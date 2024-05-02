@@ -1,0 +1,3 @@
+[submodule "submodules/lmql"]
+	path = submodules/lmql
+	url = https://github.com/eth-sri/lmql.git
