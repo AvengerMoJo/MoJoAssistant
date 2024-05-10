@@ -1,3 +1,6 @@
 [submodule "submodules/lmql"]
 	path = submodules/lmql
 	url = https://github.com/eth-sri/lmql.git
+[submodule "submodules/glycine"]
+	path = submodules/glycine
+	url = git@ssh.elmntri.co:data_aggregation/glycine.git
