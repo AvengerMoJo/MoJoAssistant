@@ -4,3 +4,7 @@
 [submodule "submodules/glycine"]
 	path = submodules/glycine
 	url = git@ssh.elmntri.co:data_aggregation/glycine.git
+[submodule "submodules/poe"]
+	path = submodules/poe
+	url = https://github.com/poe-platform/server-bot-quick-start
+	branch = poe
