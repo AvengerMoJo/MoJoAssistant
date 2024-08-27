@@ -56,7 +56,9 @@ def phraser(text):
             # if not current_function:
                 # current_function = {'name': line}
 
-query = "What's the weather like in the two cities of Boston and Dallas?"
+# query = "What's the weather like in the two cities of Boston and Dallas?"
+query = "What are the colors in a rainbow?"
+"""
 functions = [
     {
         "name": "get_current_weather",
@@ -71,6 +73,22 @@ functions = [
                 "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
             },
             "required": ["location"],
+        },
+    },
+"""
+functions = [
+    {
+        "name": "get_rgb",
+        "description": "Get the RGB value of a given color",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string",
+                    "description": "The name of a color e.g. Red",
+                }
+            },
+            "required": ["color"],
         },
     }
 ]
