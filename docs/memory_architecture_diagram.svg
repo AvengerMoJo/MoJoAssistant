@@ -1,0 +1,81 @@
+<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background and Title -->
+  <rect x="0" y="0" width="800" height="600" fill="#f8f9fa" rx="5" ry="5"/>
+  <text x="400" y="40" font-family="Arial" font-size="24" text-anchor="middle" font-weight="bold">MoJoAssistant Memory Architecture</text>
+  
+  <!-- Memory Manager - Central Component -->
+  <rect x="300" y="80" width="200" height="100" rx="10" ry="10" fill="#4285f4" stroke="#2a56c6" stroke-width="2"/>
+  <text x="400" y="120" font-family="Arial" font-size="18" text-anchor="middle" fill="white" font-weight="bold">Memory Manager</text>
+  <text x="400" y="145" font-family="Arial" font-size="14" text-anchor="middle" fill="white">Unified Memory Interface</text>
+  
+  <!-- Memory Tiers -->
+  <!-- Working Memory -->
+  <rect x="100" y="240" width="180" height="90" rx="10" ry="10" fill="#fbbc05" stroke="#ea8f00" stroke-width="2"/>
+  <text x="190" y="270" font-family="Arial" font-size="16" text-anchor="middle" fill="white" font-weight="bold">Working Memory</text>
+  <text x="190" y="295" font-family="Arial" font-size="12" text-anchor="middle" fill="white">LangChain Buffer Memory</text>
+  <text x="190" y="315" font-family="Arial" font-size="12" text-anchor="middle" fill="white">(Current Conversation)</text>
+  
+  <!-- Active Memory -->
+  <rect x="310" y="240" width="180" height="90" rx="10" ry="10" fill="#34a853" stroke="#1e8e3e" stroke-width="2"/>
+  <text x="400" y="270" font-family="Arial" font-size="16" text-anchor="middle" fill="white" font-weight="bold">Active Memory</text>
+  <text x="400" y="295" font-family="Arial" font-size="12" text-anchor="middle" fill="white">MemGPT-inspired Paging</text>
+  <text x="400" y="315" font-family="Arial" font-size="12" text-anchor="middle" fill="white">(Recent Sessions)</text>
+  
+  <!-- Archival Memory -->
+  <rect x="520" y="240" width="180" height="90" rx="10" ry="10" fill="#ea4335" stroke="#c5221f" stroke-width="2"/>
+  <text x="610" y="270" font-family="Arial" font-size="16" text-anchor="middle" fill="white" font-weight="bold">Archival Memory</text>
+  <text x="610" y="295" font-family="Arial" font-size="12" text-anchor="middle" fill="white">Vector Database</text>
+  <text x="610" y="315" font-family="Arial" font-size="12" text-anchor="middle" fill="white">(Long-term Storage)</text>
+  
+  <!-- Knowledge Components -->
+  <rect x="150" y="400" width="500" height="90" rx="10" ry="10" fill="#673ab7" stroke="#512da8" stroke-width="2"/>
+  <text x="400" y="430" font-family="Arial" font-size="16" text-anchor="middle" fill="white" font-weight="bold">Knowledge Integration</text>
+  <text x="400" y="455" font-family="Arial" font-size="12" text-anchor="middle" fill="white">LlamaIndex Document Indexing and Retrieval</text>
+  <text x="400" y="475" font-family="Arial" font-size="12" text-anchor="middle" fill="white">(Documents, Knowledge Graphs, External Sources)</text>
+  
+  <!-- Connection Lines -->
+  <!-- Memory Manager to Tiers -->
+  <line x1="400" y1="180" x2="400" y2="240" stroke="#333" stroke-width="2"/>
+  <line x1="400" y1="180" x2="190" y2="240" stroke="#333" stroke-width="2"/>
+  <line x1="400" y1="180" x2="610" y2="240" stroke="#333" stroke-width="2"/>
+  
+  <!-- Between Memory Tiers -->
+  <line x1="280" y1="285" x2="310" y2="285" stroke="#333" stroke-width="2" stroke-dasharray="5,3"/>
+  <polygon points="305,280 315,285 305,290" fill="#333"/>
+  
+  <line x1="490" y1="285" x2="520" y2="285" stroke="#333" stroke-width="2" stroke-dasharray="5,3"/>
+  <polygon points="515,280 525,285 515,290" fill="#333"/>
+  
+  <!-- Memory Tiers to Knowledge -->
+  <line x1="190" y1="330" x2="190" y2="400" stroke="#333" stroke-width="2"/>
+  <line x1="400" y1="330" x2="400" y2="400" stroke="#333" stroke-width="2"/>
+  <line x1="610" y1="330" x2="610" y2="400" stroke="#333" stroke-width="2"/>
+  
+  <!-- Agent Interface -->
+  <rect x="50" y="80" width="180" height="80" rx="10" ry="10" fill="#ff6d01" stroke="#e65100" stroke-width="2"/>
+  <text x="140" y="110" font-family="Arial" font-size="16" text-anchor="middle" fill="white" font-weight="bold">Agent Framework</text>
+  <text x="140" y="135" font-family="Arial" font-size="12" text-anchor="middle" fill="white">(LangChain Agents)</text>
+  <line x1="230" y1="120" x2="300" y2="120" stroke="#333" stroke-width="2"/>
+  <polygon points="295,115 305,120 295,125" fill="#333"/>
+  
+  <!-- User Interface -->
+  <rect x="570" y="80" width="180" height="80" rx="10" ry="10" fill="#00bcd4" stroke="#0097a7" stroke-width="2"/>
+  <text x="660" y="110" font-family="Arial" font-size="16" text-anchor="middle" fill="white" font-weight="bold">Interface Layer</text>
+  <text x="660" y="135" font-family="Arial" font-size="12" text-anchor="middle" fill="white">(CLI, API, Visualizations)</text>
+  <line x1="570" y1="120" x2="500" y2="120" stroke="#333" stroke-width="2"/>
+  <polygon points="505,115 495,120 505,125" fill="#333"/>
+  
+  <!-- Legend -->
+  <rect x="50" y="520" width="700" height="60" rx="5" ry="5" fill="white" stroke="#ccc" stroke-width="1"/>
+  <text x="70" y="540" font-family="Arial" font-size="14" font-weight="bold">Framework Components:</text>
+  <rect x="70" y="550" width="15" height="15" fill="#4285f4"/>
+  <text x="95" y="562" font-family="Arial" font-size="12">Core</text>
+  <rect x="150" y="550" width="15" height="15" fill="#fbbc05"/>
+  <text x="175" y="562" font-family="Arial" font-size="12">LangChain</text>
+  <rect x="250" y="550" width="15" height="15" fill="#34a853"/>
+  <text x="275" y="562" font-family="Arial" font-size="12">MemGPT-inspired</text>
+  <rect x="400" y="550" width="15" height="15" fill="#ea4335"/>
+  <text x="425" y="562" font-family="Arial" font-size="12">Vector Store</text>
+  <rect x="520" y="550" width="15" height="15" fill="#673ab7"/>
+  <text x="545" y="562" font-family="Arial" font-size="12">LlamaIndex</text>
+</svg>
