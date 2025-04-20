@@ -5,11 +5,8 @@ This module provides a flexible interface for interacting with various LLM backe
 supporting both local models (via GPT4All) and remote API-based models.
 """
 
-from typing import Dict, List, Any, Optional, Union
-import os
-import json
-import requests
-from abc import ABC, abstractmethod
+from typing import Dict, List, Any
+from abc import abstractmethod
 
 # For local models
 from langchain.llms import GPT4All

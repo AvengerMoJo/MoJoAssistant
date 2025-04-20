@@ -1,4 +1,5 @@
-
+from typing import Dict, List, Any
+from abc import ABC, abstractmethod
 
 class BaseLLMInterface(ABC):
     """
