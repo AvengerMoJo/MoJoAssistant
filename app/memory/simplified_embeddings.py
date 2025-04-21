@@ -1,8 +1,8 @@
 """
-Simplified Embeddings Interface for MoJoAssistant
+Enhanced Embeddings Interface for MoJoAssistant
 
 This module provides a generic embeddings interface that can work with different backends
-without direct dependencies on specific libraries.
+including direct integration with SentenceTransformers for high-quality embeddings.
 """
 
 from typing import List, Dict, Any, Optional, Union
@@ -12,45 +12,93 @@ import hashlib
 import requests
 import math
 import random
+import importlib
+import numpy as np
+from pathlib import Path
 
 class SimpleEmbedding:
     """
-    Simple embedding implementation that can use different backends:
-    1. Local server (e.g., FastEmbed, sentence-transformers server)
-    2. Remote API (OpenAI, Cohere, etc.)
-    3. Fallback random embeddings when no backend is available
+    Enhanced embedding implementation that supports multiple backends:
+    1. HuggingFace models via sentence-transformers (local)
+    2. Local server (e.g., FastEmbed, sentence-transformers server)
+    3. Remote API (OpenAI, Cohere, etc.)
+    4. Fallback random embeddings when no backend is available
     
-    Includes caching for efficiency.
+    Includes efficient caching for performance.
     """
     
     def __init__(self, 
-                 backend: str = "local", 
-                 model_name: str = "all-MiniLM-L6-v2",
+                 backend: str = "huggingface", 
+                 model_name: str = "nomic-ai/nomic-embed-text-v2-moe",
                  api_key: str = None,
                  server_url: str = "http://localhost:8080/embed",
-                 embedding_dim: int = 384,
-                 cache_dir: str = ".embedding_cache"):
+                 embedding_dim: int = 768,
+                 cache_dir: str = ".embedding_cache",
+                 device: str = None):
         """
         Initialize the embedding interface
         
         Args:
-            backend: Backend type ('local', 'api', 'random')
+            backend: Backend type ('huggingface', 'local', 'api', 'random')
             model_name: Name of the embedding model
             api_key: API key for remote services
             server_url: URL for local embedding server
             embedding_dim: Dimension of embedding vectors
             cache_dir: Directory to store embedding cache
+            device: Device to run model on ('cpu', 'cuda', etc.)
         """
         self.backend = backend
         self.model_name = model_name
         self.api_key = api_key
         self.server_url = server_url
         self.embedding_dim = embedding_dim
+        self.device = device
+        self.model = None
         
         # Set up caching
         self.cache_dir = cache_dir
         self.cache = {}
         self._init_cache()
+        
+        # Initialize the model if using HuggingFace
+        if self.backend == "huggingface":
+            self._initialize_huggingface_model()
+    
+    def _initialize_huggingface_model(self) -> None:
+        """Initialize the HuggingFace model using sentence-transformers"""
+        try:
+            # Try to import sentence-transformers
+            sentence_transformers_spec = importlib.util.find_spec("sentence_transformers")
+            if sentence_transformers_spec is None:
+                print("sentence-transformers package not found. Installing...")
+                try:
+                    import subprocess
+                    subprocess.check_call(["pip", "install", "sentence-transformers"])
+                    print("sentence-transformers installed successfully")
+                except Exception as e:
+                    print(f"Failed to install sentence-transformers: {e}")
+                    print("Falling back to random embeddings")
+                    self.backend = "random"
+                    return
+            
+            # Import and initialize the model
+            from sentence_transformers import SentenceTransformer
+            
+            print(f"Loading embedding model: {self.model_name}")
+            self.model = SentenceTransformer(self.model_name)
+            
+            # Set device if specified
+            if self.device:
+                self.model.to(self.device)
+                
+            # Update embedding dimension based on the model
+            self.embedding_dim = self.model.get_sentence_embedding_dimension()
+            print(f"Model loaded with embedding dimension: {self.embedding_dim}")
+            
+        except Exception as e:
+            print(f"Error initializing HuggingFace model: {e}")
+            print("Falling back to random embeddings")
+            self.backend = "random"
     
     def _init_cache(self) -> None:
         """Initialize the embedding cache"""
@@ -100,7 +148,9 @@ class SimpleEmbedding:
         embedding = []
         
         # Generate embedding based on backend
-        if self.backend == "local":
+        if self.backend == "huggingface":
+            embedding = self._get_huggingface_embedding(text)
+        elif self.backend == "local":
             embedding = self._get_local_embedding(text)
         elif self.backend == "api":
             embedding = self._get_api_embedding(text)
@@ -116,6 +166,32 @@ class SimpleEmbedding:
             self._save_cache()
             
         return embedding
+    
+    def _get_huggingface_embedding(self, text: str) -> List[float]:
+        """
+        Get embedding from HuggingFace model
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            List[float]: Embedding vector
+        """
+        try:
+            if self.model is None:
+                return self._get_random_embedding(text)
+                
+            # Generate embedding from model
+            embedding = self.model.encode(text)
+            
+            # Convert to list of floats
+            if isinstance(embedding, np.ndarray):
+                return embedding.tolist()
+            return list(embedding)
+            
+        except Exception as e:
+            print(f"Error getting HuggingFace embedding: {e}")
+            return self._get_random_embedding(text)
     
     def get_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
         """
@@ -147,7 +223,9 @@ class SimpleEmbedding:
             return results
         
         # Generate embeddings for uncached texts
-        if self.backend == "local":
+        if self.backend == "huggingface":
+            embeddings = self._get_huggingface_batch_embeddings(uncached_texts)
+        elif self.backend == "local":
             embeddings = self._get_local_batch_embeddings(uncached_texts)
         elif self.backend == "api":
             embeddings = self._get_api_batch_embeddings(uncached_texts)
@@ -165,6 +243,32 @@ class SimpleEmbedding:
             self._save_cache()
         
         return results
+    
+    def _get_huggingface_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """
+        Get batch embeddings from HuggingFace model
+        
+        Args:
+            texts: List of input texts
+            
+        Returns:
+            List[List[float]]: List of embedding vectors
+        """
+        try:
+            if self.model is None:
+                return [self._get_random_embedding(text) for text in texts]
+                
+            # Generate embeddings from model
+            embeddings = self.model.encode(texts)
+            
+            # Convert to list of lists
+            if isinstance(embeddings, np.ndarray):
+                return embeddings.tolist()
+            return [list(emb) for emb in embeddings]
+            
+        except Exception as e:
+            print(f"Error getting HuggingFace batch embeddings: {e}")
+            return [self._get_random_embedding(text) for text in texts]
     
     def _get_local_embedding(self, text: str) -> List[float]:
         """
@@ -420,3 +524,45 @@ class SimpleEmbedding:
             vector = [x / magnitude for x in vector]
             
         return vector
+        
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about the current embedding model"""
+        return {
+            "backend": self.backend,
+            "model_name": self.model_name,
+            "embedding_dim": self.embedding_dim,
+            "cache_size": len(self.cache),
+            "device": self.device if hasattr(self, 'device') else None
+        }
+        
+    def change_model(self, model_name: str, backend: str = None) -> bool:
+        """
+        Change the embedding model
+        
+        Args:
+            model_name: New model name
+            backend: New backend type (or None to keep current)
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            old_model_name = self.model_name
+            self.model_name = model_name
+            
+            if backend:
+                self.backend = backend
+                
+            # Reinitialize if using HuggingFace
+            if self.backend == "huggingface":
+                self.model = None
+                self._initialize_huggingface_model()
+                
+            # Re-initialize cache for new model
+            self._init_cache()
+            
+            print(f"Changed embedding model from {old_model_name} to {self.model_name}")
+            return True
+        except Exception as e:
+            print(f"Error changing embedding model: {e}")
+            return False

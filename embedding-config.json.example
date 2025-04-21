@@ -1,0 +1,41 @@
+{
+  "embedding_models": {
+    "default": {
+      "backend": "huggingface",
+      "model_name": "nomic-ai/nomic-embed-text-v2-moe",
+      "embedding_dim": 768,
+      "device": "cuda"
+    },
+    "fast": {
+      "backend": "huggingface",
+      "model_name": "BAAI/bge-small-en-v1.5",
+      "embedding_dim": 384,
+      "device": "cpu"
+    },
+    "openai": {
+      "backend": "api",
+      "model_name": "text-embedding-3-small",
+      "api_key": "YOUR_OPENAI_API_KEY",
+      "embedding_dim": 1536
+    },
+    "cohere": {
+      "backend": "api",
+      "model_name": "embed-english-v3.0",
+      "api_key": "YOUR_COHERE_API_KEY",
+      "embedding_dim": 1024
+    },
+    "local-server": {
+      "backend": "local",
+      "server_url": "http://localhost:8080/embed"
+    },
+    "fallback": {
+      "backend": "random",
+      "embedding_dim": 768
+    }
+  },
+  "memory_settings": {
+    "working_memory_max_tokens": 4000,
+    "active_memory_max_pages": 20,
+    "data_directory": ".memory"
+  }
+}

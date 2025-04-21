@@ -4,6 +4,7 @@ import json
 import os
 import re
 from collections import Counter
+import importlib
 
 from app.memory.simplified_embeddings import SimpleEmbedding
 from app.memory.working_memory import WorkingMemory
@@ -14,24 +15,87 @@ from app.memory.knowledge_manager import KnowledgeManager
 class MemoryManager:
     """
     Unified memory management system integrating all memory tiers
+    with enhanced embedding capabilities
     """
-    def __init__(self, data_dir: str = ".memory"):
+    def __init__(self, 
+                 data_dir: str = ".memory", 
+                 embedding_model: str = "nomic-ai/nomic-embed-text-v2-moe",
+                 embedding_backend: str = "huggingface",
+                 embedding_device: str = None,
+                 config: Dict[str, Any] = None):
+        """
+        Initialize the memory manager
+        
+        Args:
+            data_dir: Directory for storing memory data
+            embedding_model: Name of the embedding model to use
+            embedding_backend: Embedding backend type ('huggingface', 'local', 'api', 'random')
+            embedding_device: Device to run embedding model on ('cpu', 'cuda', etc.)
+            config: Additional configuration options
+        """
         # Set up data directory
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
         
-        # Set up embedding (using random embedding as default fallback)
-        self.embedding = SimpleEmbedding(backend="random")
+        # Process config
+        self.config = config or {}
+        
+        # Set up embedding system
+        self._setup_embedding(
+            model_name=embedding_model,
+            backend=embedding_backend,
+            device=embedding_device
+        )
         
         # Initialize memory components
-        self.working_memory = WorkingMemory()
-        self.active_memory = ActiveMemory()
-        self.archival_memory = ArchivalMemory(embedding=self.embedding, data_dir=data_dir)
-        self.knowledge_manager = KnowledgeManager(embedding=self.embedding, data_dir=data_dir)
+        self.working_memory = WorkingMemory(
+            max_tokens=self.config.get('working_memory_max_tokens', 4000)
+        )
+        
+        self.active_memory = ActiveMemory(
+            max_pages=self.config.get('active_memory_max_pages', 20)
+        )
+        
+        self.archival_memory = ArchivalMemory(
+            embedding=self.embedding, 
+            data_dir=os.path.join(data_dir, "archival")
+        )
+        
+        self.knowledge_manager = KnowledgeManager(
+            embedding=self.embedding, 
+            data_dir=os.path.join(data_dir, "knowledge")
+        )
         
         # Track the current conversation
         self.current_conversation = []
         self.current_context = []
+        
+        print(f"Memory manager initialized with {self.embedding.backend} embeddings using model: {self.embedding.model_name}")
+    
+    def _setup_embedding(self, model_name: str, backend: str, device: str = None) -> None:
+        """
+        Set up the embedding system
+        
+        Args:
+            model_name: Name of the embedding model to use
+            backend: Embedding backend type
+            device: Device to run embedding model on
+        """
+        # Check if we have sentence-transformers installed when using huggingface backend
+        if backend == "huggingface":
+            sentence_transformers_spec = importlib.util.find_spec("sentence_transformers")
+            if sentence_transformers_spec is None:
+                print("Warning: sentence-transformers not installed. Falling back to random embeddings.")
+                backend = "random"
+                model_name = None
+        
+        # Initialize embedding system
+        self.embedding = SimpleEmbedding(
+            backend=backend,
+            model_name=model_name,
+            device=device,
+            cache_dir=os.path.join(self.data_dir, "embedding_cache")
+        )
     
     def add_user_message(self, message: str) -> None:
         """Add a user message to memory"""
@@ -253,6 +317,7 @@ class MemoryManager:
                 "pages": [page.to_dict() for page in self.active_memory.pages]
             },
             "current_conversation": self.current_conversation,
+            "embedding_info": self.embedding.get_model_info(),
             "timestamp": datetime.datetime.now().isoformat()
         }
         
@@ -289,37 +354,61 @@ class MemoryManager:
             # Restore current conversation
             self.current_conversation = memory_state["current_conversation"]
             
+            # Check if we need to update the embedding model
+            if "embedding_info" in memory_state:
+                saved_model = memory_state["embedding_info"].get("model_name")
+                saved_backend = memory_state["embedding_info"].get("backend")
+                
+                current_model = self.embedding.model_name
+                current_backend = self.embedding.backend
+                
+                if saved_model != current_model or saved_backend != current_backend:
+                    print(f"Notice: Current embedding model ({current_model}) differs from saved state ({saved_model})")
+            
             return True
         except Exception as e:
             print(f"Error loading memory state: {e}")
             return False
     
-    def set_embedding_model(self, backend: str = "local", model_name: str = None, api_key: str = None) -> bool:
+    def set_embedding_model(self, model_name: str, backend: str = None, device: str = None) -> bool:
         """
-        Set the embedding model to use for vector search
+        Change the embedding model
         
         Args:
-            backend: 'local', 'api', or 'random'
             model_name: Name of the model to use
-            api_key: API key for remote services
+            backend: Backend type ('huggingface', 'local', 'api', 'random')
+            device: Device to run model on ('cpu', 'cuda', etc.)
             
         Returns:
             bool: True if successful
         """
         try:
-            # Create new embedding model
-            self.embedding = SimpleEmbedding(
-                backend=backend,
-                model_name=model_name or "all-MiniLM-L6-v2",
-                api_key=api_key
-            )
+            # Update backend if specified
+            if backend:
+                self.embedding.backend = backend
             
-            # Update components to use new embedding
-            self.archival_memory.embedding = self.embedding
-            self.knowledge_manager.embedding = self.embedding
+            # Update device if specified
+            if device:
+                self.embedding.device = device
             
-            print(f"Embedding model updated to {backend} mode")
-            return True
+            # Change embedding model
+            success = self.embedding.change_model(model_name, backend)
+            
+            if success:
+                # Update the embedding model in other components
+                self.archival_memory.embedding = self.embedding
+                self.knowledge_manager.embedding = self.embedding
+                
+                print(f"Embedding model updated to {model_name}")
+                return True
+            else:
+                print(f"Failed to update embedding model to {model_name}")
+                return False
+                
         except Exception as e:
             print(f"Error setting embedding model: {e}")
             return False
+    
+    def get_embedding_info(self) -> Dict[str, Any]:
+        """Get information about the current embedding model"""
+        return self.embedding.get_model_info()
