@@ -81,14 +81,6 @@ class MemoryManager:
             backend: Embedding backend type
             device: Device to run embedding model on
         """
-        # Check if we have sentence-transformers installed when using huggingface backend
-        if backend == "huggingface":
-            sentence_transformers_spec = importlib.util.find_spec("sentence_transformers")
-            if sentence_transformers_spec is None:
-                print("Warning: sentence-transformers not installed. Falling back to random embeddings.")
-                backend = "random"
-                model_name = None
-        
         # Initialize embedding system
         self.embedding = SimpleEmbedding(
             backend=backend,
