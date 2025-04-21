@@ -112,6 +112,13 @@ class SimpleEmbedding:
     def _get_cache_key(self, text: str) -> str:
         """Generate a cache key for a text string"""
         return hashlib.md5(text.encode('utf-8')).hexdigest()
+
+    def _get_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
+        # Ensure vectors are of the same length
+        if len(vec_a) != len(vec_b):
+            return 0.0
+        similarity = self.model.similarity(vec_a, vec_b)
+        return similarity
     
     def get_text_embedding(self, text: str, prompt_name: str = 'passage') -> List[float]:
         """

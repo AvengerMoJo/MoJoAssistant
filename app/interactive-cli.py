@@ -23,7 +23,7 @@ def clear_screen():
 
 def print_header():
     """Print the application header"""
-    clear_screen()
+    # clear_screen()
     print("=" * 60)
     print("                  MoJoAssistant Interactive CLI")
     print("=" * 60)

@@ -222,7 +222,7 @@ class MemoryManager:
         else:
             return "General conversation without specific focus"
     
-    def get_context_for_query(self, query: str, max_items: int = 5) -> List[Dict[str, Any]]:
+    def get_context_for_query(self, query: str, max_items: int = 10) -> List[Dict[str, Any]]:
         """
         Retrieve relevant context from all memory tiers to support the current query
         """
@@ -237,9 +237,11 @@ class MemoryManager:
             msg_embedding = self.embedding.get_text_embedding(msg.content)
             
             # Calculate cosine similarity between query and message
-            similarity = self._cosine_similarity(query_embedding, msg_embedding)
+            similarity = self.embedding._get_similarity(query_embedding, msg_embedding)
+            print("Similarity:", similarity)
+            print("Message:", msg.content)
             
-            if similarity > 0.5:  # Adjust threshold as needed
+            if similarity > 0.3:  # Adjust threshold as needed
                 working_context.append({
                     "source": "working_memory",
                     "content": msg.content,
@@ -297,34 +299,6 @@ class MemoryManager:
         self.current_context = sorted_context[:max_items]
         
         return self.current_context
-
-    def _cosine_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
-        """
-        Calculate cosine similarity between two embedding vectors
-        
-        Args:
-            vec_a: First embedding vector
-            vec_b: Second embedding vector
-            
-        Returns:
-            Cosine similarity score between 0 and 1
-        """
-        # Ensure vectors are of the same length
-        if len(vec_a) != len(vec_b):
-            return 0.0
-        
-        # Calculate dot product
-        dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
-        
-        # Calculate magnitudes
-        magnitude_a = math.sqrt(sum(a * a for a in vec_a))
-        magnitude_b = math.sqrt(sum(b * b for b in vec_b))
-        
-        # Prevent division by zero
-        if magnitude_a == 0 or magnitude_b == 0:
-            return 0.0
-        # Calculate and return cosine similarity
-        return dot_product / (magnitude_a * magnitude_b)
 
     def update_memory_from_response(self, query: str, response: str) -> None:
         """

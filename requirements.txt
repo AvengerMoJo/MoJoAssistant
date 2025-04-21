@@ -25,6 +25,6 @@ llama-cpp-python
 requests
 pydantic
 sentence-transformers
-
+einops
 
 
