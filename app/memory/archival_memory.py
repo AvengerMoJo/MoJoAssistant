@@ -1,44 +1,61 @@
 from typing import Dict, List, Any
 import datetime
 import uuid
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+import os
+import json
+import math
 from app.memory.memory_page import MemoryPage
 
 class ArchivalMemory:
     """
     Long-term vector-based memory storage
-    Uses Qdrant as the vector database
+    Simplified implementation without Qdrant dependency
     """
-    def __init__(self, embedding, collection_name: str = "memory", embedding_dim: int = 384):
-        # Initialize with in-memory Qdrant for simplicity
-        # For production, use persistent storage
-        self.client = QdrantClient(":memory:")
-        self.collection_name = collection_name
+    def __init__(self, embedding, collection_name: str = "memory", data_dir: str = ".archival_memory"):
         self.embedding = embedding
-        self.embedding_dim = embedding_dim
+        self.collection_name = collection_name
+        self.data_dir = data_dir
         
-        # Initialize embedding model (using smaller model for efficiency)
-        # self.embedding = HuggingFaceEmbedding(
-        #   model_name="all-MiniLM-L6-v2"
-        # )
+        # Initialize storage
+        self.memories = []  # Stores documents and metadata
+        self.vectors = []   # Stores corresponding embeddings
         
-        # Create collection if it doesn't exist
-        self._create_collection_if_not_exists()
+        # Create data directory if it doesn't exist
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        # Load existing data if available
+        self._load_data()
     
-    def _create_collection_if_not_exists(self) -> None:
-        """Create the vector collection if it doesn't exist"""
-        collections = self.client.get_collections().collections
-        collection_names = [collection.name for collection in collections]
+    def _load_data(self) -> None:
+        """Load existing archival memory data"""
+        memory_file = os.path.join(self.data_dir, f"{self.collection_name}.json")
         
-        if self.collection_name not in collection_names:
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(
-                    size=self.embedding_dim,
-                    distance=Distance.COSINE
-                )
-            )
+        if os.path.exists(memory_file):
+            try:
+                with open(memory_file, 'r') as f:
+                    data = json.load(f)
+                    self.memories = data.get("memories", [])
+                    self.vectors = data.get("vectors", [])
+                print(f"Loaded {len(self.memories)} documents from archival memory")
+            except Exception as e:
+                print(f"Error loading archival memory: {e}")
+                self.memories = []
+                self.vectors = []
+    
+    def _save_data(self) -> None:
+        """Save archival memory data to disk"""
+        memory_file = os.path.join(self.data_dir, f"{self.collection_name}.json")
+        
+        try:
+            data = {
+                "memories": self.memories,
+                "vectors": self.vectors,
+                "updated_at": datetime.datetime.now().isoformat()
+            }
+            with open(memory_file, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            print(f"Error saving archival memory: {e}")
     
     def store(self, text: str, metadata: Dict[str, Any]) -> str:
         """Store a memory in archival storage with embedding"""
@@ -47,53 +64,83 @@ class ArchivalMemory:
         
         # Generate embedding
         embedding = self.embedding.get_text_embedding(text)
-
-        # Store in vector database
-        point = PointStruct(
-            id=memory_id,
-            vector=embedding,
-            payload={
-                "text": text,
-                "metadata": metadata,
-                "created_at": datetime.datetime.now().isoformat()
-            }
-        )
-        self.client.upsert(
-            collection_name=self.collection_name,
-            points=[point]
-        )
+        
+        # Store in memory
+        memory = {
+            "id": memory_id,
+            "text": text,
+            "metadata": metadata,
+            "created_at": datetime.datetime.now().isoformat()
+        }
+        
+        self.memories.append(memory)
+        self.vectors.append(embedding)
+        
+        # Save periodically
+        if len(self.memories) % 10 == 0:
+            self._save_data()
         
         return memory_id
     
     def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Search for relevant memories based on semantic similarity"""
+        if not self.memories:
+            return []
+        
         # Generate query embedding
         query_embedding = self.embedding.get_text_embedding(query)
         
-        # Search in vector database
-        results = self.client.search(
-            collection_name=self.collection_name,
-            query_vector=query_embedding,
-            limit=limit
-        )
+        # Calculate similarity scores
+        scores = []
+        for i, memory_embedding in enumerate(self.vectors):
+            # Cosine similarity calculation
+            similarity = self._cosine_similarity(query_embedding, memory_embedding)
+            scores.append((i, similarity))
         
-        # Format results
-        memories = []
-        for result in results:
-            memories.append({
-                "id": result.id,
-                "text": result.payload["text"],
-                "metadata": result.payload["metadata"],
-                "created_at": result.payload["created_at"],
-                "relevance_score": result.score
-            })
+        # Sort by similarity (highest first)
+        scores.sort(key=lambda x: x[1], reverse=True)
+        
+        # Return top results
+        results = []
+        for i, score in scores[:limit]:
+            memory = self.memories[i].copy()
+            memory["relevance_score"] = float(score)
+            results.append(memory)
             
-        return memories
+        return results
+    
+    def _cosine_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
+        """Calculate cosine similarity between two vectors"""
+        # Calculate dot product
+        dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+        
+        # Calculate magnitudes
+        mag_a = math.sqrt(sum(a * a for a in vec_a))
+        mag_b = math.sqrt(sum(b * b for b in vec_b))
+        
+        # Calculate similarity
+        if mag_a > 0 and mag_b > 0:
+            return dot_product / (mag_a * mag_b)
+        return 0.0
     
     def store_page(self, page: MemoryPage) -> str:
         """Archive a memory page"""
         # Convert page content to text for embedding
-        content_text = json.dumps(page.content)
+        if isinstance(page.content, dict):
+            # For dictionaries with messages, extract text
+            if "messages" in page.content and isinstance(page.content["messages"], list):
+                text_parts = []
+                for msg in page.content["messages"]:
+                    if isinstance(msg, dict) and "content" in msg:
+                        role = msg.get("role", "unknown")
+                        text_parts.append(f"{role}: {msg['content']}")
+                content_text = "\n".join(text_parts)
+            else:
+                # For other dictionaries, convert to JSON
+                content_text = json.dumps(page.content)
+        else:
+            # For non-dict content, convert directly
+            content_text = str(page.content)
         
         # Store with page metadata
         return self.store(
@@ -105,4 +152,11 @@ class ArchivalMemory:
                 "access_count": page.access_count
             }
         )
-
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            "collection_name": self.collection_name,
+            "memory_count": len(self.memories),
+            "last_updated": datetime.datetime.now().isoformat()
+        }

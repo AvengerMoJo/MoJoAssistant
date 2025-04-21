@@ -1,7 +1,11 @@
 from typing import Dict, List, Any, Optional, Union
 import datetime
 import json
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+import os
+import re
+from collections import Counter
+
+from app.memory.simplified_embeddings import SimpleEmbedding
 from app.memory.working_memory import WorkingMemory
 from app.memory.active_memory import ActiveMemory
 from app.memory.archival_memory import ArchivalMemory
@@ -11,12 +15,19 @@ class MemoryManager:
     """
     Unified memory management system integrating all memory tiers
     """
-    def __init__(self):
-        shared_embedding = HuggingFaceEmbedding(model_name="all-MiniLM-L6-v2")
+    def __init__(self, data_dir: str = ".memory"):
+        # Set up data directory
+        self.data_dir = data_dir
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        # Set up embedding (using random embedding as default fallback)
+        self.embedding = SimpleEmbedding(backend="random")
+        
+        # Initialize memory components
         self.working_memory = WorkingMemory()
         self.active_memory = ActiveMemory()
-        self.archival_memory = ArchivalMemory(embedding=shared_embedding)
-        self.knowledge_manager = KnowledgeManager(embedding=shared_embedding)
+        self.archival_memory = ArchivalMemory(embedding=self.embedding, data_dir=data_dir)
+        self.knowledge_manager = KnowledgeManager(embedding=self.embedding, data_dir=data_dir)
         
         # Track the current conversation
         self.current_conversation = []
@@ -75,11 +86,14 @@ class MemoryManager:
         if not self.current_conversation:
             return
             
+        # Generate a simple summary
+        summary = self._generate_conversation_summary()
+        
         # Store full conversation in active memory
         page_content = {
             "messages": self.current_conversation,
             "timestamp": datetime.datetime.now().isoformat(),
-            "summary": self._generate_conversation_summary()
+            "summary": summary
         }
         page_id = self.active_memory.add_page(page_content, "conversation_complete")
         
@@ -91,7 +105,7 @@ class MemoryManager:
                 "type": "conversation",
                 "timestamp": datetime.datetime.now().isoformat(),
                 "message_count": len(self.current_conversation),
-                "summary": page_content["summary"],
+                "summary": summary,
                 "active_memory_page_id": page_id
             }
         )
@@ -104,9 +118,8 @@ class MemoryManager:
     def _generate_conversation_summary(self) -> str:
         """
         Generate a summary of the current conversation
-        In a full implementation, this would use an LLM to summarize
+        Uses a simple keyword extraction approach
         """
-        # Simplified placeholder - in production, use an LLM for this
         if len(self.current_conversation) <= 2:
             return "Brief conversation with insufficient content for summarization"
             
@@ -115,22 +128,43 @@ class MemoryManager:
         if not user_messages:
             return "No user messages found in conversation"
             
-        # Very basic summary approach
-        topics = []
+        # Simple topic extraction
+        # Extract words, ignoring common stop words
+        stop_words = set([
+            "a", "an", "the", "and", "or", "but", "if", "then", "else", "when",
+            "at", "from", "by", "with", "about", "against", "between", "into",
+            "through", "during", "before", "after", "above", "below", "to", "of",
+            "in", "out", "on", "off", "over", "under", "again", "further", "then",
+            "once", "here", "there", "when", "where", "why", "how", "all", "any",
+            "both", "each", "few", "more", "most", "other", "some", "such", "no",
+            "nor", "not", "only", "own", "same", "so", "than", "too", "very", "s",
+            "t", "can", "will", "just", "don", "should", "now", "d", "ll", "m",
+            "o", "re", "ve", "y", "am", "is", "are", "was", "were", "be", "been",
+            "being", "have", "has", "had", "having", "do", "does", "did", "doing",
+            "would", "could", "should", "shall", "might", "may", "must", "for",
+            "that", "what", "which", "who", "whom", "this", "these", "those", "i",
+            "me", "my", "mine", "myself", "you", "your", "yours", "yourself"
+        ])
+        
+        words = []
         for msg in user_messages:
-            words = msg.split()
-            # Get most frequent non-stopwords as topics
-            # This is an oversimplification - use proper NLP in production
-            for word in words:
-                if len(word) > 4 and word.isalpha():
-                    topics.append(word.lower())
+            # Extract words, convert to lowercase, remove punctuation
+            msg_words = re.findall(r'\b[a-zA-Z]{4,}\b', msg.lower())
+            for word in msg_words:
+                if word not in stop_words:
+                    words.append(word)
         
         # Count occurrences
-        from collections import Counter
-        topic_counter = Counter(topics)
-        main_topics = [topic for topic, count in topic_counter.most_common(3)]
+        word_counter = Counter(words)
         
-        return f"Conversation about {', '.join(main_topics)}" if main_topics else "General conversation"
+        # Get most common words as topics
+        top_words = word_counter.most_common(5)
+        main_topics = [word for word, count in top_words if count >= 2]
+        
+        if main_topics:
+            return f"Conversation about {', '.join(main_topics)}"
+        else:
+            return "General conversation without specific focus"
     
     def get_context_for_query(self, query: str, max_items: int = 5) -> List[Dict[str, Any]]:
         """
@@ -139,11 +173,11 @@ class MemoryManager:
         context_items = []
         
         # First, check working memory (current conversation context)
-        working_context = self.working_memory.get_messages()
-        if working_context:
+        working_messages = self.working_memory.get_messages()
+        if working_messages:
             context_items.append({
                 "source": "working_memory",
-                "content": working_context,
+                "content": working_messages,
                 "relevance": 1.0  # Current conversation is highly relevant
             })
         
@@ -241,6 +275,7 @@ class MemoryManager:
             # Restore active memory
             self.active_memory = ActiveMemory()
             for page_dict in memory_state["active_memory"]["pages"]:
+                from app.memory.memory_page import MemoryPage
                 page = MemoryPage(
                     content=page_dict["content"],
                     page_type=page_dict["page_type"]
@@ -258,4 +293,33 @@ class MemoryManager:
         except Exception as e:
             print(f"Error loading memory state: {e}")
             return False
-
+    
+    def set_embedding_model(self, backend: str = "local", model_name: str = None, api_key: str = None) -> bool:
+        """
+        Set the embedding model to use for vector search
+        
+        Args:
+            backend: 'local', 'api', or 'random'
+            model_name: Name of the model to use
+            api_key: API key for remote services
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            # Create new embedding model
+            self.embedding = SimpleEmbedding(
+                backend=backend,
+                model_name=model_name or "all-MiniLM-L6-v2",
+                api_key=api_key
+            )
+            
+            # Update components to use new embedding
+            self.archival_memory.embedding = self.embedding
+            self.knowledge_manager.embedding = self.embedding
+            
+            print(f"Embedding model updated to {backend} mode")
+            return True
+        except Exception as e:
+            print(f"Error setting embedding model: {e}")
+            return False

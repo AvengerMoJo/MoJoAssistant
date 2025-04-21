@@ -1,0 +1,10 @@
+{
+  "local_models": {
+    "default": {
+      "path": "/path/to/local/llm",
+      "type": "llama",
+      "n_threads": 4
+    },
+  },
+  "default_interface": "default"
+}

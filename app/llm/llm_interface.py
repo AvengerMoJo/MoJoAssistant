@@ -4,7 +4,7 @@ Unified LLM Interface Module for MoJoAssistant
 This module provides a centralized interface for working with different LLM backends.
 """
 
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import os
 import json
 
@@ -48,8 +48,10 @@ class LLMInterface:
                     self.add_local_interface(
                         name=name,
                         model_path=model_config.get('path'),
-                        model_type=model_config.get('type', 'gptj'),
-                        n_threads=model_config.get('n_threads', 6)
+                        model_type=model_config.get('type', 'llama'),
+                        server_url=model_config.get('server_url'),
+                        server_port=model_config.get('server_port', 8000),
+                        context_length=model_config.get('context_length', 4096)
                     )
             
             # Configure API models
@@ -70,27 +72,34 @@ class LLMInterface:
         except Exception as e:
             print(f"Error loading configuration: {e}")
     
-    def add_local_interface(self, name: str, model_path: str, model_type: str = "gptj", n_threads: int = 6) -> None:
+    def add_local_interface(self, name: str, model_path: str, model_type: str = "llama", 
+                            server_url: str = None, server_port: int = 8000, 
+                            context_length: int = 4096) -> None:
         """
         Add a local LLM interface
         
         Args:
             name: Name of the interface
             model_path: Path to the model file
-            model_type: Model backend type
-            n_threads: Number of threads to use
+            model_type: Model type
+            server_url: URL of existing local API server
+            server_port: Port for local server
+            context_length: Maximum context length
         """
         self.interfaces[name] = LocalLLMInterface(
             model_path=model_path,
             model_type=model_type,
-            n_threads=n_threads
+            server_url=server_url,
+            server_port=server_port,
+            context_length=context_length
         )
         
         # Set as active if first interface
         if len(self.interfaces) == 1:
             self.set_active_interface(name)
     
-    def add_api_interface(self, name: str, provider: str, api_key: str = None, model: str = None, config: Dict[str, Any] = None) -> None:
+    def add_api_interface(self, name: str, provider: str, api_key: str = None, 
+                         model: str = None, config: Dict[str, Any] = None) -> None:
         """
         Add an API-based LLM interface
         
@@ -155,40 +164,14 @@ class LLMInterface:
             return "No active LLM interface configured. Please set up an interface."
         
         return self.active_interface.generate_response(query, context)
-
-
-# Factory function to create default local LLM interface
-def create_local_llm_interface(model_name: str = "default") -> LocalLLMInterface:
-    """
-    Factory function to create a local LLM interface with a specific model
     
-    Args:
-        model_name: Name of the model configuration to use
-        
-    Returns:
-        LocalLLMInterface: Configured local LLM interface
-    """
-    # Model configurations
-    model_configs = {
-        "default": {
-            "path": "/home/alex/.cache/gpt4all/ggml-model-gpt4all-falcon-q4_0.bin",
-            "type": "gptj"
-        },
-        "llama": {
-            "path": "/home/alex/.cache/gpt4all/ggml-model-gpt4all-llama-q4_0.bin",
-            "type": "llama"
-        },
-        # Add more models as needed
-    }
-    
-    # Get config or use default
-    config = model_configs.get(model_name, model_configs["default"])
-    
-    # Create and return interface
-    return LocalLLMInterface(
-        model_path=config["path"],
-        model_type=config["type"]
-    )
+    def shutdown(self) -> None:
+        """
+        Shutdown all interfaces and clean up resources
+        """
+        for name, interface in self.interfaces.items():
+            if hasattr(interface, 'shutdown'):
+                interface.shutdown()
 
 
 # Factory function to create a unified LLM interface with default configuration
@@ -210,26 +193,71 @@ def create_llm_interface(config_file: str = None, model_name: str = "default") -
     # Otherwise, create a default interface
     interface = LLMInterface()
     
-    # Add default local interface
-    model_configs = {
-        "default": {
-            "path": "/home/alex/.cache/gpt4all/ggml-model-gpt4all-falcon-q4_0.bin",
-            "type": "gptj"
-        },
-        "llama": {
-            "path": "/home/alex/.cache/gpt4all/ggml-model-gpt4all-llama-q4_0.bin",
-            "type": "llama"
+    # Add default local interface based on OS detection and common model paths
+    system_type = os.name
+    
+    # Default model configurations based on system
+    if system_type == 'nt':  # Windows
+        default_model_paths = {
+            "default": {
+                "path": os.path.expanduser("~/AppData/Local/nomic.ai/GPT4All/ggml-model-gpt4all-falcon-q4_0.bin"),
+                "type": "gptj"
+            },
+            "llama": {
+                "path": os.path.expanduser("~/AppData/Local/nomic.ai/GPT4All/mistral-7b-instruct-v0.1.Q4_0.gguf"),
+                "type": "llama"
+            }
         }
-    }
+    else:  # Linux/Mac
+        default_model_paths = {
+            "default": {
+                "path": os.path.expanduser("~/.cache/gpt4all/ggml-model-gpt4all-falcon-q4_0.bin"),
+                "type": "gptj"
+            },
+            "llama": {
+                "path": os.path.expanduser("~/.cache/gpt4all/mistral-7b-instruct-v0.1.Q4_0.gguf"),
+                "type": "llama"
+            }
+        }
     
     # Get config or use default
-    config = model_configs.get(model_name, model_configs["default"])
+    config = default_model_paths.get(model_name, default_model_paths["default"])
     
-    # Add local interface
-    interface.add_local_interface(
-        name=model_name,
-        model_path=config["path"],
-        model_type=config["type"]
-    )
+    # Check if model file exists, otherwise try different defaults
+    model_path = config["path"]
+    if not os.path.exists(model_path):
+        # Try to find any model file in common directories
+        model_dirs = [
+            os.path.expanduser("~/.cache/gpt4all/"),
+            os.path.expanduser("~/AppData/Local/nomic.ai/GPT4All/"),
+            "/usr/local/share/gpt4all/",
+            "./models/"
+        ]
+        
+        for dir_path in model_dirs:
+            if os.path.exists(dir_path):
+                model_files = [f for f in os.listdir(dir_path) 
+                              if f.endswith(('.bin', '.gguf')) and os.path.isfile(os.path.join(dir_path, f))]
+                if model_files:
+                    model_path = os.path.join(dir_path, model_files[0])
+                    print(f"Using detected model: {model_path}")
+                    break
+    
+    # Add local interface if we found a model
+    if os.path.exists(model_path):
+        model_type = "llama" if model_path.endswith(".gguf") else "gptj"
+        interface.add_local_interface(
+            name=model_name,
+            model_path=model_path,
+            model_type=model_type
+        )
+    else:
+        # If no local model found, add a warning interface
+        interface.add_local_interface(
+            name="dummy",
+            model_path=None,
+            model_type="none"
+        )
+        print("WARNING: No local LLM model found. Please configure a model path or API endpoint.")
     
     return interface

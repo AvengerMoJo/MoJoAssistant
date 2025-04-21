@@ -15,6 +15,15 @@ llama-index-vector-stores-qdrant
 llama-index-readers-file
 llama-index-llms-openai
 llama_index
+langchain-community
+uvicorn
+starlette
+sse_starlette
+starlette_context
+fastapi
+llama-cpp-python
+requests
+pydantic
 
 
 

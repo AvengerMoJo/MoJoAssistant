@@ -144,12 +144,14 @@ def main():
     parser = argparse.ArgumentParser(description="MoJoAssistant Interactive CLI")
     parser.add_argument("--model", help="Name of the LLM model configuration to use", default="default")
     parser.add_argument("--load", help="Load memory state from file on startup")
+    parser.add_argument("--config", help="Path to LLM configuration file")
+
     args = parser.parse_args()
     
     # Initialize memory manager and LLM
     memory_manager = MemoryManager()
-    llm_interface = create_llm_interface(args.model)
-    
+    llm_interface = create_llm_interface(config_file=args.config, model_name=args.model)
+
     # Load memory state if specified
     if args.load:
         load_memory_state(memory_manager, args.load)

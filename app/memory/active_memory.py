@@ -48,20 +48,37 @@ class ActiveMemory:
         
         for page in self.pages:
             # Simple text search in content values
-            content_text = " ".join([str(v) for v in page.content.values()])
+            content_text = ""
+            
+            # Handle different content formats
+            if isinstance(page.content, dict):
+                # For dictionaries, concatenate all string values
+                for key, value in page.content.items():
+                    if key == "messages" and isinstance(value, list):
+                        # Special handling for message lists
+                        for msg in value:
+                            if isinstance(msg, dict) and "content" in msg:
+                                content_text += " " + str(msg["content"])
+                    elif isinstance(value, str):
+                        content_text += " " + value
+            else:
+                # For non-dict content, convert to string
+                content_text = str(page.content)
+                
+            # Perform the search
             if query_lower in content_text.lower():
                 page.access()
                 results.append(page)
                 
         return results
     
-    def _archive_least_accessed_page(self) -> None:
+    def _archive_least_accessed_page(self) -> Optional[MemoryPage]:
         """
         Find the least recently accessed page and mark it for archival
         In a full implementation, this would move the page to archival memory
         """
         if not self.pages:
-            return
+            return None
             
         least_accessed = min(
             self.pages, 
@@ -72,5 +89,20 @@ class ActiveMemory:
         self.pages.remove(least_accessed)
         
         return least_accessed
-
-
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            "pages": [page.to_dict() for page in self.pages],
+            "max_pages": self.max_pages
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ActiveMemory':
+        """Create an ActiveMemory instance from a dictionary"""
+        memory = cls(max_pages=data.get("max_pages", 20))
+        
+        for page_data in data.get("pages", []):
+            memory.pages.append(MemoryPage.from_dict(page_data))
+            
+        return memory

@@ -30,5 +30,16 @@ class MemoryPage:
             "last_accessed": self.last_accessed,
             "access_count": self.access_count
         }
-
-
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'MemoryPage':
+        """Create a MemoryPage instance from a dictionary"""
+        page = cls(
+            content=data.get("content", {}),
+            page_type=data.get("page_type", "unknown")
+        )
+        page.id = data.get("id", str(uuid.uuid4()))
+        page.created_at = data.get("created_at", page.created_at)
+        page.last_accessed = data.get("last_accessed", page.last_accessed)
+        page.access_count = data.get("access_count", 0)
+        return page
