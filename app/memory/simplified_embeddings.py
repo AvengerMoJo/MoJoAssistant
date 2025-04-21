@@ -80,8 +80,8 @@ class SimpleEmbedding:
             
         except Exception as e:
             print(f"Error initializing HuggingFace model: {e}")
-            print("Falling back to random embeddings")
-            self.backend = "random"
+            # print("Falling back to random embeddings")
+            # self.backend = "random"
     
     def _init_cache(self) -> None:
         """Initialize the embedding cache"""
