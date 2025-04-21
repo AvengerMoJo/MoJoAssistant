@@ -75,7 +75,7 @@ class LocalLLMInterface(BaseLLMInterface):
                     "python", "-m", "llama_cpp.server",
                     "--model", self.model_path,
                     "--port", str(self.server_port),
-                    "--chat-format", "chatml"
+                    "--chat_format", "chatml"
                 ]
             elif self.model_type.lower() in ["gptj", "gpt4all"]:
                 # For GPT4All compatible models
