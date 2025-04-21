@@ -4,7 +4,7 @@ import json
 import os
 import re
 from collections import Counter
-import importlib
+import math
 
 from app.memory.simplified_embeddings import SimpleEmbedding
 from app.memory.working_memory import WorkingMemory
@@ -227,38 +227,62 @@ class MemoryManager:
         Retrieve relevant context from all memory tiers to support the current query
         """
         context_items = []
+        query_embedding = self.embedding.get_text_embedding(query, prompt_name='query')
         
-        # First, check working memory (current conversation context)
+        # 1. Search working memory
         working_messages = self.working_memory.get_messages()
-        if working_messages:
-            context_items.append({
-                "source": "working_memory",
-                "content": working_messages,
-                "relevance": 1.0  # Current conversation is highly relevant
+        working_context = []
+        for msg in working_messages:
+            # Embed each message
+            msg_embedding = self.embedding.get_text_embedding(msg.content)
+            
+            # Calculate cosine similarity between query and message
+            similarity = self._cosine_similarity(query_embedding, msg_embedding)
+            
+            if similarity > 0.5:  # Adjust threshold as needed
+                working_context.append({
+                    "source": "working_memory",
+                    "content": msg.content,
+                    "relevance": similarity
             })
+        # Add working memory context
+        context_items.extend(working_context)
         
-        # Search active memory for relevant pages
-        active_pages = self.active_memory.search_pages(query)
-        for page in active_pages[:max_items//2]:
-            context_items.append({
-                "source": "active_memory",
+        # 2. Search active memory pages
+        active_pages = self.active_memory.pages
+        for page in active_pages:
+            # Convert page content to text for embedding
+            if isinstance(page.content, dict):
+                content_text = json.dumps(page.content)
+            else:
+                content_text = str(page.content)
+            
+            # Embed page content
+            page_embedding = self.embedding.get_text_embedding(content_text)
+            
+            # Calculate similarity
+            similarity = self._cosine_similarity(query_embedding, page_embedding)
+            
+            if similarity > 0.5:  # Adjust threshold as needed
+                context_items.append({
+                    "source": "active_memory",
                 "content": page.content,
                 "page_id": page.id,
-                "relevance": 0.8  # Active memory is fairly relevant
+                "relevance": similarity
             })
         
-        # Search archival memory for relevant memories
-        archival_results = self.archival_memory.search(query, limit=max_items//2)
+        # 3. Search archival memory
+        archival_results = self.archival_memory.search(query, limit=max_items)
         for result in archival_results:
             context_items.append({
                 "source": "archival_memory",
                 "content": result["text"],
-                "metadata": result["metadata"],
-                "relevance": result["relevance_score"]
-            })
+            "metadata": result["metadata"],
+            "relevance": result["relevance_score"]
+        })
         
-        # Search knowledge base if we have one
-        knowledge_results = self.knowledge_manager.query(query, similarity_top_k=max_items//2)
+        # 4. Search knowledge base
+        knowledge_results = self.knowledge_manager.query(query, similarity_top_k=max_items)
         for text, score in knowledge_results:
             context_items.append({
                 "source": "knowledge_base",
@@ -267,13 +291,41 @@ class MemoryManager:
             })
         
         # Sort by relevance
-        sorted_context = sorted(context_items, key=lambda x: x["relevance"], reverse=True)
+        sorted_context = sorted(context_items, key=lambda x: x.get("relevance", 0), reverse=True)
         
-        # Keep track of the context used for this query
+        # Limit and store current context
         self.current_context = sorted_context[:max_items]
         
         return self.current_context
-    
+
+    def _cosine_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
+        """
+        Calculate cosine similarity between two embedding vectors
+        
+        Args:
+            vec_a: First embedding vector
+            vec_b: Second embedding vector
+            
+        Returns:
+            Cosine similarity score between 0 and 1
+        """
+        # Ensure vectors are of the same length
+        if len(vec_a) != len(vec_b):
+            return 0.0
+        
+        # Calculate dot product
+        dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+        
+        # Calculate magnitudes
+        magnitude_a = math.sqrt(sum(a * a for a in vec_a))
+        magnitude_b = math.sqrt(sum(b * b for b in vec_b))
+        
+        # Prevent division by zero
+        if magnitude_a == 0 or magnitude_b == 0:
+            return 0.0
+        # Calculate and return cosine similarity
+        return dot_product / (magnitude_a * magnitude_b)
+
     def update_memory_from_response(self, query: str, response: str) -> None:
         """
         Update memory based on the query and response

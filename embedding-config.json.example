@@ -4,7 +4,7 @@
       "backend": "huggingface",
       "model_name": "nomic-ai/nomic-embed-text-v2-moe",
       "embedding_dim": 768,
-      "device": "cuda"
+      "device": "cpu"
     },
     "fast": {
       "backend": "huggingface",

@@ -113,7 +113,7 @@ class SimpleEmbedding:
         """Generate a cache key for a text string"""
         return hashlib.md5(text.encode('utf-8')).hexdigest()
     
-    def get_text_embedding(self, text: str) -> List[float]:
+    def get_text_embedding(self, text: str, prompt_name: str = 'passage') -> List[float]:
         """
         Get embedding vector for a text string
         
@@ -132,7 +132,7 @@ class SimpleEmbedding:
         
         # Generate embedding based on backend
         if self.backend == "huggingface":
-            embedding = self._get_huggingface_embedding(text)
+            embedding = self._get_huggingface_embedding(text, prompt_name)
         elif self.backend == "local":
             embedding = self._get_local_embedding(text)
         elif self.backend == "api":
@@ -150,7 +150,7 @@ class SimpleEmbedding:
             
         return embedding
     
-    def _get_huggingface_embedding(self, text: str) -> List[float]:
+    def _get_huggingface_embedding(self, text: str, prompt_name: str = 'passage') -> List[float]:
         """
         Get embedding from HuggingFace model
         
@@ -165,7 +165,11 @@ class SimpleEmbedding:
                 return self._get_random_embedding(text)
                 
             # Generate embedding from model
-            embedding = self.model.encode(text)
+            # prompt_name 'passage' or 'query'
+            if self.model_name == "nomic-ai/nomic-embed-text-v2-moe":
+                embedding = self.model.encode(text, prompt_name=prompt_name)
+            else:
+                embedding = self.model.encode(text)
             
             # Convert to list of floats
             if isinstance(embedding, np.ndarray):
