@@ -14,7 +14,7 @@ import math
 import random
 import importlib
 import numpy as np
-from pathlib import Path
+from sentence_transformers import SentenceTransformer
 
 class SimpleEmbedding:
     """
@@ -67,25 +67,8 @@ class SimpleEmbedding:
     def _initialize_huggingface_model(self) -> None:
         """Initialize the HuggingFace model using sentence-transformers"""
         try:
-            # Try to import sentence-transformers
-            sentence_transformers_spec = importlib.util.find_spec("sentence_transformers")
-            if sentence_transformers_spec is None:
-                print("sentence-transformers package not found. Installing...")
-                try:
-                    import subprocess
-                    subprocess.check_call(["pip", "install", "sentence-transformers"])
-                    print("sentence-transformers installed successfully")
-                except Exception as e:
-                    print(f"Failed to install sentence-transformers: {e}")
-                    print("Falling back to random embeddings")
-                    self.backend = "random"
-                    return
-            
-            # Import and initialize the model
-            from sentence_transformers import SentenceTransformer
-            
             print(f"Loading embedding model: {self.model_name}")
-            self.model = SentenceTransformer(self.model_name)
+            self.model = SentenceTransformer(self.model_name, trust_remote_code=True)
             
             # Set device if specified
             if self.device:
