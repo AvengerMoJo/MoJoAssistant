@@ -11,6 +11,8 @@ from app.memory.working_memory import WorkingMemory
 from app.memory.active_memory import ActiveMemory
 from app.memory.archival_memory import ArchivalMemory
 from app.memory.knowledge_manager import KnowledgeManager
+from app.memory.memory_page import MemoryPage
+
 
 class MemoryManager:
     """
@@ -70,6 +72,9 @@ class MemoryManager:
         self.current_conversation = []
         self.current_context = []
         
+        # Configure memory transition thresholds
+        self.archival_promotion_threshold = self.config.get('archival_promotion_threshold', 0.6)
+        self.memory_paging_threshold = self.config.get('memory_paging_threshold', 0.5)
         print(f"Memory manager initialized with {self.embedding.backend} embeddings using model: {self.embedding.model_name}")
     
     def _setup_embedding(self, model_name: str, backend: str, device: str = None) -> None:
@@ -107,7 +112,7 @@ class MemoryManager:
         if self.working_memory.is_full():
             self._page_out_oldest_messages()
     
-    def _page_out_oldest_messages(self, num_messages: int = 5) -> None:
+    def _page_out_oldest_messages(self, num_messages: int = 10) -> None:
         """
         Move oldest messages from working memory to active memory
         Implements the memory paging concept from MemGPT
@@ -118,22 +123,27 @@ class MemoryManager:
             return
             
         # Get oldest messages to page out
-        oldest_messages = messages[:num_messages]
+        oldest_messages = self.working_memory.remove_messages(num_messages)
+
         
         # Create a page in active memory
         page_content = {
             "messages": [{"role": msg.type, "content": msg.content} for msg in oldest_messages],
             "timestamp": datetime.datetime.now().isoformat()
         }
-        self.active_memory.add_page(page_content, "conversation")
-        
-        # Create new working memory with remaining messages
-        new_memory = WorkingMemory(max_tokens=self.working_memory.max_tokens)
-        for msg in messages[num_messages:]:
-            new_memory.add_message(msg.type, msg.content)
-            
-        # Replace working memory
-        self.working_memory = new_memory
+        # self.active_memory.add_page(page_content, "conversation")
+        # new_memory = WorkingMemory(max_tokens=self.working_memory.max_tokens)
+        # for msg in messages[num_messages:]:
+        #     new_memory.add_message(msg.type, msg.content)
+        # self.working_memory = new_memory
+
+        # Add to active memory with archive callback
+        page_id = self.active_memory.add_page(
+            page_content, 
+            "conversation",
+            archive_callback=self._archive_page_callback
+        )
+        print(f"Paged out {num_messages} messages to active memory (Page ID: {page_id})")
     
     def end_conversation(self) -> None:
         """
@@ -151,7 +161,11 @@ class MemoryManager:
             "timestamp": datetime.datetime.now().isoformat(),
             "summary": summary
         }
-        page_id = self.active_memory.add_page(page_content, "conversation_complete")
+        page_id = self.active_memory.add_page(
+            page_content, 
+            "conversation_complete",
+            archive_callback=self._archive_page_callback
+        )
         
         # Also store in archival memory for long-term retrieval
         conversation_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in self.current_conversation])
@@ -162,7 +176,8 @@ class MemoryManager:
                 "timestamp": datetime.datetime.now().isoformat(),
                 "message_count": len(self.current_conversation),
                 "summary": summary,
-                "active_memory_page_id": page_id
+                "active_memory_page_id": page_id,
+                "content_structure": ["messages", "timestamp", "summary"]
             }
         )
         
@@ -265,23 +280,34 @@ class MemoryManager:
             # Calculate similarity
             similarity = self._cosine_similarity(query_embedding, page_embedding)
             
-            if similarity > 0.5:  # Adjust threshold as needed
+            if similarity > 0.3:  # Adjust threshold as needed
                 context_items.append({
                     "source": "active_memory",
-                "content": page.content,
-                "page_id": page.id,
-                "relevance": similarity
-            })
+                    "content": page.content,
+                    "page_id": page.id,
+                    "relevance": similarity
+                })
+                # Update access metadata for the page
+                page.access()
         
         # 3. Search archival memory
         archival_results = self.archival_memory.search(query, limit=max_items)
         for result in archival_results:
+            # Check relevance score for promotion
+            relevance_score = result.get("relevance_score", 0)
+            # Try to promote highly relevant memories
+            if relevance_score > 0.8:  # Same threshold as in _promote_archival_to_active
+                promoted_page_id = self._promote_archival_to_active(result, relevance_score)
+                # Include promotion information if successful
+                if promoted_page_id:
+                    result["promoted_to_active"] = promoted_page_id
+            
             context_items.append({
                 "source": "archival_memory",
                 "content": result["text"],
-            "metadata": result["metadata"],
-            "relevance": result["relevance_score"]
-        })
+                "metadata": result["metadata"],
+                "relevance": result["relevance_score"]
+            })
         
         # 4. Search knowledge base
         knowledge_results = self.knowledge_manager.query(query, similarity_top_k=max_items)
@@ -430,3 +456,103 @@ class MemoryManager:
     def get_embedding_info(self) -> Dict[str, Any]:
         """Get information about the current embedding model"""
         return self.embedding.get_model_info()
+
+    def _archive_page_callback(self, page: MemoryPage) -> None:
+        """ Callback to archive a page from active memory to archival memory """
+        # Convert page content to text for archival
+        if isinstance(page.content, dict):
+            # Format messages if available
+            if "messages" in page.content and isinstance(page.content["messages"], list):
+                messages = page.content["messages"]
+                content_text = "\n".join([
+                    f"{msg.get('role', 'unknown')}: {msg.get('content', '')}" 
+                    for msg in messages
+                ])
+            else:
+                # For other dict content, convert to JSON
+                content_text = json.dumps(page.content)
+        else:
+            # For non-dict content, convert to string
+            content_text = str(page.content)
+        # Store in archival memory
+        archival_id = self.archival_memory.store(
+            text=content_text,
+            metadata={
+                "source": "active_memory",
+                "page_id": page.id,
+                "page_type": page.page_type,
+                "created_at": page.created_at,
+                "last_accessed": page.last_accessed,
+                "access_count": page.access_count,
+                "archived_at": datetime.datetime.now().isoformat(),
+                "content_structure": list(page.content.keys()) if isinstance(page.content, dict) else None
+            }
+        )
+        print(f"Archived active memory page {page.id} to archival memory as {archival_id}")
+    
+    def _promote_archival_to_active(self, archival_item: Dict[str, Any], relevance_score: float) -> Optional[str]:
+        """ Promote a highly relevant archival memory item to active memory """
+        # Only promote items with high relevance
+        if relevance_score < self.archival_promotion_threshold:
+            return None
+            
+        # Check if this was originally from active memory
+        metadata = archival_item.get("metadata", {})
+        original_page_id = metadata.get("page_id")
+        
+        # If this item is already in active memory, don't duplicate
+        if original_page_id:
+            for page in self.active_memory.pages:
+                if page.id == original_page_id:
+                    # Just update its access count and timestamp
+                    page.access()
+                    return page.id
+        
+        # Create new content for active memory
+        try:
+            content_structure = metadata.get("content_structure", [])
+            
+            # Determine content format based on the archival item
+            if "messages" in content_structure:
+                # Try to reconstruct conversation format
+                # Parse message format from text (format: role: content)
+                text = archival_item.get("text", "")
+                lines = text.split("\n")
+                messages = []
+                
+                for line in lines:
+                    if ":" in line:
+                        role, content = line.split(":", 1)
+                        messages.append({
+                            "role": role.strip(),
+                            "content": content.strip()
+                        })
+                
+                page_content = {
+                    "messages": messages,
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "source": "archival_memory",
+                    "original_timestamp": metadata.get("created_at"),
+                    "promoted_due_to": "high_relevance"
+                }
+            else:
+                # Create a content page with the archival text
+                page_content = {
+                    "text": archival_item.get("text", ""),
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "source": "archival_memory", 
+                    "metadata": metadata,
+                    "promoted_due_to": "high_relevance"
+                }
+            # Add to active memory
+            page_id = self.active_memory.add_page(
+                page_content,
+                page_type=metadata.get("page_type", "promoted"),
+                archive_callback=self._archive_page_callback
+            )
+            print(f"Promoted archival memory item to active memory as page {page_id}")
+            return page_id
+        except Exception as e:
+            print(f"Error promoting archival memory: {e}")
+            return None
+    

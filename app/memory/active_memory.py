@@ -1,4 +1,4 @@
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from app.memory.memory_page import MemoryPage
 
 class ActiveMemory:
@@ -10,15 +10,19 @@ class ActiveMemory:
         self.pages: List[MemoryPage] = []
         self.max_pages = max_pages
     
-    def add_page(self, content: Dict[str, Any], page_type: str = "conversation") -> str:
+    def add_page(self, content: Dict[str, Any], page_type: str = "conversation", 
+                archive_callback: Callable[[MemoryPage], None] = None) -> str:
         """Add a new memory page and return its ID"""
         page = MemoryPage(content, page_type)
         self.pages.append(page)
         
         # If we exceed the maximum pages, archive the least recently accessed page
         if len(self.pages) > self.max_pages:
-            self._archive_least_accessed_page()
-            
+            archived_page = self._archive_least_accessed_page()
+        
+        # If we have a callback for archiving and a page was archived, use it
+        if archive_callback and archived_page:
+            archive_callback(archived_page)
         return page.id
     
     def get_page(self, page_id: str) -> Optional[MemoryPage]:
@@ -73,21 +77,15 @@ class ActiveMemory:
         return results
     
     def _archive_least_accessed_page(self) -> Optional[MemoryPage]:
-        """
-        Find the least recently accessed page and mark it for archival
-        In a full implementation, this would move the page to archival memory
-        """
+        """ Find the least recently accessed page, move it to archival memory, and remove from active memory """
         if not self.pages:
             return None
-            
-        least_accessed = min(
-            self.pages, 
-            key=lambda p: (p.last_accessed, -p.access_count)
-        )
-        
-        # In full implementation: send to archival memory before removing
+        # Find least accessed page
+        least_accessed = min(self.pages, key=lambda p: (p.last_accessed, -p.access_count))
+        # Set archive flag for callback access
+        least_accessed.archived = True
+        # Remove from active memory
         self.pages.remove(least_accessed)
-        
         return least_accessed
     
     def to_dict(self) -> Dict[str, Any]:

@@ -59,7 +59,22 @@ class WorkingMemory:
     def get_messages(self) -> List[Message]:
         """Get all messages in working memory"""
         return self.messages
-    
+
+    def remove_messages(self, count: int) -> List[Message]:
+        """ Remove the oldest 'count' messages from working memory and update token count """
+        if count <= 0 or not self.messages:
+            return []
+        # Cap count to the number of messages available
+        count = min(count, len(self.messages))
+        # Get messages to remove
+        removed_messages = self.messages[:count]
+        # Update message list
+        self.messages = self.messages[count:]
+        # Recalculate token count for removed messages
+        removed_tokens = sum(len(msg.content.split()) for msg in removed_messages)
+        self.token_count = max(0, self.token_count - removed_tokens)
+        return removed_messages
+
     def clear(self) -> None:
         """Clear working memory"""
         self.messages = []
@@ -77,7 +92,6 @@ class WorkingMemory:
             "token_count": self.token_count
         }
     
-    @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'WorkingMemory':
         """Create a WorkingMemory instance from a dictionary"""
         memory = cls(max_tokens=data.get("max_tokens", 4000))
@@ -88,3 +102,5 @@ class WorkingMemory:
             memory.messages.append(message)
             
         return memory
+
+        
