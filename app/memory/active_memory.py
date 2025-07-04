@@ -16,6 +16,7 @@ class ActiveMemory:
         page = MemoryPage(content, page_type)
         self.pages.append(page)
         
+        archived_page = None
         # If we exceed the maximum pages, archive the least recently accessed page
         if len(self.pages) > self.max_pages:
             archived_page = self._archive_least_accessed_page()

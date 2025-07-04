@@ -14,7 +14,7 @@ from app.memory.knowledge_manager import KnowledgeManager
 from app.memory.memory_page import MemoryPage
 
 
-class MemoryManager:
+class MemoryService:
     """
     Unified memory management system integrating all memory tiers
     with enhanced embedding capabilities
@@ -243,6 +243,11 @@ class MemoryManager:
         """
         context_items = []
         query_embedding = self.embedding.get_text_embedding(query, prompt_name='query')
+
+        # If the query embedding fails, we cannot search for context.
+        if query_embedding is None:
+            print("Warning: Could not generate embedding for the query. Skipping context search.")
+            return []
         
         # 1. Search working memory
         working_messages = self.working_memory.get_messages()
@@ -250,11 +255,11 @@ class MemoryManager:
         for msg in working_messages:
             # Embed each message
             msg_embedding = self.embedding.get_text_embedding(msg.content)
+            if not msg_embedding:
+                continue
             
             # Calculate cosine similarity between query and message
             similarity = self.embedding._get_similarity(query_embedding, msg_embedding)
-            print("Similarity:", similarity)
-            print("Message:", msg.content)
             
             if similarity > 0.3:  # Adjust threshold as needed
                 working_context.append({
@@ -276,9 +281,11 @@ class MemoryManager:
             
             # Embed page content
             page_embedding = self.embedding.get_text_embedding(content_text)
+            if not page_embedding:
+                continue
             
             # Calculate similarity
-            similarity = self._cosine_similarity(query_embedding, page_embedding)
+            similarity = self.embedding._get_similarity(query_embedding, page_embedding)
             
             if similarity > 0.3:  # Adjust threshold as needed
                 context_items.append({
@@ -457,6 +464,27 @@ class MemoryManager:
         """Get information about the current embedding model"""
         return self.embedding.get_model_info()
 
+    def get_memory_stats(self) -> Dict[str, Any]:
+        """Get statistics about the current memory state"""
+        return {
+            "working_memory": {
+                "messages": len(self.working_memory.get_messages()),
+                "tokens": self.working_memory.token_count,
+                "max_tokens": self.working_memory.max_tokens
+            },
+            "active_memory": {
+                "pages": len(self.active_memory.pages),
+                "max_pages": self.active_memory.max_pages
+            },
+            "archival_memory": {
+                "items": len(self.archival_memory.memories)
+            },
+            "knowledge_base": {
+                "items": len(self.knowledge_manager.documents)
+            },
+            "embedding": self.get_embedding_info()
+        }
+
     def _archive_page_callback(self, page: MemoryPage) -> None:
         """ Callback to archive a page from active memory to archival memory """
         # Convert page content to text for archival
@@ -556,3 +584,10 @@ class MemoryManager:
             print(f"Error promoting archival memory: {e}")
             return None
     
+    def __repr__(self) -> str:
+        return (
+            f"MemoryManager(working={len(self.working_memory.get_messages())} msgs, "
+            f"active={len(self.active_memory.pages)} pages, "
+            f"archival={len(self.archival_memory.collection.get()['ids'])} items, "
+            f"knowledge={len(self.knowledge_manager.collection.get()['ids'])} items)"
+        )

@@ -10,11 +10,13 @@ import argparse
 import json
 import datetime
 import sys
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
 
 # Ensure the app module can be found
 sys.path.append('.')  
 
-from app.memory.memory_manager import MemoryManager
+from app.services.memory_service import MemoryService
 from app.llm.llm_interface import create_llm_interface
 
 def clear_screen():
@@ -28,6 +30,7 @@ def print_header():
     print("                  MoJoAssistant Interactive CLI")
     print("=" * 60)
     print("Type your messages to interact with the assistant.")
+    print("Hint: For multiline input, press Esc then Enter.")
     print("Special commands:")
     print("  /stats      - Display memory statistics")
     print("  /embed      - Show current embedding model info")
@@ -37,6 +40,7 @@ def print_header():
     print("  /add FILE   - Add a document to knowledge base")
     print("  /end        - End current conversation")
     print("  /clear      - Clear the screen")
+    print("  /help       - Show this help message again")
     print("  /exit       - Exit the application")
     print("=" * 60)
     print()
@@ -69,19 +73,19 @@ def load_embedding_config(config_file="config/embedding_config.json"):
         print(f"Error loading embedding config: {e}")
         return {"embedding_models": {"fallback": {"backend": "random"}}}
 
-def save_memory_state(memory_manager, filename):
+def save_memory_state(memory_service, filename):
     """Save the current memory state"""
     try:
-        memory_manager.save_memory_state(filename)
+        memory_service.save_memory_state(filename)
         print(f"Memory state saved to {filename}")
     except Exception as e:
         print(f"Error saving memory state: {e}")
 
-def load_memory_state(memory_manager, filename):
+def load_memory_state(memory_service, filename):
     """Load a memory state from file"""
     try:
         if os.path.exists(filename):
-            success = memory_manager.load_memory_state(filename)
+            success = memory_service.load_memory_state(filename)
             if success:
                 print(f"Memory state loaded from {filename}")
             else:
@@ -91,13 +95,13 @@ def load_memory_state(memory_manager, filename):
     except Exception as e:
         print(f"Error loading memory state: {e}")
 
-def add_document(memory_manager, filename):
+def add_document(memory_service, filename):
     """Add a document to the knowledge base"""
     try:
         if os.path.exists(filename):
             with open(filename, 'r') as f:
                 content = f.read()
-                memory_manager.add_to_knowledge_base(
+                memory_service.add_to_knowledge_base(
                     content, 
                     {"source": filename, "added_at": datetime.datetime.now().isoformat()}
                 )
@@ -107,33 +111,25 @@ def add_document(memory_manager, filename):
     except Exception as e:
         print(f"Error adding document: {e}")
 
-def display_memory_stats(memory_manager):
+def display_memory_stats(memory_service):
     """Display current memory statistics"""
+    stats = memory_service.get_memory_stats()
     print("\n===== MEMORY STATISTICS =====")
-    print(f"Working Memory: {len(memory_manager.working_memory.get_messages())} messages")
-    print(f"Active Memory: {len(memory_manager.active_memory.pages)} pages")
+    print(f"Working Memory: {stats['working_memory']['messages']} messages ({stats['working_memory']['tokens']}/{stats['working_memory']['max_tokens']} tokens)")
+    print(f"Active Memory: {stats['active_memory']['pages']}/{stats['active_memory']['max_pages']} pages")
+    print(f"Archival Memory: {stats['archival_memory']['items']} items")
+    print(f"Knowledge Base: {stats['knowledge_base']['items']} items")
     
-    # Add more detailed stats
-    print("\nWorking Memory Messages:")
-    for i, msg in enumerate(memory_manager.working_memory.get_messages()):
-        speaker = "User" if msg.type.lower() in ["user", "human"] else "Assistant"
-        print(f"  {i+1}. {speaker}: {msg.content[:50]}...")
-    
-    print("\nActive Memory Pages:")
-    for i, page in enumerate(memory_manager.active_memory.pages):
-        print(f"  {i+1}. {page.page_type} (ID: {page.id[:8]}..., Accessed: {page.access_count} times)")
-    
-    # Get embedding info
-    embed_info = memory_manager.get_embedding_info()
+    embed_info = stats['embedding']
     print(f"\nEmbedding Model: {embed_info['model_name']} (Backend: {embed_info['backend']})")
     print(f"Embedding Dimension: {embed_info['embedding_dim']}")
     print(f"Embedding Cache Size: {embed_info['cache_size']} items")
     
     print("================================\n")
 
-def display_embedding_info(memory_manager):
+def display_embedding_info(memory_service):
     """Display information about the current embedding model"""
-    embed_info = memory_manager.get_embedding_info()
+    embed_info = memory_service.get_embedding_info()
     print("\n===== EMBEDDING MODEL INFORMATION =====")
     print(f"Model Name: {embed_info['model_name']}")
     print(f"Backend: {embed_info['backend']}")
@@ -142,7 +138,7 @@ def display_embedding_info(memory_manager):
     print(f"Device: {embed_info['device'] or 'not specified'}")
     print("========================================\n")
 
-def change_embedding_model(memory_manager, model_name, embedding_config):
+def change_embedding_model(memory_service, model_name, embedding_config):
     """Change the embedding model"""
     if model_name not in embedding_config["embedding_models"]:
         print(f"Unknown embedding model: {model_name}")
@@ -150,7 +146,7 @@ def change_embedding_model(memory_manager, model_name, embedding_config):
         return
     
     config = embedding_config["embedding_models"][model_name]
-    success = memory_manager.set_embedding_model(
+    success = memory_service.set_embedding_model(
         model_name=config.get("model_name", model_name),
         backend=config.get("backend"),
         device=config.get("device")
@@ -161,45 +157,45 @@ def change_embedding_model(memory_manager, model_name, embedding_config):
     else:
         print(f"Failed to switch to embedding model: {model_name}")
 
-def handle_command(cmd, memory_manager, embedding_config):
+def handle_command(cmd, memory_service, embedding_config):
     """Handle special CLI commands"""
     parts = cmd.split()
     cmd_root = parts[0].lower()
     
     if cmd_root == "/stats":
-        display_memory_stats(memory_manager)
+        display_memory_stats(memory_service)
         return True
     
     elif cmd_root == "/embed":
         if len(parts) > 1:
-            change_embedding_model(memory_manager, parts[1], embedding_config)
+            change_embedding_model(memory_service, parts[1], embedding_config)
         else:
-            display_embedding_info(memory_manager)
+            display_embedding_info(memory_service)
         return True
     
     elif cmd_root == "/save":
         if len(parts) > 1:
-            save_memory_state(memory_manager, parts[1])
+            save_memory_state(memory_service, parts[1])
         else:
             print("Usage: /save FILENAME")
         return True
     
     elif cmd_root == "/load":
         if len(parts) > 1:
-            load_memory_state(memory_manager, parts[1])
+            load_memory_state(memory_service, parts[1])
         else:
             print("Usage: /load FILENAME")
         return True
     
     elif cmd_root == "/add":
         if len(parts) > 1:
-            add_document(memory_manager, parts[1])
+            add_document(memory_service, parts[1])
         else:
             print("Usage: /add FILENAME")
         return True
     
     elif cmd_root == "/end":
-        memory_manager.end_conversation()
+        memory_service.end_conversation()
         print("Current conversation ended and stored in memory.")
         return True
     
@@ -207,6 +203,10 @@ def handle_command(cmd, memory_manager, embedding_config):
         clear_screen()
         return True
     
+    elif cmd_root == "/help":
+        print_header()
+        return True
+
     elif cmd_root == "/exit":
         return False
     
@@ -238,8 +238,8 @@ def main():
     
     embed_config = embedding_config["embedding_models"][embed_model_name]
     
-    # Initialize memory manager with the selected embedding model
-    memory_manager = MemoryManager(
+    # Initialize memory service with the selected embedding model
+    memory_service = MemoryService(
         data_dir=embedding_config.get("memory_settings", {}).get("data_directory", ".memory"),
         embedding_model=embed_config.get("model_name", embed_model_name),
         embedding_backend=embed_config.get("backend", "huggingface"),
@@ -252,23 +252,27 @@ def main():
 
     # Load memory state if specified
     if args.load:
-        load_memory_state(memory_manager, args.load)
+        load_memory_state(memory_service, args.load)
     
     print_header()
     running = True
     
+    # Create a history object
+    history = FileHistory('.mojo_history')
+    session = PromptSession(history=history)
+
     try:
         while running:
             # Get user input
-            user_input = input("> ").strip()
+            user_input = session.prompt("> ", multiline=True).strip()
             
             # Handle special commands
             if user_input.startswith("/"):
-                result = handle_command(user_input, memory_manager, embedding_config)
+                result = handle_command(user_input, memory_service, embedding_config)
                 if result is False:  # Exit command
                     running = False
                     print("Saving final memory state to 'final_state.json'...")
-                    save_memory_state(memory_manager, "final_state.json")
+                    save_memory_state(memory_service, "final_state.json")
                     print("Goodbye!")
                 continue
             
@@ -277,10 +281,10 @@ def main():
                 continue
             
             # Add user message to memory
-            memory_manager.add_user_message(user_input)
+            memory_service.add_user_message(user_input)
             
             # Get context for this query
-            context = memory_manager.get_context_for_query(user_input)
+            context = memory_service.get_context_for_query(user_input)
             
             # If we found context, show a small indicator
             if context:
@@ -296,18 +300,18 @@ def main():
             print(f"\nAssistant: {response}\n")
             
             # Add assistant message to memory
-            memory_manager.add_assistant_message(response)
+            memory_service.add_assistant_message(response)
             
     except KeyboardInterrupt:
         print("\nInterrupted by user. Saving memory state...")
-        save_memory_state(memory_manager, "interrupt_state.json")
+        save_memory_state(memory_service, "interrupt_state.json")
         print("Goodbye!")
     
     except Exception as e:
         print(f"\nAn error occurred: {e}")
         print("Attempting to save memory state before exit...")
         try:
-            save_memory_state(memory_manager, "error_state.json")
+            save_memory_state(memory_service, "error_state.json")
         except:
             print("Could not save memory state.")
         print("Exiting...")

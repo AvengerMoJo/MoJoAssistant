@@ -51,7 +51,8 @@ class LLMInterface:
                         model_type=model_config.get('type', 'llama'),
                         server_url=model_config.get('server_url'),
                         server_port=model_config.get('server_port', 8000),
-                        context_length=model_config.get('context_length', 4096)
+                        context_length=model_config.get('context_length', 4096),
+                        timeout=model_config.get('timeout', 60)
                     )
             
             # Configure API models
@@ -62,7 +63,7 @@ class LLMInterface:
                         provider=api_config.get('provider'),
                         api_key=api_config.get('api_key'),
                         model=api_config.get('model'),
-                        config=api_config.get('config', {})
+                        config=api_config
                     )
             
             # Set active interface
@@ -74,7 +75,7 @@ class LLMInterface:
     
     def add_local_interface(self, name: str, model_path: str, model_type: str = "llama", 
                             server_url: str = None, server_port: int = 8000, 
-                            context_length: int = 4096) -> None:
+                            context_length: int = 4096, timeout: int = 60) -> None:
         """
         Add a local LLM interface
         
@@ -85,13 +86,15 @@ class LLMInterface:
             server_url: URL of existing local API server
             server_port: Port for local server
             context_length: Maximum context length
+            timeout: Request timeout in seconds
         """
         self.interfaces[name] = LocalLLMInterface(
             model_path=model_path,
             model_type=model_type,
             server_url=server_url,
             server_port=server_port,
-            context_length=context_length
+            context_length=context_length,
+            timeout=timeout
         )
         
         # Set as active if first interface

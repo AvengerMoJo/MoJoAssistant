@@ -143,6 +143,10 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# Custom
+config/llm_config.json
+config/embedding_config.json
+
 # Pyre type checker
 .pyre/
 

@@ -35,7 +35,7 @@ class APILLMInterface(BaseLLMInterface):
         self.config = config or {}
         
         # Set default values
-        self.url = self.config.get('url')
+        self.url = self.config.get('base_url') or self.config.get('url')
         self.model = model or self.config.get('model')
         self.headers = {
             "Content-Type": "application/json",
@@ -47,7 +47,8 @@ class APILLMInterface(BaseLLMInterface):
     def _configure_provider(self):
         """Configure provider-specific settings"""
         if self.provider == "openai":
-            self.url = self.url or "https://api.openai.com/v1/chat/completions"
+            base_url = self.config.get('base_url', "https://api.openai.com/v1")
+            self.url = f"{base_url.rstrip('/')}/chat/completions"
             self.model = self.model or "gpt-4o-mini"
             self.context_limit = self.config.get('context_limit', 128000)
             self.output_limit = self.config.get('output_limit', 16384)
@@ -182,7 +183,7 @@ USER QUERY:
                 self.url,
                 headers=self.headers,
                 json=payload,
-                timeout=30
+                timeout=60
             )
             
             # Process the response

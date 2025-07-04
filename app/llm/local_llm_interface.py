@@ -25,6 +25,7 @@ class LocalLLMInterface(BaseLLMInterface):
                  server_url: str = None,
                  server_port: int = 8000,
                  context_length: int = 4096,
+                 timeout: int = 60,
                  verbose: bool = True):
         """
         Initialize the local LLM interface
@@ -35,6 +36,7 @@ class LocalLLMInterface(BaseLLMInterface):
             server_url: URL of existing local API server (if already running)
             server_port: Port to run local server on (if starting new server)
             context_length: Maximum context length for the model
+            timeout: Request timeout in seconds
             verbose: Whether to enable verbose output
         """
         self.model_path = model_path
@@ -42,11 +44,12 @@ class LocalLLMInterface(BaseLLMInterface):
         self.server_url = server_url or f"http://localhost:{server_port}/v1"
         self.server_port = server_port
         self.context_length = context_length
+        self.timeout = timeout
         self.verbose = verbose
         self.server_process = None
         self._started = False
         
-        # Initialize server if model path is provided and no external server URL
+        # Initialize server if model path is provided and not external server URL
         if model_path and not server_url:
             self._start_local_server()
     
@@ -60,7 +63,7 @@ class LocalLLMInterface(BaseLLMInterface):
         try:
             # Check if server is already running
             try:
-                response = requests.get(f"{self.server_url}/models")
+                response = requests.get(f"{self.server_url}/models", timeout=self.timeout)
                 if response.status_code == 200:
                     print(f"Local LLM server already running at {self.server_url}")
                     self._started = True
@@ -104,9 +107,9 @@ class LocalLLMInterface(BaseLLMInterface):
             
             # Wait for server to start (with timeout)
             start_time = time.time()
-            while time.time() - start_time < 30:  # 30 second timeout
+            while time.time() - start_time < self.timeout:
                 try:
-                    response = requests.get(f"{self.server_url}/models")
+                    response = requests.get(f"{self.server_url}/models", timeout=self.timeout)
                     if response.status_code == 200:
                         self._started = True
                         print(f"Local LLM server started at {self.server_url}")
@@ -189,7 +192,7 @@ Keep your response concise, relevant, and helpful."""},
             response = requests.post(
                 f"{self.server_url}/chat/completions",
                 json=payload,
-                timeout=60  # Local models may take time to respond
+                timeout=self.timeout
             )
             
             if response.status_code == 200:
@@ -248,7 +251,7 @@ Keep your response concise, relevant, and helpful."""},
                 f"{self.server_url}/chat/completions",
                 json=payload,
                 stream=True,
-                timeout=60
+                timeout=self.timeout
             )
             
             if response.status_code == 200:
@@ -309,3 +312,4 @@ Keep your response concise, relevant, and helpful."""},
     def __del__(self):
         """Clean up resources on destruction"""
         self.shutdown()
+

@@ -114,11 +114,18 @@ class SimpleEmbedding:
         return hashlib.md5(text.encode('utf-8')).hexdigest()
 
     def _get_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
-        # Ensure vectors are of the same length
-        if len(vec_a) != len(vec_b):
+        """Calculate cosine similarity between two vectors"""
+        if not vec_a or not vec_b or len(vec_a) != len(vec_b):
             return 0.0
-        similarity = self.model.similarity(vec_a, vec_b)
-        return similarity
+        
+        dot_product = np.dot(vec_a, vec_b)
+        norm_a = np.linalg.norm(vec_a)
+        norm_b = np.linalg.norm(vec_b)
+        
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+            
+        return dot_product / (norm_a * norm_b)
     
     def get_text_embedding(self, text: str, prompt_name: str = 'passage') -> List[float]:
         """
@@ -510,7 +517,7 @@ class SimpleEmbedding:
         random.seed(seed)
         
         # Generate a random vector
-        vector = [random.normalvariate(0, 1) for _ in range(self.embedding_dim)]
+        vector = np.random.normal(0, 1, self.embedding_dim).tolist()
         
         # Normalize to unit length (cosine similarity space)
         magnitude = math.sqrt(sum(x * x for x in vector))

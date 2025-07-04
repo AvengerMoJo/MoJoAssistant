@@ -3,7 +3,8 @@
     "default": {
       "path": "/path/to/local/llm",
       "type": "llama",
-      "n_threads": 4
+      "n_threads": 4,
+      "timeout": 60
     },
   },
   "default_interface": "default"
