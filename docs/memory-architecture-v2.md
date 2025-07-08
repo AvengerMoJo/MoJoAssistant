@@ -4,13 +4,13 @@ This document provides a detailed overview of the current memory system architec
 
 ## Memory System Overview
 
-The memory system is the core of MoJoAssistant, providing contextual awareness, long-term knowledge retention, and efficient information retrieval. It is designed to be modular and scalable, leveraging state-of-the-art sentence-transformer models for semantic search across all memory tiers. The central component is the `MemoryManager`, which orchestrates the flow of information between the different memory layers.
+The memory system is the core of MoJoAssistant, providing contextual awareness, long-term knowledge retention, and efficient information retrieval. It is designed to be modular and scalable, leveraging state-of-the-art sentence-transformer models for semantic search across all memory tiers. The central component is the `MemoryService`, which orchestrates the flow of information between the different memory layers.
 
 ## Core Components
 
-### 1. Memory Manager (`app/memory/memory_manager.py`)
+### 1. Memory Service (`app/services/memory_service.py`)
 
-The `MemoryManager` is the main entry point for all memory operations. It initializes and manages the different memory tiers and handles the core logic for storing and retrieving information. It is also responsible for managing the embedding models.
+The `MemoryService` is the main entry point for all memory operations. It initializes and manages the different memory tiers and handles the core logic for storing and retrieving information. It is also responsible for managing the embedding models and provides a unified interface for all memory operations.
 
 ### 2. Embedding System (`app/memory/simplified_embeddings.py`)
 
@@ -49,7 +49,7 @@ The memory is structured into four distinct tiers, each serving a specific purpo
 ## Information Flow
 
 1.  A new user query enters the **Working Memory**.
-2.  The `MemoryManager` searches **Active Memory**, **Archival Memory**, and the **Knowledge Manager** for relevant context using semantic search on the embedded query.
+2.  The `MemoryService` searches **Active Memory**, **Archival Memory**, and the **Knowledge Manager** for relevant context using semantic search on the embedded query.
 3.  The retrieved context is combined with the Working Memory to form the final prompt for the LLM.
 4.  After the interaction, the new conversation turn is added to Working Memory.
 5.  As conversations age or the context window shifts, information is migrated from Working Memory to Active Memory, and eventually to Archival Memory.
