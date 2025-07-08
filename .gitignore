@@ -147,6 +147,14 @@ dmypy.json
 config/llm_config.json
 config/embedding_config.json
 
+# MoJoAssistant specific - sensitive files
+.mojo_history
+.memory/
+*.data
+error_state.json
+interrupt_state.json
+final_state.json
+
 # Pyre type checker
 .pyre/
 
