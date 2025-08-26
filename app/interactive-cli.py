@@ -43,6 +43,7 @@ def print_header():
     print("  /add FILE   - Add a document to knowledge base")
     print("  /end        - End current conversation")
     print("  /clear      - Clear the screen")
+    print("  /export FMT - Export conversation history (json/markdown)")
     print("  /help       - Show this help message again")
     print("  /env        - Show environment variable configuration help")
     print("  /log LEVEL  - Set console log level (DEBUG, INFO, WARNING, ERROR)")
@@ -178,6 +179,19 @@ def change_embedding_model(memory_service, model_name, embedding_config, logger)
         logger.error(f"Failed to change embedding model to {model_name}: {e}")
         log_cli_command("/embed", model_name, False, logger)
 
+import datetime
+from pathlib import Path
+
+def save_export(content: str, format_type: str) -> None:
+    """Save exported content to file"""
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"conversation_export_{timestamp}.{format_type}"
+    
+    with open(filename, 'w') as f:
+        f.write(content)
+    
+    print(f"✅ Export saved to {filename}")
+
 def display_embedding_info(memory_service, logger):
     """Display current embedding model information"""
     try:
@@ -294,6 +308,37 @@ def handle_command(cmd, memory_service, embedding_config, logger):
             print(f"❌ Error during validation: {e}")
             logger.error(f"Configuration validation error: {e}")
             log_cli_command("/validate", "", False, logger)
+        return True
+        
+    elif cmd_root == "/export":
+        if len(parts) < 2:
+            print("❌ Usage: /export [json|markdown]")
+            log_cli_command("/export", "", False, logger)
+            return True
+            
+        format_type = parts[1].lower()
+        
+        # Get working memory from memory service
+        try:
+            working_memory = memory_service.get_working_memory()
+            
+            if format_type == 'json':
+                content = working_memory.export_to_json()
+                save_export(content, 'json')
+                log_cli_command("/export", "json", True, logger)
+            elif format_type == 'markdown':
+                content = working_memory.export_to_markdown()
+                save_export(content, 'md')
+                log_cli_command("/export", "markdown", True, logger)
+            else:
+                print("❌ Error: Format must be 'json' or 'markdown'")
+                log_cli_command("/export", parts[1], False, logger)
+                
+        except Exception as e:
+            print(f"❌ Error during export: {e}")
+            logger.error(f"Failed to export conversation history: {e}")
+            log_cli_command("/export", format_type, False, logger)
+            
         return True
 
     elif cmd_root == "/exit":

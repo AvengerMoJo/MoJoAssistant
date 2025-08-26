@@ -87,6 +87,8 @@ Once the service is running, visit:
 - **ReDoc Documentation**: http://localhost:8000/redoc
 - **OpenAPI Schema**: http://localhost:8000/openapi.json
 
+**Tip:** The `openapi.json` file can be used with tools like [OpenAPI Generator](https://openapi-generator.tech/) to automatically create client libraries in various programming languages.
+
 ## Core Endpoints
 
 ### Memory Operations

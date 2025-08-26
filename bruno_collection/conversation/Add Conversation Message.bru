@@ -1,0 +1,22 @@
+meta {
+  name: Add Conversation Message
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/conversation/message
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{apiKey}}
+}
+
+body:json {
+  {
+    "type": "user",
+    "content": "Hello, this is a test message."
+  }
+}

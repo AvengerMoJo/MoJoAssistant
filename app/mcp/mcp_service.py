@@ -188,7 +188,7 @@ def create_error_response(code: str, message: str, details: Dict[str, Any] = Non
 # API Endpoints
 
 @app.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(api_key: Optional[str] = Depends(verify_api_key)):
     """Health check endpoint"""
     return HealthResponse(
         status="healthy",
@@ -202,7 +202,7 @@ async def health_check():
     )
 
 @app.get("/info")
-async def service_info():
+async def service_info(api_key: Optional[str] = Depends(verify_api_key)):
     """Service information endpoint"""
     return {
         "name": "MoJoAssistant MCP Service",

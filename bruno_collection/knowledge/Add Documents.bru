@@ -1,0 +1,28 @@
+meta {
+  name: Add Documents
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/knowledge/documents
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{apiKey}}
+}
+
+body:json {
+  {
+    "documents": [
+      {
+        "content": "This is a test document about Bruno.",
+        "metadata": {
+          "source": "bruno-test"
+        }
+      }
+    ]
+  }
+}
