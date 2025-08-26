@@ -45,11 +45,10 @@ def main():
 
     # Read the API description from the file
     try:
-        # IMPORTANT: The path to this file is relative to where the script is run from
         with open("config/mcp_api_description.json", "r") as f:
             api_description = json.load(f)
     except FileNotFoundError:
-        print(json.dumps({"error": "mcp_api_description.json not found in config/ directory"}), file=sys.stderr)
+        print(json.dumps({"error": "mcp_api_description.json not found"}), file=sys.stderr)
         return
 
     # Process requests from stdin in a loop

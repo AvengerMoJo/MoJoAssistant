@@ -1,192 +1,104 @@
-#!/bin/bash
-# Fresh Installation of MoJoAssistant MCP for Claude Desktop
-
-echo "🚀 Fresh Installation: MoJoAssistant MCP for Claude Desktop"
-echo "============================================================"
-
-# Check if MCP service is available
-echo "🔍 Checking MCP service availability..."
-if curl -s http://localhost:8000/health > /dev/null 2>&1; then
-    echo "✅ MCP service is running on http://localhost:8000"
-    SERVICE_STATUS="running"
-else
-    echo "⚠️  MCP service is not running"
-    echo "   You'll need to start it after installation:"
-    echo "   cd $(pwd)"
-    echo "   python3 start_mcp_service.py"
-    SERVICE_STATUS="stopped"
-fi
-
-# Create directories
-echo ""
-echo "📁 Creating directories..."
-mkdir -p ~/.local/bin
-mkdir -p ~/.config/Claude
-
-# Install the latest MCP server
-echo "📋 Installing MCP server..."
-if [ -f "mcp_server.py" ]; then
-    cp mcp_server.py ~/.local/bin/mojo_mcp_server.py
-    chmod +x ~/.local/bin/mojo_mcp_server.py
-    echo "✅ MCP server installed: ~/.local/bin/mojo_mcp_server.py"
-else
-    echo "❌ Error: mcp_server.py not found in current directory"
-    echo "   Make sure you're running this from the MoJoAssistant directory"
-    exit 1
-fi
-
-# Test MCP server
-echo "🧪 Testing MCP server..."
-TEST_RESULT=$(echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}' | python3 ~/.local/bin/mojo_mcp_server.py 2>/dev/null)
-
-if echo "$TEST_RESULT" | grep -q "search_memory"; then
-    echo "✅ MCP server test passed - 3 tools available"
-else
-    echo "⚠️  MCP server test failed, but installation continues"
-    echo "   This might be OK if the MCP service isn't running"
-fi
-
-# Configure Claude Desktop
-echo ""
-echo "⚙️  Configuring Claude Desktop..."
-CONFIG_FILE="$HOME/.config/Claude/claude_desktop_config.json"
-
-# Create or update configuration
-python3 -c "
+import sys
 import json
 import os
+import requests
 
-config_file = '$CONFIG_FILE'
-config = {}
+# --- MCPClient Class ---
+# This is the same client we've used before to communicate with the FastAPI service
+class MCPClient:
+    def __init__(self, base_url: str, api_key: str = None):
+        self.base_url = base_url.rstrip('/')
+        self.api_key = api_key
+        self.session = requests.Session()
+        if api_key:
+            self.session.headers.update({"X-API-Key": api_key})
 
-# Load existing config if it exists
-if os.path.exists(config_file):
-    try:
-        with open(config_file, 'r') as f:
-            config = json.load(f)
-        print('📝 Loaded existing Claude Desktop configuration')
-    except:
-        print('📝 Creating new Claude Desktop configuration')
-        config = {}
-else:
-    print('📝 Creating new Claude Desktop configuration')
-
-# Ensure mcpServers section exists
-if 'mcpServers' not in config:
-    config['mcpServers'] = {}
-
-# Add MoJoAssistant MCP server
-config['mcpServers']['mojo-assistant'] = {
-    'command': 'python3',
-    'args': ['$HOME/.local/bin/mojo_mcp_server.py']
-}
-
-# Save configuration
-with open(config_file, 'w') as f:
-    json.dump(config, f, indent=2)
-
-print('✅ Claude Desktop configuration updated')
-"
-
-# Verify configuration
-echo "🔍 Verifying configuration..."
-if [ -f "$CONFIG_FILE" ]; then
-    if grep -q "mojo-assistant" "$CONFIG_FILE"; then
-        echo "✅ Configuration verified - mojo-assistant MCP server registered"
-    else
-        echo "❌ Configuration verification failed"
-        exit 1
-    fi
-else
-    echo "❌ Configuration file not created"
-    exit 1
-fi
-
-# Show configuration
-echo ""
-echo "📋 Current Claude Desktop Configuration:"
-echo "----------------------------------------"
-cat "$CONFIG_FILE"
-echo "----------------------------------------"
-
-echo ""
-echo "============================================================"
-echo "🎉 Fresh Installation Complete!"
-echo ""
-echo "📊 Installation Summary:"
-echo "   ✅ MCP server: ~/.local/bin/mojo_mcp_server.py"
-echo "   ✅ Claude config: ~/.config/Claude/claude_desktop_config.json"
-echo "   ✅ Tools available: search_memory, add_knowledge, get_memory_stats"
-
-if [ "$SERVICE_STATUS" = "running" ]; then
-    echo "   ✅ MCP service: Running on http://localhost:8000"
-else
-    echo "   ⚠️  MCP service: Not running (start it manually)"
-fi
-
-echo ""
-echo "🚀 Next Steps:"
-echo "1. Start MCP service (if not running):"
-echo "   cd $(pwd)"
-echo "   python3 start_mcp_service.py"
-echo ""
-echo "2. Restart Claude Desktop completely:"
-echo "   - Quit Claude Desktop application"
-echo "   - Start Claude Desktop again"
-echo ""
-echo "3. Test in Claude Desktop:"
-echo "   • \"Search my memory for Python information\""
-echo "   • \"Add this to my memory: Testing fresh MCP installation\""
-echo "   • \"What are my memory statistics?\""
-echo ""
-echo "✅ Claude Desktop will now have persistent memory!"
-
-# Create quick test script
-cat > test_claude_mcp.py << 'EOF'
-#!/usr/bin/env python3
-"""Quick test of Claude Desktop MCP integration"""
-import subprocess
-import json
-
-def test_mcp_server():
-    print("🧪 Testing MCP Server Integration")
-    print("=" * 40)
-    
-    tests = [
-        ("List Tools", '{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}'),
-        ("Initialize", '{"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test", "version": "1.0"}}}')
-    ]
-    
-    for name, request in tests:
+    def _make_request(self, method: str, endpoint: str, **kwargs):
+        url = f"{self.base_url}{endpoint}"
         try:
-            result = subprocess.run(
-                ["python3", "/home/alex/.local/bin/mojo_mcp_server.py"],
-                input=request + "\n",
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.stdout:
-                response = json.loads(result.stdout.strip())
-                if "result" in response:
-                    print(f"✅ {name}: PASSED")
-                    if name == "List Tools":
-                        tools = response["result"].get("tools", [])
-                        print(f"   🔧 Found {len(tools)} tools: {[t['name'] for t in tools]}")
+            response = self.session.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"HTTP Request failed: {e}", file=sys.stderr)
+            raise
+
+    def get_memory_context(self, query: str, max_items: int = 10):
+        data = {"query": query, "max_items": max_items}
+        return self._make_request("POST", "/api/v1/memory/context", json=data)
+
+    def add_documents(self, documents: list):
+        data = {"documents": documents}
+        return self._make_request("POST", "/api/v1/knowledge/documents", json=data)
+
+# --- Main Stdio Handling Logic ---
+def main():
+    # Get config from environment variables
+    api_key = os.getenv("MCP_API_KEY")
+    base_url = "https://ai.avengergear.com" # Assuming this is constant
+
+    if not api_key:
+        print(json.dumps({"error": "MCP_API_KEY environment variable not set"}), file=sys.stderr)
+        return
+
+    client = MCPClient(base_url=base_url, api_key=api_key)
+
+    # Read the API description from the file
+    try:
+        # IMPORTANT: The path to this file is relative to where the script is run from
+        with open("config/mcp_api_description.json", "r") as f:
+            api_description = json.load(f)
+    except FileNotFoundError:
+        print(json.dumps({"error": "mcp_api_description.json not found in config/ directory"}), file=sys.stderr)
+        return
+
+    # Process requests from stdin in a loop
+    for line in sys.stdin:
+        try:
+            request = json.loads(line)
+        except json.JSONDecodeError:
+            print(json.dumps({"error": "Invalid JSON input"}), file=sys.stderr)
+            continue
+
+        response = None
+        request_id = request.get("id")
+
+        if request.get("method") == "ListTools":
+            response = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"tools": api_description}
+            }
+
+        elif request.get("method") == "CallTool":
+            tool_name = request["params"]["name"]
+            tool_args = request["params"]["arguments"]
+
+            try:
+                if tool_name == "get_memory_context":
+                    result = client.get_memory_context(**tool_args)
+                elif tool_name == "add_documents":
+                    result = client.add_documents(**tool_args)
                 else:
-                    print(f"❌ {name}: No result")
-            else:
-                print(f"❌ {name}: No output")
+                    raise ValueError(f"Unknown tool: {tool_name}")
                 
-        except Exception as e:
-            print(f"❌ {name}: Error - {e}")
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"content": [{"type": "text", "text": json.dumps(result)}]}
+                }
+
+            except Exception as e:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32000, "message": str(e)}
+                }
+
+        if response:
+            # Write the response to stdout
+            print(json.dumps(response))
+            sys.stdout.flush()
 
 if __name__ == "__main__":
-    test_mcp_server()
-EOF
-
-chmod +x test_claude_mcp.py
-echo ""
-echo "📋 Created test script: test_claude_mcp.py"
-echo "   Run: python3 test_claude_mcp.py"
+    main()

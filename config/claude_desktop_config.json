@@ -1,14 +1,9 @@
 {
   "mcpServers": {
     "mojo-assistant-remote": {
-      "command": "npx",
+      "command": "python3",
       "args": [
-        "mcp-remote",
-        "https://ai.avengergear.com",
-        "--header",
-        "X-API-Key: ${MCP_API_KEY}",
-        "--description",
-        "/home/alex/Development/Personal/MoJoAssistant/config/mcp_api_description.json"
+        "/home/alex/Development/Personal/MoJoAssistant/mcp_stdio_entrypoint.py"
       ],
       "env": {
         "MCP_API_KEY": "your-super-secret-api-key"

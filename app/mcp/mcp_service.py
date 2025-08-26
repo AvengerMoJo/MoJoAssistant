@@ -201,7 +201,7 @@ async def health_check(api_key: Optional[str] = Depends(verify_api_key)):
         }
     )
 
-@app.get("/info")
+@app.api_route("/info", methods=["GET", "POST"])
 async def service_info(api_key: Optional[str] = Depends(verify_api_key)):
     """Service information endpoint"""
     return {
