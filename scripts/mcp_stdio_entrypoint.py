@@ -40,20 +40,20 @@ def main():
 
     if not api_key:
         print(json.dumps({"error": "MCP_API_KEY environment variable not set"}), file=sys.stderr)
-        return
+        sys.exit(1)
     if not config_path:
         print(json.dumps({"error": "MCP_CONFIG_PATH environment variable not set using default ~/.config/mcp/mojo-assitant"}), file=sys.stderr)
-        config_path = "~/.config/mcp/mojo-assitant"
+        config_path = os.path.expanduser("~/.config/mcp/mojo-assitant")
 
     client = MCPClient(base_url=base_url, api_key=api_key)
 
     # Read the API description from the file
     try:
-        with open(f"{config_path}/mcp_api_description.json", "r") as f:
+        with open(os.path.join(config_path, "mcp_api_description.json"), "r") as f:
             api_description = json.load(f)
     except FileNotFoundError:
-        print(json.dumps({"error": "mcp_api_description.json not found"}), file=sys.stderr)
-        return
+        print(json.dumps({"error": f"mcp_api_description.json not found in {config_path}"}), file=sys.stderr)
+        sys.exit(1)
 
     # Process requests from stdin in a loop
     while True:
