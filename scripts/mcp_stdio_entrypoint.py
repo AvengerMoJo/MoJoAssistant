@@ -1,129 +1,67 @@
+import os
 import sys
 import json
-import os
-import requests
+import httpx
+from mcp.server.fastmcp import FastMCP
 
-# --- MCPClient Class ---
-# This is the same client we've used before to communicate with the FastAPI service
+# --- MCPClient Class for Backend Integration ---
 class MCPClient:
-    def __init__(self, base_url: str, api_key: str = None):
+    def __init__(self, base_url: str, api_key: str):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
-        self.session = requests.Session()
-        if api_key:
-            self.session.headers.update({"X-API-Key": api_key})
+        self.client = httpx.AsyncClient(headers={"X-API-Key": api_key})
 
-    def _make_request(self, method: str, endpoint: str, **kwargs):
-        url = f"{self.base_url}{endpoint}"
+    async def get_memory_context(self, query: str, max_items: int = 10) -> dict:
+        url = f"{self.base_url}/api/v1/memory/context"
         try:
-            response = self.session.request(method, url, **kwargs)
+            response = await self.client.post(url, json={"query": query, "max_items": max_items}, timeout=30.0)
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"HTTP Request failed: {e}", file=sys.stderr)
-            raise
+        except httpx.HTTPError as e:
+            raise Exception(f"HTTP Request failed: {e}")
 
-    def get_memory_context(self, query: str, max_items: int = 10):
-        data = {"query": query, "max_items": max_items}
-        return self._make_request("POST", "/api/v1/memory/context", json=data)
-
-    def add_documents(self, documents: list):
-        data = {"documents": documents}
-        return self._make_request("POST", "/api/v1/knowledge/documents", json=data)
-
-# --- Main Stdio Handling Logic ---
-def main():
-    # Get config from environment variables
-    api_key = os.getenv("MCP_API_KEY")
-    config_path = os.getenv("MCP_CONFIG_PATH")
-    base_url = "https://ai.avengergear.com" # Assuming this is constant
-
-    if not api_key:
-        print(json.dumps({"error": "MCP_API_KEY environment variable not set"}), file=sys.stderr)
-        sys.exit(1)
-    if not config_path:
-        print(json.dumps({"error": "MCP_CONFIG_PATH environment variable not set using default ~/.config/mcp/mojo-assitant"}), file=sys.stderr)
-        config_path = os.path.expanduser("~/.config/mcp/mojo-assitant")
-
-    client = MCPClient(base_url=base_url, api_key=api_key)
-
-    # Read the API description from the file
-    try:
-        with open(os.path.join(config_path, "mcp_api_description.json"), "r") as f:
-            api_description = json.load(f)
-    except FileNotFoundError:
-        print(json.dumps({"error": f"mcp_api_description.json not found in {config_path}"}), file=sys.stderr)
-        sys.exit(1)
-
-    # Process requests from stdin in a loop
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            break # End of input
-
-        print(f"Received line from stdin: {line.strip()}", file=sys.stderr)
-
+    async def add_documents(self, documents: list) -> dict:
+        url = f"{self.base_url}/api/v1/knowledge/documents"
         try:
-            request = json.loads(line)
-        except json.JSONDecodeError:
-            print(json.dumps({"error": "Invalid JSON input"}), file=sys.stderr)
-            continue
+            response = await self.client.post(url, json={"documents": documents}, timeout=30.0)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise Exception(f"HTTP Request failed: {e}")
 
-        response = None
-        request_id = request.get("id")
+    async def close(self):
+        await self.client.aclose()
 
-        if request.get("method") == "initialize":
-            # Respond to the initialize request with server capabilities
-            response = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "capabilities": {
-                        "tool_provider": True
-                    }
-                }
-            }
+# --- Initialize FastMCP Server ---
+api_key = os.getenv("MCP_API_KEY")
+if not api_key:
+    raise ValueError("MCP_API_KEY environment variable not set")
 
-        elif request.get("method") == "ListTools":
-            print("Handling ListTools request", file=sys.stderr)
-            response = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {"tools": api_description}
-            }
+base_url = "https://ai.avengergear.com"
+client = MCPClient(base_url=base_url, api_key=api_key)
+mcp = FastMCP("mojo-assistant")
 
-        elif request.get("method") == "CallTool":
-            tool_name = request["params"]["name"]
-            tool_args = request["params"]["arguments"]
+# --- Define Tools ---
+@mcp.tool()
+async def get_memory_context(query: str, max_items: int = 10) -> str:
+    """Retrieve memory context for a given query."""
+    result = await client.get_memory_context(query=query, max_items=max_items)
+    return json.dumps(result)
 
-            try:
-                print(f"Calling tool: {tool_name} with args: {tool_args}", file=sys.stderr)
-                if tool_name == "get_memory_context":
-                    result = client.get_memory_context(**tool_args)
-                elif tool_name == "add_documents":
-                    result = client.add_documents(**tool_args)
-                else:
-                    raise ValueError(f"Unknown tool: {tool_name}")
-                
-                print(f"Got result from tool: {tool_name}", file=sys.stderr)
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {"content": [{"type": "text", "text": json.dumps(result)}]}
-                }
+@mcp.tool()
+async def add_documents(documents: list) -> str:
+    """Add documents to the knowledge base."""
+    result = await client.add_documents(documents=documents)
+    return json.dumps(result)
 
-            except Exception as e:
-                print(f"Error calling tool: {e}", file=sys.stderr)
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {"code": -32000, "message": str(e)}
-                }
-
-        if response:
-            # Write the response to stdout
-            print(json.dumps(response))
-            sys.stdout.flush()
-
+# --- Run the Server ---
 if __name__ == "__main__":
-    main()
+    try:
+        mcp.run(transport="stdio")
+    except Exception as e:
+        print(f"Server error: {e}", file=sys.stderr)
+        sys.stderr.flush()
+        raise
+    finally:
+        import anyio
+        anyio.run(client.close)
