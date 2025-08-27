@@ -72,7 +72,19 @@ def main():
         response = None
         request_id = request.get("id")
 
-        if request.get("method") == "ListTools":
+        if request.get("method") == "initialize":
+            # Respond to the initialize request with server capabilities
+            response = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "capabilities": {
+                        "tool_provider": True
+                    }
+                }
+            }
+
+        elif request.get("method") == "ListTools":
             print("Handling ListTools request", file=sys.stderr)
             response = {
                 "jsonrpc": "2.0",
