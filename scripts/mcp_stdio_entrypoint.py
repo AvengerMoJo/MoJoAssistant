@@ -35,17 +35,21 @@ class MCPClient:
 def main():
     # Get config from environment variables
     api_key = os.getenv("MCP_API_KEY")
+    config_path = os.getenv("MCP_CONFIG_PATH")
     base_url = "https://ai.avengergear.com" # Assuming this is constant
 
     if not api_key:
         print(json.dumps({"error": "MCP_API_KEY environment variable not set"}), file=sys.stderr)
         return
+    if not config_path:
+        print(json.dumps({"error": "MCP_CONFIG_PATH environment variable not set using default ~/.config/mcp/mojo-assitant"}), file=sys.stderr)
+        config_path = "~/.config/mcp/mojo-assitant"
 
     client = MCPClient(base_url=base_url, api_key=api_key)
 
     # Read the API description from the file
     try:
-        with open("config/mcp_api_description.json", "r") as f:
+        with open(f"{config_path}/mcp_api_description.json", "r") as f:
             api_description = json.load(f)
     except FileNotFoundError:
         print(json.dumps({"error": "mcp_api_description.json not found"}), file=sys.stderr)

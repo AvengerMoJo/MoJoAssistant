@@ -1,12 +1,13 @@
 {
   "mcpServers": {
-    "mojo-assistant-remote": {
-      "command": "python3",
+    "mojo-assistant-local": {
+      "command": "~/.venv/bin/python3",
       "args": [
-        "/home/alex/Development/Personal/MoJoAssistant/mcp_stdio_entrypoint.py"
+        "~/.local/bin/mcp_stdio_entrypoint.py"
       ],
       "env": {
-        "MCP_API_KEY": "your-super-secret-api-key"
+        "MCP_API_KEY": "key_api_key",
+        "MCP_CONFIG_PATH": "~/.config/mcp/mojo-assistant"
       }
     }
   }
