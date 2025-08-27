@@ -56,7 +56,13 @@ def main():
         return
 
     # Process requests from stdin in a loop
-    for line in sys.stdin:
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break # End of input
+
+        print(f"Received line from stdin: {line.strip()}", file=sys.stderr)
+
         try:
             request = json.loads(line)
         except json.JSONDecodeError:
@@ -67,6 +73,7 @@ def main():
         request_id = request.get("id")
 
         if request.get("method") == "ListTools":
+            print("Handling ListTools request", file=sys.stderr)
             response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -94,6 +101,7 @@ def main():
                 }
 
             except Exception as e:
+                print(f"Error calling tool: {e}", file=sys.stderr)
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
