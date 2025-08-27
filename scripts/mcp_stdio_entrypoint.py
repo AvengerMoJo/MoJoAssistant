@@ -78,6 +78,7 @@ def main():
             tool_args = request["params"]["arguments"]
 
             try:
+                print(f"Calling tool: {tool_name} with args: {tool_args}", file=sys.stderr)
                 if tool_name == "get_memory_context":
                     result = client.get_memory_context(**tool_args)
                 elif tool_name == "add_documents":
@@ -85,6 +86,7 @@ def main():
                 else:
                     raise ValueError(f"Unknown tool: {tool_name}")
                 
+                print(f"Got result from tool: {tool_name}", file=sys.stderr)
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
