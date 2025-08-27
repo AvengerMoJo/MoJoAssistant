@@ -29,6 +29,15 @@ class MCPClient:
         except httpx.HTTPError as e:
             raise Exception(f"HTTP Request failed: {e}")
 
+    async def get_memory_stats(self) -> dict:
+        url = f"{self.base_url}/api/v1/memory/stats"
+        try:
+            response = await self.client.get(url, timeout=30.0)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise Exception(f"HTTP Request failed: {e}")
+
     async def close(self):
         await self.client.aclose()
 
@@ -52,6 +61,12 @@ async def get_memory_context(query: str, max_items: int = 10) -> str:
 async def add_documents(documents: list) -> str:
     """Add documents to the knowledge base."""
     result = await client.add_documents(documents=documents)
+    return json.dumps(result)
+
+@mcp.tool()
+async def get_memory_stats() -> str:
+    """Get comprehensive statistics about the memory system."""
+    result = await client.get_memory_stats()
     return json.dumps(result)
 
 # --- Run the Server ---

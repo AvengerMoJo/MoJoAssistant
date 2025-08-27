@@ -44,5 +44,14 @@
       },
       "required": ["documents"]
     }
+  },
+  {
+    "name": "get_memory_stats",
+    "description": "Get comprehensive statistics about the memory system.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
   }
 ]
