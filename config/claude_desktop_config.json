@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "mojo-assistant-local": {
+      "command": "~/.venv/bin/python3",
+      "args": [
+        "~/.local/bin/mcp_stdio_entrypoint.py"
+      ],
+      "env": {
+        "MCP_API_KEY": "key_api_key",
+        "MCP_CONFIG_PATH": "~/.config/mcp/mojo-assistant"
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+meta {
+  name: Service Info
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/info
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{apiKey}}
+}

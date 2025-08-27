@@ -1,0 +1,48 @@
+[
+  {
+    "name": "get_memory_context",
+    "description": "Search MoJoAssistant memory for relevant context based on a query.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The search query to match against memory content."
+        },
+        "max_items": {
+          "type": "integer",
+          "description": "The maximum number of context items to return.",
+          "default": 10
+        }
+      },
+      "required": ["query"]
+    }
+  },
+  {
+    "name": "add_documents",
+    "description": "Add one or more documents to the knowledge base.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "documents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "The content of the document."
+              },
+              "metadata": {
+                "type": "object",
+                "description": "A dictionary of metadata for the document."
+              }
+            },
+            "required": ["content"]
+          }
+        }
+      },
+      "required": ["documents"]
+    }
+  }
+]

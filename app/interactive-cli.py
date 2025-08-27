@@ -18,6 +18,9 @@ sys.path.append('.')
 
 from app.services.memory_service import MemoryService
 from app.llm.llm_interface import create_llm_interface
+from app.config.config_loader import load_embedding_config, get_env_config_help
+from app.config.logging_config import setup_logging, get_logger, log_cli_command, set_console_log_level
+from app.config import validate_runtime_config, get_config_validation_help
 
 def clear_screen():
     """Clear the terminal screen"""
@@ -40,92 +43,101 @@ def print_header():
     print("  /add FILE   - Add a document to knowledge base")
     print("  /end        - End current conversation")
     print("  /clear      - Clear the screen")
+    print("  /export FMT - Export conversation history (json/markdown)")
     print("  /help       - Show this help message again")
+    print("  /env        - Show environment variable configuration help")
+    print("  /log LEVEL  - Set console log level (DEBUG, INFO, WARNING, ERROR)")
+    print("  /validate   - Validate current configuration")
     print("  /exit       - Exit the application")
     print("=" * 60)
     print()
 
-def load_embedding_config(config_file="config/embedding_config.json"):
-    """Load embedding model configuration"""
-    try:
-        if os.path.exists(config_file):
-            with open(config_file, 'r') as f:
-                return json.load(f)
-        else:
-            # Create default config if it doesn't exist
-            os.makedirs(os.path.dirname(config_file), exist_ok=True)
-            default_config = {
-                "embedding_models": {
-                    "default": {
-                        "backend": "huggingface",
-                        "model_name": "nomic-ai/nomic-embed-text-v2-moe"
-                    },
-                    "fallback": {
-                        "backend": "random",
-                        "embedding_dim": 768
-                    }
-                }
-            }
-            with open(config_file, 'w') as f:
-                json.dump(default_config, f, indent=2)
-            return default_config
-    except Exception as e:
-        print(f"Error loading embedding config: {e}")
-        return {"embedding_models": {"fallback": {"backend": "random"}}}
-
-def save_memory_state(memory_service, filename):
+def save_memory_state(memory_service, filename, logger):
     """Save the current memory state"""
     try:
         memory_service.save_memory_state(filename)
-        print(f"Memory state saved to {filename}")
+        print(f"✅ Memory state saved to {filename}")
+        log_cli_command("/save", filename, True, logger)
     except Exception as e:
-        print(f"Error saving memory state: {e}")
+        error_msg = f"❌ Error saving memory state: {e}"
+        print(error_msg)
+        logger.error(f"Failed to save memory state to {filename}: {e}")
+        log_cli_command("/save", filename, False, logger)
 
-def load_memory_state(memory_service, filename):
+def load_memory_state(memory_service, filename, logger):
     """Load a memory state from file"""
     try:
-        if os.path.exists(filename):
-            success = memory_service.load_memory_state(filename)
-            if success:
-                print(f"Memory state loaded from {filename}")
-            else:
-                print(f"Failed to load memory state from {filename}")
+        if not os.path.exists(filename):
+            print(f"❌ File not found: {filename}")
+            log_cli_command("/load", filename, False, logger)
+            return
+            
+        success = memory_service.load_memory_state(filename)
+        if success:
+            print(f"✅ Memory state loaded from {filename}")
+            log_cli_command("/load", filename, True, logger)
         else:
-            print(f"File not found: {filename}")
+            print(f"❌ Failed to load memory state from {filename}")
+            log_cli_command("/load", filename, False, logger)
     except Exception as e:
-        print(f"Error loading memory state: {e}")
+        error_msg = f"❌ Error loading memory state: {e}"
+        print(error_msg)
+        logger.error(f"Failed to load memory state from {filename}: {e}")
+        log_cli_command("/load", filename, False, logger)
 
-def add_document(memory_service, filename):
+def add_document(memory_service, filename, logger):
     """Add a document to the knowledge base"""
     try:
-        if os.path.exists(filename):
-            with open(filename, 'r') as f:
-                content = f.read()
-                memory_service.add_to_knowledge_base(
-                    content, 
-                    {"source": filename, "added_at": datetime.datetime.now().isoformat()}
-                )
-                print(f"Added document {filename} to knowledge base")
-        else:
-            print(f"File not found: {filename}")
+        if not os.path.exists(filename):
+            print(f"❌ File not found: {filename}")
+            log_cli_command("/add", filename, False, logger)
+            return
+            
+        with open(filename, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        if not content.strip():
+            print(f"❌ File is empty: {filename}")
+            log_cli_command("/add", filename, False, logger)
+            return
+            
+        memory_service.add_to_knowledge_base(
+            content, 
+            {"source": filename, "added_at": datetime.datetime.now().isoformat()}
+        )
+        print(f"✅ Document added to knowledge base: {filename}")
+        log_cli_command("/add", filename, True, logger)
+        
+    except UnicodeDecodeError:
+        print(f"❌ Cannot read file (encoding issue): {filename}")
+        log_cli_command("/add", filename, False, logger)
     except Exception as e:
-        print(f"Error adding document: {e}")
+        error_msg = f"❌ Error adding document: {e}"
+        print(error_msg)
+        logger.error(f"Failed to add document {filename}: {e}")
+        log_cli_command("/add", filename, False, logger)
 
-def display_memory_stats(memory_service):
+def display_memory_stats(memory_service, logger):
     """Display current memory statistics"""
-    stats = memory_service.get_memory_stats()
-    print("\n===== MEMORY STATISTICS =====")
-    print(f"Working Memory: {stats['working_memory']['messages']} messages ({stats['working_memory']['tokens']}/{stats['working_memory']['max_tokens']} tokens)")
-    print(f"Active Memory: {stats['active_memory']['pages']}/{stats['active_memory']['max_pages']} pages")
-    print(f"Archival Memory: {stats['archival_memory']['items']} items")
-    print(f"Knowledge Base: {stats['knowledge_base']['items']} items")
-    
-    embed_info = stats['embedding']
-    print(f"\nEmbedding Model: {embed_info['model_name']} (Backend: {embed_info['backend']})")
-    print(f"Embedding Dimension: {embed_info['embedding_dim']}")
-    print(f"Embedding Cache Size: {embed_info['cache_size']} items")
-    
-    print("================================\n")
+    try:
+        stats = memory_service.get_memory_stats()
+        print("\n===== MEMORY STATISTICS =====")
+        print(f"Working Memory: {stats['working_memory']['messages']} messages ({stats['working_memory']['tokens']}/{stats['working_memory']['max_tokens']} tokens)")
+        print(f"Active Memory: {stats['active_memory']['pages']}/{stats['active_memory']['max_pages']} pages")
+        print(f"Archival Memory: {stats['archival_memory']['items']} items")
+        print(f"Knowledge Base: {stats['knowledge_base']['items']} items")
+        
+        embed_info = stats['embedding']
+        print(f"\nEmbedding Model: {embed_info['model_name']} (Backend: {embed_info['backend']})")
+        print(f"Embedding Dimension: {embed_info['embedding_dim']}")
+        print(f"Embedding Cache Size: {embed_info['cache_size']} items")
+        
+        print("================================\n")
+        log_cli_command("/stats", "", True, logger)
+    except Exception as e:
+        print(f"❌ Error retrieving memory statistics: {e}")
+        logger.error(f"Failed to display memory stats: {e}")
+        log_cli_command("/stats", "", False, logger)
 
 def display_embedding_info(memory_service):
     """Display information about the current embedding model"""
@@ -138,73 +150,195 @@ def display_embedding_info(memory_service):
     print(f"Device: {embed_info['device'] or 'not specified'}")
     print("========================================\n")
 
-def change_embedding_model(memory_service, model_name, embedding_config):
+def change_embedding_model(memory_service, model_name, embedding_config, logger):
     """Change the embedding model"""
-    if model_name not in embedding_config["embedding_models"]:
-        print(f"Unknown embedding model: {model_name}")
-        print(f"Available models: {', '.join(embedding_config['embedding_models'].keys())}")
-        return
-    
-    config = embedding_config["embedding_models"][model_name]
-    success = memory_service.set_embedding_model(
-        model_name=config.get("model_name", model_name),
-        backend=config.get("backend"),
-        device=config.get("device")
-    )
-    
-    if success:
-        print(f"Switched to embedding model: {model_name}")
-    else:
-        print(f"Failed to switch to embedding model: {model_name}")
+    try:
+        if model_name not in embedding_config["embedding_models"]:
+            available_models = ', '.join(embedding_config['embedding_models'].keys())
+            print(f"❌ Unknown embedding model: {model_name}")
+            print(f"📋 Available models: {available_models}")
+            log_cli_command("/embed", model_name, False, logger)
+            return
+        
+        config = embedding_config["embedding_models"][model_name]
+        success = memory_service.set_embedding_model(
+            model_name=config.get("model_name", model_name),
+            backend=config.get("backend"),
+            device=config.get("device")
+        )
+        
+        if success:
+            print(f"✅ Switched to embedding model: {model_name}")
+            log_cli_command("/embed", model_name, True, logger)
+        else:
+            print(f"❌ Failed to switch to embedding model: {model_name}")
+            log_cli_command("/embed", model_name, False, logger)
+            
+    except Exception as e:
+        print(f"❌ Error changing embedding model: {e}")
+        logger.error(f"Failed to change embedding model to {model_name}: {e}")
+        log_cli_command("/embed", model_name, False, logger)
 
-def handle_command(cmd, memory_service, embedding_config):
+import datetime
+from pathlib import Path
+
+def save_export(content: str, format_type: str) -> None:
+    """Save exported content to file"""
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"conversation_export_{timestamp}.{format_type}"
+    
+    with open(filename, 'w') as f:
+        f.write(content)
+    
+    print(f"✅ Export saved to {filename}")
+
+def display_embedding_info(memory_service, logger):
+    """Display current embedding model information"""
+    try:
+        embed_info = memory_service.get_embedding_info()
+        print(f"\n===== EMBEDDING MODEL INFO =====")
+        print(f"Model: {embed_info['model_name']}")
+        print(f"Backend: {embed_info['backend']}")
+        print(f"Dimensions: {embed_info['embedding_dim']}")
+        print(f"Device: {embed_info.get('device', 'N/A')}")
+        print(f"Cache Size: {embed_info['cache_size']} items")
+        print("=" * 33)
+        log_cli_command("/embed", "", True, logger)
+    except Exception as e:
+        print(f"❌ Error retrieving embedding info: {e}")
+        logger.error(f"Failed to display embedding info: {e}")
+        log_cli_command("/embed", "", False, logger)
+
+def handle_command(cmd, memory_service, embedding_config, logger):
     """Handle special CLI commands"""
     parts = cmd.split()
     cmd_root = parts[0].lower()
     
     if cmd_root == "/stats":
-        display_memory_stats(memory_service)
+        display_memory_stats(memory_service, logger)
         return True
     
     elif cmd_root == "/embed":
         if len(parts) > 1:
-            change_embedding_model(memory_service, parts[1], embedding_config)
+            change_embedding_model(memory_service, parts[1], embedding_config, logger)
         else:
-            display_embedding_info(memory_service)
+            display_embedding_info(memory_service, logger)
         return True
     
     elif cmd_root == "/save":
         if len(parts) > 1:
-            save_memory_state(memory_service, parts[1])
+            save_memory_state(memory_service, parts[1], logger)
         else:
-            print("Usage: /save FILENAME")
+            print("❌ Usage: /save FILENAME")
+            log_cli_command("/save", "", False, logger)
         return True
     
     elif cmd_root == "/load":
         if len(parts) > 1:
-            load_memory_state(memory_service, parts[1])
+            load_memory_state(memory_service, parts[1], logger)
         else:
-            print("Usage: /load FILENAME")
+            print("❌ Usage: /load FILENAME")
+            log_cli_command("/load", "", False, logger)
         return True
     
     elif cmd_root == "/add":
         if len(parts) > 1:
-            add_document(memory_service, parts[1])
+            add_document(memory_service, parts[1], logger)
         else:
-            print("Usage: /add FILENAME")
+            print("❌ Usage: /add FILENAME")
+            log_cli_command("/add", "", False, logger)
         return True
     
     elif cmd_root == "/end":
-        memory_service.end_conversation()
-        print("Current conversation ended and stored in memory.")
+        try:
+            memory_service.end_conversation()
+            print("✅ Current conversation ended and stored in memory.")
+            log_cli_command("/end", "", True, logger)
+        except Exception as e:
+            print(f"❌ Error ending conversation: {e}")
+            logger.error(f"Failed to end conversation: {e}")
+            log_cli_command("/end", "", False, logger)
         return True
     
     elif cmd_root == "/clear":
         clear_screen()
+        log_cli_command("/clear", "", True, logger)
         return True
     
     elif cmd_root == "/help":
         print_header()
+        log_cli_command("/help", "", True, logger)
+        return True
+    
+    elif cmd_root == "/env":
+        print(get_env_config_help())
+        log_cli_command("/env", "", True, logger)
+        return True
+    
+    elif cmd_root == "/log":
+        if len(parts) > 1:
+            try:
+                level = parts[1].upper()
+                if level in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
+                    set_console_log_level(level)
+                    print(f"✅ Console log level set to {level}")
+                    log_cli_command("/log", level, True, logger)
+                else:
+                    print("❌ Invalid log level. Use: DEBUG, INFO, WARNING, ERROR, CRITICAL")
+                    log_cli_command("/log", parts[1], False, logger)
+            except Exception as e:
+                print(f"❌ Error setting log level: {e}")
+                log_cli_command("/log", parts[1], False, logger)
+        else:
+            print("❌ Usage: /log LEVEL (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
+            log_cli_command("/log", "", False, logger)
+        return True
+    
+    elif cmd_root == "/validate":
+        try:
+            is_valid = validate_runtime_config(embedding_config)
+            if is_valid:
+                print("✅ Configuration validation passed")
+                log_cli_command("/validate", "", True, logger)
+            else:
+                print("❌ Configuration validation failed (check logs for details)")
+                print("\n" + get_config_validation_help())
+                log_cli_command("/validate", "", False, logger)
+        except Exception as e:
+            print(f"❌ Error during validation: {e}")
+            logger.error(f"Configuration validation error: {e}")
+            log_cli_command("/validate", "", False, logger)
+        return True
+        
+    elif cmd_root == "/export":
+        if len(parts) < 2:
+            print("❌ Usage: /export [json|markdown]")
+            log_cli_command("/export", "", False, logger)
+            return True
+            
+        format_type = parts[1].lower()
+        
+        # Get working memory from memory service
+        try:
+            working_memory = memory_service.get_working_memory()
+            
+            if format_type == 'json':
+                content = working_memory.export_to_json()
+                save_export(content, 'json')
+                log_cli_command("/export", "json", True, logger)
+            elif format_type == 'markdown':
+                content = working_memory.export_to_markdown()
+                save_export(content, 'md')
+                log_cli_command("/export", "markdown", True, logger)
+            else:
+                print("❌ Error: Format must be 'json' or 'markdown'")
+                log_cli_command("/export", parts[1], False, logger)
+                
+        except Exception as e:
+            print(f"❌ Error during export: {e}")
+            logger.error(f"Failed to export conversation history: {e}")
+            log_cli_command("/export", format_type, False, logger)
+            
         return True
 
     elif cmd_root == "/exit":
@@ -222,99 +356,135 @@ def main():
     parser.add_argument("--embedding", help="Name of the embedding model configuration to use", default="default")
     parser.add_argument("--embedding-config", help="Path to embedding configuration file", 
                        default="config/embedding_config.json")
+    parser.add_argument("--log-level", help="Logging level", default="INFO", 
+                       choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+    parser.add_argument("--log-file", help="Log file path (optional)")
 
     args = parser.parse_args()
     
-    # Load embedding configuration
-    embedding_config = load_embedding_config(args.embedding_config)
-    
-    # Get embedding model configuration
-    embed_model_name = args.embedding
-    if embed_model_name not in embedding_config["embedding_models"]:
-        print(f"Warning: Embedding model '{embed_model_name}' not found in config, using default")
-        embed_model_name = "default"
-        if embed_model_name not in embedding_config["embedding_models"]:
-            embed_model_name = next(iter(embedding_config["embedding_models"].keys()))
-    
-    embed_config = embedding_config["embedding_models"][embed_model_name]
-    
-    # Initialize memory service with the selected embedding model
-    memory_service = MemoryService(
-        data_dir=embedding_config.get("memory_settings", {}).get("data_directory", ".memory"),
-        embedding_model=embed_config.get("model_name", embed_model_name),
-        embedding_backend=embed_config.get("backend", "huggingface"),
-        embedding_device=embed_config.get("device"),
-        config=embedding_config.get("memory_settings", {})
+    # Initialize logging
+    setup_logging(
+        log_level=args.log_level,
+        log_file=args.log_file
     )
+    logger = get_logger(__name__)
+    logger.info("Starting MoJoAssistant Interactive CLI")
     
-    # Initialize LLM interface
-    llm_interface = create_llm_interface(config_file=args.config, model_name=args.model)
-
-    # Load memory state if specified
-    if args.load:
-        load_memory_state(memory_service, args.load)
-    
-    print_header()
-    running = True
-    
-    # Create a history object
-    history = FileHistory('.mojo_history')
-    session = PromptSession(history=history)
-
     try:
+        # Load embedding configuration
+        embedding_config = load_embedding_config(args.embedding_config)
+        
+        # Get embedding model configuration
+        embed_model_name = args.embedding
+        if embed_model_name not in embedding_config["embedding_models"]:
+            print(f"⚠️  Warning: Embedding model '{embed_model_name}' not found in config, using default")
+            logger.warning(f"Embedding model '{embed_model_name}' not found, using default")
+            embed_model_name = "default"
+            if embed_model_name not in embedding_config["embedding_models"]:
+                embed_model_name = next(iter(embedding_config["embedding_models"].keys()))
+        
+        embed_config = embedding_config["embedding_models"][embed_model_name]
+        
+        # Initialize memory service with the selected embedding model
+        memory_service = MemoryService(
+            data_dir=embedding_config.get("memory_settings", {}).get("data_directory", ".memory"),
+            embedding_model=embed_config.get("model_name", embed_model_name),
+            embedding_backend=embed_config.get("backend", "huggingface"),
+            embedding_device=embed_config.get("device"),
+            config=embedding_config.get("memory_settings", {})
+        )
+        
+        # Initialize LLM interface
+        llm_interface = create_llm_interface(args.config, args.model)
+        
+        # Load initial memory state if specified
+        if args.load:
+            if os.path.exists(args.load):
+                success = memory_service.load_memory_state(args.load)
+                if success:
+                    print(f"✅ Loaded memory state from {args.load}")
+                    logger.info(f"Loaded initial memory state from {args.load}")
+                else:
+                    print(f"❌ Failed to load memory state from {args.load}")
+                    logger.error(f"Failed to load initial memory state from {args.load}")
+            else:
+                print(f"❌ Memory state file not found: {args.load}")
+                logger.error(f"Memory state file not found: {args.load}")
+        
+        print_header()
+        running = True
+        
+        # Create a history object
+        history = FileHistory('.mojo_history')
+        session = PromptSession(history=history)
+
         while running:
-            # Get user input
-            user_input = session.prompt("> ", multiline=True).strip()
-            
-            # Handle special commands
-            if user_input.startswith("/"):
-                result = handle_command(user_input, memory_service, embedding_config)
-                if result is False:  # Exit command
-                    running = False
-                    print("Saving final memory state to 'final_state.json'...")
-                    save_memory_state(memory_service, "final_state.json")
-                    print("Goodbye!")
-                continue
-            
-            # Skip empty input
-            if not user_input:
-                continue
-            
-            # Add user message to memory
-            memory_service.add_user_message(user_input)
-            
-            # Get context for this query
-            context = memory_service.get_context_for_query(user_input)
-            
-            # If we found context, show a small indicator
-            if context:
-                print(f"[Found {len(context)} relevant context items]")
-            
-            # Generate response
-            print("\nAssistant is thinking...")
-            response = llm_interface.generate_response(user_input, context)
-            
-            # Sometimes the LLM adds "Assistant:" or similar prefixes - remove them
-            response = response.replace("Assistant:", "").replace("AI:", "").strip()
-            
-            print(f"\nAssistant: {response}\n")
-            
-            # Add assistant message to memory
-            memory_service.add_assistant_message(response)
-            
-    except KeyboardInterrupt:
-        print("\nInterrupted by user. Saving memory state...")
-        save_memory_state(memory_service, "interrupt_state.json")
-        print("Goodbye!")
-    
+            try:
+                # Get user input
+                user_input = session.prompt("> ", multiline=True).strip()
+                
+                # Handle special commands
+                if user_input.startswith("/"):
+                    result = handle_command(user_input, memory_service, embedding_config, logger)
+                    if result is False:  # Exit command
+                        running = False
+                        print("💾 Saving final memory state to 'final_state.json'...")
+                        save_memory_state(memory_service, "final_state.json", logger)
+                        print("👋 Goodbye!")
+                        logger.info("CLI session ended by user")
+                    continue
+                
+                # Skip empty input
+                if not user_input:
+                    continue
+                
+                # Add user message to memory
+                memory_service.add_user_message(user_input)
+                logger.debug(f"User input: {user_input[:100]}...")
+                
+                # Get context for this query
+                context = memory_service.get_context_for_query(user_input)
+                
+                # If we found context, show a small indicator
+                if context:
+                    print(f"🔍 [Found {len(context)} relevant context items]")
+                    logger.debug(f"Retrieved {len(context)} context items for query")
+                
+                # Generate response
+                print("\n🤔 Assistant is thinking...")
+                response = llm_interface.generate_response(user_input, context)
+                
+                # Clean up response (remove common prefixes)
+                response = response.replace("Assistant:", "").replace("AI:", "").strip()
+                
+                # Display response
+                print(f"\n🤖 Assistant: {response}\n")
+                
+                # Add assistant response to memory
+                memory_service.add_assistant_message(response)
+                
+            except KeyboardInterrupt:
+                print("\n\n⚠️  Interrupted by user. Saving state...")
+                save_memory_state(memory_service, "interrupt_state.json", logger)
+                logger.info("CLI session interrupted by user")
+                break
+            except EOFError:
+                print("\n\n👋 Goodbye!")
+                save_memory_state(memory_service, "final_state.json", logger)
+                logger.info("CLI session ended (EOF)")
+                break
+            except Exception as e:
+                print(f"\n❌ An error occurred: {e}")
+                logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
+                save_memory_state(memory_service, "error_state.json", logger)
+                
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
-        print("Attempting to save memory state before exit...")
-        try:
-            save_memory_state(memory_service, "error_state.json")
-        except:
-            print("Could not save memory state.")
-        print("Exiting...")
+        print(f"❌ Failed to initialize MoJoAssistant: {e}")
+        logger.error(f"Failed to initialize application: {e}", exc_info=True)
+        return 1
+    
+    return 0
 
 if __name__ == "__main__":
+    exit(main())
     main()

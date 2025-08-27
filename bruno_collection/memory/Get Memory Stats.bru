@@ -1,0 +1,15 @@
+meta {
+  name: Get Memory Stats
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/memory/stats
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{apiKey}}
+}

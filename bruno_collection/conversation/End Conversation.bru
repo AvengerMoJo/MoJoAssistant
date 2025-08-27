@@ -1,0 +1,15 @@
+meta {
+  name: End Conversation
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/conversation/end
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{apiKey}}
+}

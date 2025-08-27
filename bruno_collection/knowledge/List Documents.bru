@@ -1,0 +1,15 @@
+meta {
+  name: List Documents
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/knowledge/documents?limit=50&offset=0
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{apiKey}}
+}

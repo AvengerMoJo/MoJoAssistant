@@ -5,6 +5,7 @@ import os
 import re
 from collections import Counter
 import math
+import time
 
 from app.memory.simplified_embeddings import SimpleEmbedding
 from app.memory.working_memory import WorkingMemory
@@ -12,6 +13,7 @@ from app.memory.active_memory import ActiveMemory
 from app.memory.archival_memory import ArchivalMemory
 from app.memory.knowledge_manager import KnowledgeManager
 from app.memory.memory_page import MemoryPage
+from app.config.logging_config import get_logger, log_memory_operation, log_embedding_operation, log_error_with_context
 
 
 class MemoryService:
@@ -35,9 +37,14 @@ class MemoryService:
             embedding_device: Device to run embedding model on ('cpu', 'cuda', etc.)
             config: Additional configuration options
         """
+        # Initialize logger
+        self.logger = get_logger(__name__)
+        
         # Set up data directory
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
+        
+        self.logger.info(f"Initializing MemoryService with data_dir={data_dir}")
         
         # Process config
         self.config = config or {}
@@ -75,7 +82,8 @@ class MemoryService:
         # Configure memory transition thresholds
         self.archival_promotion_threshold = self.config.get('archival_promotion_threshold', 0.6)
         self.memory_paging_threshold = self.config.get('memory_paging_threshold', 0.5)
-        print(f"Memory manager initialized with {self.embedding.backend} embeddings using model: {self.embedding.model_name}")
+        
+        self.logger.info(f"Memory manager initialized with {self.embedding.backend} embeddings using model: {self.embedding.model_name}")
     
     def _setup_embedding(self, model_name: str, backend: str, device: str = None) -> None:
         """
@@ -143,7 +151,12 @@ class MemoryService:
             "conversation",
             archive_callback=self._archive_page_callback
         )
-        print(f"Paged out {num_messages} messages to active memory (Page ID: {page_id})")
+        
+        log_memory_operation("page_out", {
+            "num_messages": num_messages,
+            "page_id": page_id,
+            "working_memory_size": len(self.working_memory.get_messages())
+        }, self.logger)
     
     def end_conversation(self) -> None:
         """
@@ -246,7 +259,7 @@ class MemoryService:
 
         # If the query embedding fails, we cannot search for context.
         if query_embedding is None:
-            print("Warning: Could not generate embedding for the query. Skipping context search.")
+            self.logger.warning("Could not generate embedding for the query. Skipping context search.")
             return []
         
         # 1. Search working memory
@@ -414,11 +427,14 @@ class MemoryService:
                 current_backend = self.embedding.backend
                 
                 if saved_model != current_model or saved_backend != current_backend:
-                    print(f"Notice: Current embedding model ({current_model}) differs from saved state ({saved_model})")
+                    self.logger.info(f"Current embedding model ({current_model}) differs from saved state ({saved_model})")
             
             return True
         except Exception as e:
-            print(f"Error loading memory state: {e}")
+            log_error_with_context(e, {
+                "operation": "load_memory_state",
+                "file_path": file_path
+            }, self.logger)
             return False
     
     def set_embedding_model(self, model_name: str, backend: str = None, device: str = None) -> bool:
@@ -450,14 +466,18 @@ class MemoryService:
                 self.archival_memory.embedding = self.embedding
                 self.knowledge_manager.embedding = self.embedding
                 
-                print(f"Embedding model updated to {model_name}")
+                log_embedding_operation("model_switch", model_name, backend or "unknown", 0.0, True, self.logger)
                 return True
             else:
-                print(f"Failed to update embedding model to {model_name}")
+                self.logger.error(f"Failed to update embedding model to {model_name}")
                 return False
                 
         except Exception as e:
-            print(f"Error setting embedding model: {e}")
+            log_error_with_context(e, {
+                "operation": "set_embedding_model",
+                "model_name": model_name,
+                "backend": backend
+            }, self.logger)
             return False
     
     def get_embedding_info(self) -> Dict[str, Any]:
@@ -516,7 +536,12 @@ class MemoryService:
                 "content_structure": list(page.content.keys()) if isinstance(page.content, dict) else None
             }
         )
-        print(f"Archived active memory page {page.id} to archival memory as {archival_id}")
+        
+        log_memory_operation("archive_page", {
+            "page_id": page.id,
+            "archival_id": archival_id,
+            "page_size": len(page.content)
+        }, self.logger)
     
     def _promote_archival_to_active(self, archival_item: Dict[str, Any], relevance_score: float) -> Optional[str]:
         """ Promote a highly relevant archival memory item to active memory """
@@ -578,10 +603,19 @@ class MemoryService:
                 page_type=metadata.get("page_type", "promoted"),
                 archive_callback=self._archive_page_callback
             )
-            print(f"Promoted archival memory item to active memory as page {page_id}")
+            
+            log_memory_operation("promote_archival", {
+                "archival_id": archival_item.get("id", "unknown"),
+                "page_id": page_id,
+                "relevance_score": relevance_score
+            }, self.logger)
             return page_id
         except Exception as e:
-            print(f"Error promoting archival memory: {e}")
+            log_error_with_context(e, {
+                "operation": "promote_archival_to_active",
+                "archival_id": archival_item.get("id", "unknown"),
+                "relevance_score": relevance_score
+            }, self.logger)
             return None
     
     def __repr__(self) -> str:

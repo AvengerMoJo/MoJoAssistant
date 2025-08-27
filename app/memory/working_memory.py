@@ -92,6 +92,25 @@ class WorkingMemory:
             "token_count": self.token_count
         }
     
+    def export_to_json(self) -> str:
+        """Export conversation history to JSON format"""
+        import json
+        return json.dumps({
+            'type': 'conversation',
+            'version': '1.0',
+            'messages': [msg.to_dict() for msg in self.messages],
+            'timestamp': datetime.datetime.now().isoformat()
+        }, indent=2)
+        
+    def export_to_markdown(self) -> str:
+        """Export conversation history to markdown format"""
+        lines = ["# Conversation History\n"]
+        for message in self.messages:
+            header = f"### {message.type.title()}"
+            lines.extend([header, "", message.content, ""])
+        return "\n".join(lines)
+        
+    @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'WorkingMemory':
         """Create a WorkingMemory instance from a dictionary"""
         memory = cls(max_tokens=data.get("max_tokens", 4000))

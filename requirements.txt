@@ -27,3 +27,6 @@ pydantic
 sentence-transformers
 einops
 prompt_toolkit
+mcp
+httpx
+anyio

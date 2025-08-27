@@ -1,0 +1,15 @@
+meta {
+  name: List Embedding Models
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/embeddings/models
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{apiKey}}
+}
