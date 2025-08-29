@@ -1,7 +1,7 @@
 [
   {
     "name": "get_memory_context",
-    "description": "Search MoJoAssistant memory for relevant context based on a query.",
+    "description": "Search all memory tiers (working, active, archival, knowledge) for relevant context.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -13,6 +13,34 @@
           "type": "integer",
           "description": "The maximum number of context items to return.",
           "default": 10
+        }
+      },
+      "required": ["query"]
+    }
+  },
+  {
+    "name": "search_knowledge_base",
+    "description": "Search for information exclusively within the knowledge base.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The search query to match against document content."
+        }
+      },
+      "required": ["query"]
+    }
+  },
+  {
+    "name": "search_conversations",
+    "description": "Search for past conversations in the archival memory.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The search query to match against conversation content."
         }
       },
       "required": ["query"]
@@ -46,12 +74,53 @@
     }
   },
   {
+    "name": "get_current_conversation",
+    "description": "Get the messages from the current working memory.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "end_conversation",
+    "description": "End the current conversation and archive it to memory.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
     "name": "get_memory_stats",
     "description": "Get comprehensive statistics about the memory system.",
     "inputSchema": {
       "type": "object",
       "properties": {},
       "required": []
+    }
+  },
+  {
+    "name": "list_embedding_models",
+    "description": "List the available embedding models.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "switch_embedding_model",
+    "description": "Switch to a different embedding model.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "model_name": {
+          "type": "string",
+          "description": "The name of the model to switch to (e.g., 'fast' or 'default')."
+        }
+      },
+      "required": ["model_name"]
     }
   }
 ]
