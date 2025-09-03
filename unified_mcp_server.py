@@ -111,6 +111,9 @@ class UnifiedMCPServer:
     async def handle_tool_call(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Handle tool calls and return structured response"""
         try:
+            if self.logger:
+                self.logger.info(f"Handling tool call: {name} with args: {arguments}")
+            
             if not self.memory_service:
                 raise Exception("Memory service not initialized")
             
@@ -131,9 +134,15 @@ class UnifiedMCPServer:
                 user_message = arguments.get("user_message", "")
                 assistant_message = arguments.get("assistant_message", "")
                 
+                if self.logger:
+                    self.logger.info(f"Adding conversation: user={len(user_message)} chars, assistant={len(assistant_message)} chars")
+                
                 # Add both messages to working memory
                 self.memory_service.add_user_message(user_message)
                 self.memory_service.add_assistant_message(assistant_message)
+                
+                if self.logger:
+                    self.logger.info("Conversation messages added successfully")
                 
                 return {
                     "status": "success", 
@@ -146,14 +155,26 @@ class UnifiedMCPServer:
                 documents = arguments.get("documents", [])
                 results = []
                 
-                for doc in documents:
+                if self.logger:
+                    self.logger.info(f"Adding {len(documents)} documents")
+                
+                for i, doc in enumerate(documents):
                     try:
                         content = doc.get("content", "") if isinstance(doc, dict) else str(doc)
                         metadata = doc.get("metadata", {}) if isinstance(doc, dict) else {}
                         
+                        if self.logger:
+                            self.logger.info(f"Adding document {i+1}: content={len(content)} chars")
+                        
                         self.memory_service.add_to_knowledge_base(content, metadata)
                         results.append({"status": "success", "message": "Document added"})
+                        
+                        if self.logger:
+                            self.logger.info(f"Document {i+1} added successfully")
+                            
                     except Exception as e:
+                        if self.logger:
+                            self.logger.error(f"Failed to add document {i+1}: {e}")
                         results.append({"status": "error", "message": str(e)})
                 
                 return {"results": results, "total_processed": len(documents)}
