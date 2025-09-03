@@ -44,17 +44,6 @@ class UnifiedMCPServer:
                 }
             },
             {
-                "name": "search_knowledge_base",
-                "description": "Search for information exclusively within the knowledge base.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"}
-                    },
-                    "required": ["query"]
-                }
-            },
-            {
                 "name": "add_documents",
                 "description": "Add documents to the knowledge base.",
                 "inputSchema": {
@@ -63,6 +52,18 @@ class UnifiedMCPServer:
                         "documents": {"type": "array"}
                     },
                     "required": ["documents"]
+                }
+            },
+            {
+                "name": "add_conversation",
+                "description": "Add a complete conversation exchange (user question + assistant reply) to working memory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "user_message": {"type": "string"},
+                        "assistant_message": {"type": "string"}
+                    },
+                    "required": ["user_message", "assistant_message"]
                 }
             },
             {
@@ -125,10 +126,21 @@ class UnifiedMCPServer:
                     "total_items": len(context_items)
                 }
             
-            elif name == "search_knowledge_base":
-                query = arguments.get("query", "")
-                context_items = self.memory_service.get_context_for_query(query)
-                return {"query": query, "results": context_items}
+            
+            elif name == "add_conversation":
+                user_message = arguments.get("user_message", "")
+                assistant_message = arguments.get("assistant_message", "")
+                
+                # Add both messages to working memory
+                self.memory_service.add_user_message(user_message)
+                self.memory_service.add_assistant_message(assistant_message)
+                
+                return {
+                    "status": "success", 
+                    "message": "Conversation exchange added to working memory",
+                    "user_message_length": len(user_message),
+                    "assistant_message_length": len(assistant_message)
+                }
             
             elif name == "add_documents":
                 documents = arguments.get("documents", [])

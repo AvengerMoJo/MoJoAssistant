@@ -20,11 +20,6 @@ class MCPClient:
         except httpx.HTTPError as e:
             raise Exception(f"HTTP Request failed: {e}")
 
-    async def search_knowledge_base(self, query: str) -> dict:
-        # This endpoint does not exist yet, so we will simulate it by calling the existing one.
-        # In a real implementation, you would have a dedicated endpoint for this.
-        return await self.get_memory_context(query=query)
-
     async def search_conversations(self, query: str) -> dict:
         # This endpoint does not exist yet, so we will simulate it by calling the existing one.
         return await self.get_memory_context(query=query)
@@ -102,11 +97,6 @@ async def get_memory_context(query: str, max_items: int = 10) -> str:
     result = await client.get_memory_context(query=query, max_items=max_items)
     return json.dumps(result)
 
-@mcp.tool()
-async def search_knowledge_base(query: str) -> str:
-    """Search for information exclusively within the knowledge base."""
-    result = await client.search_knowledge_base(query=query)
-    return json.dumps(result)
 
 @mcp.tool()
 async def search_conversations(query: str) -> str:
