@@ -19,7 +19,7 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 # Import MoJoAssistant components
-from app.services.memory_service import MemoryService
+from app.services.hybrid_memory_service import HybridMemoryService
 from app.config.logging_config import setup_logging, get_logger
 from app.config.config_loader import load_embedding_config
 
@@ -33,35 +33,73 @@ class UnifiedMCPServer:
         self.tools = [
             {
                 "name": "get_memory_context",
-                "description": "Search all memory tiers for relevant context.",
+                "description": "Search all memory tiers (working, active, archival, knowledge base) for relevant context. Supports both English and Chinese queries.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string"},
-                        "max_items": {"type": "integer", "default": 10}
+                        "query": {
+                            "type": "string",
+                            "description": "Search query in English or Chinese",
+                            "minLength": 1
+                        },
+                        "max_items": {
+                            "type": "integer", 
+                            "description": "Maximum number of context items to return",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 50
+                        }
                     },
                     "required": ["query"]
                 }
             },
             {
                 "name": "add_documents",
-                "description": "Add documents to the knowledge base.",
+                "description": "Add reference documents to the knowledge base for permanent storage. Use for documentation, code examples, or reference material.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "documents": {"type": "array"}
+                        "documents": {
+                            "type": "array",
+                            "description": "Array of documents to add",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": {
+                                        "type": "string",
+                                        "description": "Document content (supports Chinese and English)",
+                                        "minLength": 1
+                                    },
+                                    "metadata": {
+                                        "type": "object",
+                                        "description": "Optional metadata (title, topic, tags, etc.)",
+                                        "additionalProperties": True
+                                    }
+                                },
+                                "required": ["content"]
+                            },
+                            "minItems": 1
+                        }
                     },
                     "required": ["documents"]
                 }
             },
             {
                 "name": "add_conversation",
-                "description": "Add a complete conversation exchange (user question + assistant reply) to working memory.",
+                "description": "Add a complete conversation exchange (user question + assistant reply) to working memory. Call this after each Q&A interaction to build conversation context.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "user_message": {"type": "string"},
-                        "assistant_message": {"type": "string"}
+                        "user_message": {
+                            "type": "string",
+                            "description": "The user's question or message (supports Chinese and English)",
+                            "minLength": 1
+                        },
+                        "assistant_message": {
+                            "type": "string", 
+                            "description": "The assistant's response or reply (supports Chinese and English)",
+                            "minLength": 1
+                        }
                     },
                     "required": ["user_message", "assistant_message"]
                 }
@@ -81,7 +119,99 @@ class UnifiedMCPServer:
                     "type": "object",
                     "properties": {}
                 }
-            }
+            },
+            {
+                "name": "toggle_multi_model",
+                "description": "Enable or disable multi-model embedding support at runtime.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "True to enable multi-model, False to disable"
+                        }
+                    },
+                    "required": ["enabled"]
+                }
+            },
+            {
+                "name": "list_recent_conversations",
+                "description": "List recent conversation messages for management/cleanup. Shows message previews with IDs for removal.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Number of recent conversations to show",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 50
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "remove_conversation_message", 
+                "description": "Remove a specific conversation message by its ID. Use this to clean up bad/useless conversations from other models.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "message_id": {
+                            "type": "string",
+                            "description": "ID of the message to remove (from list_recent_conversations)"
+                        }
+                    },
+                    "required": ["message_id"]
+                }
+            },
+            {
+                "name": "remove_recent_conversations",
+                "description": "Remove the most recent N conversation messages. Use when multiple recent conversations are bad.",
+                "inputSchema": {
+                    "type": "object", 
+                    "properties": {
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of recent conversations to remove",
+                            "minimum": 1,
+                            "maximum": 100
+                        }
+                    },
+                    "required": ["count"]
+                }
+            },
+            {
+                "name": "list_recent_documents",
+                "description": "List recent documents for management/cleanup. Shows document previews with IDs for removal.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer", 
+                            "description": "Number of recent documents to show",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 50
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "remove_document",
+                "description": "Remove a specific document by its ID. Use this to clean up unwanted documents.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "document_id": {
+                            "type": "string",
+                            "description": "ID of the document to remove (from list_recent_documents)"
+                        }
+                    },
+                    "required": ["document_id"]
+                }
+            },
         ]
     
     async def initialize_memory_service(self):
@@ -93,12 +223,13 @@ class UnifiedMCPServer:
             embedding_config = load_embedding_config()
             embed_config = embedding_config["embedding_models"]["default"]
             
-            self.memory_service = MemoryService(
+            self.memory_service = HybridMemoryService(
                 data_dir=embedding_config.get("memory_settings", {}).get("data_directory", ".memory"),
-                embedding_model=embed_config.get("model_name", "nomic-ai/nomic-embed-text-v2-moe"),
+                embedding_model=embed_config.get("model_name", "BAAI/bge-m3"),
                 embedding_backend=embed_config.get("backend", "huggingface"),
                 embedding_device=embed_config.get("device"),
-                config=embedding_config.get("memory_settings", {})
+                config=embedding_config,  # Pass full config for multi-model access
+                multi_model_enabled=True  # Start with multi-model enabled for testing
             )
             
             self.logger.info("Memory service initialized successfully")
@@ -180,11 +311,76 @@ class UnifiedMCPServer:
                 return {"results": results, "total_processed": len(documents)}
             
             elif name == "get_memory_stats":
-                return self.memory_service.get_memory_stats()
+                # Use multi-model stats if available
+                if hasattr(self.memory_service, 'get_multi_model_stats'):
+                    return self.memory_service.get_multi_model_stats()
+                else:
+                    return self.memory_service.get_memory_stats()
             
             elif name == "end_conversation":
                 self.memory_service.end_conversation()
                 return {"status": "success", "message": "Conversation ended and archived"}
+            
+            elif name == "toggle_multi_model":
+                enabled = arguments.get("enabled", False)
+                
+                if enabled:
+                    success = self.memory_service.enable_multi_model()
+                    status = "enabled" if success else "failed_to_enable"
+                    message = "Multi-model embedding enabled" if success else "Failed to enable multi-model"
+                else:
+                    success = self.memory_service.disable_multi_model()
+                    status = "disabled" if success else "failed_to_disable" 
+                    message = "Multi-model embedding disabled" if success else "Failed to disable multi-model"
+                
+                return {
+                    "status": status,
+                    "message": message,
+                    "multi_model_enabled": enabled if success else not enabled,
+                    "available_models": list(getattr(self.memory_service, 'embedding_models', {}).keys())
+                }
+            
+            elif name == "list_recent_conversations":
+                limit = arguments.get("limit", 10)
+                conversations = self.memory_service.list_recent_conversations(limit)
+                return {
+                    "conversations": conversations,
+                    "total": len(conversations),
+                    "message": f"Retrieved {len(conversations)} recent conversations"
+                }
+            
+            elif name == "remove_conversation_message":
+                message_id = arguments.get("message_id", "")
+                success = self.memory_service.remove_conversation_message(message_id)
+                return {
+                    "success": success,
+                    "message": f"Conversation message {message_id} {'removed' if success else 'not found'}"
+                }
+            
+            elif name == "remove_recent_conversations":
+                count = arguments.get("count", 1)
+                removed_count = self.memory_service.remove_recent_conversations(count)
+                return {
+                    "removed_count": removed_count,
+                    "message": f"Removed {removed_count} recent conversations"
+                }
+            
+            elif name == "list_recent_documents":
+                limit = arguments.get("limit", 10)
+                documents = self.memory_service.list_recent_documents(limit)
+                return {
+                    "documents": documents,
+                    "total": len(documents),
+                    "message": f"Retrieved {len(documents)} recent documents"
+                }
+            
+            elif name == "remove_document":
+                document_id = arguments.get("document_id", "")
+                success = self.memory_service.remove_document(document_id)
+                return {
+                    "success": success,
+                    "message": f"Document {document_id} {'removed' if success else 'not found'}"
+                }
             
             else:
                 raise Exception(f"Unknown tool: {name}")

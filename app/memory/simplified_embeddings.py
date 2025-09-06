@@ -55,6 +55,16 @@ class SimpleEmbedding:
         self.device = device
         self.model = None
         
+        # Model versioning for migration
+        self.model_version = f"{backend}:{model_name}:{embedding_dim}"
+        self.metadata = {
+            "model_version": self.model_version,
+            "model_name": model_name,
+            "backend": backend,
+            "embedding_dim": embedding_dim,
+            "created_at": None  # Will be set when first used
+        }
+        
         # Set up caching
         self.cache_dir = cache_dir
         self.cache = {}
