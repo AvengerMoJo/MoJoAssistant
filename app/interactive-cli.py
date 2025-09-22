@@ -44,6 +44,8 @@ def print_header():
     print("  /end        - End current conversation")
     print("  /clear      - Clear the screen")
     print("  /export FMT - Export conversation history (json/markdown)")
+    print("  /search QUERY - Search memory for relevant content")
+    print("  /config KEY VALUE - Set runtime configuration")
     print("  /help       - Show this help message again")
     print("  /env        - Show environment variable configuration help")
     print("  /log LEVEL  - Set console log level (DEBUG, INFO, WARNING, ERROR)")
@@ -139,16 +141,7 @@ def display_memory_stats(memory_service, logger):
         logger.error(f"Failed to display memory stats: {e}")
         log_cli_command("/stats", "", False, logger)
 
-def display_embedding_info(memory_service):
-    """Display information about the current embedding model"""
-    embed_info = memory_service.get_embedding_info()
-    print("\n===== EMBEDDING MODEL INFORMATION =====")
-    print(f"Model Name: {embed_info['model_name']}")
-    print(f"Backend: {embed_info['backend']}")
-    print(f"Embedding Dimension: {embed_info['embedding_dim']}")
-    print(f"Cache Size: {embed_info['cache_size']} items")
-    print(f"Device: {embed_info['device'] or 'not specified'}")
-    print("========================================\n")
+
 
 def change_embedding_model(memory_service, model_name, embedding_config, logger):
     """Change the embedding model"""
@@ -208,6 +201,96 @@ def display_embedding_info(memory_service, logger):
         print(f"❌ Error retrieving embedding info: {e}")
         logger.error(f"Failed to display embedding info: {e}")
         log_cli_command("/embed", "", False, logger)
+
+def search_memory(memory_service, query, logger):
+    """Search memory for relevant content"""
+    try:
+        if not query.strip():
+            print("❌ Usage: /search QUERY")
+            log_cli_command("/search", "", False, logger)
+            return
+            
+        results = memory_service.search_memory(query)
+        
+        if not results:
+            print(f"🔍 No results found for query: '{query}'")
+            log_cli_command("/search", query, True, logger)
+            return
+            
+        print(f"\n===== SEARCH RESULTS FOR: '{query}' =====")
+        for i, result in enumerate(results, 1):
+            print(f"\n[{i}] {result.get('title', 'Untitled')}")
+            print(f"    Type: {result.get('type', 'unknown')}")
+            print(f"    Relevance: {result.get('relevance_score', 'N/A')}")
+            if 'content' in result:
+                content = result['content']
+                if len(content) > 200:
+                    content = content[:200] + "..."
+                print(f"    Content: {content}")
+            if 'metadata' in result and result['metadata']:
+                print(f"    Metadata: {result['metadata']}")
+        
+        print(f"\n📊 Found {len(results)} results")
+        print("=" * 50)
+        log_cli_command("/search", query, True, logger)
+        
+    except Exception as e:
+        print(f"❌ Error searching memory: {e}")
+        logger.error(f"Failed to search memory for query '{query}': {e}")
+        log_cli_command("/search", query, False, logger)
+
+def handle_runtime_config(memory_service, key, value, logger):
+    """Handle runtime configuration changes"""
+    try:
+        if not key or not value:
+            print("❌ Usage: /config KEY VALUE")
+            print("Available keys: max_tokens, max_pages, search_limit")
+            log_cli_command("/config", f"{key} {value}", False, logger)
+            return
+            
+        # Map configuration keys to actual configuration parameters
+        config_mapping = {
+            'max_tokens': 'working_memory_max_tokens',
+            'max_pages': 'active_memory_max_pages', 
+            'search_limit': 'archival_memory_search_limit'
+        }
+        
+        if key not in config_mapping:
+            available_keys = ', '.join(config_mapping.keys())
+            print(f"❌ Unknown config key: {key}")
+            print(f"📋 Available keys: {available_keys}")
+            log_cli_command("/config", f"{key} {value}", False, logger)
+            return
+            
+        # Convert value to appropriate type
+        config_value = None
+        try:
+            if key in ['max_tokens', 'max_pages', 'search_limit']:
+                config_value = int(value)
+                if config_value <= 0:
+                    print("❌ Value must be a positive integer")
+                    log_cli_command("/config", f"{key} {value}", False, logger)
+                    return
+        except ValueError:
+            print("❌ Value must be a number")
+            log_cli_command("/config", f"{key} {value}", False, logger)
+            return
+            
+        # Apply configuration change
+        config_key = config_mapping[key]
+        success = memory_service.update_runtime_config(config_key, config_value)
+        
+        if success:
+            print(f"✅ Updated {key} to {config_value}")
+            log_cli_command("/config", f"{key} {value}", True, logger)
+        else:
+            print(f"❌ Failed to update {key}")
+            log_cli_command("/config", f"{key} {value}", False, logger)
+            
+    except Exception as e:
+        print(f"❌ Error updating configuration: {e}")
+        logger.error(f"Failed to update config {key} to {value}: {e}")
+        log_cli_command("/config", f"{key} {value}", False, logger)
 
 def handle_command(cmd, memory_service, embedding_config, logger):
     """Handle special CLI commands"""
@@ -339,6 +422,26 @@ def handle_command(cmd, memory_service, embedding_config, logger):
             logger.error(f"Failed to export conversation history: {e}")
             log_cli_command("/export", format_type, False, logger)
             
+        return True
+
+    elif cmd_root == "/search":
+        if len(parts) > 1:
+            query = ' '.join(parts[1:])  # Join all parts after /search
+            search_memory(memory_service, query, logger)
+        else:
+            print("❌ Usage: /search QUERY")
+            log_cli_command("/search", "", False, logger)
+        return True
+
+    elif cmd_root == "/config":
+        if len(parts) >= 3:
+            key = parts[1]
+            value = ' '.join(parts[2:])  # Join remaining parts as value
+            handle_runtime_config(memory_service, key, value, logger)
+        else:
+            print("❌ Usage: /config KEY VALUE")
+            print("Available keys: max_tokens, max_pages, search_limit")
+            log_cli_command("/config", "", False, logger)
         return True
 
     elif cmd_root == "/exit":
@@ -487,4 +590,3 @@ def main():
 
 if __name__ == "__main__":
     exit(main())
-    main()
