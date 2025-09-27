@@ -14,6 +14,7 @@ class MemoryPage:
         self.created_at = datetime.datetime.now().isoformat()
         self.last_accessed = self.created_at
         self.access_count = 0
+        self.archived = False
     
     def access(self) -> None:
         """Update page access metadata"""

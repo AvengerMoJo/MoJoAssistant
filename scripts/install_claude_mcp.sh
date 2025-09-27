@@ -11,7 +11,7 @@ mkdir -p ~/.config/Claude
 
 # Copy MCP server
 echo "📋 Installing MCP server..."
-cp mcp_server.py ~/.local/bin/mojo_mcp_server.py
+cp unified_mcp_server.py ~/.local/bin/mojo_mcp_server.py
 chmod +x ~/.local/bin/mojo_mcp_server.py
 
 if [ -f ~/.local/bin/mojo_mcp_server.py ]; then

@@ -8,6 +8,7 @@ from .config_loader import (
     get_config_validation_help
 )
 from .logging_config import setup_logging, get_logger, set_console_log_level
+from .mcp_config import load_mcp_config
 
 __all__ = [
     'load_embedding_config', 
@@ -16,5 +17,6 @@ __all__ = [
     'get_config_validation_help',
     'setup_logging',
     'get_logger',
-    'set_console_log_level'
+    'set_console_log_level',
+    'load_mcp_config'
 ]

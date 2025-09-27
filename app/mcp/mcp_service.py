@@ -6,15 +6,23 @@ import os
 import time
 import uuid
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional, Union, cast
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Query, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.middleware import Middleware
 from pydantic import BaseModel, Field
 import uvicorn
+
+# Rate limiting imports (requires slowapi: pip install slowapi)
+# from slowapi import Limiter
+# from slowapi.util import get_remote_address
+# from slowapi.errors import RateLimitExceeded
+# from slowapi.middleware import SlowAPIMiddleware
 
 # Import MoJoAssistant components
 import sys
@@ -97,7 +105,7 @@ class ErrorResponse(BaseModel):
 
 # Global variables
 memory_service: Optional[MemoryService] = None
-logger = None
+logger: Optional[Any] = None
 start_time = time.time()
 
 
@@ -109,7 +117,9 @@ async def lifespan(app: FastAPI):
     # Startup
     setup_logging()
     logger = get_logger(__name__)
-    logger.info("Starting MCP Service...")
+    if logger is not None:
+
+        logger.info("Starting MCP Service...")
     
     try:
         # Load configuration
@@ -125,16 +135,23 @@ async def lifespan(app: FastAPI):
             config=embedding_config.get("memory_settings", {})
         )
         
-        logger.info("MCP Service initialized successfully")
+        if logger is not None:
+
+        
+            logger.info("MCP Service initialized successfully")
         
     except Exception as e:
-        logger.error(f"Failed to initialize MCP Service: {e}")
+        if logger is not None:
+
+            logger.error(f"Failed to initialize MCP Service: {e}")
         raise
     
     yield
     
     # Shutdown
-    logger.info("Shutting down MCP Service...")
+    if logger is not None:
+
+        logger.info("Shutting down MCP Service...")
 
 
 # Create FastAPI app
@@ -145,13 +162,41 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Rate limiting setup (requires slowapi: pip install slowapi)
+# limiter = Limiter(key_func=get_remote_address)
+# app.state.limiter = limiter
+# 
+# @app.exception_handler(RateLimitExceeded)
+# async def rate_limit_exception_handler(request, exc):
+#     return JSONResponse(
+#         status_code=429,
+#         content={"detail": "Rate limit exceeded. Please try again later."}
+#     )
+# 
+# app.add_middleware(SlowAPIMiddleware)
+
+# Rate limiting setup (requires slowapi: pip install slowapi)
+# limiter = Limiter(key_func=get_remote_address)
+# app.state.limiter = limiter
+# 
+# @app.exception_handler(RateLimitExceeded)
+# async def rate_limit_exception_handler(request, exc):
+#     return JSONResponse(
+#         status_code=429,
+#         content={"detail": "Rate limit exceeded. Please try again later."}
+#     )
+# 
+# app.add_middleware(SlowAPIMiddleware)
+
+# Add CORS middleware with more secure defaults
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("MCP_CORS_ORIGINS", "*").split(","),
+    allow_origins=os.getenv("MCP_CORS_ORIGINS", "http://localhost:3000,http://localhost:8080").split(","),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
 )
 
 
@@ -169,7 +214,7 @@ def generate_request_id() -> str:
     """Generate unique request ID"""
     return f"req_{uuid.uuid4().hex[:8]}"
 
-def create_error_response(code: str, message: str, details: Dict[str, Any] = None) -> JSONResponse:
+def create_error_response(code: str, message: str, details: Optional[Dict[str, Any]] = None) -> JSONResponse:
     """Create standardized error response"""
     return JSONResponse(
         status_code=400,
@@ -255,7 +300,8 @@ async def get_memory_context(
         
         processing_time = (time.time() * 1000) - start_time_ms
         
-        logger.info(f"Context retrieval: query='{query_data.query[:50]}...', items={len(response_items)}, time={processing_time:.2f}ms")
+        if logger:
+            cast(logging.Logger, logger).info(f"Context retrieval: query='{query_data.query[:50]}...', items={len(response_items)}, time={processing_time:.2f}ms")
         
         return ContextResponse(
             query=query_data.query,
@@ -265,7 +311,10 @@ async def get_memory_context(
         )
         
     except Exception as e:
-        logger.error(f"Error retrieving context: {e}")
+        if logger is not None:
+            if logger is not None:
+
+                logger.error(f"Error retrieving context: {e}")
         raise HTTPException(status_code=500, detail=f"Context retrieval failed: {str(e)}")
 
 @app.get("/api/v1/memory/stats")
@@ -280,15 +329,34 @@ async def get_memory_stats(api_key: Optional[str] = Depends(verify_api_key)):
         # Add system stats
         stats["system"] = {
             "uptime_seconds": int(time.time() - start_time),
-            "memory_usage_mb": 0,  # Could add psutil for actual memory usage
+            "memory_usage_mb": 0,  # Will be updated with psutil if available
             "api_version": "1.0.0"
         }
         
-        logger.debug("Memory statistics retrieved")
+        # Try to get actual memory usage with psutil if available
+        try:
+            import psutil
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            stats["system"]["memory_usage_mb"] = round(memory_info.rss / 1024 / 1024, 2)
+        except ImportError:
+            # psutil not available, keep the default 0 value
+            pass
+        except Exception as e:
+            # Other psutil errors, keep the default 0 value
+            if logger is not None:
+                logger.warning(f"Failed to get memory usage from psutil: {e}")
+        
+        if logger is not None:
+                    if logger is not None:
+
+                        logger.debug("Memory statistics retrieved")
         return stats
         
     except Exception as e:
-        logger.error(f"Error retrieving memory stats: {e}")
+        if logger is not None:
+
+            logger.error(f"Error retrieving memory stats: {e}")
         raise HTTPException(status_code=500, detail=f"Stats retrieval failed: {str(e)}")
 
 @app.post("/api/v1/knowledge/documents", response_model=DocumentsResponse)
@@ -319,7 +387,9 @@ async def add_documents(
                 ))
                 
             except Exception as e:
-                logger.error(f"Error adding document {i}: {e}")
+                if logger is not None:
+
+                    logger.error(f"Error adding document {i}: {e}")
                 results.append(DocumentResponse(
                     document_id=f"doc_error_{i}",
                     status="error", 
@@ -328,7 +398,10 @@ async def add_documents(
         
         processing_time = (time.time() * 1000) - start_time_ms
         
-        logger.info(f"Documents processed: total={len(documents_data.documents)}, time={processing_time:.2f}ms")
+        if logger is not None:
+
+        
+            logger.info(f"Documents processed: total={len(documents_data.documents)}, time={processing_time:.2f}ms")
         
         return DocumentsResponse(
             results=results,
@@ -337,7 +410,9 @@ async def add_documents(
         )
         
     except Exception as e:
-        logger.error(f"Error processing documents: {e}")
+        if logger is not None:
+
+            logger.error(f"Error processing documents: {e}")
         raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
 
 @app.get("/api/v1/knowledge/documents")
@@ -367,7 +442,9 @@ async def list_documents(
         }
         
     except Exception as e:
-        logger.error(f"Error listing documents: {e}")
+        if logger is not None:
+
+            logger.error(f"Error listing documents: {e}")
         raise HTTPException(status_code=500, detail=f"Document listing failed: {str(e)}")
 
 @app.post("/api/v1/conversation/message", response_model=MessageResponse)
@@ -403,7 +480,10 @@ async def add_conversation_message(
         elif message_data.type == "assistant":
             memory_service.add_assistant_message(message_data.content)
         
-        logger.info(f"Message added: type={message_data.type}, id={message_id}")
+        if logger is not None:
+
+        
+            logger.info(f"Message added: type={message_data.type}, id={message_id}")
         
         return MessageResponse(
             message_id=message_id,
@@ -412,7 +492,9 @@ async def add_conversation_message(
         )
         
     except Exception as e:
-        logger.error(f"Error adding message: {e}")
+        if logger is not None:
+
+            logger.error(f"Error adding message: {e}")
         raise HTTPException(status_code=500, detail=f"Message processing failed: {str(e)}")
 
 @app.post("/api/v1/conversation/end")
@@ -425,7 +507,10 @@ async def end_conversation(api_key: Optional[str] = Depends(verify_api_key)):
         # End conversation
         memory_service.end_conversation()
         
-        logger.info("Conversation ended and archived")
+        if logger is not None:
+
+        
+            logger.info("Conversation ended and archived")
         
         return {
             "status": "success",
@@ -434,7 +519,9 @@ async def end_conversation(api_key: Optional[str] = Depends(verify_api_key)):
         }
         
     except Exception as e:
-        logger.error(f"Error ending conversation: {e}")
+        if logger is not None:
+
+            logger.error(f"Error ending conversation: {e}")
         raise HTTPException(status_code=500, detail=f"Conversation end failed: {str(e)}")
 
 @app.get("/api/v1/conversation/current")
@@ -460,7 +547,9 @@ async def get_current_conversation(api_key: Optional[str] = Depends(verify_api_k
         }
         
     except Exception as e:
-        logger.error(f"Error getting current conversation: {e}")
+        if logger is not None:
+
+            logger.error(f"Error getting current conversation: {e}")
         raise HTTPException(status_code=500, detail=f"Conversation retrieval failed: {str(e)}")
 
 @app.get("/api/v1/embeddings/models")
@@ -486,7 +575,9 @@ async def list_embedding_models(api_key: Optional[str] = Depends(verify_api_key)
         }
         
     except Exception as e:
-        logger.error(f"Error listing embedding models: {e}")
+        if logger is not None:
+
+            logger.error(f"Error listing embedding models: {e}")
         raise HTTPException(status_code=500, detail=f"Model listing failed: {str(e)}")
 
 @app.post("/api/v1/embeddings/switch")
@@ -505,7 +596,9 @@ async def switch_embedding_model(
         )
         
         if success:
-            logger.info(f"Embedding model switched to: {switch_data.model_name}")
+            if logger is not None:
+
+                logger.info(f"Embedding model switched to: {switch_data.model_name}")
             return {
                 "status": "success",
                 "message": f"Switched to embedding model: {switch_data.model_name}",
@@ -515,7 +608,9 @@ async def switch_embedding_model(
             raise HTTPException(status_code=400, detail="Failed to switch embedding model")
             
     except Exception as e:
-        logger.error(f"Error switching embedding model: {e}")
+        if logger is not None:
+
+            logger.error(f"Error switching embedding model: {e}")
         raise HTTPException(status_code=500, detail=f"Model switch failed: {str(e)}")
 
 

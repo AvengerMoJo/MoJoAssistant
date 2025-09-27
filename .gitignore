@@ -155,6 +155,15 @@ error_state.json
 interrupt_state.json
 final_state.json
 
+# Test files and directories
+tests/
+test_*.py
+*_test.py
+comprehensive_test.py
+test_comprehensive.py
+test_ddg_direct.py
+test_hybrid_system.py
+
 # Pyre type checker
 .pyre/
 
@@ -171,3 +180,8 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 .aider*
+
+# IDE and tool directories
+.vscode/
+.kiro/
+.crush/

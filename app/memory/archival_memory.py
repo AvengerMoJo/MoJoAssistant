@@ -17,8 +17,8 @@ class ArchivalMemory:
         self.data_dir = data_dir
         
         # Initialize storage
-        self.memories = []  # Stores documents and metadata
-        self.vectors = []   # Stores corresponding embeddings
+        self.memories: List[Dict[str, Any]] = []  # Stores documents and metadata
+        self.vectors: List[List[float]] = []   # Stores corresponding embeddings
         
         # Create data directory if it doesn't exist
         os.makedirs(self.data_dir, exist_ok=True)

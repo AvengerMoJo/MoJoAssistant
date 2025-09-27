@@ -25,8 +25,8 @@ class MemoryService:
                  data_dir: str = ".memory", 
                  embedding_model: str = "nomic-ai/nomic-embed-text-v2-moe",
                  embedding_backend: str = "huggingface",
-                 embedding_device: str = None,
-                 config: Dict[str, Any] = None):
+                 embedding_device: str | None = None,
+                 config: Dict[str, Any] | None = None):
         """
         Initialize the memory manager
         
@@ -53,7 +53,7 @@ class MemoryService:
         self._setup_embedding(
             model_name=embedding_model,
             backend=embedding_backend,
-            device=embedding_device
+            device=embedding_device or "cpu"
         )
         
         # Initialize memory components
@@ -76,8 +76,8 @@ class MemoryService:
         )
         
         # Track the current conversation
-        self.current_conversation = []
-        self.current_context = []
+        self.current_conversation: List[Dict[str, Any]] = []
+        self.current_context: List[Dict[str, Any]] = []
         
         # Configure memory transition thresholds
         self.archival_promotion_threshold = self.config.get('archival_promotion_threshold', 0.6)
@@ -85,7 +85,7 @@ class MemoryService:
         
         self.logger.info(f"Memory manager initialized with {self.embedding.backend} embeddings using model: {self.embedding.model_name}")
     
-    def _setup_embedding(self, model_name: str, backend: str, device: str = None) -> None:
+    def _setup_embedding(self, model_name: str, backend: str, device: str | None = None) -> None:
         """
         Set up the embedding system
         
@@ -98,7 +98,7 @@ class MemoryService:
         self.embedding = SimpleEmbedding(
             backend=backend,
             model_name=model_name,
-            device=device,
+            device=device or "cpu",
             cache_dir=os.path.join(self.data_dir, "embedding_cache")
         )
     
@@ -254,6 +254,15 @@ class MemoryService:
         """
         Retrieve relevant context from all memory tiers to support the current query
         """
+        # Validate input parameters
+        if not query or not isinstance(query, str) or query.strip() == "":
+            self.logger.warning("Empty or invalid query provided")
+            return []
+        
+        if not isinstance(max_items, int) or max_items <= 0:
+            self.logger.warning(f"Invalid max_items: {max_items}, using default value 10")
+            max_items = 10
+        
         context_items = []
         query_embedding = self.embedding.get_text_embedding(query, prompt_name='query')
 
@@ -339,7 +348,7 @@ class MemoryService:
             })
         
         # Sort by relevance
-        sorted_context = sorted(context_items, key=lambda x: x.get("relevance", 0), reverse=True)
+        sorted_context = sorted(context_items, key=lambda x: float(str(x.get("relevance", 0.0))), reverse=True)
         
         # Limit and store current context
         self.current_context = sorted_context[:max_items]
@@ -356,7 +365,7 @@ class MemoryService:
         self.add_user_message(query)
         self.add_assistant_message(response)
     
-    def add_to_knowledge_base(self, document: str, metadata: Dict[str, Any] = None) -> None:
+    def add_to_knowledge_base(self, document: str, metadata: Dict[str, Any] | None = None) -> None:
         """
         Add a document to the knowledge base
         """
@@ -437,7 +446,7 @@ class MemoryService:
             }, self.logger)
             return False
     
-    def set_embedding_model(self, model_name: str, backend: str = None, device: str = None) -> bool:
+    def set_embedding_model(self, model_name: str, backend: str | None = None, device: str | None = None) -> bool:
         """
         Change the embedding model
         
@@ -459,7 +468,7 @@ class MemoryService:
                 self.embedding.device = device
             
             # Change embedding model
-            success = self.embedding.change_model(model_name, backend)
+            success = self.embedding.change_model(model_name, backend or self.embedding.backend)
             
             if success:
                 # Update the embedding model in other components
@@ -622,6 +631,6 @@ class MemoryService:
         return (
             f"MemoryManager(working={len(self.working_memory.get_messages())} msgs, "
             f"active={len(self.active_memory.pages)} pages, "
-            f"archival={len(self.archival_memory.collection.get()['ids'])} items, "
-            f"knowledge={len(self.knowledge_manager.collection.get()['ids'])} items)"
+            f"archival={len(self.archival_memory.memories)} items, "
+            f"knowledge={len(self.knowledge_manager.documents)} items)"
         )

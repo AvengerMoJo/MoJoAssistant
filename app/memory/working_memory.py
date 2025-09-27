@@ -3,7 +3,7 @@ import datetime
 
 class Message:
     """Simple message class for memory storage"""
-    def __init__(self, type: str, content: str, timestamp: str = None):
+    def __init__(self, type: str, content: str, timestamp: str | None = None):
         self.type = type  # 'user' or 'assistant'
         self.content = content
         self.timestamp = timestamp or datetime.datetime.now().isoformat()
@@ -22,7 +22,7 @@ class Message:
         return cls(
             type=data.get("type", "unknown"),
             content=data.get("content", ""),
-            timestamp=data.get("timestamp")
+            timestamp=data.get("timestamp") or datetime.datetime.now().isoformat()
         )
 
 class WorkingMemory:

@@ -13,15 +13,29 @@ import asyncio
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Add project root to path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "app"))
+
+# Load environment variables from .env file
+env_path = project_root / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+    print(f"Loaded environment variables from {env_path}")
+else:
+    print(f"Warning: .env file not found at {env_path}")
 
 # Import MoJoAssistant components
-from app.services.memory_service import MemoryService
+from app.services.hybrid_memory_service import HybridMemoryService
 from app.config.logging_config import setup_logging, get_logger
 from app.config.config_loader import load_embedding_config
+
+# MCP config integration will be added later
+
+
 
 class UnifiedMCPServer:
     """Unified MCP Server supporting both STDIO and HTTP protocols"""
@@ -30,38 +44,113 @@ class UnifiedMCPServer:
         self.memory_service = None
         self.logger = None
         self.start_time = time.time()
+        
+        # Load MCP configuration using centralized config module
+        try:
+            # Import the centralized configuration module
+            from app.config.mcp_config import load_mcp_config
+            self.mcp_config = load_mcp_config()
+            if self.logger:
+                self.logger.info("Using centralized MCP configuration module")
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Could not import centralized config module ({e}), using fallback")
+            # Fallback to direct environment variable access
+            self.mcp_config = {
+                'google_api_key': os.getenv("GOOGLE_API_KEY"),
+                'google_search_engine_id': os.getenv("GOOGLE_SEARCH_ENGINE_ID"),
+                'mcp_require_auth': os.getenv("MCP_REQUIRE_AUTH", "true").lower() == "true",
+                'mcp_api_key': os.getenv("MCP_API_KEY"),
+                'log_level': os.getenv("LOG_LEVEL", "INFO")
+            }
         self.tools = [
             {
                 "name": "get_memory_context",
-                "description": "Search all memory tiers for relevant context.",
+                "description": "Search all memory tiers (working, active, archival, knowledge base) for relevant context. Supports both English and Chinese queries.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string"},
-                        "max_items": {"type": "integer", "default": 10}
+                        "query": {
+                            "type": "string",
+                            "description": "Search query in English or Chinese",
+                            "minLength": 1
+                        },
+                        "max_items": {
+                            "type": "integer", 
+                            "description": "Maximum number of context items to return",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 50
+                        }
                     },
                     "required": ["query"]
                 }
             },
             {
+                "name": "system_info",
+                "description": "Get system information including server status, uptime, and configuration details.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "system_health",
+                "description": "Check system health and performance metrics including memory usage, response times, and error rates.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
                 "name": "add_documents",
-                "description": "Add documents to the knowledge base.",
+                "description": "Add reference documents to the knowledge base for permanent storage. Use for documentation, code examples, or reference material.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "documents": {"type": "array"}
+                        "documents": {
+                            "type": "array",
+                            "description": "Array of documents to add",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": {
+                                        "type": "string",
+                                        "description": "Document content (supports Chinese and English)",
+                                        "minLength": 1
+                                    },
+                                    "metadata": {
+                                        "type": "object",
+                                        "description": "Optional metadata (title, topic, tags, etc.)",
+                                        "additionalProperties": True
+                                    }
+                                },
+                                "required": ["content"]
+                            },
+                            "minItems": 1
+                        }
                     },
                     "required": ["documents"]
                 }
             },
             {
                 "name": "add_conversation",
-                "description": "Add a complete conversation exchange (user question + assistant reply) to working memory.",
+                "description": "Add a complete conversation exchange (user question + assistant reply) to working memory. Call this after each Q&A interaction to build conversation context.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "user_message": {"type": "string"},
-                        "assistant_message": {"type": "string"}
+                        "user_message": {
+                            "type": "string",
+                            "description": "The user's question or message (supports Chinese and English)",
+                            "minLength": 1
+                        },
+                        "assistant_message": {
+                            "type": "string", 
+                            "description": "The assistant's response or reply (supports Chinese and English)",
+                            "minLength": 1
+                        }
                     },
                     "required": ["user_message", "assistant_message"]
                 }
@@ -81,8 +170,153 @@ class UnifiedMCPServer:
                     "type": "object",
                     "properties": {}
                 }
+            },
+            {
+                "name": "toggle_multi_model",
+                "description": "Enable or disable multi-model embedding support at runtime.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "True to enable multi-model, False to disable"
+                        }
+                    },
+                    "required": ["enabled"]
+                }
+            },
+            {
+                "name": "list_recent_conversations",
+                "description": "List recent conversation messages for management/cleanup. Shows message previews with IDs for removal.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Number of recent conversations to show",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 50
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "remove_conversation_message", 
+                "description": "Remove a specific conversation message by its ID. Use this to clean up bad/useless conversations from other models.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "message_id": {
+                            "type": "string",
+                            "description": "ID of the message to remove (from list_recent_conversations)"
+                        }
+                    },
+                    "required": ["message_id"]
+                }
+            },
+            {
+                "name": "remove_recent_conversations",
+                "description": "Remove the most recent N conversation messages. Use when multiple recent conversations are bad.",
+                "inputSchema": {
+                    "type": "object", 
+                    "properties": {
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of recent conversations to remove",
+                            "minimum": 1,
+                            "maximum": 100
+                        }
+                    },
+                    "required": ["count"]
+                }
+            },
+            {
+                "name": "list_recent_documents",
+                "description": "List recent documents for management/cleanup. Shows document previews with IDs for removal.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer", 
+                            "description": "Number of recent documents to show",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 50
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "remove_document",
+                "description": "Remove a specific document by its ID. Use this to clean up unwanted documents.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "document_id": {
+                            "type": "string",
+                            "description": "ID of the document to remove (from list_recent_documents)"
+                        }
+                    },
+                    "required": ["document_id"]
+                }
+            },
+            {
+                "name": "web_search",
+                "description": "Search the internet for current information using Google Custom Search API. Returns high-quality, relevant web search results with citations.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query for finding current information on the web",
+                            "minLength": 1
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of search results to return (Google: max 10)",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 10
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "get_current_day",
+                "description": "Get the current date, day of week, time, and year information. Use this for questions about today's date, current day, time, current year, or any date/time related queries. Returns exact current date (including year), day name, time, timestamp, year, and other temporal details without needing web search.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "get_current_time",
+                "description": "Get the current time with timezone information. Returns detailed time information including hours, minutes, seconds, and timezone.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             }
         ]
+    
+    def _format_uptime(self, uptime_seconds: float) -> str:
+        """Format uptime in human readable format"""
+        days = int(uptime_seconds // 86400)
+        hours = int((uptime_seconds % 86400) // 3600)
+        minutes = int((uptime_seconds % 3600) // 60)
+        
+        if days > 0:
+            return f"{days}d {hours}h {minutes}m"
+        elif hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m"
     
     async def initialize_memory_service(self):
         """Initialize the memory service"""
@@ -93,12 +327,13 @@ class UnifiedMCPServer:
             embedding_config = load_embedding_config()
             embed_config = embedding_config["embedding_models"]["default"]
             
-            self.memory_service = MemoryService(
+            self.memory_service = HybridMemoryService(
                 data_dir=embedding_config.get("memory_settings", {}).get("data_directory", ".memory"),
-                embedding_model=embed_config.get("model_name", "nomic-ai/nomic-embed-text-v2-moe"),
+                embedding_model=embed_config.get("model_name", "BAAI/bge-m3"),
                 embedding_backend=embed_config.get("backend", "huggingface"),
                 embedding_device=embed_config.get("device"),
-                config=embedding_config.get("memory_settings", {})
+                config=embedding_config,  # Pass full config for multi-model access
+                multi_model_enabled=True  # Start with multi-model enabled for testing
             )
             
             self.logger.info("Memory service initialized successfully")
@@ -109,6 +344,8 @@ class UnifiedMCPServer:
             raise
     
     async def handle_tool_call(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle tool calls with proper error handling"""
+        import time
         """Handle tool calls and return structured response"""
         try:
             if self.logger:
@@ -180,11 +417,279 @@ class UnifiedMCPServer:
                 return {"results": results, "total_processed": len(documents)}
             
             elif name == "get_memory_stats":
-                return self.memory_service.get_memory_stats()
+                # Use multi-model stats if available
+                if hasattr(self.memory_service, 'get_multi_model_stats'):
+                    return self.memory_service.get_multi_model_stats()
+                else:
+                    return self.memory_service.get_memory_stats()
             
             elif name == "end_conversation":
                 self.memory_service.end_conversation()
                 return {"status": "success", "message": "Conversation ended and archived"}
+            
+            elif name == "toggle_multi_model":
+                enabled = arguments.get("enabled", False)
+                
+                if enabled:
+                    try:
+                        success = self.memory_service.enable_multi_model()
+                        status = "enabled" if success else "failed_to_enable"
+                        message = "Multi-model embedding enabled" if success else "Failed to enable multi-model"
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.error(f"Failed to enable multi-model: {e}")
+                        success = False
+                        status = "failed_to_enable"
+                        message = f"Failed to enable multi-model: {str(e)}"
+                else:
+                    try:
+                        success = self.memory_service.disable_multi_model()
+                        status = "disabled" if success else "failed_to_disable" 
+                        message = "Multi-model embedding disabled" if success else "Failed to disable multi-model"
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.error(f"Failed to disable multi-model: {e}")
+                        success = False
+                        status = "failed_to_disable"
+                        message = f"Failed to disable multi-model: {str(e)}"
+                
+                return {
+                    "status": status,
+                    "message": message,
+                    "multi_model_enabled": enabled if success else not enabled,
+                    "available_models": list(getattr(self.memory_service, 'embedding_models', {}).keys())
+                }
+            
+            elif name == "list_recent_conversations":
+                limit = arguments.get("limit", 10)
+                conversations = self.memory_service.list_recent_conversations(limit)
+                return {
+                    "conversations": conversations,
+                    "total": len(conversations),
+                    "message": f"Retrieved {len(conversations)} recent conversations"
+                }
+            
+            elif name == "remove_conversation_message":
+                message_id = arguments.get("message_id", "")
+                success = self.memory_service.remove_conversation_message(message_id)
+                return {
+                    "success": success,
+                    "message": f"Conversation message {message_id} {'removed' if success else 'not found'}"
+                }
+            
+            elif name == "remove_recent_conversations":
+                count = arguments.get("count", 1)
+                removed_count = self.memory_service.remove_recent_conversations(count)
+                return {
+                    "removed_count": removed_count,
+                    "message": f"Removed {removed_count} recent conversations"
+                }
+            
+            elif name == "list_recent_documents":
+                limit = arguments.get("limit", 10)
+                documents = self.memory_service.list_recent_documents(limit)
+                return {
+                    "documents": documents,
+                    "total": len(documents),
+                    "message": f"Retrieved {len(documents)} recent documents"
+                }
+            
+            elif name == "remove_document":
+                document_id = arguments.get("document_id", "")
+                success = self.memory_service.remove_document(document_id)
+                return {
+                    "success": success,
+                    "message": f"Document {document_id} {'removed' if success else 'not found'}"
+                }
+            
+            elif name == "web_search":
+                query = arguments.get("query", "")
+                max_results = arguments.get("limit", 10)
+                
+                try:
+                    # Import here to avoid dependency issues if not available
+                    import urllib.request
+                    import urllib.parse
+                    import json
+                    import time
+                    
+                    # Try Google Custom Search API first (if API key is available)
+                    google_api_key = self.mcp_config['google_api_key']
+                    search_engine_id = self.mcp_config['google_search_engine_id']
+                    
+                    if self.logger:
+                        self.logger.info(f"Google API Key: {'***' if google_api_key else 'Not set'}")
+                        self.logger.info(f"Search Engine ID: {'***' if search_engine_id else 'Not set'}")
+                    
+                    if google_api_key and search_engine_id:
+                        try:
+                            # Use Google Custom Search API
+                            encoded_query = urllib.parse.quote(query)
+                            url = f"https://www.googleapis.com/customsearch/v1?key={google_api_key}&cx={search_engine_id}&q={encoded_query}&num={min(max_results, 10)}"
+                            
+                            if self.logger:
+                                self.logger.info(f"Performing Google search for: {query}")
+                            
+                            req = urllib.request.Request(url)
+                            req.add_header('User-Agent', 'MoJoAssistant/1.0')
+                            
+                            with urllib.request.urlopen(req, timeout=15) as response:
+                                data = response.read().decode('utf-8')
+                                search_result = json.loads(data)
+                            
+                            # Parse Google results
+                            results = []
+                            if 'items' in search_result:
+                                for item in search_result['items'][:max_results]:
+                                    results.append({
+                                        "title": item.get('title', ''),
+                                        "content": item.get('snippet', ''),
+                                        "url": item.get('link', ''),
+                                        "source": "google"
+                                    })
+                            
+                            if self.logger:
+                                self.logger.info(f"Google search returned {len(results)} results")
+                            
+                            return {
+                                "query": query,
+                                "results": results,
+                                "total_results": search_result.get('searchInformation', {}).get('totalResults', len(results)),
+                                "source": "google"
+                            }
+                        except Exception as google_e:
+                            if self.logger:
+                                self.logger.error(f"Google API failed ({google_e})")
+                            return {
+                                "error": f"Google API failed: {str(google_e)}",
+                                "query": query,
+                                "results": [],
+                                "total_results": 0
+                            }
+                    
+                    # No Google credentials available
+                    if self.logger:
+                        self.logger.error("Google API credentials not available. Please configure GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID.")
+                    return {
+                        "error": "Google API credentials not available. Please configure GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID.",
+                        "query": query,
+                        "results": [],
+                        "total_results": 0
+                    }
+                    
+                    if self.logger:
+                        self.logger.info(f"Performing DuckDuckGo search for: {query}")
+                    
+                    # DuckDuckGo fallback removed - Google API is now required
+                    
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"Web search failed: {e}")
+                    return {
+                        "error": f"Web search failed: {str(e)}",
+                        "query": query,
+                        "results": [],
+                        "total_results": 0
+                    }
+            
+            elif name == "get_current_day":
+                from datetime import datetime
+                
+                now = datetime.now()
+                
+                # Format date information
+                date_info = {
+                    "current_date": now.strftime("%Y-%m-%d"),
+                    "year": now.year,
+                    "day_of_week": now.strftime("%A"),
+                    "day_of_year": now.timetuple().tm_yday,
+                    "week_of_year": now.isocalendar()[1],
+                    "time": now.strftime("%H:%M:%S"),
+                    "timezone": "Local",
+                    "timestamp": int(now.timestamp())
+                }
+                
+                if self.logger:
+                    self.logger.info(f"Current day: {date_info['day_of_week']}, {date_info['current_date']}")
+                
+                return date_info
+            
+            elif name == "get_current_time":
+                from datetime import datetime
+                
+                now = datetime.now()
+                
+                # Format time information
+                time_info = {
+                    "current_time": now.strftime("%H:%M:%S"),
+                    "current_date": now.strftime("%Y-%m-%d"),
+                    "day_of_week": now.strftime("%A"),
+                    "iso_format": now.isoformat(),
+                    "timezone": "Local",
+                    "timestamp": int(now.timestamp()),
+                    "hour": now.hour,
+                    "minute": now.minute,
+                    "second": now.second,
+                    "am_pm": "AM" if now.hour < 12 else "PM",
+                    "hour_12": now.hour % 12 or 12
+                }
+                
+                if self.logger:
+                    self.logger.info(f"Current time: {time_info['current_time']} ({time_info['timezone']})")
+                
+                return time_info
+            
+            elif name == "system_info":
+                import time
+                uptime = time.time() - self.start_time
+                return {
+                    "server_name": "mojo-assistant",
+                    "version": "1.0.0",
+                    "uptime_seconds": uptime,
+                    "uptime_formatted": self._format_uptime(uptime),
+                    "mode": "stdio" if hasattr(self, 'stdio_mode') else "http",
+                    "memory_service": "initialized" if self.memory_service else "not_initialized",
+                    "multi_model_enabled": getattr(self.memory_service, 'multi_model_enabled', False) if self.memory_service else False,
+                    "google_api_configured": bool(self.mcp_config.get('google_api_key')),
+                    "google_search_engine_configured": bool(self.mcp_config.get('google_search_engine_id')),
+                    "mcp_auth_required": self.mcp_config.get('mcp_require_auth', False),
+                    "log_level": self.mcp_config.get('log_level', 'INFO')
+                }
+            
+            elif name == "system_health":
+                # Get system metrics
+                try:
+                    import psutil
+                    memory_info = psutil.virtual_memory()
+                    disk_info = psutil.disk_usage('/')
+                    cpu_percent = psutil.cpu_percent(interval=0.1)
+                except ImportError:
+                    # Fallback if psutil is not available
+                    cpu_percent = 0
+                    memory_info = None
+                    disk_info = None
+                
+                # Get memory service metrics if available
+                memory_metrics = {}
+                if self.memory_service:
+                    try:
+                        stats = self.memory_service.get_memory_stats()
+                        memory_metrics = stats
+                    except Exception as e:
+                        memory_metrics = {"error": str(e)}
+                
+                return {
+                    "system_metrics": {
+                        "cpu_percent": cpu_percent,
+                        "memory_percent": memory_info.percent if memory_info else 0,
+                        "memory_available_gb": round(memory_info.available / (1024**3), 2) if memory_info else 0,
+                        "disk_percent": disk_info.percent if disk_info else 0,
+                        "disk_free_gb": round(disk_info.free / (1024**3), 2) if disk_info else 0
+                    },
+                    "memory_service_metrics": memory_metrics,
+                    "server_health": "healthy" if cpu_percent < 90 and (memory_info.percent < 90 if memory_info else True) else "degraded",
+                    "timestamp": time.time()
+                }
             
             else:
                 raise Exception(f"Unknown tool: {name}")
@@ -309,7 +814,7 @@ class UnifiedMCPServer:
                 api_key = authorization[7:]  # Remove "Bearer " prefix
             
             # For development, allow requests without API key if MCP_REQUIRE_AUTH is false
-            if not api_key and os.getenv("MCP_REQUIRE_AUTH", "true").lower() == "false":
+            if not api_key and not self.mcp_config['mcp_require_auth']:
                 return None
                 
             if not api_key:
@@ -420,6 +925,21 @@ class UnifiedMCPServer:
         @app.get("/api/v1/memory/stats")
         async def get_memory_stats_rest(api_key: Optional[str] = Depends(verify_api_key)):
             result = await self.handle_tool_call("get_memory_stats", {})
+            if "error" in result:
+                raise HTTPException(status_code=500, detail=result["error"])
+            return result
+        
+        # System endpoints
+        @app.get("/system/info")
+        async def system_info_rest(api_key: Optional[str] = Depends(verify_api_key)):
+            result = await self.handle_tool_call("system_info", {})
+            if "error" in result:
+                raise HTTPException(status_code=500, detail=result["error"])
+            return result
+        
+        @app.get("/system/health")
+        async def system_health_rest(api_key: Optional[str] = Depends(verify_api_key)):
+            result = await self.handle_tool_call("system_health", {})
             if "error" in result:
                 raise HTTPException(status_code=500, detail=result["error"])
             return result

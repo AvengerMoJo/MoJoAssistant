@@ -11,7 +11,7 @@
 
 ## ✅ What We Built
 
-### 1. Proper MCP Server (`mcp_server.py`)
+### 1. Proper MCP Server (`unified_mcp_server.py`)
 - **No External Dependencies**: Uses only Python standard library (`urllib`, `json`)
 - **Correct MCP Protocol**: Implements proper JSON-RPC 2.0 protocol
 - **Three Tools**: `search_memory`, `add_knowledge`, `get_memory_stats`

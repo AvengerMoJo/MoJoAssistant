@@ -5,7 +5,7 @@ This module provides a generic embeddings interface that can work with different
 including direct integration with SentenceTransformers for high-quality embeddings.
 """
 
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, cast
 import os
 import json
 import hashlib
@@ -15,6 +15,7 @@ import random
 import importlib
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from app.config.logging_config import get_logger
 
 class SimpleEmbedding:
     """
@@ -30,11 +31,11 @@ class SimpleEmbedding:
     def __init__(self, 
                  backend: str = "huggingface", 
                  model_name: str = "nomic-ai/nomic-embed-text-v2-moe",
-                 api_key: str = None,
-                 server_url: str = "http://localhost:8080/embed",
-                 embedding_dim: int = 768,
-                 cache_dir: str = ".embedding_cache",
-                 device: str = None):
+                  api_key: str | None = None,
+                  server_url: str = "http://localhost:8080/embed",
+                  embedding_dim: int = 768,
+                  cache_dir: str = ".embedding_cache",
+                  device: str | None = None):
         """
         Initialize the embedding interface
         
@@ -47,17 +48,28 @@ class SimpleEmbedding:
             cache_dir: Directory to store embedding cache
             device: Device to run model on ('cpu', 'cuda', etc.)
         """
+        self.logger = get_logger(self.__class__.__name__)
         self.backend = backend
         self.model_name = model_name
         self.api_key = api_key
         self.server_url = server_url
-        self.embedding_dim = embedding_dim
+        self.embedding_dim: int | None = embedding_dim
         self.device = device
-        self.model = None
+        self.model: Optional[SentenceTransformer] = None
+        
+        # Model versioning for migration
+        self.model_version = f"{backend}:{model_name}:{embedding_dim}"
+        self.metadata = {
+            "model_version": self.model_version,
+            "model_name": model_name,
+            "backend": backend,
+            "embedding_dim": embedding_dim,
+            "created_at": None  # Will be set when first used
+        }
         
         # Set up caching
         self.cache_dir = cache_dir
-        self.cache = {}
+        self.cache: Dict[str, List[float]] = {}
         self._init_cache()
         
         # Initialize the model if using HuggingFace
@@ -67,20 +79,22 @@ class SimpleEmbedding:
     def _initialize_huggingface_model(self) -> None:
         """Initialize the HuggingFace model using sentence-transformers"""
         try:
-            print(f"Loading embedding model: {self.model_name}")
+            self.logger.info(f"Loading embedding model: {self.model_name}")
             self.model = SentenceTransformer(self.model_name, trust_remote_code=True)
             
             # Set device if specified
-            if self.device:
+            if self.device and self.model is not None:
                 self.model.to(self.device)
                 
             # Update embedding dimension based on the model
-            self.embedding_dim = self.model.get_sentence_embedding_dimension()
-            print(f"Model loaded with embedding dimension: {self.embedding_dim}")
+            if self.model is not None:
+                self.embedding_dim = self.model.get_sentence_embedding_dimension()
+            self.logger.info(f"Model loaded with embedding dimension: {self.embedding_dim}")
             
         except Exception as e:
-            print(f"Error initializing HuggingFace model: {e}")
-            # print("Falling back to random embeddings")
+            self.logger.error(f"Error initializing HuggingFace model: {e}")
+
+            # self.logger.info("Falling back to random embeddings")
             # self.backend = "random"
     
     def _init_cache(self) -> None:
@@ -92,10 +106,11 @@ class SimpleEmbedding:
             try:
                 with open(cache_file, 'r') as f:
                     self.cache = json.load(f)
-                print(f"Loaded {len(self.cache)} cached embeddings")
+                self.logger.info(f"Loaded {len(self.cache)} cached embeddings")
             except Exception as e:
-                print(f"Error loading embedding cache: {e}")
-                self.cache = {}
+                self.logger.error(f"Error loading embedding cache: {e}")
+        
+        self.cache = {}
     
     def _save_cache(self) -> None:
         """Save the embedding cache to disk"""
@@ -107,7 +122,7 @@ class SimpleEmbedding:
                 with open(cache_file, 'w') as f:
                     json.dump(self.cache, f)
         except Exception as e:
-            print(f"Error saving embedding cache: {e}")
+            self.logger.error(f"Error saving embedding cache: {e}")
     
     def _get_cache_key(self, text: str) -> str:
         """Generate a cache key for a text string"""
@@ -118,14 +133,18 @@ class SimpleEmbedding:
         if not vec_a or not vec_b or len(vec_a) != len(vec_b):
             return 0.0
         
-        dot_product = np.dot(vec_a, vec_b)
-        norm_a = np.linalg.norm(vec_a)
-        norm_b = np.linalg.norm(vec_b)
+        # Convert to numpy arrays for proper computation
+        vec_a_np = np.array(vec_a, dtype=np.float32)
+        vec_b_np = np.array(vec_b, dtype=np.float32)
+        
+        dot_product = np.dot(vec_a_np, vec_b_np)
+        norm_a = np.linalg.norm(vec_a_np)
+        norm_b = np.linalg.norm(vec_b_np)
         
         if norm_a == 0 or norm_b == 0:
             return 0.0
             
-        return dot_product / (norm_a * norm_b)
+        return float(dot_product / (norm_a * norm_b))
     
     def get_text_embedding(self, text: str, prompt_name: str = 'passage') -> List[float]:
         """
@@ -185,16 +204,16 @@ class SimpleEmbedding:
             else:
                 embedding = self.model.encode(text)
             
-            # Convert to list of floats
+            # Convert to list of floats with proper type handling
             if isinstance(embedding, np.ndarray):
-                return embedding.tolist()
-            return list(embedding)
+                return embedding.astype(np.float32).tolist()
+            return [float(x) for x in embedding]
             
         except Exception as e:
-            print(f"Error getting HuggingFace embedding: {e}")
+            self.logger.error(f"Error getting HuggingFace embedding: {e}")
             return self._get_random_embedding(text)
     
-    def get_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
+    def get_batch_embeddings(self, texts: List[str]) -> List[List[float] | None]:
         """
         Get embedding vectors for a batch of texts
         
@@ -208,7 +227,7 @@ class SimpleEmbedding:
         uncached_texts = []
         uncached_indices = []
         
-        results = [None] * len(texts)
+        results: List[List[float] | None] = [None] * len(texts)
         
         # Check cache first for each text
         for i, text in enumerate(texts):
@@ -260,15 +279,15 @@ class SimpleEmbedding:
                 return [self._get_random_embedding(text) for text in texts]
                 
             # Generate embeddings from model
-            embeddings = self.model.encode(texts)
+            embeddings: Union[np.ndarray[Any, Any], List[List[float]]] = self.model.encode(texts)
             
-            # Convert to list of lists
+            # Convert to list of lists with proper type handling
             if isinstance(embeddings, np.ndarray):
-                return embeddings.tolist()
+                return embeddings.astype(np.float32).tolist()
             return [list(emb) for emb in embeddings]
             
         except Exception as e:
-            print(f"Error getting HuggingFace batch embeddings: {e}")
+            self.logger.error(f"Error getting HuggingFace batch embeddings: {e}")
             return [self._get_random_embedding(text) for text in texts]
     
     def _get_local_embedding(self, text: str) -> List[float]:
@@ -292,16 +311,16 @@ class SimpleEmbedding:
             if response.status_code == 200:
                 result = response.json()
                 if "embedding" in result:
-                    return result["embedding"]
+                    return result["embedding"]  # type: ignore
                 elif "data" in result and len(result["data"]) > 0:
-                    return result["data"][0]["embedding"]
+                    return result["data"][0]["embedding"]  # type: ignore
             
             # If server fails, fall back to random embedding
-            print("Local embedding server failed, using fallback")
+            self.logger.warning("Local embedding server failed, using fallback")
             return self._get_random_embedding(text)
             
         except Exception as e:
-            print(f"Error getting local embedding: {e}")
+            self.logger.error(f"Error getting local embedding: {e}")
             return self._get_random_embedding(text)
     
     def _get_local_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
@@ -333,7 +352,7 @@ class SimpleEmbedding:
             return [self._get_local_embedding(text) for text in texts]
             
         except Exception as e:
-            print(f"Error getting batch local embeddings: {e}")
+            self.logger.error(f"Error getting batch local embeddings: {e}")
             return [self._get_random_embedding(text) for text in texts]
     
     def _get_api_embedding(self, text: str) -> List[float]:
@@ -384,7 +403,7 @@ class SimpleEmbedding:
                 
                 if response.status_code == 200:
                     result = response.json()
-                    return result["embeddings"][0]
+                    return result["embeddings"][0]  # type: ignore
             
             else:
                 # Generic API format
@@ -408,14 +427,14 @@ class SimpleEmbedding:
                     if "embedding" in result:
                         return result["embedding"]
                     elif "data" in result and len(result["data"]) > 0:
-                        return result["data"][0]["embedding"]
+                        return result["data"][0]["embedding"]  # type: ignore
             
             # Fallback to random if API fails
-            print(f"API embedding failed with status {response.status_code}, using fallback")
+            self.logger.warning(f"API embedding failed with status {response.status_code}, using fallback")
             return self._get_random_embedding(text)
             
         except Exception as e:
-            print(f"Error getting API embedding: {e}")
+            self.logger.error(f"Error getting API embedding: {e}")
             return self._get_random_embedding(text)
     
     def _get_api_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
@@ -496,7 +515,7 @@ class SimpleEmbedding:
             return [self._get_api_embedding(text) for text in texts]
             
         except Exception as e:
-            print(f"Error getting API batch embeddings: {e}")
+            self.logger.error(f"Error getting API batch embeddings: {e}")
             return [self._get_random_embedding(text) for text in texts]
     
     def _get_random_embedding(self, text: str) -> List[float]:
@@ -509,6 +528,13 @@ class SimpleEmbedding:
         Returns:
             List[float]: Pseudo-random embedding vector
         """
+        # Ensure embedding_dim is valid
+        if self.embedding_dim is None or self.embedding_dim <= 0:
+            # Fallback to default dimension
+            embedding_dim = 768
+        else:
+            embedding_dim = self.embedding_dim
+            
         # Create a deterministic seed based on the text
         text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
         seed = int(text_hash, 16) % (2**32)
@@ -517,7 +543,7 @@ class SimpleEmbedding:
         random.seed(seed)
         
         # Generate a random vector
-        vector = np.random.normal(0, 1, self.embedding_dim).tolist()
+        vector = np.random.normal(0, 1, embedding_dim).tolist()
         
         # Normalize to unit length (cosine similarity space)
         magnitude = math.sqrt(sum(x * x for x in vector))
@@ -536,7 +562,7 @@ class SimpleEmbedding:
             "device": self.device if hasattr(self, 'device') else None
         }
         
-    def change_model(self, model_name: str, backend: str = None) -> bool:
+    def change_model(self, model_name: str, backend: str | None = None) -> bool:
         """
         Change the embedding model
         
@@ -556,14 +582,13 @@ class SimpleEmbedding:
                 
             # Reinitialize if using HuggingFace
             if self.backend == "huggingface":
-                self.model = None
                 self._initialize_huggingface_model()
                 
             # Re-initialize cache for new model
             self._init_cache()
             
-            print(f"Changed embedding model from {old_model_name} to {self.model_name}")
+            self.logger.info(f"Changed embedding model from {old_model_name} to {self.model_name}")
             return True
         except Exception as e:
-            print(f"Error changing embedding model: {e}")
+            self.logger.error(f"Error changing embedding model: {e}")
             return False

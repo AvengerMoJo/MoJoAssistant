@@ -18,9 +18,9 @@ class APILLMInterface(BaseLLMInterface):
     """
     def __init__(self, 
                  provider: str,
-                 api_key: str = None,
-                 model: str = None,
-                 config: Dict[str, Any] = None):
+                 api_key: str | None = None,
+                 model: str | None = None,
+                 config: Dict[str, Any] | None = None):
         """
         Initialize the API LLM interface
         
@@ -30,12 +30,13 @@ class APILLMInterface(BaseLLMInterface):
             model: Model name to use
             config: Additional configuration parameters
         """
+        super().__init__()
         self.provider = provider.lower()
         self.api_key = api_key or os.environ.get(f"{provider.upper()}_API_KEY")
         self.config = config or {}
         
         # Set default values
-        self.url = self.config.get('base_url') or self.config.get('url')
+        self.url = self.config.get('base_url') or self.config.get('url') or ""
         self.model = model or self.config.get('model')
         self.headers = {
             "Content-Type": "application/json",
@@ -60,7 +61,7 @@ class APILLMInterface(BaseLLMInterface):
             self.model = self.model or "claude-3-5-sonnet-20241022"
             self.context_limit = self.config.get('context_limit', 200000)
             self.output_limit = self.config.get('output_limit', 8192)
-            self.headers['x-api-key'] = self.api_key
+            self.headers['x-api-key'] = self.api_key or ""
             self.headers['anthropic-version'] = "2023-06-01"
             self.message_format = "anthropic"
             
@@ -141,7 +142,7 @@ USER QUERY:
 {query}"""}
         ]
     
-    def generate_response(self, query: str, context: List[Dict[str, Any]] = None) -> str:
+    def generate_response(self, query: str, context: List[Dict[str, Any]] | None = None) -> str:
         """
         Generate a response using the API-based LLM
         
@@ -156,26 +157,41 @@ USER QUERY:
             # Format context
             context_text = self.format_context(context) if context else "No context available."
             
+            # Initialize payload with default
+            payload = {
+                "model": self.model or "unknown",
+                "messages": [{"role": "user", "content": query}],
+                "temperature": 0.7,
+                "max_tokens": 1000,
+            }
+            
             # Format messages according to the provider's API
             if self.message_format == "openai":
                 messages = self._format_openai_messages(query, context_text)
-                payload = {
+                payload.update({
                     "model": self.model,
                     "messages": messages,
-                    "temperature": 0.7,
                     "max_tokens": min(2048, self.output_limit),
-                }
+                })
                 if hasattr(self, 'search_enabled') and self.search_enabled:
                     payload["search"] = True
                     
             elif self.message_format == "anthropic":
                 messages = self._format_anthropic_messages(query, context_text)
-                payload = {
+                payload.update({
                     "model": self.model,
                     "messages": messages,
                     "system": "You are MoJoAssistant, a helpful AI with a tiered memory system.",
-                    "temperature": 0.7,
                     "max_tokens": min(2048, self.output_limit),
+                })
+            
+            # Ensure payload is set
+            if payload is None:
+                payload = {
+                    "model": self.model or "unknown",
+                    "messages": [{"role": "user", "content": query}],
+                    "temperature": 0.7,
+                    "max_tokens": 1000,
                 }
             
             # Make the API request
@@ -197,14 +213,17 @@ USER QUERY:
                     return response_data['content'][0]['text'].strip()
                 
             else:
-                print(f"API Error: {response.status_code} - {response.text}")
-                return self._fallback_response(query, context)
+                self.logger.error(f"API Error: {response.status_code} - {response.text}")
+                return self._fallback_response(query, context or [])
                 
         except Exception as e:
-            print(f"Error generating API response: {e}")
-            return self._fallback_response(query, context)
+            self.logger.error(f"Error generating API response: {e}")
+            return self._fallback_response(query, context or [])
+        
+        # Fallback if no response was returned
+        return self._fallback_response(query, context or [])
     
-    def _fallback_response(self, query: str, context: List[Dict[str, Any]] = None) -> str:
+    def _fallback_response(self, query: str, context: List[Dict[str, Any]] | None = None) -> str:
         """Provide a fallback response when API call fails"""
         context_info = f"(with {len(context)} context items)" if context else "(without context)"
         return f"I'm sorry, I couldn't generate a proper response to your query {context_info}. There was an issue connecting to the {self.provider.capitalize()} API. Please check your API configuration and try again."
