@@ -155,15 +155,6 @@ error_state.json
 interrupt_state.json
 final_state.json
 
-# Test files and directories
-tests/
-test_*.py
-*_test.py
-comprehensive_test.py
-test_comprehensive.py
-test_ddg_direct.py
-test_hybrid_system.py
-
 # Pyre type checker
 .pyre/
 
@@ -185,3 +176,6 @@ cython_debug/
 .vscode/
 .kiro/
 .crush/
+
+# Documentation
+TODO.md
