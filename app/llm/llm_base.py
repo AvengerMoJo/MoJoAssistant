@@ -1,13 +1,20 @@
 from typing import Dict, List, Any
 from abc import ABC, abstractmethod
+from app.config.logging_config import get_logger
 
 class BaseLLMInterface(ABC):
+    def __init__(self):
+        self.logger = get_logger(self.__class__.__name__)
     """
     Abstract base class for LLM interfaces
     """
     @abstractmethod
-    def generate_response(self, query: str, context: List[Dict[str, Any]] = None) -> str:
+    def generate_response(self, query: str, context: List[Dict[str, Any]] | None = None) -> str:
         """Generate a response from the LLM"""
+        pass
+    
+    def shutdown(self) -> None:
+        """Clean up resources"""
         pass
     
     def format_context(self, context: List[Dict[str, Any]]) -> str:

@@ -30,3 +30,6 @@ prompt_toolkit
 mcp
 httpx
 anyio
+# Optional dependencies
+psutil
+slowapi

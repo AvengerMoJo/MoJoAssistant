@@ -2,7 +2,7 @@
 
 ## ✅ What We've Built
 
-1. **MCP Server** (`mcp_server.py`): Standard library only, works with Claude Desktop
+1. **MCP Server** (`unified_mcp_server.py`): Unified server supporting both STDIO and HTTP protocols
 2. **Simple MCP Service** (`simple_mcp_service.py`): For testing without FastAPI
 3. **Complete Integration**: Tested and working MCP protocol implementation
 

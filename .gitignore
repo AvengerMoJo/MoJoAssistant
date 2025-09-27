@@ -154,6 +154,8 @@ config/embedding_config.json
 error_state.json
 interrupt_state.json
 final_state.json
+memory_state.json
+*.state.json
 
 # Pyre type checker
 .pyre/
@@ -171,3 +173,11 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 .aider*
+
+# IDE and tool directories
+.vscode/
+.kiro/
+.crush/
+
+# Documentation
+TODO.md

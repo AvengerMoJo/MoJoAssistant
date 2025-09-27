@@ -72,7 +72,7 @@ class MCPClient:
     
     def list_documents(self, limit: int = 50, offset: int = 0, search: Optional[str] = None) -> Dict[str, Any]:
         """List documents in knowledge base"""
-        params = {"limit": limit, "offset": offset}
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
         if search:
             params["search"] = search
         return self._make_request("GET", "/api/v1/knowledge/documents", params=params)

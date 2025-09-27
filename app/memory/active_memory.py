@@ -11,7 +11,7 @@ class ActiveMemory:
         self.max_pages = max_pages
     
     def add_page(self, content: Dict[str, Any], page_type: str = "conversation", 
-                archive_callback: Callable[[MemoryPage], None] = None) -> str:
+                archive_callback: Callable[[MemoryPage], None] | None = None) -> str:
         """Add a new memory page and return its ID"""
         page = MemoryPage(content, page_type)
         self.pages.append(page)

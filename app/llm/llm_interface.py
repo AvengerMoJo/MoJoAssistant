@@ -11,21 +11,22 @@ import json
 # Import implementations
 from app.llm.local_llm_interface import LocalLLMInterface
 from app.llm.api_llm_interface import APILLMInterface
+from app.llm.llm_base import BaseLLMInterface
 
 class LLMInterface:
     """
     Unified LLM interface that supports both local and API-based models
     """
-    def __init__(self, config_file: str = None):
+    def __init__(self, config_file: Optional[str] = None):
         """
         Initialize the unified LLM interface
         
         Args:
             config_file: Path to configuration file
         """
-        self.interfaces = {}
-        self.active_interface = None
-        self.active_interface_name = None
+        self.interfaces: Dict[str, 'BaseLLMInterface'] = {}
+        self.active_interface: Optional['BaseLLMInterface'] = None
+        self.active_interface_name: Optional[str] = None
         
         # Load configuration if provided
         if config_file and os.path.exists(config_file):
@@ -73,8 +74,8 @@ class LLMInterface:
         except Exception as e:
             print(f"Error loading configuration: {e}")
     
-    def add_local_interface(self, name: str, model_path: str, model_type: str = "llama", 
-                            server_url: str = None, server_port: int = 8000, 
+    def add_local_interface(self, name: str, model_path: Optional[str], model_type: str = "llama", 
+                            server_url: Optional[str] = None, server_port: int = 8000, 
                             context_length: int = 4096, timeout: int = 60) -> None:
         """
         Add a local LLM interface
@@ -101,8 +102,8 @@ class LLMInterface:
         if len(self.interfaces) == 1:
             self.set_active_interface(name)
     
-    def add_api_interface(self, name: str, provider: str, api_key: str = None, 
-                         model: str = None, config: Dict[str, Any] = None) -> None:
+    def add_api_interface(self, name: str, provider: str, api_key: Optional[str] = None, 
+                         model: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> None:
         """
         Add an API-based LLM interface
         
@@ -152,7 +153,7 @@ class LLMInterface:
         """
         return list(self.interfaces.keys())
     
-    def generate_response(self, query: str, context: List[Dict[str, Any]] = None) -> str:
+    def generate_response(self, query: str, context: Optional[List[Dict[str, Any]]] = None) -> str:
         """
         Generate a response using the active interface
         
@@ -178,7 +179,7 @@ class LLMInterface:
 
 
 # Factory function to create a unified LLM interface with default configuration
-def create_llm_interface(config_file: str = None, model_name: str = "default") -> LLMInterface:
+def create_llm_interface(config_file: Optional[str] = None, model_name: str = "default") -> LLMInterface:
     """
     Factory function to create a unified LLM interface
     

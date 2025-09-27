@@ -18,8 +18,8 @@ class KnowledgeManager:
         self.data_dir = data_dir
         
         # Storage for documents and embeddings
-        self.documents = []  # Stores document text and metadata
-        self.chunk_embeddings = []  # Stores embeddings for document chunks
+        self.documents: List[Dict[str, Any]] = []  # Stores document text and metadata
+        self.chunk_embeddings: List[Dict[str, Any]] = []  # Stores embeddings for document chunks
         
         # Create data directory if it doesn't exist
         os.makedirs(self.data_dir, exist_ok=True)
@@ -128,7 +128,7 @@ class KnowledgeManager:
             
         return chunks
     
-    def add_documents(self, documents: List[str], metadatas: List[Dict[str, Any]] = None):
+    def add_documents(self, documents: List[str], metadatas: List[Dict[str, Any]] | None = None):
         """Add documents to the knowledge base"""
         if metadatas is None:
             metadatas = [{}] * len(documents)
@@ -185,7 +185,7 @@ class KnowledgeManager:
         
         # Get top results while avoiding duplicates from same document
         results = []
-        seen_docs = set()
+        seen_docs: set[str] = set()
         
         for i, score in chunk_scores:
             chunk_data = self.chunk_embeddings[i]

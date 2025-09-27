@@ -6,6 +6,7 @@ using a standardized approach similar to the API interface.
 """
 
 from typing import Dict, List, Any, Optional
+from subprocess import Popen
 import os
 import json
 import subprocess
@@ -20,9 +21,9 @@ class LocalLLMInterface(BaseLLMInterface):
     without LangChain dependencies
     """
     def __init__(self, 
-                 model_path: str = None,
+                 model_path: str | None = None,
                  model_type: str = "llama", 
-                 server_url: str = None,
+                 server_url: str | None = None,
                  server_port: int = 8000,
                  context_length: int = 4096,
                  timeout: int = 60,
@@ -46,7 +47,7 @@ class LocalLLMInterface(BaseLLMInterface):
         self.context_length = context_length
         self.timeout = timeout
         self.verbose = verbose
-        self.server_process = None
+        self.server_process: Optional[Popen[bytes]] = None
         self._started = False
         
         # Initialize server if model path is provided and not external server URL
@@ -96,11 +97,16 @@ class LocalLLMInterface(BaseLLMInterface):
                 ]
             
             if self.verbose:
-                print(f"Starting local LLM server with command: {' '.join(cmd)}")
+                # Filter out None values from cmd before joining
+                cmd_str = ' '.join(str(arg) for arg in cmd if arg is not None)
+                print(f"Starting local LLM server with command: {cmd_str}")
+            
+            # Filter out None values from cmd
+            cmd_filtered = [str(arg) for arg in cmd if arg is not None]
             
             # Start server in background
             self.server_process = subprocess.Popen(
-                cmd,
+                cmd_filtered,
                 stdout=subprocess.PIPE if not self.verbose else None,
                 stderr=subprocess.PIPE if not self.verbose else None
             )
@@ -124,7 +130,7 @@ class LocalLLMInterface(BaseLLMInterface):
             print(f"Error starting local LLM server: {e}")
             if self.server_process:
                 self.server_process.terminate()
-                self.server_process = None
+
             return False
     
     def set_model(self, model_path: str, model_type: str = "llama") -> bool:
@@ -148,7 +154,7 @@ class LocalLLMInterface(BaseLLMInterface):
         # Start new server
         return self._start_local_server()
     
-    def generate_response(self, query: str, context: List[Dict[str, Any]] = None) -> str:
+    def generate_response(self, query: str, context: List[Dict[str, Any]] | None = None) -> str:
         """
         Generate a response using the local LLM based on query and available context
         
@@ -160,7 +166,7 @@ class LocalLLMInterface(BaseLLMInterface):
             str: Generated response
         """
         if not self._started:
-            return self._fallback_response(query, context)
+            return self._fallback_response(query, context or [])
         
         # Format context
         context_text = self.format_context(context) if context else "No context available."
@@ -200,13 +206,13 @@ Keep your response concise, relevant, and helpful."""},
                 return result.get("choices", [{}])[0].get("message", {}).get("content", "")
             else:
                 print(f"Local LLM API error: {response.status_code} - {response.text}")
-                return self._fallback_response(query, context)
+                return self._fallback_response(query, context or [])
                 
         except Exception as e:
             print(f"Error generating local LLM response: {e}")
-            return self._fallback_response(query, context)
+            return self._fallback_response(query, context or [])
     
-    def generate_response_stream(self, query: str, context: List[Dict[str, Any]] = None) -> str:
+    def generate_response_stream(self, query: str, context: List[Dict[str, Any]] | None = None) -> str:
         """
         Stream a response from the local LLM (alternative implementation)
         
@@ -218,7 +224,7 @@ Keep your response concise, relevant, and helpful."""},
             str: Full generated response
         """
         if not self._started:
-            return self._fallback_response(query, context)
+            return self._fallback_response(query, context or [])
         
         # Format context
         context_text = self.format_context(context) if context else "No context available."
@@ -275,13 +281,13 @@ Keep your response concise, relevant, and helpful."""},
                 return full_response
             else:
                 print(f"Local LLM API streaming error: {response.status_code}")
-                return self._fallback_response(query, context)
+                return self._fallback_response(query, context or [])
                 
         except Exception as e:
             print(f"Error streaming local LLM response: {e}")
-            return self._fallback_response(query, context)
+            return self._fallback_response(query, context or [])
     
-    def _fallback_response(self, query: str, context: List[Dict[str, Any]] = None) -> str:
+    def _fallback_response(self, query: str, context: List[Dict[str, Any]] | None = None) -> str:
         """
         Provide a fallback response when LLM generation fails
         
@@ -305,7 +311,7 @@ Keep your response concise, relevant, and helpful."""},
                 self.server_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.server_process.kill()
-            self.server_process = None
+
             self._started = False
             print("Local LLM server shut down")
     
