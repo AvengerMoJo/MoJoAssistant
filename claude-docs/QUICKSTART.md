@@ -2,29 +2,56 @@
 
 Get up and running with MoJoAssistant in minutes!
 
+## 🚀 5-Minute Quick Start
+
+No setup required! Try MoJoAssistant immediately:
+
+```bash
+# Clone the repository
+git clone https://github.com/AvengerMoJo/MoJoAssistant.git
+cd MoJoAssistant
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Start interactive demo (works immediately!)
+python app/interactive-cli.py
+```
+
+**Try these commands in the CLI:**
+```
+> Hello, what can you help me with?
+> /stats
+> /help
+> I'm working on a Python machine learning project
+> What should I focus on next?
+```
+
 ## Prerequisites
 
 - Python 3.8+
 - Git
 
-## Installation
+## Full Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd MoJoAssistant
-   ```
+For production use or advanced features:
 
-2. **Set up virtual environment**
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
+```bash
+# 1. Clone the repository
+git clone https://github.com/AvengerMoJo/MoJoAssistant.git
+cd MoJoAssistant
 
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+# 2. Set up virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Set up environment (optional for advanced features)
+cp .env.example .env
+# Edit .env with your API keys if using cloud services
+```
 
 ## Basic Usage
 

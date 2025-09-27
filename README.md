@@ -1,6 +1,17 @@
-# MoJoAssistant - Personal AI Memory Proxy
+# MoJoAssistant - Your Personal AI Memory Assistant
 
-MoJoAssistant is your personal AI memory proxy and bridge to public AI agents. It maintains a private, persistent memory system that learns from your interactions while serving as an intelligent proxy to communicate with external AI services on your behalf.
+MoJoAssistant is your intelligent memory companion that learns from your conversations and helps you remember, search, and build upon your knowledge over time. It maintains a private, persistent memory system while serving as a bridge to enhance your interactions with AI assistants.
+
+## What is MoJoAssistant?
+
+MoJoAssistant helps you:
+- **Remember everything**: Track conversations, projects, and ideas across sessions
+- **Search naturally**: Find past conversations and documents using plain language
+- **Enhance AI interactions**: Provide personal context to AI assistants for better responses
+- **Build knowledge**: Add documents and create a personal knowledge base
+- **Stay organized**: Maintain context across different projects and areas of interest
+
+Perfect for students, researchers, developers, professionals, or anyone who wants to remember more and work smarter with AI.
 
 ## Vision
 
@@ -59,21 +70,95 @@ MoJoAssistant consists of several integrated components:
 - **Model Switching**: Runtime model changes without restart
 - **Customizable Architecture**: Modular design for easy extension
 
-## Getting Started
+## Try MoJoAssistant in 5 Minutes
 
-### Quick Installation
+### 🚀 Quick Start (No Setup Required)
+
+**No setup required!** Get started immediately with our interactive demo:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/MoJoAssistant.git
+git clone https://github.com/AvengerMoJo/MoJoAssistant.git
 cd MoJoAssistant
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Set up environment variables (optional)
+# Start interactive demo (works immediately - no setup required!)
+python app/interactive-cli.py
+```
+
+**Try these commands in the CLI:**
+```
+> Hello, what can you help me with?
+> /stats
+> /help
+> I'm working on a Python machine learning project
+> What should I focus on next?
+```
+
+### 🎯 Choose Your Experience
+
+| Use Case | Recommended Setup | Time Required |
+|----------|------------------|---------------|
+| **Quick Demo** | Interactive CLI | 2 minutes |
+| **Claude Desktop** | MCP Server | 10 minutes |
+| **Web Integration** | HTTP API | 15 minutes |
+| **Custom Development** | Web API | 20 minutes |
+
+### Full Installation
+
+For production use or advanced features:
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/AvengerMoJo/MoJoAssistant.git
+cd MoJoAssistant
+
+# 2. Create virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Set up environment (optional for advanced features)
 cp .env.example .env
 # Edit .env with your API keys if using cloud services
+```
+
+## What You Can Do With MoJoAssistant
+
+### 📝 **Personal Knowledge Base**
+Add your documents and search them conversationally:
+```
+> /add README.md
+> What does my README say about installation?
+> Find all documents related to machine learning
+```
+
+### 💼 **Work Assistant**
+Maintain context across work sessions:
+```
+> We're designing a new API for our mobile app
+> What were we discussing about the API design?
+> Remind me of the decisions we made last week
+```
+
+### 🎓 **Learning Companion**
+Track your learning progress:
+```
+> I'm studying Python data structures
+> What concepts have I been studying recently?
+> Help me understand this based on what I already know
+```
+
+### 🤖 **Enhanced AI Assistant**
+Get better responses from AI by providing personal context:
+```
+> What should I focus on for my career growth?
+> [MoJoAssistant provides your personal context about your goals and interests]
+> AI response enhanced with your personal information
 ```
 
 ### Basic Usage
@@ -93,16 +178,38 @@ context = memory_service.get_context_for_query("What was I working on?")
 print(context)
 ```
 
-### MCP Server Integration
+## Starting MoJoAssistant
 
-Start the MCP server to enable integration with AI clients:
-
+### 🚀 **Option 1: Interactive CLI (Recommended First)**
+Perfect for trying MoJoAssistant immediately:
 ```bash
-# Start the unified MCP server
+python app/interactive-cli.py
+```
+- No configuration required
+- Try all features immediately
+- Perfect for understanding what MoJoAssistant does
+
+### 🔧 **Option 2: MCP Server (For Claude Desktop Integration)**
+For integration with Claude Desktop:
+```bash
+# Method 1: Start with unified server
 python start_mcp_service.py
 
-# Or run directly
-python unified_mcp_server.py
+# Method 2: Run directly
+python unified_mcp_server.py --mode stdio
+
+# Method 3: Run with specific configuration  
+python unified_mcp_server.py --mode stdio --port 8000
+```
+
+### 🌐 **Option 3: Web API (For Developers)**
+For HTTP API access and custom applications:
+```bash
+# Start HTTP server
+python unified_mcp_server.py --mode http --port 8000
+
+# Test the server
+curl http://localhost:8000/system/health
 ```
 
 The MCP server provides both HTTP API and native MCP protocol support for seamless integration with Claude Desktop and other AI clients.
@@ -256,7 +363,21 @@ Create a `.env` file from the template:
 cp .env.example .env
 ```
 
-Key environment variables:
+**Quick Start Configuration** (for development):
+```env
+# For quick start, leave MCP_REQUIRE_AUTH=false
+MCP_REQUIRE_AUTH=false
+MCP_API_KEY=demo_key_for_development
+
+# Optional: Google Search (enhances web search)
+# GOOGLE_API_KEY=your_google_api_key_here
+# GOOGLE_SEARCH_ENGINE_ID=your_search_engine_id_here
+
+# Logging
+LOG_LEVEL=INFO
+```
+
+**Advanced Configuration** (for production):
 ```env
 # LLM Configuration
 OPENAI_API_KEY=your-openai-key
@@ -267,7 +388,8 @@ GOOGLE_API_KEY=your-google-key
 GOOGLE_SEARCH_ENGINE_ID=your-search-engine-id
 
 # MCP Configuration
-MCP_API_KEY=your-mcp-api-key
+MCP_REQUIRE_AUTH=true
+MCP_API_KEY=your_secure_api_key
 
 # Optional: Local model paths
 LOCAL_MODEL_PATH=/path/to/local/models
@@ -452,11 +574,11 @@ context = context_response.json()
 - Git (for cloning)
 - Optional: GPU with CUDA support for faster inference
 
-### Installation Steps
+### Quick Installation (5 Minutes)
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/MoJoAssistant.git
+git clone https://github.com/AvengerMoJo/MoJoAssistant.git
 cd MoJoAssistant
 
 # 2. Create virtual environment (recommended)
@@ -466,7 +588,25 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Set up environment
+# 4. Start interactive demo (no configuration needed!)
+python app/interactive-cli.py
+```
+
+### Full Installation (For Advanced Features)
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/AvengerMoJo/MoJoAssistant.git
+cd MoJoAssistant
+
+# 2. Create virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Set up environment (optional for advanced features)
 cp .env.example .env
 # Edit .env with your API keys if using cloud services
 
@@ -606,6 +746,49 @@ logging.basicConfig(level=logging.DEBUG)
 }
 ```
 
+## Troubleshooting Common Issues
+
+### **"Module not found" errors**
+```bash
+# Make sure you're in the project directory and virtual environment is activated
+cd MoJoAssistant
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+### **Cannot clone repository**
+```bash
+# If the URL doesn't work, try:
+git clone https://github.com/AvengerMoJo/MoJoAssistant.git
+```
+
+### **Embedding model fails to load**
+```bash
+# Try the fast model or fallback
+/embed fast
+# Or use random embeddings as fallback
+/embed fallback
+```
+
+### **Out of memory errors**
+```bash
+# Use CPU instead of GPU
+export EMBEDDING_DEVICE="cpu"
+# Or use a smaller model
+/embed fast
+```
+
+### **No immediate success with CLI**
+The CLI works immediately without configuration. If you're having issues:
+1. Make sure you're in the correct directory
+2. Check that the virtual environment is activated
+3. Try reinstalling dependencies: `pip install -r requirements.txt`
+
+### **Getting Help**
+- Use `/help` in the CLI for command reference
+- Use `/stats` to check memory system status
+- Check the logs in `.memory/` directory for detailed error information
+- Review the documentation in `docs/` for advanced usage
+
 ## Contributing
 
 MoJoAssistant is designed to be extensible. Key areas for contribution:
@@ -622,13 +805,38 @@ See `CONTRIBUTING.md` for detailed contribution guidelines.
 
 This project is licensed under the MIT License - see the `LICENSE` file for details.
 
-## Support
+## Next Steps
 
-- **Documentation**: See `docs/` for detailed technical documentation
+### 🎯 **After Your First Session**
+1. **Add your documents**: Use `/add filename` to import your files
+2. **Experiment with models**: Try `/embed fast` for better performance
+3. **Save important conversations**: Use `/save my_conversation.json`
+4. **Explore memory statistics**: Use `/stats` to see your memory usage
+
+### 🚀 **Advanced Setup**
+1. **Claude Desktop Integration**: Set up MCP server for seamless AI assistant access
+2. **Web Search**: Configure Google API for enhanced search capabilities
+3. **Custom Applications**: Use the HTTP API for your own integrations
+4. **Multiple Models**: Switch between different embedding and LLM models
+
+### 📚 **Learn More**
+- **API Documentation**: See `docs/` for detailed technical documentation
+- **Google API Setup**: Follow `GOOGLE_API_SETUP.md` for enhanced web search
+- **Claude Integration**: Check `claude-docs/` for Claude Desktop setup
+- **Examples**: Explore `example.py` and `experimental/` for advanced usage
+
+### 🤝 **Community & Support**
 - **Issues**: Report bugs and request features on GitHub Issues
-- **Discussions**: Join discussions on GitHub Discussions
+- **Discussions**: Join discussions on GitHub Discussions  
 - **Community**: Connect with other users and contributors
+- **Contributing**: See `CONTRIBUTING.md` for development guidelines
 
 ---
 
-MoJoAssistant represents the future of personal AI - a private, intelligent memory system that serves as your bridge to the world of AI agents, keeping your data personal while enhancing your AI interactions.
+## MoJoAssistant: Your AI Memory Companion
+
+MoJoAssistant helps you remember more, work smarter, and build lasting knowledge. Whether you're a student, researcher, developer, or professional, it adapts to your needs and grows with you over time.
+
+**Start today** and experience the power of persistent, personal memory enhanced by AI.
+
+**Quick reminder**: Don't forget to set up your GPG passphrase for git operations if you encounter issues!
