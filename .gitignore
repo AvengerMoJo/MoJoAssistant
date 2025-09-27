@@ -154,6 +154,8 @@ config/embedding_config.json
 error_state.json
 interrupt_state.json
 final_state.json
+memory_state.json
+*.state.json
 
 # Pyre type checker
 .pyre/
