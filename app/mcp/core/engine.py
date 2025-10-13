@@ -116,11 +116,9 @@ class MCPEngine:
         
         try:
             result = await self.tool_registry.execute(tool_name, arguments)
-            
-            import json
-            return MCPResponse.success(request.request_id, {
-                "content": [{"type": "text", "text": json.dumps(result)}]
-            })
+
+            # Return structured data directly for MCP clients
+            return MCPResponse.success(request.request_id, result)
         
         except ValueError as e:
             return MCPResponse.make_error(
