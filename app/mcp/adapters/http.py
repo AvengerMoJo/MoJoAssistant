@@ -246,6 +246,7 @@ class HTTPAdapter(ProtocolAdapter):
             # This endpoint doesn't have a corresponding tool, return placeholder
             raise HTTPException(status_code=501, detail="Endpoint not implemented")
         
+        self.app = app
         return app
     
     async def receive_request(self) -> Optional[MCPRequest]:
@@ -259,7 +260,7 @@ class HTTPAdapter(ProtocolAdapter):
         import uvicorn
         
         if not self.app:
-            self.create_app()
+            self.app = self.create_app()
         
         if self.logger:
             self.logger.info(f"Starting HTTP server on {host}:{port}")
