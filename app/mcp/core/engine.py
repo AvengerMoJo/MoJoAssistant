@@ -35,7 +35,7 @@ class MCPEngine:
             self.memory_service = HybridMemoryService()
             self.logger.info("Memory service initialized")
         
-        self.tool_registry = ToolRegistry(self.memory_service)
+        self.tool_registry = ToolRegistry(self.memory_service, self.config)
         self.logger.info(f"Tool registry initialized with {len(self.tool_registry.get_tools())} tools")
         
         self.initialized = True
@@ -116,9 +116,11 @@ class MCPEngine:
         
         try:
             result = await self.tool_registry.execute(tool_name, arguments)
-
-            # Return structured data directly for MCP clients
-            return MCPResponse.success(request.request_id, result)
+            
+            import json
+            return MCPResponse.success(request.request_id, {
+                "content": [{"type": "text", "text": json.dumps(result)}]
+            })
         
         except ValueError as e:
             return MCPResponse.make_error(

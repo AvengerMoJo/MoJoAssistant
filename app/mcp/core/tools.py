@@ -4,548 +4,502 @@ File: app/mcp/core/tools.py
 """
 from typing import Dict, Any, List
 import time
+from datetime import datetime
 
 
 class ToolRegistry:
     """Registry of available tools and their execution"""
     
-    def __init__(self, memory_service):
+    def __init__(self, memory_service, config: Dict[str, Any] = None):
         self.memory_service = memory_service
+        self.config = config or {}
         self.tools = self._define_tools()
+        # Re-enable the working placeholder tools
+        self.placeholder_tools = {
+            "get_current_time",  # Redundant with get_current_day
+            "get_memory_stats"  # Internal stats not useful for LLMs
+        }
     
     def _define_tools(self) -> List[Dict[str, Any]]:
-        """Define all available tools with comprehensive descriptions"""
+        """Define all available tools"""
         return [
             {
                 "name": "get_memory_context",
-                "description": """COMPREHENSIVE MEMORY SEARCH - Primary tool for retrieving relevant context across all memory tiers.
-
-WHEN TO USE:
-- User asks questions that might relate to past conversations, documents, or knowledge
-- You need background context to provide better responses
-- User references something from "before", "earlier", or "we discussed"
-- Any query that could benefit from historical context or factual information
-
-HOW IT WORKS:
-- Searches ALL memory tiers in PARALLEL for maximum speed and coverage:
-  • Working Memory: Current conversation context
-  • Active Memory: Recent conversations (days/weeks)
-  • Archival Memory: All historical conversations (semantic search)
-  • Knowledge Base: Documents and factual information
-- Returns comprehensive results with metadata for intelligent filtering
-- Uses advanced semantic search with multiple embedding models
-
-WHY USE THIS:
-- Provides rich context for more accurate and personalized responses
-- Leverages the full power of MoJoAssistant's human-like memory architecture
-- Essential for maintaining conversation continuity and referencing past discussions
-- Enables factual accuracy by accessing stored documents and knowledge
-
-PARAMETERS:
-- query: Natural language search query (be specific for better results)
-- max_results: Maximum items to return (default: 50 for comprehensive context)
-
-RETURNS: Rich contextual data with relevance scores, sources, timestamps, and metadata for intelligent selection.""",
+                "description": "Search all memory tiers (working, active, archival, knowledge base) for relevant context to enhance responses. Supports both English and Chinese queries. When to use: Call this tool whenever you need to retrieve relevant context from the user's memory during conversations, research, or problem-solving. How it works: Performs semantic search across multiple memory tiers using embeddings. Why useful: Provides personalized, context-aware responses based on user's history and knowledge.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Natural language search query - be specific for better semantic matching"
+                            "description": "Search query in English or Chinese to find relevant context",
+                            "minLength": 1
                         },
-                        "max_results": {
-                            "type": "integer",
-                            "default": 50,
+                        "max_items": {
+                            "type": "integer", 
+                            "description": "Maximum number of context items to return (default: 10, max: 50)",
+                            "default": 10,
                             "minimum": 1,
-                            "maximum": 200,
-                            "description": "Maximum results to return - modern LLMs can handle large context, so don't be conservative"
+                            "maximum": 50
                         }
                     },
                     "required": ["query"]
                 }
             },
             {
-                "name": "add_conversation",
-                "description": """CONVERSATION MEMORY STORAGE - Store conversation turns into MoJoAssistant's memory system.
-
-WHEN TO USE:
-- At the end of meaningful conversation exchanges
-- When you want to ensure important information is preserved for future reference
-- Before context window limits are reached
-- When transitioning between conversation topics
-
-HOW IT WORKS:
-- Stores messages in Working Memory (immediate context)
-- Automatically flows to Active Memory and eventually Archival Memory
-- Maintains conversation continuity and enables future retrieval
-- Supports both user and assistant message types
-
-WHY USE THIS:
-- Enables long-term memory and conversation continuity
-- Allows future conversations to reference past interactions
-- Essential for building personalized assistant experience
-- Preserves important decisions, preferences, and context
-
-PARAMETERS:
-- messages: Array of conversation messages with type (user/assistant) and content
-
-RETURNS: Confirmation of storage with message counts and processing details.""",
+                "name": "add_documents",
+                "description": "Add reference documents, code examples, or knowledge to the permanent knowledge base for future retrieval. When to use: Use this when you want to permanently store reference material, documentation, code snippets, or any information that should be available for future conversations. How it works: Documents are embedded and stored in the knowledge base with optional metadata. Why useful: Builds a personal knowledge repository that can be searched later using get_memory_context.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "messages": {
+                        "documents": {
                             "type": "array",
-                            "description": "Array of conversation messages to store",
+                            "description": "Array of documents to add to knowledge base",
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "type": {
-                                        "type": "string",
-                                        "enum": ["user", "assistant"],
-                                        "description": "Message type: 'user' for human messages, 'assistant' for AI responses"
-                                    },
                                     "content": {
                                         "type": "string",
-                                        "description": "The actual message content - preserve formatting and context"
+                                        "description": "Document content (supports Chinese and English text)",
+                                        "minLength": 1
+                                    },
+                                    "metadata": {
+                                        "type": "object",
+                                        "description": "Optional metadata (title, topic, tags, source, etc.) for better organization",
+                                        "additionalProperties": True
                                     }
                                 },
-                                "required": ["type", "content"]
-                            }
+                                "required": ["content"]
+                            },
+                            "minItems": 1
                         }
                     },
-                    "required": ["messages"]
+                    "required": ["documents"]
                 }
             },
             {
-                "name": "add_knowledge",
-                "description": """KNOWLEDGE BASE STORAGE - Add documents and factual information to the knowledge base.
-
-WHEN TO USE:
-- User provides documents, articles, or reference materials
-- You need to store factual information for future retrieval
-- User shares important specifications, documentation, or guides
-- Building a personal knowledge repository
-
-HOW IT WORKS:
-- Processes and indexes documents with semantic embeddings
-- Stores in dedicated Knowledge Base tier for factual retrieval
-- Supports rich metadata for categorization and organization
-- Enables precise document-based question answering
-
-WHY USE THIS:
-- Creates persistent knowledge repository beyond conversations
-- Enables fact-based responses with source attribution
-- Supports document Q&A and reference lookup
-- Essential for professional and educational use cases
-
-PARAMETERS:
-- content: Document text content
-- metadata: Optional metadata (title, source, type, tags, etc.)
-
-RETURNS: Confirmation of storage with document ID and processing details.""",
+                "name": "add_conversation",
+                "description": "PRESERVE CONVERSATION CONTEXT: Add this Q&A exchange to memory so I remember our conversation. Use IMMEDIATELY after every user question and my response to maintain context across our interaction. This ensures I can reference previous parts of our conversation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "content": {
+                        "user_message": {
                             "type": "string",
-                            "description": "Document content to store in knowledge base"
+                            "description": "The exact user question/message that was just asked",
+                            "minLength": 1
                         },
-                        "metadata": {
-                            "type": "object",
-                            "description": "Optional metadata for organization and retrieval",
-                            "properties": {
-                                "title": {"type": "string", "description": "Document title"},
-                                "source": {"type": "string", "description": "Source URL or reference"},
-                                "type": {"type": "string", "description": "Document type (article, spec, guide, etc.)"},
-                                "tags": {"type": "array", "items": {"type": "string"}, "description": "Categorization tags"},
-                                "author": {"type": "string", "description": "Document author"},
-                                "date": {"type": "string", "description": "Document date"}
-                            },
-                            "additionalProperties": True
+                        "assistant_message": {
+                            "type": "string", 
+                            "description": "My complete response to that user question",
+                            "minLength": 1
                         }
                     },
-                    "required": ["content"]
+                    "required": ["user_message", "assistant_message"]
                 }
             },
             {
                 "name": "get_memory_stats",
-                "description": """MEMORY SYSTEM DIAGNOSTICS - Get comprehensive statistics about the memory system state.
-
-WHEN TO USE:
-- User asks about memory usage, system status, or available information
-- Debugging memory-related issues or performance
-- Understanding the scope of stored information
-- System health monitoring
-
-HOW IT WORKS:
-- Provides detailed statistics across all memory tiers
-- Shows embedding model information and performance metrics
-- Includes storage usage, item counts, and system health
-- Reports on parallel retrieval performance
-
-WHY USE THIS:
-- Transparency into memory system operation
-- Helps users understand available information scope
-- Enables system optimization and troubleshooting
-- Provides confidence in memory system reliability
-
-RETURNS: Comprehensive system statistics with tier-by-tier breakdowns, performance metrics, and health indicators.""",
+                "description": "Get comprehensive statistics about the memory system including sizes of different memory tiers and performance metrics. When to use: Use to monitor memory usage, check system health, or understand how much information is stored. How it works: Returns detailed statistics from all memory tiers (working, active, archival, knowledge base). Why useful: Helps monitor system performance and memory utilization for optimization.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "end_conversation",
+                "description": "ARCHIVE CURRENT TOPIC: End this conversation topic and archive it for long-term memory. Use when switching to a completely different topic or when the current discussion is complete. This moves our conversation from short-term working memory to long-term storage.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "toggle_multi_model",
+                "description": "Enable or disable multi-model embedding support at runtime for enhanced semantic search. When to use: Enable when you need better search accuracy across diverse content types, disable to reduce resource usage. How it works: Switches between single and multi-model embedding modes. Why useful: Multi-model mode provides better semantic understanding but uses more computational resources.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "True to enable multi-model embeddings, False to disable (uses single model)"
+                        }
+                    },
+                    "required": ["enabled"]
+                }
+            },
+            {
+                "name": "list_recent_conversations",
+                "description": "REVIEW CONVERSATION HISTORY: Show me recent conversation exchanges that are stored in memory. Use this when I need to see what we've discussed before, or when I want to clean up unwanted conversations. This helps me understand our conversation history and manage stored content.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Number of recent conversations to show (default: 10, max: 50)",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 50
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "remove_conversation_message", 
+                "description": "CLEAN UP BAD CONVERSATIONS: Remove a specific problematic conversation message by its ID. Use when other AI models generated bad responses that are cluttering our memory. This helps keep our conversation history clean and relevant.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "message_id": {
+                            "type": "string",
+                            "description": "ID of the bad message to remove (get this from list_recent_conversations first)"
+                        }
+                    },
+                    "required": ["message_id"]
+                }
+            },
+            {
+                "name": "remove_recent_conversations",
+                "description": "BULK CLEANUP: Remove multiple recent bad conversations at once. Use when several recent interactions were problematic and need to be cleared. This is faster than removing conversations one by one.",
+                "inputSchema": {
+                    "type": "object", 
+                    "properties": {
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of most recent conversations to remove (1-100)",
+                            "minimum": 1,
+                            "maximum": 100
+                        }
+                    },
+                    "required": ["count"]
+                }
+            },
+            {
+                "name": "list_recent_documents",
+                "description": "REVIEW KNOWLEDGE BASE: Show me recently added documents in the knowledge base. Use this to see what reference materials are available, or to identify documents that need cleanup. This helps me understand what information is stored for future reference.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer", 
+                            "description": "Number of recent documents to show (default: 10, max: 50)",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 50
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "remove_document",
+                "description": "CLEAN UP KNOWLEDGE BASE: Remove a specific document by its ID. Use when a document is outdated, incorrect, or no longer relevant. This keeps the knowledge base focused on useful reference material.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "document_id": {
+                            "type": "string",
+                            "description": "ID of the document to remove (get this from list_recent_documents first)"
+                        }
+                    },
+                    "required": ["document_id"]
+                }
+            },
+            {
+                "name": "web_search",
+                "description": "Search the internet for current information using Google Custom Search API. When to use: Use when you need up-to-date information, news, or data not available in local memory. How it works: Queries Google Custom Search API and returns relevant results with citations. Why useful: Provides access to current web information for comprehensive responses. [PLACEHOLDER - Not yet implemented]",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query for finding current information on the web",
+                            "minLength": 1
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of search results to return (max: 10)",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 10
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "get_current_day",
+                "description": "Get the current date, day of week, time, and year information for temporal awareness. When to use: Call for questions about today's date, current day, time, current year, or any date/time related queries. How it works: Returns exact current date/time information without needing web search. Why useful: Provides accurate temporal context for scheduling, reminders, and time-sensitive responses.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
-                    "description": "No parameters required - returns full system statistics"
+                    "required": []
+                }
+            },
+            {
+                "name": "get_current_time",
+                "description": "Get the current time with timezone information for precise timing. When to use: Use for questions about current time, scheduling, or time-sensitive operations. How it works: Returns detailed time information including hours, minutes, seconds, and timezone. Why useful: Ensures accurate time awareness for all responses.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
                 }
             }
         ]
     
     def get_tools(self) -> List[Dict[str, Any]]:
-        """Get list of available tools"""
-        return self.tools
+        """Get list of available tools (excludes placeholders)"""
+        return [tool for tool in self.tools if tool["name"] not in self.placeholder_tools]
+    
+    def enable_placeholder_tool(self, tool_name: str):
+        """Enable a placeholder tool (make it available to MCP)"""
+        if tool_name in self.placeholder_tools:
+            self.placeholder_tools.remove(tool_name)
+
+    def disable_placeholder_tool(self, tool_name: str):
+        """Disable a tool (make it unavailable to MCP but keep definition)"""
+        if tool_name not in self.placeholder_tools:
+            self.placeholder_tools.add(tool_name)
     
     async def execute(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool by name"""
-
+        
+        # Check if this is a placeholder tool
+        if name in self.placeholder_tools:
+            return {
+                "status": "placeholder",
+                "message": f"Tool '{name}' is not yet implemented. This is a placeholder for future development.",
+                "tool_name": name,
+                "timestamp": time.time()
+            }
+        
         if name == "get_memory_context":
             return await self._execute_get_memory_context(args)
         elif name == "add_conversation":
             return await self._execute_add_conversation(args)
-        elif name == "add_knowledge":
-            return await self._execute_add_knowledge(args)
         elif name == "get_memory_stats":
             return await self._execute_get_memory_stats(args)
+        elif name == "add_documents":
+            return await self._execute_add_documents(args)
+        elif name == "end_conversation":
+            return await self._execute_end_conversation(args)
+        elif name == "toggle_multi_model":
+            return await self._execute_toggle_multi_model(args)
+        elif name == "list_recent_conversations":
+            return await self._execute_list_recent_conversations(args)
+        elif name == "remove_conversation_message":
+            return await self._execute_remove_conversation_message(args)
+        elif name == "remove_recent_conversations":
+            return await self._execute_remove_recent_conversations(args)
+        elif name == "list_recent_documents":
+            return await self._execute_list_recent_documents(args)
+        elif name == "remove_document":
+            return await self._execute_remove_document(args)
+        elif name == "web_search":
+            return await self._execute_web_search(args)
+        elif name == "get_current_day":
+            return await self._execute_get_current_day(args)
+        elif name == "get_current_time":
+            return await self._execute_get_current_time(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
     
     async def _execute_get_memory_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute memory context search with comprehensive metadata"""
-        start_time = time.time()
+        """Execute memory context search"""
         query = args.get("query", "")
-        max_results = args.get("max_results", 50)  # Increased default for comprehensive context
-
-        # Get raw results from parallel memory search
-        raw_results = self.memory_service.get_context_for_query(query, max_items=max_results)
-
-        # Enhance results with richer metadata
-        enhanced_results = []
-        tier_counts = {"working_memory": 0, "active_memory": 0, "archival_memory": 0, "knowledge_base": 0}
-
-        for result in raw_results:
-            source = result.get("source", "unknown")
-            tier_counts[source] = tier_counts.get(source, 0) + 1
-
-            enhanced_result = {
-                "content": result.get("content", ""),
-                "source": source,
-                "relevance_score": result.get("relevance", 0.0),
-                "metadata": {
-                    "original_metadata": result.get("metadata", {}),
-                    "timestamp": result.get("timestamp", ""),
-                    "content_length": len(str(result.get("content", ""))),
-                    "content_preview": str(result.get("content", ""))[:200] + "..." if len(str(result.get("content", ""))) > 200 else str(result.get("content", "")),
-                    "tier_specific_data": self._get_tier_specific_metadata(result, source)
-                }
-            }
-            enhanced_results.append(enhanced_result)
-
-        processing_time = time.time() - start_time
-
+        max_results = args.get("max_items", 10)
+        
+        # Use async version for better performance in async contexts
+        results = await self.memory_service.get_context_for_query_async(query, max_items=max_results)
+        
         return {
             "query": query,
-            "results": enhanced_results,
-            "summary": {
-                "total_results": len(enhanced_results),
-                "results_by_tier": tier_counts,
-                "processing_time_seconds": processing_time,
-                "search_strategy": "parallel_all_tiers",
-                "max_requested": max_results,
-                "query_timestamp": time.time()
-            },
-            "recommendations": {
-                "high_relevance_count": len([r for r in enhanced_results if r["relevance_score"] > 0.7]),
-                "tier_diversity": len([k for k, v in tier_counts.items() if v > 0]),
-                "suggested_follow_up": self._suggest_follow_up_searches(enhanced_results, query)
-            },
-            # Keep backward compatibility
-            "count": len(enhanced_results),
+            "results": results,
+            "count": len(results),
             "timestamp": time.time()
         }
     
     async def _execute_add_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute add conversation with detailed processing info"""
-        start_time = time.time()
-        messages = args.get("messages", [])
-
-        processed_messages = []
-        for i, msg in enumerate(messages):
-            try:
-                if msg["type"] == "user":
-                    self.memory_service.add_user_message(msg["content"])
-                else:
-                    self.memory_service.add_assistant_message(msg["content"])
-
-                processed_messages.append({
-                    "index": i,
-                    "type": msg["type"],
-                    "content_length": len(msg["content"]),
-                    "status": "stored"
-                })
-            except Exception as e:
-                processed_messages.append({
-                    "index": i,
-                    "type": msg.get("type", "unknown"),
-                    "status": "error",
-                    "error": str(e)
-                })
-
-        processing_time = time.time() - start_time
-
+        """Execute add conversation"""
+        user_message = args.get("user_message", "")
+        assistant_message = args.get("assistant_message", "")
+        
+        self.memory_service.add_user_message(user_message)
+        self.memory_service.add_assistant_message(assistant_message)
+        
         return {
             "status": "success",
-            "summary": {
-                "messages_added": len([m for m in processed_messages if m["status"] == "stored"]),
-                "total_messages": len(messages),
-                "processing_time_seconds": processing_time,
-                "user_messages": len([m for m in messages if m.get("type") == "user"]),
-                "assistant_messages": len([m for m in messages if m.get("type") == "assistant"])
-            },
-            "processed_messages": processed_messages,
-            "memory_state": {
-                "working_memory_size": len(self.memory_service.working_memory.get_messages()) if hasattr(self.memory_service, 'working_memory') else 0,
-                "conversation_length": len(self.memory_service.current_conversation) if hasattr(self.memory_service, 'current_conversation') else 0
-            },
-            # Backward compatibility
-            "messages_added": len(messages),
-            "timestamp": time.time()
+            "message": "Conversation exchange added to working memory",
+            "user_message_length": len(user_message),
+            "assistant_message_length": len(assistant_message)
         }
     
-    async def _execute_add_knowledge(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute add knowledge with comprehensive tracking"""
-        start_time = time.time()
-        content = args.get("content", "")
-        metadata = args.get("metadata", {})
-
-        try:
-            # Add to knowledge base
-            self.memory_service.add_to_knowledge_base(content, metadata)
-
-            processing_time = time.time() - start_time
-
-            return {
-                "status": "success",
-                "summary": {
-                    "content_length": len(content),
-                    "processing_time_seconds": processing_time,
-                    "metadata_provided": bool(metadata),
-                    "metadata_keys": list(metadata.keys()) if metadata else []
-                },
-                "document_info": {
-                    "content_preview": content[:200] + "..." if len(content) > 200 else content,
-                    "estimated_tokens": len(content.split()),  # Rough estimate
-                    "metadata": metadata,
-                    "storage_tier": "knowledge_base",
-                    "indexed_timestamp": time.time()
-                },
-                "recommendations": {
-                    "suggested_tags": self._extract_suggested_tags(content),
-                    "content_type": self._detect_content_type(content, metadata),
-                    "related_queries": self._suggest_related_queries(content)
-                },
-                "timestamp": time.time()
-            }
-
-        except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "content_length": len(content),
-                "timestamp": time.time()
-            }
-
     async def _execute_get_memory_stats(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute get memory statistics with enhanced details"""
-        start_time = time.time()
+        """Execute get memory statistics"""
+        stats = self.memory_service.get_memory_stats()
+        return stats
+
+    async def _execute_add_documents(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute add documents"""
+        documents = args.get("documents", [])
+        results = []
+        for doc in documents:
+            try:
+                content = doc.get("content", "")
+                metadata = doc.get("metadata", {})
+                self.memory_service.add_to_knowledge_base(content, metadata)
+                results.append({"status": "success", "message": "Document added"})
+            except Exception as e:
+                results.append({"status": "error", "message": str(e)})
+        return {"results": results, "total_processed": len(documents)}
+
+    async def _execute_end_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute end conversation"""
+        self.memory_service.end_conversation()
+        return {"status": "success", "message": "Conversation ended and archived"}
+
+    async def _execute_toggle_multi_model(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute toggle multi model"""
+        enabled = args.get("enabled", False)
+        self.memory_service.multi_model_enabled = enabled
+        return {"status": "success", "multi_model_enabled": enabled}
+
+    async def _execute_list_recent_conversations(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute list recent conversations"""
+        limit = args.get("limit", 10)
+        conversations = self.memory_service.list_recent_conversations(limit)
+        return {
+            "conversations": conversations,
+            "total": len(conversations),
+            "message": f"Retrieved {len(conversations)} recent conversations"
+        }
+
+    async def _execute_remove_conversation_message(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute remove conversation message"""
+        message_id = args.get("message_id", "")
+        success = self.memory_service.remove_conversation_message(message_id)
+        return {
+            "success": success,
+            "message": f"Conversation message {message_id} {'removed' if success else 'not found'}"
+        }
+
+    async def _execute_remove_recent_conversations(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute remove recent conversations"""
+        count = args.get("count", 0)
+        removed_count = self.memory_service.remove_recent_conversations(count)
+        return {
+            "removed_count": removed_count,
+            "message": f"Removed {removed_count} recent conversations"
+        }
+
+    async def _execute_list_recent_documents(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute list recent documents"""
+        limit = args.get("limit", 10)
+        documents = self.memory_service.list_recent_documents(limit)
+        return {
+            "documents": documents,
+            "total": len(documents),
+            "message": f"Retrieved {len(documents)} recent documents"
+        }
+
+    async def _execute_remove_document(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute remove document"""
+        document_id = args.get("document_id", "")
+        success = self.memory_service.remove_document(document_id)
+        return {
+            "success": success,
+            "message": f"Document {document_id} {'removed' if success else 'not found'}"
+        }
+
+    async def _execute_web_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute web search using Google Custom Search API"""
+        query = args.get("query", "")
+        max_results = args.get("limit", 10)
 
         try:
-            # Get base stats from memory service
-            if hasattr(self.memory_service, 'get_memory_stats'):
-                base_stats = self.memory_service.get_memory_stats()
-            elif hasattr(self.memory_service, 'get_statistics'):
-                base_stats = self.memory_service.get_statistics()
-            else:
-                base_stats = {}
+            # Import here to avoid dependency issues if not available
+            import urllib.request
+            import urllib.parse
+            import json
+            import time
 
-            processing_time = time.time() - start_time
+            # Try Google Custom Search API first (if API key is available)
+            google_api_key = self.config.get('google_api_key', '')
+            search_engine_id = self.config.get('google_search_engine_id', '')
 
-            # Enhanced stats with system information
-            enhanced_stats = {
-                "memory_tiers": base_stats,
-                "system_info": {
-                    "retrieval_optimization": "parallel_async_enabled",
-                    "embedding_models": self._get_embedding_model_info(),
-                    "performance_metrics": {
-                        "last_query_time": getattr(self.memory_service, 'last_query_time', 0),
-                        "stats_generation_time": processing_time,
-                        "parallel_retrieval_available": True
+            if google_api_key and search_engine_id:
+                try:
+                    # Use Google Custom Search API
+                    encoded_query = urllib.parse.quote(query)
+                    url = f"https://www.googleapis.com/customsearch/v1?key={google_api_key}&cx={search_engine_id}&q={encoded_query}&num={min(max_results, 10)}"
+
+                    req = urllib.request.Request(url)
+                    req.add_header('User-Agent', 'MoJoAssistant/1.0')
+
+                    with urllib.request.urlopen(req, timeout=15) as response:
+                        data = response.read().decode('utf-8')
+                        search_result = json.loads(data)
+
+                    # Parse Google results
+                    results = []
+                    if 'items' in search_result:
+                        for item in search_result['items'][:max_results]:
+                            results.append({
+                                "title": item.get('title', ''),
+                                "content": item.get('snippet', ''),
+                                "url": item.get('link', ''),
+                                "source": "google"
+                            })
+
+                    return {
+                        "query": query,
+                        "results": results,
+                        "total_results": len(results),
+                        "source": "google_custom_search",
+                        "timestamp": time.time()
                     }
-                },
-                "usage_insights": {
-                    "total_stored_items": self._calculate_total_items(base_stats),
-                    "tier_distribution": self._calculate_tier_distribution(base_stats),
-                    "storage_efficiency": self._calculate_storage_efficiency(base_stats)
-                },
-                "capabilities": {
-                    "semantic_search": True,
-                    "parallel_retrieval": True,
-                    "multi_tier_memory": True,
-                    "conversation_continuity": True,
-                    "document_storage": True,
-                    "metadata_support": True
-                },
-                "timestamp": time.time()
-            }
 
-            return enhanced_stats
+                except Exception as e:
+                    # Fallback if Google API fails
+                    return {
+                        "query": query,
+                        "error": f"Google Custom Search API failed: {str(e)}",
+                        "results": [],
+                        "timestamp": time.time()
+                    }
+            else:
+                return {
+                    "query": query,
+                    "error": "Google Custom Search API not configured",
+                    "results": [],
+                    "timestamp": time.time()
+                }
 
         except Exception as e:
             return {
-                "status": "error",
-                "error": str(e),
+                "query": query,
+                "error": f"Web search failed: {str(e)}",
+                "results": [],
                 "timestamp": time.time()
             }
 
-    def _get_tier_specific_metadata(self, result: Dict[str, Any], source: str) -> Dict[str, Any]:
-        """Get tier-specific metadata for enhanced context"""
-        tier_data = {"tier": source}
-
-        if source == "working_memory":
-            tier_data.update({
-                "recency": "current_session",
-                "importance": "high",
-                "context_type": "immediate"
-            })
-        elif source == "active_memory":
-            tier_data.update({
-                "recency": "recent",
-                "importance": "medium",
-                "context_type": "short_term"
-            })
-        elif source == "archival_memory":
-            tier_data.update({
-                "recency": "historical",
-                "importance": "contextual",
-                "context_type": "long_term"
-            })
-        elif source == "knowledge_base":
-            tier_data.update({
-                "recency": "persistent",
-                "importance": "factual",
-                "context_type": "reference"
-            })
-
-        return tier_data
-
-    def _suggest_follow_up_searches(self, results: List[Dict[str, Any]], query: str) -> List[str]:
-        """Suggest follow-up searches based on results"""
-        suggestions = []
-
-        # If low result count, suggest broader searches
-        if len(results) < 3:
-            suggestions.append(f"Broader search related to: {query}")
-
-        # If many results from one tier, suggest specific tier searches
-        tier_counts = {}
-        for result in results:
-            tier = result.get("source", "unknown")
-            tier_counts[tier] = tier_counts.get(tier, 0) + 1
-
-        dominant_tier = max(tier_counts.items(), key=lambda x: x[1])[0] if tier_counts else None
-        if dominant_tier and tier_counts[dominant_tier] > len(results) * 0.7:
-            suggestions.append(f"Search other memory tiers for: {query}")
-
-        return suggestions[:3]  # Limit to 3 suggestions
-
-    def _extract_suggested_tags(self, content: str) -> List[str]:
-        """Extract suggested tags from content"""
-        # Simple keyword extraction - could be enhanced with NLP
-        words = content.lower().split()
-        common_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by"}
-        keywords = [word for word in words if len(word) > 3 and word not in common_words]
-        return list(set(keywords[:5]))  # Return top 5 unique keywords
-
-    def _detect_content_type(self, content: str, metadata: Dict[str, Any]) -> str:
-        """Detect the type of content"""
-        content_lower = content.lower()
-
-        if metadata.get("type"):
-            return metadata["type"]
-        elif "http" in content_lower and ("www" in content_lower or ".com" in content_lower):
-            return "url_reference"
-        elif content.count("\n") > 10:
-            return "document"
-        elif "def " in content or "function" in content or "class " in content:
-            return "code"
-        else:
-            return "text"
-
-    def _suggest_related_queries(self, content: str) -> List[str]:
-        """Suggest related queries for the content"""
-        # Simple approach - could be enhanced with semantic analysis
-        content_preview = content[:100].lower()
-        suggestions = []
-
-        if "api" in content_preview:
-            suggestions.append("API documentation")
-        if "function" in content_preview or "method" in content_preview:
-            suggestions.append("function implementation")
-        if "error" in content_preview or "bug" in content_preview:
-            suggestions.append("troubleshooting guide")
-
-        return suggestions
-
-    def _get_embedding_model_info(self) -> Dict[str, Any]:
-        """Get embedding model information"""
-        try:
-            if hasattr(self.memory_service, 'get_embedding_info'):
-                return self.memory_service.get_embedding_info()
-            elif hasattr(self.memory_service, 'embedding'):
-                return {
-                    "model_name": getattr(self.memory_service.embedding, 'model_name', 'unknown'),
-                    "backend": getattr(self.memory_service.embedding, 'backend', 'unknown')
-                }
-            else:
-                return {"status": "no_embedding_info"}
-        except Exception:
-            return {"status": "error_retrieving_info"}
-
-    def _calculate_total_items(self, stats: Dict[str, Any]) -> int:
-        """Calculate total items across all tiers"""
-        total = 0
-        for tier_name, tier_data in stats.items():
-            if isinstance(tier_data, dict):
-                if "items" in tier_data:
-                    total += tier_data["items"]
-                elif "messages" in tier_data:
-                    total += tier_data["messages"]
-        return total
-
-    def _calculate_tier_distribution(self, stats: Dict[str, Any]) -> Dict[str, float]:
-        """Calculate percentage distribution across tiers"""
-        total = self._calculate_total_items(stats)
-        if total == 0:
-            return {}
-
-        distribution = {}
-        for tier_name, tier_data in stats.items():
-            if isinstance(tier_data, dict):
-                tier_items = tier_data.get("items", tier_data.get("messages", 0))
-                distribution[tier_name] = round((tier_items / total) * 100, 1)
-
-        return distribution
-
-    def _calculate_storage_efficiency(self, stats: Dict[str, Any]) -> Dict[str, Any]:
-        """Calculate storage efficiency metrics"""
+    async def _execute_get_current_day(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute get current day"""
+        from datetime import datetime
+        now = datetime.now()
         return {
-            "total_tiers_active": len([t for t, data in stats.items() if isinstance(data, dict) and (data.get("items", 0) > 0 or data.get("messages", 0) > 0)]),
-            "average_tier_utilization": "calculated_based_on_usage",
-            "memory_balance": "distributed" if len(stats) > 1 else "concentrated"
+            "date": now.strftime("%Y-%m-%d"),
+            "day_of_week": now.strftime("%A"),
+            "time": now.strftime("%H:%M:%S"),
+            "year": now.year,
+            "month": now.month,
+            "day": now.day
+        }
+
+    async def _execute_get_current_time(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute get current time"""
+        from datetime import datetime
+        now = datetime.now()
+        return {
+            "time": now.strftime("%H:%M:%S"),
+            "timezone": now.astimezone().tzname()
         }

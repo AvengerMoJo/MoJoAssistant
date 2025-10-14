@@ -6,6 +6,8 @@ import re
 from collections import Counter
 import math
 import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from app.memory.simplified_embeddings import SimpleEmbedding
 from app.memory.working_memory import WorkingMemory
@@ -250,94 +252,235 @@ class MemoryService:
         else:
             return "General conversation without specific focus"
     
-    def get_context_for_query(self, query: str, max_items: int = 10) -> List[Dict[str, Any]]:
+    async def get_context_for_query_async(self, query: str, max_items: int = 10) -> List[Dict[str, Any]]:
         """
+        Async version of get_context_for_query that can be called from async contexts
         Retrieve relevant context from all memory tiers to support the current query
+        Uses parallel async retrieval for optimal performance
         """
         # Validate input parameters
         if not query or not isinstance(query, str) or query.strip() == "":
             self.logger.warning("Empty or invalid query provided")
             return []
-        
+
         if not isinstance(max_items, int) or max_items <= 0:
             self.logger.warning(f"Invalid max_items: {max_items}, using default value 10")
             max_items = 10
-        
-        context_items = []
-        query_embedding = self.embedding.get_text_embedding(query, prompt_name='query')
 
-        # If the query embedding fails, we cannot search for context.
+        # Run async retrieval and return results
+        try:
+            return await self._get_context_parallel(query, max_items)
+        except Exception as e:
+            self.logger.warning(f"Parallel retrieval failed, falling back to sequential: {e}")
+            return self._get_context_sequential(query, max_items)
+
+    async def _get_context_parallel(self, query: str, max_items: int) -> List[Dict[str, Any]]:
+        """
+        Parallel async context retrieval from all memory tiers
+        """
+        query_embedding = self.embedding.get_text_embedding(query, prompt_name='query')
         if query_embedding is None:
             self.logger.warning("Could not generate embedding for the query. Skipping context search.")
             return []
-        
+
+        # Create tasks for parallel execution
+        tasks = [
+            self._search_working_memory_async(query_embedding),
+            self._search_active_memory_async(query_embedding),
+            self._search_archival_memory_async(query, max_items),
+            self._search_knowledge_base_async(query, max_items)
+        ]
+
+        # Execute all searches in parallel
+        start_time = time.time()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        search_time = time.time() - start_time
+
+        # Merge results from all tiers
+        context_items = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                tier_names = ["working", "active", "archival", "knowledge"]
+                self.logger.warning(f"Search failed for {tier_names[i]} memory: {result}")
+                continue
+            if isinstance(result, list):
+                context_items.extend(result)
+
+        # Sort by relevance and limit results
+        sorted_context = sorted(context_items, key=lambda x: float(str(x.get("relevance", 0.0))), reverse=True)
+        final_context = sorted_context[:max_items]
+
+        # Store current context and log performance
+        self.current_context = final_context
+        self.logger.debug(f"Parallel retrieval completed in {search_time:.3f}s, found {len(final_context)} items")
+
+        return final_context
+
+    async def _search_working_memory_async(self, query_embedding) -> List[Dict[str, Any]]:
+        """Search working memory asynchronously"""
+        def search_working():
+            working_context = []
+            working_messages = self.working_memory.get_messages()
+
+            for msg in working_messages:
+                msg_embedding = self.embedding.get_text_embedding(msg.content)
+                if not msg_embedding:
+                    continue
+
+                similarity = self.embedding._get_similarity(query_embedding, msg_embedding)
+                if similarity > 0.3:
+                    working_context.append({
+                        "source": "working_memory",
+                        "content": msg.content,
+                        "relevance": similarity
+                    })
+            return working_context
+
+        # Run in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            return await loop.run_in_executor(executor, search_working)
+
+    async def _search_active_memory_async(self, query_embedding) -> List[Dict[str, Any]]:
+        """Search active memory asynchronously"""
+        def search_active():
+            context_items = []
+            active_pages = self.active_memory.pages
+
+            for page in active_pages:
+                if isinstance(page.content, dict):
+                    content_text = json.dumps(page.content)
+                else:
+                    content_text = str(page.content)
+
+                page_embedding = self.embedding.get_text_embedding(content_text)
+                if not page_embedding:
+                    continue
+
+                similarity = self.embedding._get_similarity(query_embedding, page_embedding)
+                if similarity > 0.3:
+                    context_items.append({
+                        "source": "active_memory",
+                        "content": page.content,
+                        "page_id": page.id,
+                        "relevance": similarity
+                    })
+                    page.access()
+            return context_items
+
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            return await loop.run_in_executor(executor, search_active)
+
+    async def _search_archival_memory_async(self, query: str, max_items: int) -> List[Dict[str, Any]]:
+        """Search archival memory asynchronously"""
+        def search_archival():
+            context_items = []
+            archival_results = self.archival_memory.search(query, limit=max_items)
+
+            for result in archival_results:
+                relevance_score = result.get("relevance_score", 0)
+
+                # Try to promote highly relevant memories
+                if relevance_score > 0.8:
+                    promoted_page_id = self._promote_archival_to_active(result, relevance_score)
+                    if promoted_page_id:
+                        result["promoted_to_active"] = promoted_page_id
+
+                context_items.append({
+                    "source": "archival_memory",
+                    "content": result["text"],
+                    "metadata": result["metadata"],
+                    "relevance": result["relevance_score"]
+                })
+            return context_items
+
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            return await loop.run_in_executor(executor, search_archival)
+
+    async def _search_knowledge_base_async(self, query: str, max_items: int) -> List[Dict[str, Any]]:
+        """Search knowledge base asynchronously"""
+        def search_knowledge():
+            context_items = []
+            knowledge_results = self.knowledge_manager.query(query, similarity_top_k=max_items)
+
+            for text, score in knowledge_results:
+                context_items.append({
+                    "source": "knowledge_base",
+                    "content": text,
+                    "relevance": score
+                })
+            return context_items
+
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            return await loop.run_in_executor(executor, search_knowledge)
+
+    def _get_context_sequential(self, query: str, max_items: int) -> List[Dict[str, Any]]:
+        """
+        Fallback sequential context retrieval (original implementation)
+        """
+        context_items = []
+        query_embedding = self.embedding.get_text_embedding(query, prompt_name='query')
+
+        if query_embedding is None:
+            self.logger.warning("Could not generate embedding for the query. Skipping context search.")
+            return []
+
         # 1. Search working memory
         working_messages = self.working_memory.get_messages()
-        working_context = []
         for msg in working_messages:
-            # Embed each message
             msg_embedding = self.embedding.get_text_embedding(msg.content)
             if not msg_embedding:
                 continue
-            
-            # Calculate cosine similarity between query and message
+
             similarity = self.embedding._get_similarity(query_embedding, msg_embedding)
-            
-            if similarity > 0.3:  # Adjust threshold as needed
-                working_context.append({
+            if similarity > 0.3:
+                context_items.append({
                     "source": "working_memory",
                     "content": msg.content,
                     "relevance": similarity
-            })
-        # Add working memory context
-        context_items.extend(working_context)
-        
+                })
+
         # 2. Search active memory pages
         active_pages = self.active_memory.pages
         for page in active_pages:
-            # Convert page content to text for embedding
             if isinstance(page.content, dict):
                 content_text = json.dumps(page.content)
             else:
                 content_text = str(page.content)
-            
-            # Embed page content
+
             page_embedding = self.embedding.get_text_embedding(content_text)
             if not page_embedding:
                 continue
-            
-            # Calculate similarity
+
             similarity = self.embedding._get_similarity(query_embedding, page_embedding)
-            
-            if similarity > 0.3:  # Adjust threshold as needed
+            if similarity > 0.3:
                 context_items.append({
                     "source": "active_memory",
                     "content": page.content,
                     "page_id": page.id,
                     "relevance": similarity
                 })
-                # Update access metadata for the page
                 page.access()
-        
+
         # 3. Search archival memory
         archival_results = self.archival_memory.search(query, limit=max_items)
         for result in archival_results:
-            # Check relevance score for promotion
             relevance_score = result.get("relevance_score", 0)
-            # Try to promote highly relevant memories
-            if relevance_score > 0.8:  # Same threshold as in _promote_archival_to_active
+            if relevance_score > 0.8:
                 promoted_page_id = self._promote_archival_to_active(result, relevance_score)
-                # Include promotion information if successful
                 if promoted_page_id:
                     result["promoted_to_active"] = promoted_page_id
-            
+
             context_items.append({
                 "source": "archival_memory",
                 "content": result["text"],
                 "metadata": result["metadata"],
                 "relevance": result["relevance_score"]
             })
-        
+
         # 4. Search knowledge base
         knowledge_results = self.knowledge_manager.query(query, similarity_top_k=max_items)
         for text, score in knowledge_results:
@@ -346,13 +489,10 @@ class MemoryService:
                 "content": text,
                 "relevance": score
             })
-        
+
         # Sort by relevance
         sorted_context = sorted(context_items, key=lambda x: float(str(x.get("relevance", 0.0))), reverse=True)
-        
-        # Limit and store current context
         self.current_context = sorted_context[:max_items]
-        
         return self.current_context
 
     def update_memory_from_response(self, query: str, response: str) -> None:
