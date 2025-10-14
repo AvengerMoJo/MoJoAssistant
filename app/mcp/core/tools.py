@@ -10,17 +10,13 @@ from datetime import datetime
 class ToolRegistry:
     """Registry of available tools and their execution"""
     
-    def __init__(self, memory_service):
+    def __init__(self, memory_service, config: Dict[str, Any] = None):
         self.memory_service = memory_service
+        self.config = config or {}
         self.tools = self._define_tools()
-        # Placeholder tools that are not yet fully implemented
+        # Re-enable the working placeholder tools
         self.placeholder_tools = {
-            "list_recent_conversations",
-            "remove_conversation_message", 
-            "remove_recent_conversations",
-            "list_recent_documents",
-            "remove_document",
-            "web_search"
+            "web_search"  # Only web_search needs re-implementation
         }
     
     def _define_tools(self) -> List[Dict[str, Any]]:
@@ -250,8 +246,18 @@ class ToolRegistry:
         ]
     
     def get_tools(self) -> List[Dict[str, Any]]:
-        """Get list of available tools"""
-        return self.tools
+        """Get list of available tools (excludes placeholders)"""
+        return [tool for tool in self.tools if tool["name"] not in self.placeholder_tools]
+    
+    def enable_placeholder_tool(self, tool_name: str):
+        """Enable a placeholder tool (make it available to MCP)"""
+        if tool_name in self.placeholder_tools:
+            self.placeholder_tools.remove(tool_name)
+
+    def disable_placeholder_tool(self, tool_name: str):
+        """Disable a tool (make it unavailable to MCP but keep definition)"""
+        if tool_name not in self.placeholder_tools:
+            self.placeholder_tools.add(tool_name)
     
     async def execute(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool by name"""
@@ -277,6 +283,18 @@ class ToolRegistry:
             return await self._execute_end_conversation(args)
         elif name == "toggle_multi_model":
             return await self._execute_toggle_multi_model(args)
+        elif name == "list_recent_conversations":
+            return await self._execute_list_recent_conversations(args)
+        elif name == "remove_conversation_message":
+            return await self._execute_remove_conversation_message(args)
+        elif name == "remove_recent_conversations":
+            return await self._execute_remove_recent_conversations(args)
+        elif name == "list_recent_documents":
+            return await self._execute_list_recent_documents(args)
+        elif name == "remove_document":
+            return await self._execute_remove_document(args)
+        elif name == "web_search":
+            return await self._execute_web_search(args)
         elif name == "get_current_day":
             return await self._execute_get_current_day(args)
         elif name == "get_current_time":
@@ -289,7 +307,8 @@ class ToolRegistry:
         query = args.get("query", "")
         max_results = args.get("max_items", 10)
         
-        results = self.memory_service.get_context_for_query(query, max_items=max_results)
+        # Use async version for better performance in async contexts
+        results = await self.memory_service.get_context_for_query_async(query, max_items=max_results)
         
         return {
             "query": query,
@@ -345,33 +364,122 @@ class ToolRegistry:
 
     async def _execute_list_recent_conversations(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute list recent conversations"""
-        # This method is no longer called due to placeholder check above
-        raise NotImplementedError("This tool is disabled as a placeholder")
+        limit = args.get("limit", 10)
+        conversations = self.memory_service.list_recent_conversations(limit)
+        return {
+            "conversations": conversations,
+            "total": len(conversations),
+            "message": f"Retrieved {len(conversations)} recent conversations"
+        }
 
     async def _execute_remove_conversation_message(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute remove conversation message"""
-        # This method is no longer called due to placeholder check above
-        raise NotImplementedError("This tool is disabled as a placeholder")
+        message_id = args.get("message_id", "")
+        success = self.memory_service.remove_conversation_message(message_id)
+        return {
+            "success": success,
+            "message": f"Conversation message {message_id} {'removed' if success else 'not found'}"
+        }
 
     async def _execute_remove_recent_conversations(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute remove recent conversations"""
-        # This method is no longer called due to placeholder check above
-        raise NotImplementedError("This tool is disabled as a placeholder")
+        count = args.get("count", 0)
+        removed_count = self.memory_service.remove_recent_conversations(count)
+        return {
+            "removed_count": removed_count,
+            "message": f"Removed {removed_count} recent conversations"
+        }
 
     async def _execute_list_recent_documents(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute list recent documents"""
-        # This method is no longer called due to placeholder check above
-        raise NotImplementedError("This tool is disabled as a placeholder")
+        limit = args.get("limit", 10)
+        documents = self.memory_service.list_recent_documents(limit)
+        return {
+            "documents": documents,
+            "total": len(documents),
+            "message": f"Retrieved {len(documents)} recent documents"
+        }
 
     async def _execute_remove_document(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute remove document"""
-        # This method is no longer called due to placeholder check above
-        raise NotImplementedError("This tool is disabled as a placeholder")
+        document_id = args.get("document_id", "")
+        success = self.memory_service.remove_document(document_id)
+        return {
+            "success": success,
+            "message": f"Document {document_id} {'removed' if success else 'not found'}"
+        }
 
     async def _execute_web_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute web search"""
-        # This method is no longer called due to placeholder check above
-        raise NotImplementedError("This tool is disabled as a placeholder")
+        """Execute web search using Google Custom Search API"""
+        query = args.get("query", "")
+        max_results = args.get("limit", 10)
+
+        try:
+            # Import here to avoid dependency issues if not available
+            import urllib.request
+            import urllib.parse
+            import json
+            import time
+
+            # Try Google Custom Search API first (if API key is available)
+            google_api_key = self.config.get('google_api_key', '')
+            search_engine_id = self.config.get('google_search_engine_id', '')
+
+            if google_api_key and search_engine_id:
+                try:
+                    # Use Google Custom Search API
+                    encoded_query = urllib.parse.quote(query)
+                    url = f"https://www.googleapis.com/customsearch/v1?key={google_api_key}&cx={search_engine_id}&q={encoded_query}&num={min(max_results, 10)}"
+
+                    req = urllib.request.Request(url)
+                    req.add_header('User-Agent', 'MoJoAssistant/1.0')
+
+                    with urllib.request.urlopen(req, timeout=15) as response:
+                        data = response.read().decode('utf-8')
+                        search_result = json.loads(data)
+
+                    # Parse Google results
+                    results = []
+                    if 'items' in search_result:
+                        for item in search_result['items'][:max_results]:
+                            results.append({
+                                "title": item.get('title', ''),
+                                "content": item.get('snippet', ''),
+                                "url": item.get('link', ''),
+                                "source": "google"
+                            })
+
+                    return {
+                        "query": query,
+                        "results": results,
+                        "total_results": len(results),
+                        "source": "google_custom_search",
+                        "timestamp": time.time()
+                    }
+
+                except Exception as e:
+                    # Fallback if Google API fails
+                    return {
+                        "query": query,
+                        "error": f"Google Custom Search API failed: {str(e)}",
+                        "results": [],
+                        "timestamp": time.time()
+                    }
+            else:
+                return {
+                    "query": query,
+                    "error": "Google Custom Search API not configured",
+                    "results": [],
+                    "timestamp": time.time()
+                }
+
+        except Exception as e:
+            return {
+                "query": query,
+                "error": f"Web search failed: {str(e)}",
+                "results": [],
+                "timestamp": time.time()
+            }
 
     async def _execute_get_current_day(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute get current day"""

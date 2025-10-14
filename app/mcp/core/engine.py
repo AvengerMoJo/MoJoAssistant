@@ -35,7 +35,7 @@ class MCPEngine:
             self.memory_service = HybridMemoryService()
             self.logger.info("Memory service initialized")
         
-        self.tool_registry = ToolRegistry(self.memory_service)
+        self.tool_registry = ToolRegistry(self.memory_service, self.config)
         self.logger.info(f"Tool registry initialized with {len(self.tool_registry.get_tools())} tools")
         
         self.initialized = True

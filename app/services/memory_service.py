@@ -252,8 +252,9 @@ class MemoryService:
         else:
             return "General conversation without specific focus"
     
-    def get_context_for_query(self, query: str, max_items: int = 10) -> List[Dict[str, Any]]:
+    async def get_context_for_query_async(self, query: str, max_items: int = 10) -> List[Dict[str, Any]]:
         """
+        Async version of get_context_for_query that can be called from async contexts
         Retrieve relevant context from all memory tiers to support the current query
         Uses parallel async retrieval for optimal performance
         """
@@ -268,7 +269,7 @@ class MemoryService:
 
         # Run async retrieval and return results
         try:
-            return asyncio.run(self._get_context_parallel(query, max_items))
+            return await self._get_context_parallel(query, max_items)
         except Exception as e:
             self.logger.warning(f"Parallel retrieval failed, falling back to sequential: {e}")
             return self._get_context_sequential(query, max_items)
