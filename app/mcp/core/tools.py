@@ -16,7 +16,9 @@ class ToolRegistry:
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
         self.placeholder_tools = {
-            "web_search"  # Only web_search needs re-implementation
+            "web_search",  # Only web_search needs re-implementation
+            "get_current_time",  # Redundant with get_current_day
+            "get_memory_stats"  # Internal stats not useful for LLMs
         }
     
     def _define_tools(self) -> List[Dict[str, Any]]:
@@ -77,18 +79,18 @@ class ToolRegistry:
             },
             {
                 "name": "add_conversation",
-                "description": "Add a complete conversation exchange (user question + assistant reply) to working memory to maintain conversation continuity. When to use: Call this after each Q&A interaction or conversation exchange to build and maintain context. How it works: Stores both user and assistant messages in working memory for immediate retrieval. Why useful: Enables the assistant to remember recent conversations and maintain context across multiple interactions.",
+                "description": "PRESERVE CONVERSATION CONTEXT: Add this Q&A exchange to memory so I remember our conversation. Use IMMEDIATELY after every user question and my response to maintain context across our interaction. This ensures I can reference previous parts of our conversation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "user_message": {
                             "type": "string",
-                            "description": "The user's question or message (supports Chinese and English)",
+                            "description": "The exact user question/message that was just asked",
                             "minLength": 1
                         },
                         "assistant_message": {
                             "type": "string", 
-                            "description": "The assistant's response or reply (supports Chinese and English)",
+                            "description": "My complete response to that user question",
                             "minLength": 1
                         }
                     },
@@ -105,7 +107,7 @@ class ToolRegistry:
             },
             {
                 "name": "end_conversation",
-                "description": "End the current conversation and archive it to long-term memory for future reference. When to use: Call when a conversation topic is complete or when starting a new unrelated topic. How it works: Moves conversation from working memory to archival memory for long-term storage. Why useful: Keeps working memory focused on current topics while preserving conversation history.",
+                "description": "ARCHIVE CURRENT TOPIC: End this conversation topic and archive it for long-term memory. Use when switching to a completely different topic or when the current discussion is complete. This moves our conversation from short-term working memory to long-term storage.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
@@ -127,7 +129,7 @@ class ToolRegistry:
             },
             {
                 "name": "list_recent_conversations",
-                "description": "List recent conversation messages for management and cleanup purposes. When to use: Use to review recent conversations before cleanup or to identify messages for removal. How it works: Returns a list of recent conversation messages with their IDs. Why useful: Enables cleanup of unwanted or incorrect conversations from memory. [PLACEHOLDER - Not yet implemented]",
+                "description": "REVIEW CONVERSATION HISTORY: Show me recent conversation exchanges that are stored in memory. Use this when I need to see what we've discussed before, or when I want to clean up unwanted conversations. This helps me understand our conversation history and manage stored content.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -144,13 +146,13 @@ class ToolRegistry:
             },
             {
                 "name": "remove_conversation_message", 
-                "description": "Remove a specific conversation message by its ID to clean up memory. When to use: Use to remove bad, incorrect, or unwanted conversation messages from other models. How it works: Deletes a specific message by its unique ID. Why useful: Allows cleanup of problematic conversations while preserving good ones. [PLACEHOLDER - Not yet implemented]",
+                "description": "CLEAN UP BAD CONVERSATIONS: Remove a specific problematic conversation message by its ID. Use when other AI models generated bad responses that are cluttering our memory. This helps keep our conversation history clean and relevant.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "message_id": {
                             "type": "string",
-                            "description": "ID of the message to remove (obtain from list_recent_conversations)"
+                            "description": "ID of the bad message to remove (get this from list_recent_conversations first)"
                         }
                     },
                     "required": ["message_id"]
@@ -158,13 +160,13 @@ class ToolRegistry:
             },
             {
                 "name": "remove_recent_conversations",
-                "description": "Remove the most recent N conversation messages for bulk cleanup. When to use: Use when multiple recent conversations are bad or unwanted. How it works: Deletes the specified number of most recent conversation exchanges. Why useful: Enables quick cleanup of recent problematic conversations. [PLACEHOLDER - Not yet implemented]",
+                "description": "BULK CLEANUP: Remove multiple recent bad conversations at once. Use when several recent interactions were problematic and need to be cleared. This is faster than removing conversations one by one.",
                 "inputSchema": {
                     "type": "object", 
                     "properties": {
                         "count": {
                             "type": "integer",
-                            "description": "Number of recent conversations to remove (1-100)",
+                            "description": "Number of most recent conversations to remove (1-100)",
                             "minimum": 1,
                             "maximum": 100
                         }
@@ -174,7 +176,7 @@ class ToolRegistry:
             },
             {
                 "name": "list_recent_documents",
-                "description": "List recent documents for management and cleanup purposes. When to use: Use to review recently added documents before cleanup. How it works: Returns a list of recent documents with their IDs and metadata. Why useful: Enables cleanup of unwanted documents from the knowledge base. [PLACEHOLDER - Not yet implemented]",
+                "description": "REVIEW KNOWLEDGE BASE: Show me recently added documents in the knowledge base. Use this to see what reference materials are available, or to identify documents that need cleanup. This helps me understand what information is stored for future reference.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -191,13 +193,13 @@ class ToolRegistry:
             },
             {
                 "name": "remove_document",
-                "description": "Remove a specific document by its ID to clean up the knowledge base. When to use: Use to remove unwanted, outdated, or incorrect documents. How it works: Deletes a specific document by its unique ID. Why useful: Keeps the knowledge base clean and relevant. [PLACEHOLDER - Not yet implemented]",
+                "description": "CLEAN UP KNOWLEDGE BASE: Remove a specific document by its ID. Use when a document is outdated, incorrect, or no longer relevant. This keeps the knowledge base focused on useful reference material.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "document_id": {
                             "type": "string",
-                            "description": "ID of the document to remove (obtain from list_recent_documents)"
+                            "description": "ID of the document to remove (get this from list_recent_documents first)"
                         }
                     },
                     "required": ["document_id"]
