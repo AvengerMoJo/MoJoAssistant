@@ -16,7 +16,6 @@ class ToolRegistry:
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
         self.placeholder_tools = {
-            "web_search",  # Only web_search needs re-implementation
             "get_current_time",  # Redundant with get_current_day
             "get_memory_stats"  # Internal stats not useful for LLMs
         }
