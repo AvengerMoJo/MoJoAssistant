@@ -40,24 +40,6 @@ class ToolRegistry:
                 }
             },
             {
-                "name": "system_info",
-                "description": "Get system information including server status, uptime, and configuration details.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
-                "name": "system_health",
-                "description": "Check system health and performance metrics including memory usage, response times, and error rates.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
                 "name": "add_documents",
                 "description": "Add reference documents to the knowledge base for permanent storage. Use for documentation, code examples, or reference material.",
                 "inputSchema": {
@@ -293,10 +275,6 @@ class ToolRegistry:
             return await self._execute_get_current_day(args)
         elif name == "get_current_time":
             return await self._execute_get_current_time(args)
-        elif name == "system_info":
-            return await self._execute_system_info(args)
-        elif name == "system_health":
-            return await self._execute_system_health(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
     
@@ -416,13 +394,3 @@ class ToolRegistry:
             "time": now.strftime("%H:%M:%S"),
             "timezone": now.astimezone().tzname()
         }
-
-    async def _execute_system_info(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute system info"""
-        # This is a placeholder. The actual implementation will depend on the memory service.
-        return {"message": "System info is not implemented yet."}
-
-    async def _execute_system_health(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute system health"""
-        # This is a placeholder. The actual implementation will depend on the memory service.
-        return {"message": "System health is not implemented yet."}
