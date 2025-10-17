@@ -4,9 +4,15 @@ File: app/mcp/server.py
 """
 import os
 from typing import Dict, Any
+from dotenv import load_dotenv
 from app.mcp.core.engine import MCPEngine
 from app.mcp.adapters.stdio import STDIOAdapter
 from app.mcp.adapters.http import HTTPAdapter
+
+# Load .env file if it exists
+env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+if os.path.exists(env_path):
+    load_dotenv(env_path)
 
 
 class UnifiedMCPServer:
@@ -19,10 +25,13 @@ class UnifiedMCPServer:
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from environment variables"""
+        # Load .env file if it exists
+        env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+        if os.path.exists(env_path):
+            load_dotenv(env_path)
+        
         return {
-            'require_auth': os.getenv("MCP_REQUIRE_AUTH", "true").lower() == "true",
-            'api_key': os.getenv("MCP_API_KEY"),
-            'cors_origins': os.getenv("MCP_CORS_ORIGINS", "http://localhost:3000"),
+            'cors_origins': os.getenv("MCP_CORS_ORIGINS", "*"),
             'log_level': os.getenv("LOG_LEVEL", "INFO"),
         }
     

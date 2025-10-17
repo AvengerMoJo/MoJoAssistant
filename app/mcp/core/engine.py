@@ -46,13 +46,6 @@ class MCPEngine:
             await self.initialize()
         
         try:
-            if not self._authenticate(request):
-                return MCPResponse.make_error(
-                    request.request_id,
-                    ErrorCode.AUTH_ERROR,
-                    "Authentication required or invalid API key"
-                )
-            
             if request.method == "initialize":
                 return await self._handle_initialize(request)
             elif request.method == "tools/list":
