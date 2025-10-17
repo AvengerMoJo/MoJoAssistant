@@ -2,7 +2,7 @@
 Tool definitions and execution logic
 File: app/mcp/core/tools.py
 """
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import time
 from datetime import datetime
 
@@ -10,7 +10,7 @@ from datetime import datetime
 class ToolRegistry:
     """Registry of available tools and their execution"""
     
-    def __init__(self, memory_service, config: Dict[str, Any] = None):
+    def __init__(self, memory_service, config: Dict[str, Any] | None = None):
         self.memory_service = memory_service
         self.config = config or {}
         self.tools = self._define_tools()
@@ -18,6 +18,123 @@ class ToolRegistry:
         self.placeholder_tools = {
             "get_current_time",  # Redundant with get_current_day
             "get_memory_stats"  # Internal stats not useful for LLMs
+        }
+        
+        # Enable web_search tool as implementation is complete
+        if "web_search" in self.placeholder_tools:
+            self.placeholder_tools.remove("web_search")
+        
+        # Enable web_search tool as implementation is complete
+        if "web_search" in self.placeholder_tools:
+            self.placeholder_tools.remove("web_search")
+        
+        # Enable web_search tool as implementation is complete
+        self.enable_placeholder_tool("web_search")
+        
+        # Standardized user prompt templates for LLM usability
+        self.user_prompt_templates = {
+            "get_memory_context": {
+                "template": "Search my memory for information about: {query}",
+                "examples": [
+                    "Search my memory for information about Python programming",
+                    "Find information about our previous discussion about machine learning",
+                    "Look up what I know about climate change"
+                ],
+                "usage_tip": "Use this tool to retrieve relevant context from the user's memory before answering questions or providing information."
+            },
+            "add_documents": {
+                "template": "Add these documents to my knowledge base: {content}",
+                "examples": [
+                    "Add this document to my knowledge base: Python best practices for web development",
+                    "Store this reference material: Machine learning algorithms explained",
+                    "Save this information: Climate change impacts and solutions"
+                ],
+                "usage_tip": "Use this tool to permanently store reference material, documentation, or any information that should be available for future conversations."
+            },
+            "add_conversation": {
+                "template": "Remember this conversation: User asked '{user_message}' and I responded '{assistant_message}'",
+                "examples": [
+                    "Remember this conversation: User asked 'What is Python?' and I responded 'Python is a high-level programming language...'",
+                    "Store this exchange: User asked 'How do I install packages?' and I responded 'You can use pip to install Python packages...'"
+                ],
+                "usage_tip": "Call this tool IMMEDIATELY after every user question and your response to maintain conversation context."
+            },
+            "end_conversation": {
+                "template": "Archive our current conversation topic",
+                "examples": [
+                    "Archive our current conversation topic",
+                    "End this discussion and save it to memory"
+                ],
+                "usage_tip": "Use when switching to a completely different topic or when the current discussion is complete."
+            },
+            "toggle_multi_model": {
+                "template": "Toggle multi-model embeddings: {enabled}",
+                "examples": [
+                    "Enable multi-model embeddings for better search accuracy",
+                    "Disable multi-model embeddings to save resources"
+                ],
+                "usage_tip": "Enable when you need better search accuracy across diverse content types, disable to reduce resource usage."
+            },
+            "list_recent_conversations": {
+                "template": "Show me my recent conversation history",
+                "examples": [
+                    "Show me my recent conversation history",
+                    "List my last 5 conversations",
+                    "What have we discussed recently?"
+                ],
+                "usage_tip": "Use this to review conversation history or identify conversations that need cleanup."
+            },
+            "remove_conversation_message": {
+                "template": "Remove conversation message with ID: {message_id}",
+                "examples": [
+                    "Remove conversation message with ID: conv_12345",
+                    "Delete this bad conversation: conv_67890"
+                ],
+                "usage_tip": "Use to remove specific problematic conversation messages that are cluttering memory."
+            },
+            "remove_recent_conversations": {
+                "template": "Remove my last {count} conversations",
+                "examples": [
+                    "Remove my last 3 conversations",
+                    "Clean up the last 10 conversations"
+                ],
+                "usage_tip": "Use for bulk cleanup of multiple recent problematic conversations."
+            },
+            "list_recent_documents": {
+                "template": "Show me my recent documents in the knowledge base",
+                "examples": [
+                    "Show me my recent documents in the knowledge base",
+                    "List my last 5 added documents",
+                    "What reference materials do I have?"
+                ],
+                "usage_tip": "Use this to review what documents are stored in the knowledge base."
+            },
+            "remove_document": {
+                "template": "Remove document with ID: {document_id}",
+                "examples": [
+                    "Remove document with ID: doc_12345",
+                    "Delete this outdated document: doc_67890"
+                ],
+                "usage_tip": "Use to remove specific documents that are outdated, incorrect, or no longer relevant."
+            },
+            "web_search": {
+                "template": "Search the web for: {query}",
+                "examples": [
+                    "Search the web for latest AI news",
+                    "Find information about quantum computing advancements",
+                    "Look up current weather in Tokyo"
+                ],
+                "usage_tip": "Use when you need up-to-date information, news, or data not available in local memory."
+            },
+            "get_current_day": {
+                "template": "What is today's date and day?",
+                "examples": [
+                    "What is today's date and day?",
+                    "Tell me the current date and time",
+                    "What day of the week is it today?"
+                ],
+                "usage_tip": "Use for questions about today's date, current day, time, or year information."
+            }
         }
     
     def _define_tools(self) -> List[Dict[str, Any]]:
@@ -248,7 +365,164 @@ class ToolRegistry:
     
     def get_tools(self) -> List[Dict[str, Any]]:
         """Get list of available tools (excludes placeholders)"""
-        return [tool for tool in self.tools if tool["name"] not in self.placeholder_tools]
+        # Special case: web_search is implemented and should be available
+        available_tools = [tool for tool in self.tools if tool["name"] not in self.placeholder_tools]
+        
+        # Add web_search if it's not already included (implementation is complete)
+        web_search_tool = next((tool for tool in self.tools if tool["name"] == "web_search"), None)
+        if web_search_tool and web_search_tool not in available_tools:
+            available_tools.append(web_search_tool)
+            
+        return available_tools
+    
+    def get_user_prompt_template(self, tool_name: str) -> Dict[str, Any] | None:
+        """Get user prompt template for a specific tool"""
+        return self.user_prompt_templates.get(tool_name)
+    
+    def get_all_user_prompt_templates(self) -> Dict[str, Dict[str, Any]]:
+        """Get all user prompt templates"""
+        return self.user_prompt_templates
+    
+    def get_tools_with_templates(self) -> List[Dict[str, Any]]:
+        """Get list of available tools with their user prompt templates"""
+        tools = self.get_tools()
+        result = []
+        
+        for tool in tools:
+            tool_name = tool["name"]
+            template = self.get_user_prompt_template(tool_name)
+            
+            if template:
+                tool_with_template = tool.copy()
+                tool_with_template["user_prompt_template"] = template
+                result.append(tool_with_template)
+            else:
+                result.append(tool)
+        
+        return result
+    
+    def get_tools_by_category(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get tools organized by category for better LLM usability"""
+        categories = {
+            "memory": [],
+            "conversation": [],
+            "knowledge": [],
+            "utilities": []
+        }
+        
+        tools = self.get_tools()
+        
+        for tool in tools:
+            tool_name = tool["name"]
+            
+            # Categorize tools
+            if tool_name in ["get_memory_context", "get_memory_stats"]:
+                categories["memory"].append(tool)
+            elif tool_name in ["add_conversation", "end_conversation", "list_recent_conversations", 
+                             "remove_conversation_message", "remove_recent_conversations"]:
+                categories["conversation"].append(tool)
+            elif tool_name in ["add_documents", "list_recent_documents", "remove_document"]:
+                categories["knowledge"].append(tool)
+            elif tool_name in ["toggle_multi_model", "web_search", "get_current_day", "get_current_time"]:
+                categories["utilities"].append(tool)
+        
+        return categories
+    
+    def get_tools_by_priority(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get tools organized by priority level"""
+        priority_levels = {
+            "high": [],
+            "medium": [],
+            "low": []
+        }
+        
+        tools = self.get_tools()
+        
+        # Define priority mapping
+        priority_mapping = {
+            "get_memory_context": "high",
+            "add_conversation": "high",
+            "add_documents": "high",
+            "end_conversation": "medium",
+            "toggle_multi_model": "medium",
+            "list_recent_conversations": "medium",
+            "web_search": "medium",
+            "get_current_day": "medium",
+            "remove_conversation_message": "low",
+            "remove_recent_conversations": "low",
+            "list_recent_documents": "low",
+            "remove_document": "low",
+            "get_current_time": "low"
+        }
+        
+        for tool in tools:
+            tool_name = tool["name"]
+            priority = priority_mapping.get(tool_name, "medium")
+            priority_levels[priority].append(tool)
+        
+        return priority_levels
+    
+    def get_essential_tools(self) -> List[Dict[str, Any]]:
+        """Get essential tools that should always be available to LLMs"""
+        essential_tool_names = [
+            "get_memory_context",      # Core memory functionality
+            "add_conversation",        # Conversation context preservation
+            "add_documents",           # Knowledge base management
+            "end_conversation",        # Conversation management
+            "web_search"               # Current information access
+        ]
+        
+        tools = self.get_tools()
+        return [tool for tool in tools if tool["name"] in essential_tool_names]
+    
+    def get_category_description(self, category: str) -> str:
+        """Get description for a category"""
+        descriptions = {
+            "memory": "Memory and context retrieval tools for accessing user's stored information",
+            "conversation": "Conversation management tools for preserving and organizing dialogue history",
+            "knowledge": "Knowledge base tools for managing reference materials and documents",
+            "utilities": "Utility tools for web search, time information, and system configuration"
+        }
+        return descriptions.get(category, "General tools")
+    
+    def get_tools_usage_guide(self) -> str:
+        """Generate a comprehensive usage guide for LLMs"""
+        categories = self.get_tools_by_category()
+        
+        guide = "## MCP Tools Usage Guide\n\n"
+        guide += "### Tool Categories and Usage Patterns\n\n"
+        
+        for category, tools in categories.items():
+            if tools:
+                guide += f"#### {category.title()} Tools\n"
+                guide += f"*{self.get_category_description(category)}*\n\n"
+                
+                for tool in tools:
+                    tool_name = tool["name"]
+                    template = self.get_user_prompt_template(tool_name)
+                    
+                    guide += f"**{tool_name}**\n"
+                    guide += f"- *Description*: {tool['description']}\n"
+                    
+                    if template:
+                        guide += f"- *User Prompt Template*: {template['template']}\n"
+                        guide += f"- *Usage Tip*: {template['usage_tip']}\n"
+                    
+                    guide += "\n"
+        
+        guide += "### Priority Guidelines\n"
+        guide += "- **High Priority**: Core memory and conversation tools (use frequently)\n"
+        guide += "- **Medium Priority**: Supporting tools for enhanced functionality\n"
+        guide += "- **Low Priority**: Cleanup and management tools (use as needed)\n\n"
+        
+        guide += "### Best Practices\n"
+        guide += "1. Always use `add_conversation` after each exchange to maintain context\n"
+        guide += "2. Use `get_memory_context` before answering questions to retrieve relevant information\n"
+        guide += "3. Use `web_search` for current information not available in local memory\n"
+        guide += "4. Use `end_conversation` when switching to completely different topics\n"
+        guide += "5. Regularly clean up old conversations and documents to maintain system performance\n"
+        
+        return guide
     
     def enable_placeholder_tool(self, tool_name: str):
         """Enable a placeholder tool (make it available to MCP)"""
@@ -420,7 +694,6 @@ class ToolRegistry:
             import urllib.request
             import urllib.parse
             import json
-            import time
 
             # Try Google Custom Search API first (if API key is available)
             google_api_key = self.config.get('google_api_key', '')
