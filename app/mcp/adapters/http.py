@@ -6,6 +6,7 @@ import json
 import time
 from datetime import datetime
 from typing import Dict, Any, Optional
+from fastapi import HTTPException
 from app.mcp.adapters.base import ProtocolAdapter
 from app.mcp.core.models import MCPRequest, MCPResponse
 
@@ -245,6 +246,103 @@ class HTTPAdapter(ProtocolAdapter):
         async def switch_embedding_model_rest(model_data: Dict[str, Any], auth_token: Optional[str] = Depends(extract_auth_token)):
             # This endpoint doesn't have a corresponding tool, return placeholder
             raise HTTPException(status_code=501, detail="Endpoint not implemented")
+        
+        # MCP Prompt List endpoints
+        @app.get("/api/v1/prompts")
+        async def get_mcp_prompts_list(auth_token: Optional[str] = Depends(extract_auth_token)):
+            """Get copy-paste friendly MCP prompt list"""
+            try:
+                prompt_list = self.engine.tool_registry.get_copy_paste_prompt_list()
+                return {
+                    "status": "success",
+                    "format": "markdown",
+                    "content": prompt_list,
+                    "total_tools": len(self.engine.tool_registry.get_tools()),
+                    "generated_at": datetime.utcnow().isoformat() + "Z"
+                }
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Error generating prompt list: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to generate prompt list: {str(e)}")
+        
+        @app.get("/api/v1/prompts/json")
+        async def get_mcp_prompts_json(auth_token: Optional[str] = Depends(extract_auth_token)):
+            """Get MCP prompt list in JSON format"""
+            try:
+                prompt_data = self.engine.tool_registry.get_json_prompt_list()
+                return {
+                    "status": "success",
+                    "format": "json",
+                    "data": prompt_data,
+                    "total_tools": len(self.engine.tool_registry.get_tools()),
+                    "generated_at": datetime.utcnow().isoformat() + "Z"
+                }
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Error generating JSON prompt list: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to generate JSON prompt list: {str(e)}")
+        
+        @app.get("/api/v1/prompts/categories")
+        async def get_mcp_prompts_categories(auth_token: Optional[str] = Depends(extract_auth_token)):
+            """Get MCP prompts organized by category"""
+            try:
+                categories = self.engine.tool_registry.get_tools_by_category()
+                priority_levels = self.engine.tool_registry.get_tools_by_priority()
+                
+                return {
+                    "status": "success",
+                    "categories": {
+                        category: {
+                            "description": self.engine.tool_registry.get_category_description(category),
+                            "tools_count": len(tools),
+                            "tools": [
+                                {
+                                    "name": tool["name"],
+                                    "description": tool["description"],
+                                    "has_template": "user_prompt_template" in tool if "user_prompt_template" in tool else False
+                                }
+                                for tool in tools
+                            ]
+                        }
+                        for category, tools in categories.items()
+                    },
+                    "priority_levels": {
+                        level: {
+                            "description": f"{level.title()} Priority Tools",
+                            "tools_count": len(tools),
+                            "tools": [
+                                {
+                                    "name": tool["name"],
+                                    "description": tool["description"]
+                                }
+                                for tool in tools
+                            ]
+                        }
+                        for level, tools in priority_levels.items()
+                    },
+                    "total_tools": len(self.engine.tool_registry.get_tools()),
+                    "generated_at": datetime.utcnow().isoformat() + "Z"
+                }
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Error generating categories: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to generate categories: {str(e)}")
+        
+        @app.get("/api/v1/prompts/usage-guide")
+        async def get_mcp_usage_guide(auth_token: Optional[str] = Depends(extract_auth_token)):
+            """Get comprehensive MCP tools usage guide"""
+            try:
+                usage_guide = self.engine.tool_registry.get_tools_usage_guide()
+                return {
+                    "status": "success",
+                    "format": "markdown",
+                    "content": usage_guide,
+                    "generated_at": datetime.utcnow().isoformat() + "Z"
+                }
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Error generating usage guide: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to generate usage guide: {str(e)}")
         
         self.app = app
         return app

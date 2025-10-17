@@ -80,13 +80,12 @@ class MCPEngine:
     
     def _authenticate(self, request: MCPRequest) -> bool:
         """Authenticate request"""
-        if not self.config.get('require_auth', True):
-            return True
-        
+        # Only require authentication if an API key is actually set
         expected_key = self.config.get('api_key')
         if not expected_key:
             return True
         
+        # If API key is set, require authentication
         return request.auth_token == expected_key
     
     async def _handle_initialize(self, request: MCPRequest) -> MCPResponse:

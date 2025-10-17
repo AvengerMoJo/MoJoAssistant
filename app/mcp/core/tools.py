@@ -524,6 +524,109 @@ class ToolRegistry:
         
         return guide
     
+    def get_copy_paste_prompt_list(self) -> str:
+        """Generate a copy-paste friendly prompt list for users"""
+        categories = self.get_tools_by_category()
+        
+        prompt_list = "# MCP Tools Prompt List\n\n"
+        prompt_list += "Copy and paste these prompts into your MCP client:\n\n"
+        
+        for category, tools in categories.items():
+            if tools:
+                prompt_list += f"## {category.title()} Tools\n\n"
+                
+                for tool in tools:
+                    tool_name = tool["name"]
+                    template = self.get_user_prompt_template(tool_name)
+                    
+                    prompt_list += f"### {tool_name}\n"
+                    prompt_list += f"**Description**: {tool['description']}\n\n"
+                    
+                    if template:
+                        prompt_list += f"**Prompt Template**:\n```\n{template['template']}\n```\n\n"
+                        
+                        prompt_list += "**Examples**:\n"
+                        for i, example in enumerate(template['examples'], 1):
+                            prompt_list += f"{i}. {example}\n"
+                        prompt_list += "\n"
+                        
+                        prompt_list += f"**Usage Tip**: {template['usage_tip']}\n\n"
+                    
+                    prompt_list += "---\n\n"
+        
+        prompt_list += "## Quick Reference\n\n"
+        prompt_list += "### High Priority (Use Frequently)\n"
+        high_priority = [tool for tool in self.get_tools_by_priority()["high"]]
+        for tool in high_priority:
+            prompt_list += f"- **{tool['name']}**: {tool['description'][:60]}...\n"
+        
+        prompt_list += "\n### Medium Priority (Supporting Tools)\n"
+        medium_priority = [tool for tool in self.get_tools_by_priority()["medium"]]
+        for tool in medium_priority:
+            prompt_list += f"- **{tool['name']}**: {tool['description'][:60]}...\n"
+        
+        prompt_list += "\n### Low Priority (Cleanup/Management)\n"
+        low_priority = [tool for tool in self.get_tools_by_priority()["low"]]
+        for tool in low_priority:
+            prompt_list += f"- **{tool['name']}**: {tool['description'][:60]}...\n"
+        
+        return prompt_list
+    
+    def get_json_prompt_list(self) -> Dict[str, Any]:
+        """Generate JSON format prompt list for programmatic access"""
+        categories = self.get_tools_by_category()
+        
+        json_data = {
+            "title": "MCP Tools Prompt List",
+            "description": "Copy and paste prompts for MCP tools",
+            "generated_at": datetime.now().isoformat(),
+            "categories": {},
+            "quick_reference": {
+                "high_priority": [],
+                "medium_priority": [],
+                "low_priority": []
+            }
+        }
+        
+        # Add categories
+        for category, tools in categories.items():
+            category_data = {
+                "description": self.get_category_description(category),
+                "tools": []
+            }
+            
+            for tool in tools:
+                tool_name = tool["name"]
+                template = self.get_user_prompt_template(tool_name)
+                
+                tool_data = {
+                    "name": tool_name,
+                    "description": tool["description"],
+                    "input_schema": tool["inputSchema"]
+                }
+                
+                if template:
+                    tool_data.update({
+                        "prompt_template": template["template"],
+                        "examples": template["examples"],
+                        "usage_tip": template["usage_tip"]
+                    })
+                
+                category_data["tools"].append(tool_data)
+            
+            json_data["categories"][category] = category_data
+        
+        # Add quick reference
+        for priority, tools in self.get_tools_by_priority().items():
+            for tool in tools:
+                json_data["quick_reference"][f"{priority}_priority"].append({
+                    "name": tool["name"],
+                    "description": tool["description"]
+                })
+        
+        json_data["total_tools"] = len(self.get_tools())
+        return json_data
+    
     def enable_placeholder_tool(self, tool_name: str):
         """Enable a placeholder tool (make it available to MCP)"""
         if tool_name in self.placeholder_tools:
