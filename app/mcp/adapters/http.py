@@ -6,7 +6,7 @@ import json
 import time
 from datetime import datetime
 from typing import Dict, Any, Optional
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.mcp.adapters.base import ProtocolAdapter
@@ -43,7 +43,11 @@ class HTTPAdapter(ProtocolAdapter):
         )
         
         @app.post("/")
-        async def handle_mcp_request(raw_request: Request):
+        async def handle_mcp_request(
+            raw_request: Request,
+            mcp_api_key: Optional[str] = Header(None, alias="MCP-API-Key"),
+            mcp_env_api_key: Optional[str] = Header(None, alias="MCP_API_KEY")
+        ):
             try:
                 body = await raw_request.json()
                 

@@ -31,6 +31,7 @@ class UnifiedMCPServer:
             load_dotenv(env_path)
         
         return {
+            'api_key': os.getenv("MCP_API_KEY"),
             'cors_origins': os.getenv("MCP_CORS_ORIGINS", "*"),
             'log_level': os.getenv("LOG_LEVEL", "INFO"),
         }
