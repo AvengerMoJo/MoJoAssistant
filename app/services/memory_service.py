@@ -252,6 +252,27 @@ class MemoryService:
         else:
             return "General conversation without specific focus"
     
+    def get_context_for_query(self, query: str, max_items: int = 10) -> List[Dict[str, Any]]:
+        """
+        Synchronous version of get_context_for_query
+        Retrieve relevant context from all memory tiers to support the current query
+        """
+        # Validate input parameters
+        if not query or not isinstance(query, str) or query.strip() == "":
+            self.logger.warning("Empty or invalid query provided")
+            return []
+
+        if not isinstance(max_items, int) or max_items <= 0:
+            self.logger.warning(f"Invalid max_items: {max_items}, using default value 10")
+            max_items = 10
+
+        # Run synchronous retrieval
+        try:
+            return self._get_context_sequential(query, max_items)
+        except Exception as e:
+            self.logger.warning(f"Sequential retrieval failed: {e}")
+            return []
+
     async def get_context_for_query_async(self, query: str, max_items: int = 10) -> List[Dict[str, Any]]:
         """
         Async version of get_context_for_query that can be called from async contexts
@@ -633,6 +654,136 @@ class MemoryService:
         """Get information about the current embedding model"""
         return self.embedding.get_model_info()
 
+    def list_recent_conversations(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """List recent conversations from active and archival memory"""
+        conversations = []
+        
+        # Get conversations from active memory
+        for page in self.active_memory.pages:
+            if page.page_type in ["conversation", "conversation_complete"] and isinstance(page.content, dict):
+                if "messages" in page.content:
+                    conversations.append({
+                        "id": page.id,
+                        "messages": page.content["messages"],
+                        "timestamp": page.content.get("timestamp", page.created_at),
+                        "summary": page.content.get("summary", ""),
+                        "source": "active_memory",
+                        "page_id": page.id
+                    })
+        
+# Get recent conversations from archival memory
+        archival_conversations = []
+        for memory in self.archival_memory.memories:
+            if isinstance(memory, dict) and memory.get("metadata", {}).get("type") == "conversation":
+                archival_conversations.append({
+                    "id": memory.get("id", ""),
+                    "text": memory.get("text", ""),
+                    "timestamp": memory.get("metadata", {}).get("timestamp", ""),
+                    "summary": memory.get("metadata", {}).get("summary", ""),
+                    "source": "archival_memory",
+                    "metadata": memory.get("metadata", {})
+                })
+        
+        # Sort by timestamp (most recent first)
+        all_conversations = conversations + archival_conversations
+        all_conversations.sort(key=lambda x: x["timestamp"], reverse=True)
+        
+        # Return limited results
+        return all_conversations[:limit]
+    
+    def list_recent_documents(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """List recent documents from knowledge base"""
+        documents = []
+        
+# Get recent documents from knowledge manager
+        for doc in self.knowledge_manager.documents[-limit:]:
+            documents.append({
+                "id": doc.get("id", ""),
+                "content": doc.get("content", doc.get("text", "")),
+                "metadata": doc.get("metadata", {}),
+                "timestamp": doc.get("timestamp", ""),
+                "source": "knowledge_base"
+            })
+        
+        return documents
+    
+    def remove_conversation_message(self, message_id: str) -> bool:
+        """Remove a specific conversation message by its ID"""
+        if not message_id or not message_id.strip():
+            return False
+        
+        removed = False
+        
+        # Search in active memory
+        for page in self.active_memory.pages[:]:  # Use slice to avoid modification during iteration
+            if page.page_type in ["conversation", "conversation_complete"] and isinstance(page.content, dict):
+                if "messages" in page.content:
+                    # Remove messages that match the message_id
+                    original_messages = page.content["messages"][:]
+                    filtered_messages = [
+                        msg for msg in original_messages 
+                        if msg.get("id") != message_id
+                    ]
+                    
+                    if len(filtered_messages) < len(original_messages):
+                        page.content["messages"] = filtered_messages
+                        removed = True
+                        
+                        # If conversation is empty, remove the page
+                        if not filtered_messages:
+                            self.active_memory.pages.remove(page)
+        
+        # Search in archival memory
+        for memory in self.archival_memory.memories[:]:
+            if isinstance(memory, dict) and memory.get("metadata", {}).get("type") == "conversation":
+                if "messages" in memory:
+                    original_messages = memory["messages"][:]
+                    filtered_messages = [
+                        msg for msg in original_messages 
+                        if msg.get("id") != message_id
+                    ]
+                    
+                    if len(filtered_messages) < len(original_messages):
+                        memory["messages"] = filtered_messages
+                        removed = True
+                        
+                        # If conversation is empty, remove the memory
+                        if not filtered_messages:
+                            self.archival_memory.memories.remove(memory)
+        
+        if removed:
+            self.logger.info(f"Removed conversation message {message_id}")
+        
+        return removed
+    
+    def remove_recent_conversations(self, count: int) -> int:
+        """Remove the most recent N conversations"""
+        removed = 0
+        
+        # Remove from active memory (most recent first)
+        active_pages_to_remove = min(count, len(self.active_memory.pages))
+        for _ in range(active_pages_to_remove):
+            if self.active_memory.pages:
+                removed_page = self.active_memory.pages.pop()  # Remove most recent
+                removed += 1
+        
+        # Remove from archival memory if needed
+        if removed < count:
+            archival_to_remove = count - removed
+            # Since archival_memory.memories is a list, we need to remove from the end
+            if len(self.archival_memory.memories) > archival_to_remove:
+                del self.archival_memory.memories[-archival_to_remove:]
+                removed += archival_to_remove
+        
+        return removed
+    
+    def remove_document(self, document_id: str) -> bool:
+        """Remove a specific document from knowledge base"""
+        if document_id in self.knowledge_manager.documents:
+            del self.knowledge_manager.documents[document_id]
+            return True
+        return False
+    
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get statistics about the current memory state"""
         return {

@@ -377,9 +377,8 @@ class HybridMemoryService(MemoryService):
         if self.multi_model_enabled and self.multi_model_storage:
             return self.multi_model_storage.list_recent_conversations(limit)
         else:
-            # For single-model, we'd need to implement this in the base MemoryService
-            # For now, return empty list with a note
-            return []
+            # Use base MemoryService implementation
+            return super().list_recent_conversations(limit)
     
     def remove_conversation_message(self, message_id: str) -> bool:
         """Remove a specific conversation message"""
@@ -403,7 +402,8 @@ class HybridMemoryService(MemoryService):
         if self.multi_model_enabled and self.multi_model_storage:
             return self.multi_model_storage.list_recent_documents(limit)
         else:
-            return []
+            # Use base MemoryService implementation
+            return super().list_recent_documents(limit)
     
     def remove_document(self, document_id: str) -> bool:
         """Remove a specific document"""

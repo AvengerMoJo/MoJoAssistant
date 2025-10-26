@@ -12,7 +12,17 @@ class ToolRegistry:
     
     def __init__(self, memory_service, config: Dict[str, Any] | None = None):
         self.memory_service = memory_service
-        self.config = config or {}
+        # Load Google API config from environment if not provided
+        if config is None:
+            config = {}
+        
+        # Ensure Google API config is loaded
+        if 'google_api_key' not in config:
+            from app.config.mcp_config import load_mcp_config
+            mcp_config = load_mcp_config()
+            config.update(mcp_config)
+        
+        self.config = config
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
         self.placeholder_tools = {
@@ -753,6 +763,14 @@ class ToolRegistry:
     async def _execute_remove_conversation_message(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute remove conversation message"""
         message_id = args.get("message_id", "")
+        
+        # Validate message_id
+        if not message_id or not message_id.strip():
+            return {
+                "success": False,
+                "message": "No conversation message ID was provided"
+            }
+        
         success = self.memory_service.remove_conversation_message(message_id)
         return {
             "success": success,
