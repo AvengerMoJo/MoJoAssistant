@@ -799,6 +799,14 @@ class ToolRegistry:
     async def _execute_remove_document(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute remove document"""
         document_id = args.get("document_id", "")
+        
+        # Validate document_id
+        if not document_id or not document_id.strip():
+            return {
+                "success": False,
+                "message": "No document ID was provided"
+            }
+        
         success = self.memory_service.remove_document(document_id)
         return {
             "success": success,

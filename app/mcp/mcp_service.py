@@ -6,7 +6,7 @@ import os
 import time
 import uuid
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Union, cast
+from typing import Dict, List, Any, Optional, Union, cast, Literal
 import asyncio
 from contextlib import asynccontextmanager
 import logging
@@ -54,6 +54,14 @@ class ContextResponse(BaseModel):
 class DocumentInput(BaseModel):
     content: str = Field(..., description="Document content")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Document metadata")
+    
+    # Enhanced fields for source-aware document handling
+    source_type: Literal["chat", "code", "web", "manual"] = Field(default="chat", description="Source type for context-aware handling")
+    repo_url: Optional[str] = Field(None, description="Git repository URL (for code documents)")
+    file_path: Optional[str] = Field(None, description="File path in repository (for code documents)")
+    commit_hash: Optional[str] = Field(None, description="Git commit hash for version tracking")
+    branch: Optional[str] = Field(None, description="Git branch name")
+    version: Optional[str] = Field(None, description="Document version identifier")
 
 class DocumentsInput(BaseModel):
     documents: List[DocumentInput] = Field(..., description="List of documents to add")
@@ -374,21 +382,48 @@ async def add_documents(
         
         results = []
         
-        for i, doc in enumerate(documents_data.documents):
+        # Process documents individually to maintain detailed error handling
+        for i, doc_input in enumerate(documents_data.documents):
             try:
-                # Add document to knowledge base
-                memory_service.add_to_knowledge_base(doc.content, doc.metadata)
+                # Extract git context if provided
+                git_context = {}
+                if doc_input.repo_url:
+                    git_context["repo_url"] = doc_input.repo_url
+                if doc_input.file_path:
+                    git_context["file_path"] = doc_input.file_path
+                if doc_input.commit_hash:
+                    git_context["commit_hash"] = doc_input.commit_hash
+                if doc_input.branch:
+                    git_context["branch"] = doc_input.branch
+                if doc_input.version:
+                    git_context["version"] = doc_input.version
                 
-                doc_id = f"doc_{uuid.uuid4().hex[:8]}"
+                # Add document to knowledge base with enhanced parameters
+                memory_service.add_to_knowledge_base(
+                    doc_input.content,
+                    doc_input.metadata,
+                    doc_input.source_type,
+                    git_context if git_context else None
+                )
+                
+                # Generate appropriate document ID
+                if doc_input.source_type == "code" and doc_input.repo_url and doc_input.file_path:
+                    # Generate deterministic ID for git-based documents
+                    content = f"{doc_input.repo_url}:{doc_input.file_path}"
+                    if doc_input.commit_hash:
+                        content += f":{doc_input.commit_hash}"
+                    doc_id = hashlib.sha256(content.encode()).hexdigest()[:16]
+                else:
+                    doc_id = f"doc_{uuid.uuid4().hex[:8]}"
+                
                 results.append(DocumentResponse(
                     document_id=doc_id,
                     status="success",
-                    message="Document added successfully"
+                    message=f"Document added with source type: {doc_input.source_type}"
                 ))
                 
             except Exception as e:
                 if logger is not None:
-
                     logger.error(f"Error adding document {i}: {e}")
                 results.append(DocumentResponse(
                     document_id=f"doc_error_{i}",

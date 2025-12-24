@@ -1,10 +1,11 @@
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 import os
 import json
 import datetime
 import uuid
 import math
 import re
+import hashlib
 
 class KnowledgeManager:
     """
@@ -128,42 +129,67 @@ class KnowledgeManager:
             
         return chunks
     
-    def add_documents(self, documents: List[str], metadatas: List[Dict[str, Any]] | None = None):
-        """Add documents to the knowledge base"""
+    def add_documents(self, documents: List[str], metadatas: List[Dict[str, Any]] | None = None,
+                     source_types: List[str] | None = None,
+                     git_contexts: List[Dict[str, Any]] | None = None):
+        """Add documents to the knowledge base with enhanced source awareness"""
+        
+        # Set defaults for backward compatibility
         if metadatas is None:
             metadatas = [{}] * len(documents)
+        if source_types is None:
+            source_types = ["chat"] * len(documents)  # Default to "chat" for existing documents
+        if git_contexts is None:
+            git_contexts = [{}] * len(documents)
             
-        for i, (doc, metadata) in enumerate(zip(documents, metadatas)):
-            # Generate document ID
-            doc_id = str(uuid.uuid4())
+        for i, (doc, metadata, source_type, git_context) in enumerate(zip(documents, metadatas, source_types, git_contexts)):
             
-            # Split document into chunks for better retrieval
-            chunks = self._chunk_text(doc)
+            # Generate appropriate document ID
+            if source_type == "code" and git_context.get("repo_url") and git_context.get("file_path"):
+                doc_id = self._generate_repo_based_id(
+                    repo_url=git_context["repo_url"],
+                    file_path=git_context["file_path"],
+                    commit_hash=git_context.get("commit_hash")
+                )
+            else:
+                doc_id = str(uuid.uuid4())
             
-            # Generate embeddings for each chunk
-            chunk_embeddings = self.embedding.get_batch_embeddings(chunks)
-            
-            # Store document with chunks
+            # Enhanced document structure with source awareness
             document = {
                 "id": doc_id,
                 "text": doc,
-                "chunks": chunks,
+                "chunks": self._chunk_text(doc),
                 "metadata": metadata,
-                "created_at": datetime.datetime.now().isoformat()
+                "source_type": source_type,
+                "git_context": git_context if git_context else None,
+                "created_at": datetime.datetime.now().isoformat(),
+                "last_updated": datetime.datetime.now().isoformat()
             }
             
             self.documents.append(document)
             
-            # Store embeddings for each chunk with reference to parent doc
+            # Generate and store embeddings with source type indexing
+            chunk_embeddings = self.embedding.get_batch_embeddings(document["chunks"])
             for j, embedding in enumerate(chunk_embeddings):
                 self.chunk_embeddings.append({
                     "doc_id": doc_id,
                     "chunk_index": j,
-                    "embedding": embedding
+                    "embedding": embedding,
+                    "source_type": source_type  # Index by source type for faster filtering
                 })
         
         # Save to disk
         self._save_data()
+    
+    def _generate_repo_based_id(self, repo_url: str, file_path: str, commit_hash: Optional[str] = None) -> str:
+        """Generate deterministic ID based on repository context"""
+        # Create a hash from repo URL + file path + (optional) commit
+        content = f"{repo_url}:{file_path}"
+        if commit_hash:
+            content += f":{commit_hash}"
+        
+        # Use SHA256 for deterministic but secure ID
+        return hashlib.sha256(content.encode()).hexdigest()[:16]
     
     def query(self, query_text: str, similarity_top_k: int = 3) -> List[Tuple[str, float]]:
         """Query the knowledge base"""
@@ -211,6 +237,67 @@ class KnowledgeManager:
                 break
         
         return results
+    
+    def query_by_source_type(self, query_text: str, source_type: str | None = None, 
+                           similarity_top_k: int = 3) -> List[Tuple[str, float]]:
+        """Query documents filtered by source type"""
+        if not self.chunk_embeddings:
+            return []
+        
+        # Generate query embedding
+        query_embedding = self.embedding.get_text_embedding(query_text)
+        
+        # Filter embeddings by source type if specified
+        relevant_chunks = []
+        for chunk_data in self.chunk_embeddings:
+            if source_type is None or chunk_data.get("source_type") == source_type:
+                relevant_chunks.append(chunk_data)
+        
+        if not relevant_chunks:
+            return []
+        
+        # Calculate similarity with filtered chunks
+        chunk_scores = []
+        for i, chunk_data in enumerate(relevant_chunks):
+            # Calculate cosine similarity
+            similarity = self._cosine_similarity(query_embedding, chunk_data["embedding"])
+            chunk_scores.append((chunk_data, similarity))
+        
+        # Sort by similarity (highest first)
+        chunk_scores.sort(key=lambda x: x[1], reverse=True)
+        
+        # Get top results while avoiding duplicates from same document
+        results = []
+        seen_docs: set[str] = set()
+        
+        for chunk_data, score in chunk_scores:
+            doc_id = chunk_data["doc_id"]
+            
+            # Skip if we already have a chunk from this document
+            if doc_id in seen_docs and len(seen_docs) >= similarity_top_k:
+                continue
+                
+            # Find the document and chunk
+            for doc in self.documents:
+                if doc["id"] == doc_id:
+                    chunk_index = chunk_data["chunk_index"]
+                    
+                    if 0 <= chunk_index < len(doc["chunks"]):
+                        chunk_text = doc["chunks"][chunk_index]
+                        results.append((chunk_text, float(score)))
+                        seen_docs.add(doc_id)
+                        break
+            
+            # Stop if we have enough results
+            if len(results) >= similarity_top_k:
+                break
+        
+        return results
+    
+    def get_repository_documents(self, repo_url: str) -> List[Dict[str, Any]]:
+        """Get all documents from specific repository"""
+        return [doc for doc in self.documents 
+                if doc.get("git_context") and doc.get("git_context", {}).get("repo_url") == repo_url]
     
     def _cosine_similarity(self, vec_a: List[float], vec_b: List[float]) -> float:
         """Calculate cosine similarity between two vectors"""

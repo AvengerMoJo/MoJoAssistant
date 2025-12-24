@@ -130,24 +130,32 @@ class HybridMemoryService(MemoryService):
         else:
             super().add_assistant_message(message)
     
-    def add_to_knowledge_base(self, document: str, metadata: Dict[str, Any] | None = None) -> None:
-        """Add document - uses multi-model if enabled"""
+    def add_to_knowledge_base(self, document: str, metadata: Dict[str, Any] | None = None,
+                             source_type: str = "chat",
+                             git_context: Dict[str, Any] | None = None) -> None:
+        """Add document with enhanced parameters - uses multi-model if enabled"""
         if metadata is None:
             metadata = {}
             
         if self.multi_model_enabled and self.multi_model_storage and self.embedding_models:
             try:
+                # Enhanced metadata with source information
+                enhanced_metadata = metadata.copy()
+                enhanced_metadata["source_type"] = source_type
+                if git_context:
+                    enhanced_metadata["git_context"] = git_context
+                
                 doc_id = self.multi_model_storage.store_document(
                     content=document,
-                    metadata=metadata,
+                    metadata=enhanced_metadata,
                     embedding_models=self.embedding_models
                 )
                 self.logger.debug(f"Stored document with multi-model: {doc_id}")
             except Exception as e:
                 self.logger.warning(f"Multi-model storage failed, falling back to single-model: {e}")
-                super().add_to_knowledge_base(document, metadata)
+                super().add_to_knowledge_base(document, metadata, source_type, git_context)
         else:
-            super().add_to_knowledge_base(document, metadata)
+            super().add_to_knowledge_base(document, metadata, source_type, git_context)
     
     def get_context_for_query(self, query: str, max_items: int = 10) -> List[Dict[str, Any]]:
         """Get context - uses multi-model with parallel retrieval if enabled"""
@@ -410,5 +418,5 @@ class HybridMemoryService(MemoryService):
         if self.multi_model_enabled and self.multi_model_storage:
             return self.multi_model_storage.remove_document(document_id)
         else:
-            self.logger.warning("Document removal only supported in multi-model mode")
-            return False
+            # Fall back to parent class implementation for single-mode operation
+            return super().remove_document(document_id)

@@ -85,7 +85,73 @@ class MemoryService:
         self.archival_promotion_threshold = self.config.get('archival_promotion_threshold', 0.6)
         self.memory_paging_threshold = self.config.get('memory_paging_threshold', 0.5)
         
+        # Auto-load most recent state if available
+        self.logger.info("Attempting to auto-load recent state...")
+        self._auto_load_recent_state()
+        
         self.logger.info(f"Memory manager initialized with {self.embedding.backend} embeddings using model: {self.embedding.model_name}")
+    
+    def _auto_load_recent_state(self) -> None:
+        """
+        Auto-load most recent state file to restore conversation context
+        This ensures personal history is available immediately on startup
+        """
+        import glob
+        
+        # List of possible state files in order of priority
+        state_files = [
+            'json/final_state.json',      # Most recent complete state
+            'json/interrupt_state.json',  # Interrupted session
+            'json/error_state.json'       # Error recovery state
+        ]
+        
+        # Find most recent state file
+        recent_file = None
+        recent_time = 0
+        
+        self.logger.info(f"Searching for state files in: {self.data_dir}")
+        
+        for state_file in state_files:
+            file_path = os.path.join(self.data_dir, state_file)
+            self.logger.info(f"Checking state file: {file_path}")
+            if os.path.exists(file_path):
+                try:
+                    mod_time = os.path.getmtime(file_path)
+                    self.logger.info(f"Found {file_path} with modification time: {mod_time}")
+                    if mod_time > recent_time:
+                        recent_time = mod_time
+                        recent_file = file_path
+                        self.logger.info(f"New most recent file: {recent_file}")
+                except OSError as e:
+                    self.logger.warning(f"Could not check modification time for {file_path}: {e}")
+                    continue
+            else:
+                self.logger.info(f"State file not found: {file_path}")
+        
+        # Auto-load the most recent state file if found
+        if recent_file:
+            self.logger.info(f"Auto-loading most recent state file: {recent_file}")
+            try:
+                success = self.load_memory_state(recent_file)
+                if success:
+                    self.logger.info(f"Auto-loaded memory state from {recent_file}")
+                    
+                    # Log what was loaded
+                    working_msgs = len(self.working_memory.get_messages())
+                    active_pages = len(self.active_memory.pages)
+                    archival_items = len(self.archival_memory.memories)
+                    
+                    self.logger.info(f"Restored: {working_msgs} working messages, {active_pages} active pages, {archival_items} archival items")
+                else:
+                    self.logger.warning(f"Failed to auto-load memory state from {recent_file}")
+            except Exception as e:
+                self.logger.error(f"Error auto-loading memory state: {e}")
+                log_error_with_context(e, {
+                    "operation": "_auto_load_recent_state",
+                    "file_path": recent_file
+                }, self.logger)
+        else:
+            self.logger.info("No previous state file found - starting with fresh memory")
     
     def _setup_embedding(self, model_name: str, backend: str, device: str | None = None) -> None:
         """
@@ -526,14 +592,22 @@ class MemoryService:
         self.add_user_message(query)
         self.add_assistant_message(response)
     
-    def add_to_knowledge_base(self, document: str, metadata: Dict[str, Any] | None = None) -> None:
+    def add_to_knowledge_base(self, document: str, metadata: Dict[str, Any] | None = None,
+                             source_type: str = "chat",
+                             git_context: Dict[str, Any] | None = None) -> None:
         """
-        Add a document to the knowledge base
+        Add a document to the knowledge base with enhanced source awareness
         """
         if metadata is None:
             metadata = {}
         
-        self.knowledge_manager.add_documents([document], [metadata])
+        # Convert single document to list format for enhanced method
+        self.knowledge_manager.add_documents(
+            documents=[document], 
+            metadatas=[metadata],
+            source_types=[source_type],
+            git_contexts=[git_context] if git_context else [{}]
+        )
     
     def save_memory_state(self, file_path: str) -> None:
         """
@@ -779,10 +853,24 @@ class MemoryService:
     
     def remove_document(self, document_id: str) -> bool:
         """Remove a specific document from knowledge base"""
-        if document_id in self.knowledge_manager.documents:
-            del self.knowledge_manager.documents[document_id]
-            return True
-        return False
+        if not document_id or not document_id.strip():
+            return False
+        
+        removed = False
+        
+        # Search through documents list and remove by ID
+        for i, doc in enumerate(self.knowledge_manager.documents[:]):
+            if doc.get("id") == document_id:
+                del self.knowledge_manager.documents[i]
+                removed = True
+                break
+        
+        if removed:
+            # Save the updated knowledge base to disk
+            self.knowledge_manager._save_data()
+            self.logger.info(f"Removed document {document_id}")
+        
+        return removed
     
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get statistics about the current memory state"""

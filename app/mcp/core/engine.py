@@ -32,8 +32,8 @@ class MCPEngine:
         
         if not self.memory_service:
             from app.services.hybrid_memory_service import HybridMemoryService
-            self.memory_service = HybridMemoryService()
-            self.logger.info("Memory service initialized")
+            self.memory_service = HybridMemoryService(multi_model_enabled=True)
+            self.logger.info("Memory service initialized with multi-model support")
         
         self.tool_registry = ToolRegistry(self.memory_service, self.config)
         self.logger.info(f"Tool registry initialized with {len(self.tool_registry.get_tools())} tools")
