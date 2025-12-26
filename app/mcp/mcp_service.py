@@ -649,7 +649,50 @@ async def switch_embedding_model(
         raise HTTPException(status_code=500, detail=f"Model switch failed: {str(e)}")
 
 
+def setup_graceful_shutdown():
+    """Setup graceful shutdown handlers to save memory before exit"""
+    import signal
+    import atexit
+    
+    def save_memory_on_shutdown():
+        """Save current context and working memory before shutdown"""
+        if memory_service:
+            try:
+                logger.info("Graceful shutdown: saving current memory context...")
+                
+                # Save current working memory if it has content
+                if hasattr(memory_service, 'working_memory') and memory_service.working_memory:
+                    working_messages = memory_service.working_memory.get_messages()
+                    if working_messages:
+                        logger.info(f"Saving {len(working_messages)} working memory messages")
+                        # Store working memory as temporary context
+                        temp_context = {
+                            "type": "working_memory_backup",
+                            "messages": working_messages,
+                            "timestamp": datetime.now().isoformat(),
+                            "backup_reason": "graceful_shutdown"
+                        }
+                        memory_service.active_memory.add_page(temp_context, "shutdown_backup")
+                
+                # Save current conversation if active
+                if hasattr(memory_service, 'current_conversation') and memory_service.current_conversation:
+                    logger.info(f"Saving current conversation with {len(memory_service.current_conversation)} messages")
+                    memory_service.end_conversation()
+                
+                logger.info("Memory context saved successfully")
+            except Exception as e:
+                if logger:
+                    logger.error(f"Error saving memory on shutdown: {e}")
+    
+    # Register shutdown handlers
+    signal.signal(signal.SIGTERM, lambda signum, frame: save_memory_on_shutdown())
+    signal.signal(signal.SIGINT, lambda signum, frame: save_memory_on_shutdown())
+    atexit.register(save_memory_on_shutdown)
+
 if __name__ == "__main__":
+    # Setup graceful shutdown
+    setup_graceful_shutdown()
+    
     # Run the service
     host = os.getenv("MCP_HOST", "0.0.0.0")
     port = int(os.getenv("MCP_PORT", "8000"))

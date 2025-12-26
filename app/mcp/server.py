@@ -4,15 +4,20 @@ File: app/mcp/server.py
 """
 import os
 from typing import Dict, Any
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+    # Load .env file if it exists
+    env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+except ImportError:
+    # dotenv is optional, continue without it
+    pass
+
 from app.mcp.core.engine import MCPEngine
 from app.mcp.adapters.stdio import STDIOAdapter
 from app.mcp.adapters.http import HTTPAdapter
-
-# Load .env file if it exists
-env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
-if os.path.exists(env_path):
-    load_dotenv(env_path)
 
 
 class UnifiedMCPServer:
