@@ -4,6 +4,42 @@
 
 Successfully implemented **Phase 1** of the git-aware document enhancement for MoJoAssistant. This provides the foundation for distinguishing between chat-generated documentation and code-generated documentation from private git repositories.
 
+## 🎯 **Strategic Vision: Repository-Based AI Knowledge System**
+
+### **Core Problem Solved**
+The enhancement addresses two distinct workflows:
+
+**Chat Client Workflow:**
+- Users have conversations and store conversational knowledge
+- Documents added manually through chat interface
+- No specific source context needed
+
+**Development CLI Workflow (Crush + MiniMax-M2.1):**
+- Developers integrate actual source code files
+- System understands repository context and git history  
+- Documents represent real code with full git provenance
+
+### **Repository-Based Storage Architecture**
+```
+knowledge_base/
+└── github.com/
+    └── MoJoAssistant/                    # ← Repository organized
+        └── main/                         # ← Branch organized  
+            └── c6399e7/                  # ← Commit organized
+                └── app/
+                    └── mcp/
+                        └── mcp_service.py
+                            └── Document: "Enhanced git-aware doc system"
+```
+
+### **AI System Intelligence Features**
+1. **Quick Filtering**: AI filters documents by repository scope and relevance
+2. **Time Travel**: AI can track evolution through git log history
+3. **Intelligent Updates**: AI compares repo state vs knowledge base for efficient updates
+4. **Repository Navigation**: AI understands code structure like human developer
+
+This transforms the AI from a document searcher into a **repository-aware development assistant**.
+
 ## ✅ **What Was Implemented**
 
 ### 1. **Enhanced Document Schema**

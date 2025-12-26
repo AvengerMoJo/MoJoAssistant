@@ -1,5 +1,36 @@
 # Practical Implementation: Enhanced MCP add_documents Tool
 
+## 🎯 **Strategic Context: Two Workflows, One System**
+
+### **Problem Being Solved**
+The enhancement addresses fundamental differences between two usage patterns:
+
+**Chat Client Workflow:**
+- Conversational knowledge storage
+- Manual document addition  
+- No repository context needed
+
+**Development CLI Workflow (Crush + MiniMax-M2.1):**
+- Source code integration with git context
+- Repository-aware document management
+- Full git provenance tracking
+
+### **Repository-Based Vision**
+```python
+# Current: Flat storage
+knowledge_base/ → doc_12345, doc_67890, doc_abcde
+
+# Future: Repository-organized storage  
+knowledge_base/
+└── github.com/
+    └── MoJoAssistant/
+        └── main/
+            └── c6399e7/
+                └── app/mcp/mcp_service.py
+```
+
+This transforms the AI from a document searcher into a **repository-aware development assistant** that understands code context like a human developer.
+
 ## Quick Test: Current vs Enhanced Usage
 
 ### Current Usage (Still Works)
