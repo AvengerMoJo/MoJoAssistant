@@ -174,7 +174,7 @@ class ToolRegistry:
             },
             {
                 "name": "add_documents",
-                "description": "Add reference documents, code examples, or knowledge to the permanent knowledge base for future retrieval. When to use: Use this when you want to permanently store reference material, documentation, code snippets, or any information that should be available for future conversations. How it works: Documents are embedded and stored in the knowledge base with optional metadata. Why useful: Builds a personal knowledge repository that can be searched later using get_memory_context.",
+                "description": "Add reference documents, code examples, or knowledge to the permanent knowledge base with source context awareness for future retrieval. When to use: Use this when you want to permanently store reference material, documentation, code snippets, or any information that should be available for future conversations. How it works: Documents are embedded and stored in the knowledge base with optional metadata and git context. Why useful: Builds a personal knowledge repository with source-aware categorization that can be searched later using get_memory_context.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -193,6 +193,32 @@ class ToolRegistry:
                                         "type": "object",
                                         "description": "Optional metadata (title, topic, tags, source, etc.) for better organization",
                                         "additionalProperties": True
+                                    },
+                                    "source_type": {
+                                        "type": "string",
+                                        "enum": ["chat", "code", "web", "manual"],
+                                        "default": "chat",
+                                        "description": "Source type for context-aware handling"
+                                    },
+                                    "repo_url": {
+                                        "type": "string",
+                                        "description": "Git repository URL (for code documents)"
+                                    },
+                                    "file_path": {
+                                        "type": "string",
+                                        "description": "Relative file path in repository (for code documents)"
+                                    },
+                                    "commit_hash": {
+                                        "type": "string",
+                                        "description": "Git commit hash for version tracking"
+                                    },
+                                    "branch": {
+                                        "type": "string",
+                                        "description": "Git branch name"
+                                    },
+                                    "version": {
+                                        "type": "string",
+                                        "description": "Document version identifier"
                                     }
                                 },
                                 "required": ["content"]
