@@ -12,7 +12,7 @@ from jwt import PyJWKClient, PyJWKClientError
 import httpx
 from ..core.models import ErrorCode
 from .models import OAuthToken, OAuthError
-from .config import OAuthConfig
+from app.config.app_config import OAuthConfig
 from app.config.logging_config import get_logger
 
 

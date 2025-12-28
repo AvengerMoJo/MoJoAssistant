@@ -4,37 +4,27 @@ File: app/mcp/server.py
 """
 import os
 from typing import Dict, Any
-from dotenv import load_dotenv
+from app.config.app_config import get_app_config, AppConfig
 from app.mcp.core.engine import MCPEngine
 from app.mcp.adapters.stdio import STDIOAdapter
 from app.mcp.adapters.http import HTTPAdapter
 
-# Load .env file if it exists
-env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
-if os.path.exists(env_path):
-    load_dotenv(env_path)
-
 
 class UnifiedMCPServer:
     """Main server orchestrator"""
-    
-    def __init__(self, config: Dict[str, Any] = None):
-        self.config = config or self._load_config()
-        self.engine = MCPEngine(config=self.config)
-        self.logger = None
-    
-    def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from environment variables"""
-        # Load .env file if it exists
-        env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
-        if os.path.exists(env_path):
-            load_dotenv(env_path)
-        
-        return {
-            'api_key': os.getenv("MCP_API_KEY"),
-            'cors_origins': os.getenv("MCP_CORS_ORIGINS", "*"),
-            'log_level': os.getenv("LOG_LEVEL", "INFO"),
+
+    def __init__(self, app_config: AppConfig = None):
+        self.app_config = app_config or get_app_config()
+
+        # Create legacy config dict for backwards compatibility with MCPEngine
+        legacy_config = {
+            'api_key': self.app_config.server.api_key,
+            'cors_origins': ",".join(self.app_config.server.cors_origins),
+            'log_level': self.app_config.logging.level,
         }
+
+        self.engine = MCPEngine(config=legacy_config)
+        self.logger = None
     
     async def run_stdio(self):
         """Run server in STDIO mode (for Claude Desktop)"""
@@ -63,16 +53,32 @@ class UnifiedMCPServer:
                 self.logger.error(f"Error in STDIO loop: {e}", exc_info=True)
                 continue
     
-    async def run_http(self, host: str = "0.0.0.0", port: int = 8000):
+    async def run_http(self, host: str = None, port: int = None):
         """Run server in HTTP mode (for Web/Mobile)"""
+        # Use configuration values if not provided
+        if host is None:
+            host = self.app_config.server.host
+        if port is None:
+            port = self.app_config.server.port
+
         await self.engine.initialize()
         self.logger = self.engine.logger
-        
-        adapter = HTTPAdapter(self.engine, self.config)
+
+        # Create legacy config for HTTPAdapter
+        legacy_config = {
+            'api_key': self.app_config.server.api_key,
+            'cors_origins': ",".join(self.app_config.server.cors_origins),
+            'log_level': self.app_config.logging.level,
+        }
+
+        adapter = HTTPAdapter(self.engine, legacy_config)
         adapter.set_logger(self.logger)
-        
+
         self.logger.info(f"MCP Server starting in HTTP mode on {host}:{port}")
-        
+        self.logger.info(f"OAuth enabled: {self.app_config.oauth.enabled}")
+        if self.app_config.oauth.enabled:
+            self.logger.info(f"OAuth issuer: {self.app_config.oauth.issuer}")
+
         try:
             await adapter.run(host, port)
         except Exception as e:

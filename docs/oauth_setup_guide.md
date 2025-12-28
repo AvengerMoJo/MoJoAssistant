@@ -2,7 +2,51 @@
 
 ## Overview
 
-MoJoAssistant supports OAuth 2.1 authentication to work with Claude Connectors while maintaining backwards compatibility with direct MCP clients.
+MoJoAssistant uses a **unified configuration system** that supports OAuth 2.1 authentication for Claude Connectors while maintaining backwards compatibility with direct MCP clients. All configuration is managed through environment variables and the unified `app.config.app_config` module.
+
+## Unified Configuration System
+
+MoJoAssistant uses a centralized configuration system located at `app.config.app_config.py` that:
+
+- ✅ **Loads from `.env` file** - All settings in one place
+- ✅ **Environment variable override** - Production flexibility
+- ✅ **Type validation** - Ensures configuration correctness
+- ✅ **Default values** - Works out of the box
+- ✅ **Global access** - `get_app_config()` from anywhere
+
+### Configuration Categories
+
+The unified system manages these configuration areas:
+
+1. **Server** - HTTP server settings (`SERVER_HOST`, `SERVER_PORT`, etc.)
+2. **OAuth** - OAuth 2.1 authentication (`OAUTH_*` variables)
+3. **LLM** - AI model providers (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
+4. **Search** - Web search functionality (`GOOGLE_API_KEY`, etc.)
+5. **Memory** - Knowledge and embedding system (`EMBEDDING_MODEL`, etc.)
+6. **Logging** - Log configuration (`LOG_LEVEL`, etc.)
+
+### Using Configuration in Code
+
+```python
+from app.config.app_config import get_app_config
+
+# Get global configuration
+config = get_app_config()
+
+# Access OAuth settings
+if config.oauth.enabled:
+    print(f"OAuth issuer: {config.oauth.issuer}")
+
+# Access server settings
+print(f"Server running on {config.server.host}:{config.server.port}")
+
+# Check if features are properly configured
+if config.is_oauth_valid():
+    print("OAuth is properly configured")
+
+if config.is_search_enabled():
+    print("Search functionality is available")
+```
 
 ## Quick Start
 

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.mcp.adapters.base import ProtocolAdapter
 from app.mcp.core.models import MCPRequest, MCPResponse
-from app.mcp.oauth.config import OAuthConfig
+from app.config.app_config import get_app_config
 from app.mcp.oauth.middleware import (
     OAuthMiddleware,
     OptionalOAuthToken,
@@ -30,7 +30,7 @@ class HTTPAdapter(ProtocolAdapter):
         self.logger = None
 
         # Initialize OAuth configuration
-        self.oauth_config = OAuthConfig.from_env()
+        self.oauth_config = get_app_config().oauth
     
     def set_logger(self, logger):
         self.logger = logger
@@ -56,6 +56,65 @@ class HTTPAdapter(ProtocolAdapter):
         if self.oauth_config.enabled:
             oauth_middleware = OAuthMiddleware(self.oauth_config)
             app.middleware("http")(oauth_middleware)
+
+        # Add startup and shutdown event handlers
+        @app.on_event("startup")
+        async def startup_event():
+            """Application startup event handler"""
+            if self.logger:
+                self.logger.info("MCP Server startup initiated")
+
+                # Log configuration status
+                self.logger.info(f"OAuth enabled: {self.oauth_config.enabled}")
+                if self.oauth_config.enabled:
+                    self.logger.info(f"OAuth issuer: {self.oauth_config.issuer}")
+                    self.logger.info(f"OAuth audience: {self.oauth_config.audience}")
+
+                # Initialize memory system if needed
+                try:
+                    if hasattr(self.engine, 'memory_service'):
+                        # Memory service is initialized in __init__, just log status
+                        if hasattr(self.engine.memory_service, 'multi_model_enabled'):
+                            multi_enabled = self.engine.memory_service.multi_model_enabled
+                            self.logger.info(f"Memory service ready (multi-model: {multi_enabled})")
+                        else:
+                            self.logger.info("Memory service ready")
+
+                    if hasattr(self.engine, 'knowledge_service'):
+                        # Knowledge service typically doesn't need explicit initialization
+                        self.logger.info("Knowledge service ready")
+
+                    self.logger.info("MCP Server startup complete")
+                except Exception as e:
+                    self.logger.error(f"Error during startup initialization: {e}")
+
+        @app.on_event("shutdown")
+        async def shutdown_event():
+            """Application shutdown event handler"""
+            if self.logger:
+                self.logger.info("MCP Server shutdown initiated")
+
+                # Cleanup memory system
+                try:
+                    if hasattr(self.engine, 'memory_service'):
+                        # Check if memory service has explicit cleanup methods
+                        if hasattr(self.engine.memory_service, 'close'):
+                            await self.engine.memory_service.close()
+                        elif hasattr(self.engine.memory_service, 'cleanup'):
+                            await self.engine.memory_service.cleanup()
+                        self.logger.info("Memory service cleanup complete")
+
+                    if hasattr(self.engine, 'knowledge_service'):
+                        # Check if knowledge service has explicit cleanup methods
+                        if hasattr(self.engine.knowledge_service, 'close'):
+                            await self.engine.knowledge_service.close()
+                        elif hasattr(self.engine.knowledge_service, 'cleanup'):
+                            await self.engine.knowledge_service.cleanup()
+                        self.logger.info("Knowledge service cleanup complete")
+
+                    self.logger.info("MCP Server shutdown complete")
+                except Exception as e:
+                    self.logger.error(f"Error during shutdown cleanup: {e}")
 
         # OAuth 2.1 Protected Resource Metadata endpoint
         @app.get("/.well-known/oauth-protected-resource")

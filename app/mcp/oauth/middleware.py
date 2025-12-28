@@ -7,7 +7,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from .token_validator import TokenValidator, TokenValidationError
 from .models import OAuthToken
-from .config import OAuthConfig
+from app.config.app_config import OAuthConfig, get_app_config
 from app.config.logging_config import get_logger
 
 
@@ -27,7 +27,7 @@ def get_oauth_config() -> OAuthConfig:
     """Get current OAuth configuration"""
     global _oauth_config
     if _oauth_config is None:
-        _oauth_config = OAuthConfig.from_env()
+        _oauth_config = get_app_config().oauth
     return _oauth_config
 
 
