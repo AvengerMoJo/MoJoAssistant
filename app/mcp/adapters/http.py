@@ -1,16 +1,23 @@
 """
-HTTP Protocol Adapter for Web/Mobile clients
+HTTP Protocol Adapter for Web/Mobile clients with OAuth 2.1 support
 File: app/mcp/adapters/http.py
 """
 import json
 import time
 from datetime import datetime
 from typing import Dict, Any, Optional
-from fastapi import FastAPI, Request, Header
+from fastapi import FastAPI, Request, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.mcp.adapters.base import ProtocolAdapter
 from app.mcp.core.models import MCPRequest, MCPResponse
+from app.mcp.oauth.config import OAuthConfig
+from app.mcp.oauth.middleware import (
+    OAuthMiddleware,
+    OptionalOAuthToken,
+    RequiredOAuthToken,
+    create_protected_resource_metadata_response
+)
 
 
 class HTTPAdapter(ProtocolAdapter):
@@ -21,84 +28,64 @@ class HTTPAdapter(ProtocolAdapter):
         self.config = config
         self.app = None
         self.logger = None
+
+        # Initialize OAuth configuration
+        self.oauth_config = OAuthConfig.from_env()
     
     def set_logger(self, logger):
         self.logger = logger
     
     def create_app(self):
-        """Create FastAPI application"""
+        """Create FastAPI application with OAuth 2.1 support"""
         app = FastAPI(
             title="MoJoAssistant MCP Server",
             version="1.0.0",
-            description="Simple MCP Server for memory and knowledge management"
+            description="MCP Server with OAuth 2.1 support for Claude Connectors"
         )
-        
-        # Simple CORS
+
+        # Enhanced CORS for OAuth
         app.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],
             allow_credentials=True,
             allow_methods=["*"],
-            allow_headers=["*"],
+            allow_headers=["*", "Authorization"],  # Include Authorization header
         )
-        
+
+        # Initialize OAuth middleware if enabled
+        if self.oauth_config.enabled:
+            oauth_middleware = OAuthMiddleware(self.oauth_config)
+            app.middleware("http")(oauth_middleware)
+
+        # OAuth 2.1 Protected Resource Metadata endpoint
+        @app.get("/.well-known/oauth-protected-resource")
+        async def oauth_protected_resource_metadata():
+            """OAuth 2.1 Protected Resource Metadata per RFC"""
+            if not self.oauth_config.enabled:
+                return JSONResponse(
+                    content={"error": "OAuth not enabled"},
+                    status_code=501
+                )
+            return create_protected_resource_metadata_response()
+
+        # OAuth-protected MCP endpoint for Claude Connectors
+        @app.post("/oauth")
+        async def handle_oauth_mcp_request(
+            raw_request: Request,
+            token: RequiredOAuthToken
+        ):
+            """OAuth-protected MCP endpoint for Claude Connectors"""
+            return await self._process_mcp_request(raw_request, token.user_id)
+
+        # Original MCP endpoint (backwards compatible - no OAuth required)
         @app.post("/")
         async def handle_mcp_request(
             raw_request: Request,
             mcp_api_key: Optional[str] = Header(None, alias="MCP-API-Key"),
             mcp_env_api_key: Optional[str] = Header(None, alias="MCP_API_KEY")
         ):
-            try:
-                body = await raw_request.json()
-                
-                # Validate JSON-RPC 2.0 format
-                if not isinstance(body, dict):
-                    return JSONResponse(
-                        content={"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}},
-                        status_code=400
-                    )
-                
-                if "jsonrpc" not in body or body.get("jsonrpc") != "2.0":
-                    return JSONResponse(
-                        content={"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32600, "message": "Invalid Request"}},
-                        status_code=400
-                    )
-                
-                if "method" not in body:
-                    return JSONResponse(
-                        content={"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32600, "message": "Invalid Request"}},
-                        status_code=400
-                    )
-                
-                mcp_request = MCPRequest(
-                    method=body.get("method", ""),
-                    params=body.get("params", {}),
-                    request_id=body.get("id"),
-                    auth_token=None
-                )
-                
-                if self.logger:
-                    self.logger.debug(f"HTTP received: {mcp_request.method}")
-                
-                mcp_response = await self.engine.process_request(mcp_request)
-                
-                if mcp_response is None:
-                    return JSONResponse(content={}, status_code=202)
-                
-                return JSONResponse(content=mcp_response.to_dict())
-            
-            except json.JSONDecodeError:
-                return JSONResponse(
-                    content={"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
-                    status_code=400
-                )
-            except Exception as e:
-                if self.logger:
-                    self.logger.error(f"HTTP request error: {e}")
-                return JSONResponse(
-                    content={"jsonrpc": "2.0", "id": None, "error": {"code": -32603, "message": "Internal error"}},
-                    status_code=500
-                )
+            """Original MCP endpoint - backwards compatible"""
+            return await self._process_mcp_request(raw_request)
         
         @app.get("/health")
         async def health_check():
@@ -110,7 +97,72 @@ class HTTPAdapter(ProtocolAdapter):
         
         self.app = app
         return app
-    
+
+    async def _process_mcp_request(self, raw_request: Request, user_id: Optional[str] = None) -> JSONResponse:
+        """
+        Shared MCP request processing logic
+
+        Args:
+            raw_request: FastAPI Request object
+            user_id: Optional user ID from OAuth token (for audit/isolation)
+
+        Returns:
+            JSONResponse: MCP response
+        """
+        try:
+            body = await raw_request.json()
+
+            # Validate JSON-RPC 2.0 format
+            if not isinstance(body, dict):
+                return JSONResponse(
+                    content={"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}},
+                    status_code=400
+                )
+
+            if "jsonrpc" not in body or body.get("jsonrpc") != "2.0":
+                return JSONResponse(
+                    content={"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32600, "message": "Invalid Request"}},
+                    status_code=400
+                )
+
+            if "method" not in body:
+                return JSONResponse(
+                    content={"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32600, "message": "Invalid Request"}},
+                    status_code=400
+                )
+
+            # Create MCP request with optional user context
+            mcp_request = MCPRequest(
+                method=body.get("method", ""),
+                params=body.get("params", {}),
+                request_id=body.get("id"),
+                auth_token=user_id  # Use user_id for context
+            )
+
+            if self.logger:
+                auth_info = f" (user: {user_id})" if user_id else ""
+                self.logger.debug(f"HTTP received: {mcp_request.method}{auth_info}")
+
+            mcp_response = await self.engine.process_request(mcp_request)
+
+            if mcp_response is None:
+                return JSONResponse(content={}, status_code=202)
+
+            return JSONResponse(content=mcp_response.to_dict())
+
+        except json.JSONDecodeError:
+            return JSONResponse(
+                content={"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+                status_code=400
+            )
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"HTTP request error: {e}")
+            return JSONResponse(
+                content={"jsonrpc": "2.0", "id": None, "error": {"code": -32603, "message": "Internal error"}},
+                status_code=500
+            )
+
     async def receive_request(self) -> Optional[MCPRequest]:
         raise NotImplementedError("HTTP adapter uses FastAPI for request handling")
     

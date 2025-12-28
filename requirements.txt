@@ -30,6 +30,11 @@ prompt_toolkit
 mcp
 httpx
 anyio
+# OAuth 2.1 Dependencies for Claude Connectors
+PyJWT>=2.8.0
+python-jose[cryptography]>=3.3.0
+python-multipart>=0.0.6
+
 # Optional dependencies
 psutil
 slowapi
