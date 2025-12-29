@@ -5,6 +5,7 @@ File: app/mcp/core/tools.py
 from typing import Dict, Any, List, Optional
 import time
 from datetime import datetime
+from app.git.git_service import GitService
 
 
 class ToolRegistry:
@@ -15,14 +16,17 @@ class ToolRegistry:
         # Load Google API config from environment if not provided
         if config is None:
             config = {}
-        
+
         # Ensure Google API config is loaded
         if 'google_api_key' not in config:
             from app.config.mcp_config import load_mcp_config
             mcp_config = load_mcp_config()
             config.update(mcp_config)
-        
+
         self.config = config
+
+        # Initialize git service
+        self.git_service = GitService()
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
         self.placeholder_tools = {
@@ -370,6 +374,70 @@ class ToolRegistry:
                     "properties": {},
                     "required": []
                 }
+            },
+            {
+                "name": "add_git_repository",
+                "description": "Register a private git repository for code analysis and retrieval. When to use: Use when you want to give the memory system access to a private codebase for future reference and understanding. How it works: Clones repository using SSH key authentication and stores it locally for file access. Why useful: Enables code-aware conversations and allows storing code insights in memory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_name": {
+                            "type": "string",
+                            "description": "Local name for the repository (e.g., 'MyProject')",
+                            "minLength": 1
+                        },
+                        "repo_url": {
+                            "type": "string",
+                            "description": "Git SSH URL (e.g., 'git@github.com:user/repo.git')",
+                            "minLength": 1
+                        },
+                        "ssh_key_path": {
+                            "type": "string",
+                            "description": "Path to SSH private key file (e.g., '~/.ssh/id_rsa')",
+                            "minLength": 1
+                        },
+                        "branch": {
+                            "type": "string",
+                            "description": "Branch to track (default: 'main')",
+                            "default": "main"
+                        }
+                    },
+                    "required": ["repo_name", "repo_url", "ssh_key_path"]
+                }
+            },
+            {
+                "name": "get_git_file_content",
+                "description": "Retrieve file content from a registered git repository. When to use: Use when you need to read the actual code content of specific files for analysis or reference. How it works: Retrieves current or historical file content directly from the git repository. Why useful: Provides access to actual code for detailed analysis and understanding.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_name": {
+                            "type": "string",
+                            "description": "Name of registered repository",
+                            "minLength": 1
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to file within repository (e.g., 'src/main.py')",
+                            "minLength": 1
+                        },
+                        "git_hash": {
+                            "type": "string",
+                            "description": "Optional specific commit hash (defaults to latest)",
+                            "minLength": 7
+                        }
+                    },
+                    "required": ["repo_name", "file_path"]
+                }
+            },
+            {
+                "name": "list_git_repositories",
+                "description": "List all registered git repositories. When to use: Use to see which repositories are available for code analysis and their current status. How it works: Shows all registered repositories with their URLs, branches, and status. Why useful: Helps you understand what codebases are available for analysis.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             }
         ]
     
@@ -417,6 +485,7 @@ class ToolRegistry:
             "memory": [],
             "conversation": [],
             "knowledge": [],
+            "git": [],
             "utilities": []
         }
         
@@ -433,6 +502,8 @@ class ToolRegistry:
                 categories["conversation"].append(tool)
             elif tool_name in ["add_documents", "list_recent_documents", "remove_document"]:
                 categories["knowledge"].append(tool)
+            elif tool_name in ["add_git_repository", "get_git_file_content", "list_git_repositories"]:
+                categories["git"].append(tool)
             elif tool_name in ["toggle_multi_model", "web_search", "get_current_day", "get_current_time"]:
                 categories["utilities"].append(tool)
         
@@ -458,6 +529,9 @@ class ToolRegistry:
             "list_recent_conversations": "medium",
             "web_search": "medium",
             "get_current_day": "medium",
+            "add_git_repository": "medium",
+            "get_git_file_content": "medium",
+            "list_git_repositories": "medium",
             "remove_conversation_message": "low",
             "remove_recent_conversations": "low",
             "list_recent_documents": "low",
@@ -687,6 +761,12 @@ class ToolRegistry:
             return await self._execute_get_current_day(args)
         elif name == "get_current_time":
             return await self._execute_get_current_time(args)
+        elif name == "add_git_repository":
+            return await self._execute_add_git_repository(args)
+        elif name == "get_git_file_content":
+            return await self._execute_get_git_file_content(args)
+        elif name == "list_git_repositories":
+            return await self._execute_list_git_repositories(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
     
@@ -726,18 +806,86 @@ class ToolRegistry:
         return stats
 
     async def _execute_add_documents(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute add documents"""
+        """Execute add documents with support for code metadata"""
         documents = args.get("documents", [])
         results = []
+
         for doc in documents:
             try:
                 content = doc.get("content", "")
                 metadata = doc.get("metadata", {})
-                self.memory_service.add_to_knowledge_base(content, metadata)
-                results.append({"status": "success", "message": "Document added"})
+
+                # Check if this is code metadata
+                if metadata.get("type") == "code_metadata":
+                    result = await self._process_code_metadata(content, metadata)
+                    results.append(result)
+                else:
+                    # Regular document processing
+                    self.memory_service.add_to_knowledge_base(content, metadata)
+                    results.append({"status": "success", "message": "Document added"})
+
             except Exception as e:
                 results.append({"status": "error", "message": str(e)})
+
         return {"results": results, "total_processed": len(documents)}
+
+    async def _process_code_metadata(self, content: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Process code metadata document with git-aware features"""
+        try:
+            repo_name = metadata.get("repo")
+            files = metadata.get("files", [])
+
+            if not repo_name:
+                return {"status": "error", "message": "Repository name required for code metadata"}
+
+            # Validate git repository exists
+            repos_result = self.git_service.list_repositories()
+            if repos_result["status"] != "success":
+                return {"status": "error", "message": "Failed to access git repositories"}
+
+            repo_exists = any(repo["name"] == repo_name for repo in repos_result.get("repositories", []))
+            if not repo_exists:
+                return {
+                    "status": "warning",
+                    "message": f"Repository '{repo_name}' not registered. Register it first with add_git_repository."
+                }
+
+            # Validate file hashes if provided
+            validated_files = []
+            for file_info in files:
+                file_path = file_info.get("path")
+                expected_hash = file_info.get("hash")
+
+                if file_path and expected_hash:
+                    # Get current file and check hash
+                    file_result = self.git_service.get_file_content(repo_name, file_path)
+                    if file_result["status"] == "success":
+                        current_hash = file_result["metadata"]["git_hash"]
+                        file_info["current_hash"] = current_hash
+                        file_info["hash_match"] = (current_hash == expected_hash)
+                        validated_files.append(file_info)
+
+            # Update metadata with validated file info
+            enhanced_metadata = metadata.copy()
+            enhanced_metadata["validated_files"] = validated_files
+            enhanced_metadata["git_aware"] = True
+            enhanced_metadata["added_at"] = datetime.now().isoformat()
+
+            # Add to knowledge base with enhanced metadata
+            self.memory_service.add_to_knowledge_base(content, enhanced_metadata)
+
+            return {
+                "status": "success",
+                "message": "Code metadata added with git validation",
+                "git_info": {
+                    "repo": repo_name,
+                    "files_validated": len(validated_files),
+                    "files_with_hash_mismatch": len([f for f in validated_files if not f.get("hash_match", True)])
+                }
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to process code metadata: {str(e)}"}
 
     async def _execute_end_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute end conversation"""
@@ -897,3 +1045,45 @@ class ToolRegistry:
             "time": now.strftime("%H:%M:%S"),
             "timezone": now.astimezone().tzname()
         }
+
+    async def _execute_add_git_repository(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute add git repository"""
+        repo_name = args.get("repo_name")
+        repo_url = args.get("repo_url")
+        ssh_key_path = args.get("ssh_key_path")
+        branch = args.get("branch", "main")
+
+        try:
+            result = self.git_service.add_repository(repo_name, repo_url, ssh_key_path, branch)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to add repository: {str(e)}"
+            }
+
+    async def _execute_get_git_file_content(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute get git file content"""
+        repo_name = args.get("repo_name")
+        file_path = args.get("file_path")
+        git_hash = args.get("git_hash")
+
+        try:
+            result = self.git_service.get_file_content(repo_name, file_path, git_hash)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get file content: {str(e)}"
+            }
+
+    async def _execute_list_git_repositories(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute list git repositories"""
+        try:
+            result = self.git_service.list_repositories()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to list repositories: {str(e)}"
+            }
