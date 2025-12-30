@@ -655,9 +655,41 @@ class MemoryService:
         return self.embedding.get_model_info()
 
     def list_recent_conversations(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """List recent conversations from active and archival memory"""
+        """List recent conversations from working, active and archival memory"""
         conversations = []
-        
+
+        # Get current conversation from working memory
+        if self.current_conversation:
+            conversations.append({
+                "id": "current_conversation",
+                "messages": self.current_conversation,
+                "timestamp": datetime.datetime.now().isoformat(),
+                "summary": f"Current conversation with {len(self.current_conversation)} messages",
+                "source": "working_memory",
+                "page_id": "current"
+            })
+
+        # Get messages from working memory
+        working_messages = self.working_memory.get_messages()
+        if working_messages:
+            # Convert Message objects to dict format for consistency
+            message_dicts = []
+            for msg in working_messages:
+                message_dicts.append({
+                    "role": msg.type,
+                    "content": msg.content,
+                    "timestamp": msg.timestamp
+                })
+
+            conversations.append({
+                "id": "working_memory_messages",
+                "messages": message_dicts,
+                "timestamp": working_messages[-1].timestamp if working_messages else datetime.datetime.now().isoformat(),
+                "summary": f"Working memory with {len(working_messages)} messages",
+                "source": "working_memory",
+                "page_id": "working_messages"
+            })
+
         # Get conversations from active memory
         for page in self.active_memory.pages:
             if page.page_type in ["conversation", "conversation_complete"] and isinstance(page.content, dict):
