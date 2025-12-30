@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mojoassistant"
+version = "1.0.0"
+description = "AI memory and code understanding system with git-aware capabilities"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "MoJoAssistant Team"}
+]
+keywords = ["ai", "memory", "git", "mcp", "assistant"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "langchain",
+    "GPT4ALL",
+    "llama_cpp_python",
+    "sacremoses==0.0.53",
+    "datasets",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "transformers[sentencepiece]",
+    "langchain-community",
+    "qdrant-client",
+    "llama-index-embeddings-huggingface",
+    "llama-index-vector-stores-qdrant",
+    "llama-index-readers-file",
+    "llama-index-llms-openai",
+    "llama_index",
+    "uvicorn",
+    "starlette",
+    "sse_starlette",
+    "starlette_context",
+    "fastapi",
+    "llama-cpp-python",
+    "requests",
+    "pydantic",
+    "sentence-transformers",
+    "einops",
+    "prompt_toolkit",
+    "mcp",
+    "httpx",
+    "anyio",
+    "PyJWT>=2.8.0",
+    "python-jose[cryptography]>=3.3.0",
+    "python-multipart>=0.0.6",
+    "python-dotenv>=1.0.0",
+    "psutil",
+]
+
+[project.optional-dependencies]
+git = [
+    "GitPython>=3.1.40"
+]
+dev = [
+    "slowapi",
+]
+
+[project.urls]
+Homepage = "https://github.com/AvengerMoJo/MoJoAssistant"
+Repository = "https://github.com/AvengerMoJo/MoJoAssistant"
+Issues = "https://github.com/AvengerMoJo/MoJoAssistant/issues"
+
+[project.scripts]
+mojoassistant = "unified_mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.txt", "*.yaml", "*.yml", "*.json"]

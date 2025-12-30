@@ -6,7 +6,13 @@ import os
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from pathlib import Path
-from dotenv import load_dotenv
+# Import with fallback for environments without python-dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # Fallback if python-dotenv is not available
+    def load_dotenv(*args, **kwargs):
+        pass
 
 
 @dataclass

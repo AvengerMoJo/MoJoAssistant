@@ -12,7 +12,14 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from dotenv import load_dotenv
+# Import with fallbacks for different environments (uv, pip, etc.)
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # Fallback if python-dotenv is not available
+    def load_dotenv(*args, **kwargs):
+        pass
+
 from app.mcp.server import UnifiedMCPServer
 
 env_path = project_root / '.env'
