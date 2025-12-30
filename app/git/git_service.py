@@ -7,9 +7,33 @@ import json
 import shutil
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
-from git import Repo, Git
-from git.exc import GitError, InvalidGitRepositoryError
 import logging
+
+# Import GitPython with fallback for optional git features
+try:
+    from git import Repo, Git
+    from git.exc import GitError, InvalidGitRepositoryError
+    GIT_AVAILABLE = True
+except ImportError:
+    # Provide dummy classes when GitPython is not available
+    class Repo:
+        @classmethod
+        def clone_from(cls, *args, **kwargs):
+            raise ImportError("GitPython not installed. Install with: pip install GitPython>=3.1.40")
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError("GitPython not installed. Install with: pip install GitPython>=3.1.40")
+
+    class Git:
+        pass
+
+    class GitError(Exception):
+        pass
+
+    class InvalidGitRepositoryError(Exception):
+        pass
+
+    GIT_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +60,12 @@ class GitService:
         Returns:
             Dict with status and repository info
         """
+        if not GIT_AVAILABLE:
+            return {
+                "status": "error",
+                "message": "Git features not available. Install GitPython with: pip install GitPython>=3.1.40"
+            }
+
         try:
             repo_path = self.git_dir / repo_name
             config_path = repo_path / "config.json"
@@ -123,6 +153,12 @@ class GitService:
         Returns:
             Dict with file content and metadata
         """
+        if not GIT_AVAILABLE:
+            return {
+                "status": "error",
+                "message": "Git features not available. Install GitPython with: pip install GitPython>=3.1.40"
+            }
+
         try:
             repo_config = self._get_repo_config(repo_name)
             if not repo_config:

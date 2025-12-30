@@ -38,6 +38,9 @@ python-multipart>=0.0.6
 # Git Integration Dependencies
 GitPython>=3.1.40
 
+# Environment Configuration Dependencies
+python-dotenv>=1.0.0
+
 # Optional dependencies
 psutil
 slowapi
