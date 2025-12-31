@@ -301,9 +301,12 @@ class MultiModelEmbeddingStorage:
     
     def remove_document(self, document_id: str) -> bool:
         """Remove a specific document by ID"""
+        if not document_id or not document_id.strip():
+            return False
+
         original_count = len(self.documents)
         self.documents = [doc for doc in self.documents if doc["document_id"] != document_id]
-        
+
         if len(self.documents) < original_count:
             self._save_data(self.documents, self.documents_file)
             return True
