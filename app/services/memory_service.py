@@ -811,8 +811,23 @@ class MemoryService:
     
     def remove_document(self, document_id: str) -> bool:
         """Remove a specific document from knowledge base"""
-        if document_id in self.knowledge_manager.documents:
-            del self.knowledge_manager.documents[document_id]
+        if not document_id or not document_id.strip():
+            return False
+
+        original_count = len(self.knowledge_manager.documents)
+        self.knowledge_manager.documents = [
+            doc for doc in self.knowledge_manager.documents
+            if doc.get("id") != document_id
+        ]
+
+        if len(self.knowledge_manager.documents) < original_count:
+            # Also remove associated embeddings
+            self.knowledge_manager.chunk_embeddings = [
+                emb for emb in self.knowledge_manager.chunk_embeddings
+                if emb.get("doc_id") != document_id
+            ]
+            # Save changes
+            self.knowledge_manager._save_data()
             return True
         return False
     

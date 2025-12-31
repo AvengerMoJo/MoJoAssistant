@@ -410,5 +410,5 @@ class HybridMemoryService(MemoryService):
         if self.multi_model_enabled and self.multi_model_storage:
             return self.multi_model_storage.remove_document(document_id)
         else:
-            self.logger.warning("Document removal only supported in multi-model mode")
-            return False
+            # Use base MemoryService implementation for non-multi-model mode
+            return super().remove_document(document_id)
