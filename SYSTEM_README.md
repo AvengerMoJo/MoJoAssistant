@@ -91,6 +91,8 @@ The system can access private repositories with SSH authentication and stores co
 ### Repository Setup
 ```bash
 # Register a private repository
+# IMPORTANT: SSH key must NOT have a passphrase
+# Remove passphrase with: ssh-keygen -p -f ~/.ssh/id_rsa
 curl -X POST "http://localhost:8000/add_git_repository" \
   -H "Content-Type: application/json" \
   -d '{
