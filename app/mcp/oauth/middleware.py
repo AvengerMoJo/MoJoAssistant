@@ -72,6 +72,50 @@ async def optional_oauth_token(
         return None
 
 
+async def validated_oauth_token(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(oauth2_scheme)
+) -> Optional[OAuthToken]:
+    """
+    Validated OAuth token dependency - enforces token validation if provided
+
+    If Authorization header is present, token MUST be valid (raises 401 if invalid)
+    If no Authorization header, returns None (backwards compatible)
+
+    Use this for endpoints that want to enforce OAuth when used, but allow no-auth access
+    """
+    config = get_oauth_config()
+
+    # OAuth disabled - allow all requests
+    if not config.enabled:
+        return None
+
+    # No credentials provided - allow for backwards compatibility
+    if not credentials:
+        return None
+
+    # Credentials provided - MUST be valid
+    validator = get_token_validator()
+    if not validator:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OAuth validator not available"
+        )
+
+    try:
+        token = await validator.validate_token(credentials.credentials)
+        return token
+    except TokenValidationError as e:
+        # Token was provided but is INVALID - reject the request
+        logger = get_logger(__name__)
+        logger.warning(f"Invalid token rejected: {e.message}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {e.message}",
+            headers={"WWW-Authenticate": validator.create_www_authenticate_header(e.error_code, e.message)}
+        )
+
+
 async def required_oauth_token(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(oauth2_scheme)
@@ -142,6 +186,7 @@ async def oauth_token_with_scope(required_scope: str):
 
 # Convenience type annotations for dependencies
 OptionalOAuthToken = Annotated[Optional[OAuthToken], Depends(optional_oauth_token)]
+ValidatedOAuthToken = Annotated[Optional[OAuthToken], Depends(validated_oauth_token)]
 RequiredOAuthToken = Annotated[OAuthToken, Depends(required_oauth_token)]
 
 

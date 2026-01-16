@@ -61,6 +61,12 @@ class TokenValidator:
             if await self._validate_mcp_api_key(token):
                 return self._create_mcp_api_key_token(token)
 
+            # Check if token is an opaque token from our token store (authorization server mode)
+            if self.config.enable_authorization_server:
+                opaque_token = await self._validate_opaque_token(token)
+                if opaque_token:
+                    return opaque_token
+
             # Step 1: Decode token header to get key ID
             unverified_header = jwt.get_unverified_header(token)
             algorithm = unverified_header.get("alg", self.config.algorithm)
@@ -275,3 +281,50 @@ class TokenValidator:
             client_id="mcp_development",
             scope="mcp:read mcp:write mcp:admin"
         )
+
+    async def _validate_opaque_token(self, token: str) -> Optional[OAuthToken]:
+        """
+        Validate opaque token from authorization server token store
+
+        Args:
+            token: Opaque access token
+
+        Returns:
+            OAuthToken if valid, None if not found in store
+        """
+        try:
+            from .storage import get_token_store
+
+            token_store = get_token_store()
+            token_data = token_store.get_access_token(token)
+
+            if not token_data:
+                return None
+
+            # Convert AccessTokenData to OAuthToken
+            scopes_list = token_data.scope.split() if token_data.scope else []
+
+            # Note: For our authorization server tokens, we use a separate issuer
+            # The config.issuer is for EXTERNAL token validation (e.g., Claude's OAuth)
+            # Our tokens use "mcp_oauth_server" or the audience as issuer
+            oauth_token = OAuthToken(
+                access_token=token_data.token,
+                token_type="Bearer",
+                expires_in=token_data.get_expires_in(),
+                scope=token_data.scope,
+                scopes=scopes_list,
+                user_id=token_data.client_id or "oauth_user",
+                client_id=token_data.client_id,
+                sub=token_data.client_id or "oauth_user",
+                iss="mcp_oauth_server",  # Our authorization server issuer
+                aud=self.config.audience or "mcp_server",
+                exp=int(token_data.expires_at.timestamp()),
+                iat=int(token_data.created_at.timestamp())
+            )
+
+            self.logger.debug(f"Opaque token validated successfully for client: {token_data.client_id}")
+            return oauth_token
+
+        except Exception as e:
+            self.logger.debug(f"Opaque token validation failed: {str(e)}")
+            return None

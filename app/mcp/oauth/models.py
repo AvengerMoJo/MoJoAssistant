@@ -70,3 +70,56 @@ class TokenIntrospectionResponse(BaseModel):
     aud: Optional[str] = None
     iss: Optional[str] = None
     jti: Optional[str] = None
+
+
+class AuthorizationServerMetadata(BaseModel):
+    """OAuth 2.1 Authorization Server Metadata (RFC 8414)"""
+    issuer: str
+    authorization_endpoint: str
+    token_endpoint: str
+    response_types_supported: List[str] = Field(
+        default_factory=lambda: ["code"]
+    )
+    grant_types_supported: List[str] = Field(
+        default_factory=lambda: ["authorization_code", "refresh_token"]
+    )
+    code_challenge_methods_supported: List[str] = Field(
+        default_factory=lambda: ["S256"]
+    )
+    token_endpoint_auth_methods_supported: List[str] = Field(
+        default_factory=lambda: ["none"]
+    )
+    scopes_supported: List[str] = Field(
+        default_factory=lambda: ["mcp:read", "mcp:write", "mcp:admin"]
+    )
+
+
+class AuthorizationRequest(BaseModel):
+    """OAuth 2.1 Authorization Request"""
+    response_type: str  # "code"
+    client_id: Optional[str] = None  # Optional for public clients
+    redirect_uri: str
+    scope: Optional[str] = None
+    state: str
+    code_challenge: str
+    code_challenge_method: str  # "S256"
+
+
+class TokenRequest(BaseModel):
+    """OAuth 2.1 Token Request"""
+    grant_type: str  # "authorization_code" or "refresh_token"
+    code: Optional[str] = None  # For authorization_code grant
+    redirect_uri: Optional[str] = None  # For authorization_code grant
+    code_verifier: Optional[str] = None  # For PKCE verification
+    refresh_token: Optional[str] = None  # For refresh_token grant
+    client_id: Optional[str] = None  # Optional for public clients
+    client_secret: Optional[str] = None  # Optional
+
+
+class TokenResponse(BaseModel):
+    """OAuth 2.1 Token Response"""
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: int
+    refresh_token: Optional[str] = None
+    scope: Optional[str] = None

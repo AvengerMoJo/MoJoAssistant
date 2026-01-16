@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MoJoAssistant - Authorization Request</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            max-width: 500px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .logo h1 {
+            color: #667eea;
+            font-size: 28px;
+            font-weight: 700;
+        }
+
+        .logo p {
+            color: #6b7280;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+
+        h2 {
+            color: #1f2937;
+            font-size: 24px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .client-info {
+            background: #f9fafb;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 25px;
+        }
+
+        .client-info p {
+            color: #4b5563;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        .client-name {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .scopes {
+            margin: 25px 0;
+        }
+
+        .scopes h3 {
+            color: #374151;
+            font-size: 16px;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+
+        .scope-list {
+            list-style: none;
+        }
+
+        .scope-item {
+            background: #f3f4f6;
+            padding: 12px 16px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            border-left: 3px solid #667eea;
+            font-size: 14px;
+            color: #374151;
+        }
+
+        .scope-item::before {
+            content: "✓ ";
+            color: #667eea;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+
+        .buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 30px;
+        }
+
+        button {
+            flex: 1;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-allow {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-allow:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-deny {
+            background: #e5e7eb;
+            color: #6b7280;
+        }
+
+        .btn-deny:hover {
+            background: #d1d5db;
+            color: #374151;
+        }
+
+        .security-note {
+            margin-top: 20px;
+            padding: 12px;
+            background: #fef3c7;
+            border-radius: 6px;
+            font-size: 13px;
+            color: #92400e;
+            text-align: center;
+        }
+
+        .security-note::before {
+            content: "🔒 ";
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 30px 20px;
+            }
+
+            .buttons {
+                flex-direction: column;
+            }
+
+            button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <h1>🤖 MoJoAssistant</h1>
+            <p>Personal AI Assistant</p>
+        </div>
+
+        <h2>Authorization Request</h2>
+
+        <div class="client-info">
+            <p><span class="client-name">{{ client_id }}</span> is requesting access to your MCP server.</p>
+        </div>
+
+        <div class="scopes">
+            <h3>Requested Permissions:</h3>
+            <ul class="scope-list">
+                {% for scope in scopes %}
+                <li class="scope-item">{{ scope }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <form method="POST" action="/oauth/authorize">
+            <input type="hidden" name="client_id" value="{{ client_id }}">
+            <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+            <input type="hidden" name="scope" value="{{ scope }}">
+            <input type="hidden" name="state" value="{{ state }}">
+            <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+            <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+
+            <div class="buttons">
+                <button type="submit" name="action" value="allow" class="btn-allow">
+                    Allow Access
+                </button>
+                <button type="submit" name="action" value="deny" class="btn-deny">
+                    Deny
+                </button>
+            </div>
+        </form>
+
+        <div class="security-note">
+            This connection uses OAuth 2.1 with PKCE for secure authorization
+        </div>
+    </div>
+</body>
+</html>

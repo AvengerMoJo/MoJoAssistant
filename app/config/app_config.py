@@ -54,6 +54,15 @@ class OAuthConfig:
     algorithm: str = "RS256"
     token_cache_ttl: int = 300
 
+    # Authorization Server Settings (for full OAuth server mode)
+    enable_authorization_server: bool = False  # Enable full OAuth server vs resource-only
+    api_key_mode: bool = True  # Allow API key as Bearer token
+    auto_approve: bool = True  # Auto-approve for personal use
+    authorization_code_ttl: int = 600  # Authorization code TTL in seconds (10 minutes)
+    access_token_ttl: int = 3600  # Access token TTL in seconds (1 hour)
+    refresh_token_ttl: int = 2592000  # Refresh token TTL in seconds (30 days)
+    public_client_enabled: bool = True  # Allow requests without client_id
+
     def get_protected_resource_metadata(self) -> Dict[str, Any]:
         """Generate OAuth 2.1 Protected Resource Metadata"""
         metadata = {
@@ -178,7 +187,15 @@ class AppConfig:
                 supported_scopes=os.getenv("OAUTH_SUPPORTED_SCOPES", "mcp:read,mcp:write,mcp:admin").split(","),
                 required_scope=os.getenv("OAUTH_REQUIRED_SCOPE"),
                 algorithm=os.getenv("OAUTH_ALGORITHM", "RS256"),
-                token_cache_ttl=int(os.getenv("OAUTH_TOKEN_CACHE_TTL", "300"))
+                token_cache_ttl=int(os.getenv("OAUTH_TOKEN_CACHE_TTL", "300")),
+                # Authorization Server settings
+                enable_authorization_server=os.getenv("OAUTH_AUTHORIZATION_SERVER_ENABLED", "false").lower() in ("true", "1", "yes"),
+                api_key_mode=os.getenv("OAUTH_API_KEY_MODE", "true").lower() in ("true", "1", "yes"),
+                auto_approve=os.getenv("OAUTH_AUTO_APPROVE", "true").lower() in ("true", "1", "yes"),
+                authorization_code_ttl=int(os.getenv("OAUTH_AUTHORIZATION_CODE_TTL", "600")),
+                access_token_ttl=int(os.getenv("OAUTH_ACCESS_TOKEN_TTL", "3600")),
+                refresh_token_ttl=int(os.getenv("OAUTH_REFRESH_TOKEN_TTL", "2592000")),
+                public_client_enabled=os.getenv("OAUTH_PUBLIC_CLIENT_ENABLED", "true").lower() in ("true", "1", "yes")
             ),
 
             llm=LLMConfig(

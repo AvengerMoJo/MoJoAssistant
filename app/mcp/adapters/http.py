@@ -15,9 +15,11 @@ from app.config.app_config import get_app_config
 from app.mcp.oauth.middleware import (
     OAuthMiddleware,
     OptionalOAuthToken,
+    ValidatedOAuthToken,
     RequiredOAuthToken,
     create_protected_resource_metadata_response
 )
+from app.mcp.oauth import endpoints as oauth_endpoints
 
 
 class HTTPAdapter(ProtocolAdapter):
@@ -136,16 +138,55 @@ class HTTPAdapter(ProtocolAdapter):
             """OAuth-protected MCP endpoint for Claude Connectors"""
             return await self._process_mcp_request(raw_request, token.user_id)
 
-        # Original MCP endpoint (backwards compatible - no OAuth required)
+        # Root GET endpoint - Server info and OAuth discovery
+        @app.get("/")
+        async def root_info():
+            """Root endpoint - provides server info"""
+            info = {
+                "name": "MoJoAssistant MCP Server",
+                "version": "1.0.0",
+                "status": "running",
+                "protocol": "MCP",
+                "endpoints": {
+                    "mcp": "POST /",
+                    "oauth_mcp": "POST /oauth",
+                    "health": "GET /health"
+                }
+            }
+
+            # Add OAuth discovery if enabled
+            if self.oauth_config.enabled and self.oauth_config.enable_authorization_server:
+                info["oauth"] = {
+                    "enabled": True,
+                    "discovery": "GET /.well-known/oauth-authorization-server"
+                }
+
+            return info
+
+        # Original MCP endpoint - validates OAuth if provided
         @app.post("/")
         async def handle_mcp_request(
             raw_request: Request,
+            token: ValidatedOAuthToken = None,
             mcp_api_key: Optional[str] = Header(None, alias="MCP-API-Key"),
             mcp_env_api_key: Optional[str] = Header(None, alias="MCP_API_KEY")
         ):
-            """Original MCP endpoint - backwards compatible"""
-            return await self._process_mcp_request(raw_request)
-        
+            """
+            Original MCP endpoint - enforces OAuth validation if token provided
+
+            - No Authorization header → Allowed (backwards compatible)
+            - Valid Authorization header → Allowed with user context
+            - Invalid Authorization header → Rejected with 401
+            """
+            user_id = token.user_id if token else None
+            return await self._process_mcp_request(raw_request, user_id)
+
+        # Include OAuth Authorization Server endpoints if enabled
+        if self.oauth_config.enabled and self.oauth_config.enable_authorization_server:
+            app.include_router(oauth_endpoints.router)
+            if self.logger:
+                self.logger.info("OAuth Authorization Server endpoints enabled")
+
         @app.get("/health")
         async def health_check():
             uptime = time.time() - self.engine.start_time
