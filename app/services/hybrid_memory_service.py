@@ -121,7 +121,9 @@ class HybridMemoryService(MemoryService):
             )
 
         except Exception as e:
+            import traceback
             self.logger.error(f"Multi-model setup failed: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             self.multi_model_enabled = False
 
     def add_user_message(self, message: str) -> None:
@@ -236,6 +238,42 @@ class HybridMemoryService(MemoryService):
 
         # Fall back to parent's optimized parallel retrieval
         return super().get_context_for_query(query, max_items)
+
+    async def get_context_for_query_async(
+        self, query: str, max_items: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Async version - uses multi-model with parallel retrieval if enabled"""
+        # Validate input parameters
+        if not query or not isinstance(query, str) or query.strip() == "":
+            self.logger.warning("Empty or invalid query provided")
+            return []
+
+        if not isinstance(max_items, int) or max_items <= 0:
+            self.logger.warning(
+                f"Invalid max_items: {max_items}, using default value 10"
+            )
+            max_items = 10
+
+        if (
+            self.multi_model_enabled
+            and self.multi_model_storage
+            and self.embedding_models
+        ):
+            try:
+                return await self._get_multi_model_context_parallel(query, max_items)
+            except Exception as e:
+                self.logger.warning(
+                    f"Multi-model parallel search failed, trying sequential: {e}"
+                )
+                try:
+                    return self._get_multi_model_context(query, max_items)
+                except Exception as e2:
+                    self.logger.warning(
+                        f"Multi-model search failed, falling back to single-model: {e2}"
+                    )
+
+        # Fall back to parent's async implementation
+        return await super().get_context_for_query_async(query, max_items)
 
     def _get_multi_model_context(
         self, query: str, max_items: int = 10
