@@ -1,0 +1,79 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.1.0",
+  "entity": {
+    "type": "individual",
+    "role": "maintainer",
+    "name": "Alex Lau (AvengerMoJo)",
+    "email": "AvengerMoJo@gmail.com",
+    "description": "Independent open-source developer with 25+ years in Linux/OSS, 15+ years leading engineering teams (up to 70 engineers), and recent LLM/AI consulting (built root-cause LLM search engines, reduced research time by 90% via open-source workflows). Solo-maintaining MoJoAssistant to safeguard human agency, privacy, and cognitive liberty in the accelerating AI era.",
+    "webpageUrl": {
+      "url": "https://github.com/AvengerMoJo"
+    }
+  },
+  "projects": [
+    {
+      "guid": "mojoassistant",
+      "name": "MoJoAssistant",
+      "description": "Local-first cognitive firewall and internal proxy protecting users' private data, intent, and decision-making from public AI risks (scams, profiling, cognitive erosion, manipulation). Runs entirely on-device with perfect local memory (MCP), multi-layered embeddings, adversarial verification, and pedagogical explainability to teach digital self-reliance while enabling safe, utility-preserving access to powerful models. Aims to prevent large-scale fraud, preserve human sovereignty, and foster decentralized, human-centric AI futures.",
+      "webpageUrl": {
+        "url": "https://github.com/AvengerMoJo/MoJoAssistant"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/AvengerMoJo/MoJoAssistant"
+      },
+      "licenses": [
+        "spdx:MIT"
+      ],
+      "tags": [
+        "ai-safety",
+        "privacy",
+        "digital-sovereignty",
+        "local-first",
+        "open-source",
+        "cognitive-security",
+        "llm",
+        "edge-computing",
+        "anti-fraud",
+        "human-agency"
+      ]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "github-sponsors",
+        "type": "payment-provider",
+        "address": "https://github.com/sponsors/AvengerMoJo",
+        "description": "Preferred channel for recurring or one-time contributions via GitHub Sponsors."
+      },
+      {
+        "guid": "ethereum-wallet",
+        "type": "crypto",
+        "address": "0x338A9C508F10509151B371f5227f7FFf7cF445D0",
+        "description": "Ethereum (Base network) wallet for direct crypto donations. ETH or compatible tokens welcome."
+      },
+      {
+        "guid": "other",
+        "type": "other",
+        "description": "Open to grants, direct bank transfer, or other arrangements — contact via email."
+      }
+    ],
+    "plans": [
+      {
+        "guid": "core-development",
+        "status": "active",
+        "name": "MoJoAssistant Core Safety & Acceleration Funding",
+        "description": "Supports part-time development of the safety-first prototype (adversarial scam verification, tamper-proof local memory, pedagogical UI for digital literacy), 6-month residency acceleration (Berlin + SF for contributor onboarding, meetups, red-teaming), on-device compute/hardware, and small community events. Targeting flexible support in the $45,000–$85,000 range over 18–24 months to harden protections, reach 10k–20k users, and demonstrate measurable impact on reducing AI-driven fraud and cognitive risks.",
+        "amount": 0,
+        "currency": "USD",
+        "frequency": "one-time",
+        "channels": [
+          "github-sponsors",
+          "ethereum-wallet",
+          "other"
+        ]
+      }
+    ]
+  }
+}
