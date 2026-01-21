@@ -49,7 +49,7 @@
       },
       {
         "guid": "ethereum-wallet",
-        "type": "crypto",
+        "type": "other",
         "address": "0x338A9C508F10509151B371f5227f7FFf7cF445D0",
         "description": "Ethereum (Base network) wallet for direct crypto donations. ETH or compatible tokens welcome."
       },
