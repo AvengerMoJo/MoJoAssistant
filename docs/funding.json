@@ -6,7 +6,7 @@
     "role": "maintainer",
     "name": "Alex Lau (AvengerMoJo)",
     "email": "AvengerMoJo@gmail.com",
-    "description": "Independent open-source developer with 25+ years in Linux/OSS, 15+ years leading engineering teams (up to 70 engineers), and recent LLM/AI consulting (built root-cause LLM search engines, reduced research time by 90% via open-source workflows). Solo-maintaining MoJoAssistant to safeguard human agency, privacy, and cognitive liberty in the accelerating AI era.",
+    "description": "Independent open-source developer building local-first AI tools. Solo-maintaining MoJoAssistant - an on-device cognitive firewall protecting user privacy, agency, and decision-making from public AI risks.",
     "webpageUrl": {
       "url": "https://github.com/AvengerMoJo"
     }
@@ -15,7 +15,7 @@
     {
       "guid": "mojoassistant",
       "name": "MoJoAssistant",
-      "description": "Local-first cognitive firewall and internal proxy protecting users' private data, intent, and decision-making from public AI risks (scams, profiling, cognitive erosion, manipulation). Runs entirely on-device with perfect local memory (MCP), multi-layered embeddings, adversarial verification, and pedagogical explainability to teach digital self-reliance while enabling safe, utility-preserving access to powerful models. Aims to prevent large-scale fraud, preserve human sovereignty, and foster decentralized, human-centric AI futures.",
+      "description": "Local-first AI system protecting user agency, privacy, and data from public AI. Runs entirely on-device with local memory (MCP), multi-model embeddings, adversarial verification, and pedagogical explainability. Fosters digital self-reliance while enabling safe access to powerful models.",
       "webpageUrl": {
         "url": "https://github.com/AvengerMoJo/MoJoAssistant"
       },
@@ -31,11 +31,9 @@
         "digital-sovereignty",
         "local-first",
         "open-source",
-        "cognitive-security",
-        "llm",
-        "edge-computing",
-        "anti-fraud",
-        "human-agency"
+        "mcp",
+        "memory",
+        "embeddings"
       ]
     }
   ],
@@ -63,8 +61,8 @@
       {
         "guid": "core-development",
         "status": "active",
-        "name": "MoJoAssistant Core Safety & Acceleration Funding",
-        "description": "Supports part-time development of the safety-first prototype (adversarial scam verification, tamper-proof local memory, pedagogical UI for digital literacy), 6-month residency acceleration (Berlin + SF for contributor onboarding, meetups, red-teaming), on-device compute/hardware, and small community events. Targeting flexible support in the $45,000–$85,000 range over 18–24 months to harden protections, reach 10k–20k users, and demonstrate measurable impact on reducing AI-driven fraud and cognitive risks.",
+        "name": "MoJoAssistant Development",
+        "description": "Supports ongoing development of safety features, multi-model memory system, and user experience improvements. Enables part-time work on core infrastructure, adversarial verification, and educational tools.",
         "amount": 0,
         "currency": "USD",
         "frequency": "one-time",
