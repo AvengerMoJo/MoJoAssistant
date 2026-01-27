@@ -86,21 +86,16 @@ async def validated_oauth_token(
     """
     config = get_oauth_config()
 
-    # OAuth disabled - allow all requests
-    if not config.enabled:
-        return None
-
     # No credentials provided - allow for backwards compatibility
     if not credentials:
         return None
 
     # Credentials provided - MUST be valid
+    # Create validator if needed (even if OAuth disabled, for MCP_API_KEY validation)
     validator = get_token_validator()
     if not validator:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OAuth validator not available"
-        )
+        # Create a validator even when OAuth is disabled to handle MCP_API_KEY
+        validator = TokenValidator(config)
 
     try:
         token = await validator.validate_token(credentials.credentials)

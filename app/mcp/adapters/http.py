@@ -43,6 +43,10 @@ class HTTPAdapter(ProtocolAdapter):
 
         mcp_require_auth, mcp_api_key = get_mcp_auth_config()
 
+        # Store authentication configuration as instance variables
+        self.mcp_require_auth = mcp_require_auth
+        self.mcp_api_key_expected = mcp_api_key
+
         use_oauth = self.oauth_config.enabled and (
             not mcp_require_auth
             or (self.oauth_config.issuer and self.oauth_config.audience)
@@ -190,12 +194,30 @@ class HTTPAdapter(ProtocolAdapter):
             mcp_env_api_key: Optional[str] = Header(None, alias="MCP_API_KEY"),
         ):
             """
-            Original MCP endpoint - enforces OAuth validation if token provided
+            Original MCP endpoint - enforces authentication based on MCP_REQUIRE_AUTH
 
-            - No Authorization header → Allowed (backwards compatible)
-            - Valid Authorization header → Allowed with user context
-            - Invalid Authorization header → Rejected with 401
+            Authentication logic:
+            - If MCP_REQUIRE_AUTH=true: Requires EITHER valid OAuth token OR valid MCP-API-Key
+            - If MCP_REQUIRE_AUTH=false: Allows all requests (no auth required)
+            - OAuth token validation is independent of MCP_REQUIRE_AUTH setting
             """
+            # Check if authentication is required
+            if self.mcp_require_auth:
+                # Extract provided API key from headers
+                provided_api_key = mcp_api_key or mcp_env_api_key
+
+                # Authentication required - must have EITHER valid OAuth token OR valid MCP-API-Key
+                has_valid_oauth = token is not None
+                has_valid_api_key = provided_api_key and provided_api_key == self.mcp_api_key_expected
+
+                if not has_valid_oauth and not has_valid_api_key:
+                    from fastapi import HTTPException, status
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Authentication required: provide valid Bearer token or MCP-API-Key header",
+                        headers={"WWW-Authenticate": 'Bearer realm="MCP Server"'}
+                    )
+
             user_id = token.user_id if token else None
             return await self._process_mcp_request(raw_request, user_id)
 

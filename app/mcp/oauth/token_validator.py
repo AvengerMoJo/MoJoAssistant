@@ -50,16 +50,18 @@ class TokenValidator:
         Raises:
             TokenValidationError: If token is invalid
         """
-        if not self.config.enabled:
-            raise TokenValidationError("OAuth is not enabled", "oauth_disabled")
-
         if not token:
             raise TokenValidationError("Token is required", "invalid_request")
 
         try:
-            # Development mode: Check if token matches MCP_API_KEY directly
+            # Check if token matches MCP_API_KEY (works as both header and Bearer token)
+            # This works even when OAuth is disabled
             if await self._validate_mcp_api_key(token):
                 return self._create_mcp_api_key_token(token)
+
+            # If OAuth is disabled, only MCP_API_KEY is accepted
+            if not self.config.enabled:
+                raise TokenValidationError("OAuth is not enabled - only MCP_API_KEY is accepted", "oauth_disabled")
 
             # Check if token is an opaque token from our token store (authorization server mode)
             if self.config.enable_authorization_server:
@@ -115,6 +117,16 @@ class TokenValidator:
 
     async def _get_signing_key(self, key_id: Optional[str], algorithm: str) -> str:
         """Get JWT signing key for validation"""
+        # Check if MCP_REQUIRE_AUTH is enabled - if so, enforce signature verification
+        import os
+        mcp_require_auth = os.getenv("MCP_REQUIRE_AUTH", "false").lower() == "true"
+
+        if mcp_require_auth and not self.config.verify_signature:
+            raise TokenValidationError(
+                "Signature verification cannot be disabled when MCP_REQUIRE_AUTH=true",
+                "invalid_configuration"
+            )
+
         if not self.config.verify_signature:
             return ""  # Skip signature verification
 
@@ -250,35 +262,40 @@ class TokenValidator:
         return datetime.utcnow().timestamp() > token.exp
 
     async def _validate_mcp_api_key(self, token: str) -> bool:
-        """Check if token matches MCP_API_KEY (development mode)"""
+        """
+        Check if token matches MCP_API_KEY
+
+        This allows MCP_API_KEY to be used as a Bearer token in addition to the MCP-API-Key header.
+        Works in all environments when MCP_API_KEY is configured.
+        """
         import os
         mcp_api_key = os.getenv("MCP_API_KEY")
 
         if not mcp_api_key:
             return False
 
-        # Only enable in development mode
-        environment = os.getenv("ENVIRONMENT", "development")
-        if environment not in ["development", "testing"]:
-            return False
-
         return token == mcp_api_key
 
     def _create_mcp_api_key_token(self, token: str) -> OAuthToken:
-        """Create OAuthToken for MCP API Key (development mode)"""
+        """
+        Create OAuthToken for MCP API Key
+
+        When MCP_API_KEY is used as a Bearer token, create a valid OAuthToken
+        with full access scopes.
+        """
         import time
 
         return OAuthToken(
             access_token=token,
             token_type="Bearer",
             sub="mcp_api_key_user",
-            iss="mcp_development",
+            iss="mcp_server",
             aud=self.config.audience or "mcp_server",
             exp=int(time.time()) + 3600,  # 1 hour expiry
             iat=int(time.time()),
-            scopes=["mcp:read", "mcp:write", "mcp:admin"],  # Full access in dev mode
+            scopes=["mcp:read", "mcp:write", "mcp:admin"],  # Full access with MCP_API_KEY
             user_id="mcp_api_key_user",
-            client_id="mcp_development",
+            client_id="mcp_api_key",
             scope="mcp:read mcp:write mcp:admin"
         )
 
