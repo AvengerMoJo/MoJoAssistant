@@ -101,18 +101,23 @@ class TokenValidator:
             self.logger.debug(f"Token validated successfully for subject: {oauth_token.sub}")
             return oauth_token
 
-        except jwt.ExpiredSignatureError:
+        except jwt.ExpiredSignatureError as e:
+            self.logger.warning(f"Token validation failed: Token has expired - {str(e)}")
             raise TokenValidationError("Token has expired", "invalid_token")
-        except jwt.InvalidAudienceError:
+        except jwt.InvalidAudienceError as e:
+            self.logger.warning(f"Token validation failed: Invalid audience - expected: {self.config.audience}, error: {str(e)}")
             raise TokenValidationError("Invalid token audience", "invalid_token")
-        except jwt.InvalidIssuerError:
+        except jwt.InvalidIssuerError as e:
+            self.logger.warning(f"Token validation failed: Invalid issuer - expected: {self.config.issuer}, error: {str(e)}")
             raise TokenValidationError("Invalid token issuer", "invalid_token")
-        except jwt.InvalidSignatureError:
+        except jwt.InvalidSignatureError as e:
+            self.logger.warning(f"Token validation failed: Invalid signature - JWKS URI: {self.config.jwks_uri}, error: {str(e)}")
             raise TokenValidationError("Invalid token signature", "invalid_token")
         except jwt.DecodeError as e:
+            self.logger.warning(f"Token validation failed: Decode error - {str(e)}")
             raise TokenValidationError(f"Token decode error: {str(e)}", "invalid_token")
         except Exception as e:
-            self.logger.error(f"Token validation error: {str(e)}")
+            self.logger.error(f"Token validation error (unexpected): {type(e).__name__}: {str(e)}")
             raise TokenValidationError(f"Token validation failed: {str(e)}", "invalid_token")
 
     async def _get_signing_key(self, key_id: Optional[str], algorithm: str) -> str:

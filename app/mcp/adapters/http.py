@@ -212,6 +212,8 @@ class HTTPAdapter(ProtocolAdapter):
 
                 if not has_valid_oauth and not has_valid_api_key:
                     from fastapi import HTTPException, status
+                    if self.logger:
+                        self.logger.warning(f"MCP_REQUIRE_AUTH blocked request - has_oauth={has_valid_oauth}, has_api_key={bool(provided_api_key)}, api_key_valid={has_valid_api_key}")
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Authentication required: provide valid Bearer token or MCP-API-Key header",

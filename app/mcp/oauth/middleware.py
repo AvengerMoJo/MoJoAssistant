@@ -103,7 +103,7 @@ async def validated_oauth_token(
     except TokenValidationError as e:
         # Token was provided but is INVALID - reject the request
         logger = get_logger(__name__)
-        logger.warning(f"Invalid token rejected: {e.message}")
+        logger.warning(f"OAuth token validation failed - error_code: {e.error_code}, message: {e.message}, token_prefix: {credentials.credentials[:20]}...")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {e.message}",
