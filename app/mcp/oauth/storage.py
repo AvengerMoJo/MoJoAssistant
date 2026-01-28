@@ -374,9 +374,82 @@ class TokenStore:
             return len(self._refresh_tokens)
 
 
+@dataclass
+class ClientRegistration:
+    """OAuth client registration data"""
+    client_id: str
+    client_name: str
+    redirect_uris: List[str]
+    grant_types: List[str]
+    response_types: List[str]
+    scope: str
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+class ClientRegistrationStore:
+    """
+    Thread-safe in-memory store for client registrations
+    """
+
+    def __init__(self):
+        self._clients: Dict[str, ClientRegistration] = {}
+        self._lock = Lock()
+
+    def register_client(
+        self,
+        client_name: str,
+        redirect_uris: List[str],
+        grant_types: List[str],
+        response_types: List[str],
+        scope: str = ""
+    ) -> ClientRegistration:
+        """
+        Register a new OAuth client
+
+        Args:
+            client_name: Name of the client application
+            redirect_uris: List of allowed redirect URIs
+            grant_types: List of OAuth grant types
+            response_types: List of OAuth response types
+            scope: Requested scopes
+
+        Returns:
+            Client registration data
+        """
+        client_id = secrets.token_urlsafe(16)
+
+        client = ClientRegistration(
+            client_id=client_id,
+            client_name=client_name,
+            redirect_uris=redirect_uris,
+            grant_types=grant_types,
+            response_types=response_types,
+            scope=scope
+        )
+
+        with self._lock:
+            self._clients[client_id] = client
+
+        return client
+
+    def get_client(self, client_id: str) -> Optional[ClientRegistration]:
+        """Get client by ID"""
+        with self._lock:
+            return self._clients.get(client_id)
+
+    def delete_client(self, client_id: str) -> bool:
+        """Delete client registration"""
+        with self._lock:
+            if client_id in self._clients:
+                del self._clients[client_id]
+                return True
+            return False
+
+
 # Global singleton instances
 _authorization_code_store: Optional[AuthorizationCodeStore] = None
 _token_store: Optional[TokenStore] = None
+_client_registration_store: Optional[ClientRegistrationStore] = None
 
 
 def get_authorization_code_store() -> AuthorizationCodeStore:
@@ -393,3 +466,11 @@ def get_token_store() -> TokenStore:
     if _token_store is None:
         _token_store = TokenStore()
     return _token_store
+
+
+def get_client_registration_store() -> ClientRegistrationStore:
+    """Get global client registration store instance"""
+    global _client_registration_store
+    if _client_registration_store is None:
+        _client_registration_store = ClientRegistrationStore()
+    return _client_registration_store

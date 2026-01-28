@@ -65,10 +65,10 @@ class OAuthConfig:
 
     def get_protected_resource_metadata(self, base_url: Optional[str] = None) -> Dict[str, Any]:
         """
-        Generate OAuth 2.1 Protected Resource Metadata
+        Generate OAuth 2.1 Protected Resource Metadata (RFC 9728)
 
         Args:
-            base_url: Base URL of the server (for authorization server mode)
+            base_url: Base URL of the server (required for resource field)
 
         Returns:
             Protected resource metadata dict
@@ -76,6 +76,11 @@ class OAuthConfig:
         metadata = {
             "authorization_servers": []
         }
+
+        # Add resource field (required by 2025-06-18 MCP spec update)
+        if base_url:
+            # Resource should be the MCP endpoint URL (typically base_url + /oauth or just base_url)
+            metadata["resource"] = base_url.rstrip('/')
 
         # Priority: If OAUTH_ISSUER is set, always use it for Claude Desktop
         # Authorization server mode is for OTHER clients, not Claude

@@ -18,6 +18,7 @@ from .models import (
 from .storage import (
     get_authorization_code_store,
     get_token_store,
+    get_client_registration_store,
     AuthorizationCodeData,
     AccessTokenData
 )
@@ -102,6 +103,7 @@ async def oauth_authorization_server_metadata(request: Request) -> JSONResponse:
         issuer=base_url,
         authorization_endpoint=f"{base_url}/oauth/authorize",
         token_endpoint=f"{base_url}/oauth/token",
+        registration_endpoint=f"{base_url}/oauth/register",  # Dynamic Client Registration
         response_types_supported=["code"],
         grant_types_supported=["authorization_code", "refresh_token"],
         code_challenge_methods_supported=["S256"],
@@ -304,6 +306,78 @@ async def oauth_authorize_approve(
         "state": state
     })
     return RedirectResponse(url=f"{redirect_uri}?{callback_params}")
+
+
+@router.post("/oauth/register")
+async def oauth_register_client(request: Request) -> JSONResponse:
+    """
+    OAuth 2.0 Dynamic Client Registration (RFC 7591)
+
+    Allows clients like Claude to dynamically register themselves
+
+    Expected request body:
+    {
+        "client_name": "Claude",
+        "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"]
+    }
+
+    Returns:
+        Client registration response with client_id
+    """
+    config = get_app_config()
+
+    if not config.oauth.enabled or not config.oauth.enable_authorization_server:
+        raise HTTPException(
+            status_code=501,
+            detail="OAuth Authorization Server is not enabled"
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid JSON in request body"
+        )
+
+    # Validate required fields
+    client_name = body.get("client_name", "Unknown Client")
+    redirect_uris = body.get("redirect_uris", [])
+    grant_types = body.get("grant_types", ["authorization_code"])
+    response_types = body.get("response_types", ["code"])
+    scope = body.get("scope", " ".join(config.oauth.supported_scopes))
+
+    if not redirect_uris:
+        raise HTTPException(
+            status_code=400,
+            detail="redirect_uris is required"
+        )
+
+    # Register the client
+    client_store = get_client_registration_store()
+    client = client_store.register_client(
+        client_name=client_name,
+        redirect_uris=redirect_uris,
+        grant_types=grant_types,
+        response_types=response_types,
+        scope=scope
+    )
+
+    logger.info(f"Registered new OAuth client: {client_name} (ID: {client.client_id})")
+
+    # Return registration response (RFC 7591)
+    registration_response = {
+        "client_id": client.client_id,
+        "client_name": client.client_name,
+        "redirect_uris": client.redirect_uris,
+        "grant_types": client.grant_types,
+        "response_types": client.response_types,
+        "token_endpoint_auth_method": "none",  # Public client
+    }
+
+    return JSONResponse(content=registration_response, status_code=201)
 
 
 @router.post("/oauth/token")
