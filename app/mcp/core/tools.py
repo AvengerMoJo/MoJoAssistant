@@ -12,8 +12,10 @@ from app.git.git_service import GitService
 class ToolRegistry:
     """Registry of available tools and their execution"""
 
-    def __init__(self, memory_service, config: Dict[str, Any] | None = None):
+    def __init__(self, memory_service, config: Dict[str, Any] | None = None, logger=None):
         self.memory_service = memory_service
+        self.logger = logger
+
         # Load Google API config from environment if not provided
         if config is None:
             config = {}
@@ -29,6 +31,11 @@ class ToolRegistry:
 
         # Initialize git service
         self.git_service = GitService()
+
+        # Initialize OpenCode manager
+        from app.mcp.opencode.manager import OpenCodeManager
+        self.opencode_manager = OpenCodeManager(logger=logger)
+
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
         self.placeholder_tools = {
@@ -423,6 +430,97 @@ class ToolRegistry:
                 "description": "List all registered git repositories. When to use: Use to see which repositories are available for code analysis and their current status. How it works: Shows all registered repositories with their URLs, branches, and status. Why useful: Helps you understand what codebases are available for analysis.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
+            # OpenCode Manager Tools
+            {
+                "name": "opencode_start",
+                "description": "Start or bootstrap an OpenCode coding agent project. This launches an OpenCode server and MCP tool for hands-free development. SECRETS ARE NEVER PASSED - they're read from .env files in the sandbox. In development mode, .env is auto-generated with warnings. Use this when you need to start working on a codebase with AI assistance.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project (alphanumeric, no spaces)",
+                            "minLength": 1,
+                            "pattern": "^[a-zA-Z0-9_-]+$",
+                        },
+                        "git_url": {
+                            "type": "string",
+                            "description": "Git repository SSH URL (e.g., git@github.com:user/repo.git)",
+                            "minLength": 1,
+                        },
+                        "user_ssh_key": {
+                            "type": "string",
+                            "description": "Optional: Path to user's SSH key (will auto-generate if not provided)",
+                        },
+                    },
+                    "required": ["project_name", "git_url"],
+                },
+            },
+            {
+                "name": "opencode_status",
+                "description": "Check the status of an OpenCode project. Shows if processes are running, ports, PIDs, and health status. Use this to verify a project is running correctly.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["project_name"],
+                },
+            },
+            {
+                "name": "opencode_stop",
+                "description": "Stop an OpenCode project. Terminates both the OpenCode server and MCP tool processes. The sandbox files remain intact. Use this to free up resources when not actively working on a project.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["project_name"],
+                },
+            },
+            {
+                "name": "opencode_restart",
+                "description": "Restart an OpenCode project. Stops and starts both processes. Useful when processes have crashed or need to reload configuration.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["project_name"],
+                },
+            },
+            {
+                "name": "opencode_destroy",
+                "description": "⚠️ DESTRUCTIVE: Stop project and DELETE sandbox directory. This permanently removes all local code and configuration. The remote Git repository is NOT affected. Use only when you're completely done with a project and want to free up disk space.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["project_name"],
+                },
+            },
+            {
+                "name": "opencode_list",
+                "description": "List all OpenCode projects. Shows project names, running status, ports, and sandbox locations. Use this to see what projects are available.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -776,6 +874,18 @@ class ToolRegistry:
             return await self._execute_get_git_file_content(args)
         elif name == "list_git_repositories":
             return await self._execute_list_git_repositories(args)
+        elif name == "opencode_start":
+            return await self._execute_opencode_start(args)
+        elif name == "opencode_status":
+            return await self._execute_opencode_status(args)
+        elif name == "opencode_stop":
+            return await self._execute_opencode_stop(args)
+        elif name == "opencode_restart":
+            return await self._execute_opencode_restart(args)
+        elif name == "opencode_destroy":
+            return await self._execute_opencode_destroy(args)
+        elif name == "opencode_list":
+            return await self._execute_opencode_list(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1127,4 +1237,85 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to list repositories: {str(e)}",
+            }
+
+    # OpenCode Manager execution methods
+    async def _execute_opencode_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_start tool"""
+        project_name = args.get("project_name")
+        git_url = args.get("git_url")
+        user_ssh_key = args.get("user_ssh_key")
+
+        try:
+            result = await self.opencode_manager.start_project(
+                project_name, git_url, user_ssh_key
+            )
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to start project: {str(e)}",
+            }
+
+    async def _execute_opencode_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_status tool"""
+        project_name = args.get("project_name")
+
+        try:
+            result = await self.opencode_manager.get_status(project_name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get status: {str(e)}",
+            }
+
+    async def _execute_opencode_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_stop tool"""
+        project_name = args.get("project_name")
+
+        try:
+            result = await self.opencode_manager.stop_project(project_name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to stop project: {str(e)}",
+            }
+
+    async def _execute_opencode_restart(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_restart tool"""
+        project_name = args.get("project_name")
+
+        try:
+            result = await self.opencode_manager.restart_project(project_name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to restart project: {str(e)}",
+            }
+
+    async def _execute_opencode_destroy(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_destroy tool"""
+        project_name = args.get("project_name")
+
+        try:
+            result = await self.opencode_manager.destroy_project(project_name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to destroy project: {str(e)}",
+            }
+
+    async def _execute_opencode_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_list tool"""
+        try:
+            result = await self.opencode_manager.list_projects()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to list projects: {str(e)}",
             }

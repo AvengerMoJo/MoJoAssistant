@@ -1,0 +1,533 @@
+"""
+OpenCode Manager
+
+Main orchestrator for OpenCode project lifecycle management.
+
+File: app/mcp/opencode/manager.py
+"""
+
+import os
+from pathlib import Path
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+
+from app.mcp.opencode.models import ProjectState, ProcessStatus
+from app.mcp.opencode.env_manager import EnvManager
+from app.mcp.opencode.state_manager import StateManager
+from app.mcp.opencode.ssh_manager import SSHManager
+from app.mcp.opencode.process_manager import ProcessManager
+
+
+class OpenCodeManager:
+    """
+    Manages OpenCode server instances and their associated MCP tools.
+
+    Responsibilities:
+    - Bootstrap projects (clone repo, start processes)
+    - Monitor health
+    - Stop/restart projects
+    - Track state persistently
+    """
+
+    def __init__(self, memory_root: str = None, logger=None):
+        self.memory_root = memory_root or os.path.expanduser("~/.memory")
+        self.logger = logger
+        self.env_manager = EnvManager(self.memory_root)
+        self.state_manager = StateManager(self.memory_root)
+        self.ssh_manager = SSHManager(self.memory_root)
+        self.process_manager = ProcessManager(self.memory_root)
+
+        # Check if we're in development mode
+        self.is_dev_mode = os.getenv("ENVIRONMENT", "production").lower() in [
+            "development",
+            "dev",
+        ]
+
+    def _log(self, message: str, level: str = "info"):
+        """Log message if logger available"""
+        if self.logger:
+            getattr(self.logger, level)(f"[OpenCode Manager] {message}")
+
+    async def start_project(
+        self, project_name: str, git_url: str, user_ssh_key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Start or bootstrap an OpenCode project
+
+        Args:
+            project_name: Name of the project
+            git_url: Git repository URL
+            user_ssh_key: Optional user-provided SSH key path
+
+        Returns:
+            Dictionary with status and details
+        """
+        self._log(f"Starting project: {project_name}")
+
+        # Check if project already exists
+        existing_project = self.state_manager.get_project(project_name)
+        if existing_project:
+            # Check if processes are running
+            opencode_running = self.process_manager.is_process_running(
+                existing_project.opencode.pid
+            )
+            mcp_tool_running = self.process_manager.is_process_running(
+                existing_project.mcp_tool.pid
+            )
+
+            if opencode_running and mcp_tool_running:
+                self._log(f"Project {project_name} is already running")
+                return {
+                    "status": "already_running",
+                    "project": project_name,
+                    "opencode_port": existing_project.opencode.port,
+                    "mcp_tool_port": existing_project.mcp_tool.port,
+                    "message": "Project is already running",
+                }
+
+            # Restart if stopped/failed
+            return await self.restart_project(project_name)
+
+        # Bootstrap new project
+        return await self._bootstrap_project(project_name, git_url, user_ssh_key)
+
+    async def _bootstrap_project(
+        self, project_name: str, git_url: str, user_ssh_key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Bootstrap a new project from scratch"""
+        self._log(f"Bootstrapping project: {project_name}")
+
+        try:
+            # Step 1: Handle .env configuration
+            env_path = self.env_manager.get_env_path(project_name)
+            warning_message = None
+
+            if not self.env_manager.env_exists(project_name):
+                if self.is_dev_mode:
+                    # Development mode: Auto-generate .env
+                    self._log(f"Development mode: Generating .env for {project_name}")
+                    env_path, warning_message = self.env_manager.generate_env(
+                        project_name, git_url, user_ssh_key
+                    )
+                else:
+                    # Production mode: Fail if .env missing
+                    return {
+                        "status": "error",
+                        "error": "missing_config",
+                        "message": (
+                            f"Configuration file not found: {env_path}\n\n"
+                            f"In production mode, you must create the .env file manually.\n"
+                            f"See template at: {self.env_manager.template_path}"
+                        ),
+                    }
+
+            # Step 2: Load and validate configuration
+            try:
+                config = self.env_manager.load_project_config(project_name)
+            except (FileNotFoundError, ValueError) as e:
+                return {"status": "error", "error": "invalid_config", "message": str(e)}
+
+            valid, error = self.env_manager.validate_config(config)
+            if not valid:
+                return {
+                    "status": "error",
+                    "error": "invalid_config",
+                    "message": error,
+                }
+
+            # Step 3: Handle SSH key
+            ssh_key_path = config.ssh_key_path
+            public_key = None
+
+            if not os.path.exists(ssh_key_path):
+                # Generate SSH key
+                self._log(f"Generating SSH key for {project_name}")
+                (
+                    ssh_key_path,
+                    public_key_path,
+                    public_key,
+                ) = self.ssh_manager.generate_key(project_name)
+
+                # Update config with generated key path
+                config.ssh_key_path = ssh_key_path
+
+            else:
+                # Validate existing key
+                valid, error = self.ssh_manager.validate_key(ssh_key_path)
+                if not valid:
+                    return {
+                        "status": "error",
+                        "error": "invalid_ssh_key",
+                        "message": error,
+                    }
+                public_key = self.ssh_manager.get_public_key(ssh_key_path)
+
+            # Step 4: Test Git access
+            self._log(f"Testing Git access for {project_name}")
+            has_access, access_message = self.ssh_manager.test_git_access(
+                git_url, ssh_key_path
+            )
+
+            if not has_access:
+                # Return with instructions to add key
+                return {
+                    "status": "waiting_for_key",
+                    "project": project_name,
+                    "message": (
+                        "SSH key does not have access to repository yet.\n\n"
+                        "Please add this public key to your Git repository:\n\n"
+                        f"{public_key}\n\n"
+                        f"Public key location: {ssh_key_path}.pub\n\n"
+                        "After adding the key, run this command again to retry."
+                    ),
+                    "public_key": public_key,
+                    "public_key_path": f"{ssh_key_path}.pub",
+                    "error_detail": access_message,
+                }
+
+            # Step 5: Clone repository
+            repo_dir = Path(config.sandbox_dir) / "repo"
+            if not repo_dir.exists():
+                self._log(f"Cloning repository for {project_name}")
+                success, clone_message = self.process_manager.clone_repository(
+                    git_url, repo_dir, ssh_key_path
+                )
+                if not success:
+                    return {
+                        "status": "error",
+                        "error": "clone_failed",
+                        "message": clone_message,
+                    }
+
+            # Step 6: Create .gitignore in sandbox to protect .env
+            gitignore_template = (
+                Path(__file__).parent / "templates" / ".gitignore.template"
+            )
+            sandbox_gitignore = Path(config.sandbox_dir) / ".gitignore"
+            if gitignore_template.exists() and not sandbox_gitignore.exists():
+                import shutil
+
+                shutil.copy(gitignore_template, sandbox_gitignore)
+                self._log(f"Created .gitignore in sandbox to protect secrets")
+
+            # Step 7: Create initial project state
+            project_state = ProjectState(
+                project_name=project_name,
+                sandbox_dir=config.sandbox_dir,
+                git_url=git_url,
+                ssh_key_path=ssh_key_path,
+            )
+            self.state_manager.save_project(project_state)
+
+            # Step 8: Start OpenCode server
+            self._log(f"Starting OpenCode server for {project_name}")
+            opencode_pid, opencode_port, opencode_error = (
+                self.process_manager.start_opencode(config, repo_dir)
+            )
+
+            if opencode_error:
+                self.state_manager.update_process_status(
+                    project_name, "opencode", status="failed", error=opencode_error
+                )
+                return {
+                    "status": "error",
+                    "error": "opencode_start_failed",
+                    "message": opencode_error,
+                }
+
+            self.state_manager.update_process_status(
+                project_name,
+                "opencode",
+                pid=opencode_pid,
+                port=opencode_port,
+                status="starting",
+            )
+
+            # Step 9: Health check OpenCode
+            self._log(f"Checking OpenCode health for {project_name}")
+            healthy, health_message = self.process_manager.check_opencode_health(
+                opencode_port, config.opencode_password
+            )
+
+            if not healthy:
+                self.state_manager.update_process_status(
+                    project_name, "opencode", status="failed", error=health_message
+                )
+                return {
+                    "status": "error",
+                    "error": "opencode_unhealthy",
+                    "message": health_message,
+                }
+
+            self.state_manager.update_process_status(
+                project_name, "opencode", status="running"
+            )
+
+            # Step 10: Start MCP tool
+            self._log(f"Starting MCP tool for {project_name}")
+            mcp_pid, mcp_port, mcp_error = self.process_manager.start_mcp_tool(
+                config, opencode_port
+            )
+
+            if mcp_error:
+                self.state_manager.update_process_status(
+                    project_name, "mcp_tool", status="failed", error=mcp_error
+                )
+                return {
+                    "status": "partial",
+                    "message": "OpenCode started but MCP tool failed",
+                    "opencode_port": opencode_port,
+                    "mcp_tool_error": mcp_error,
+                }
+
+            self.state_manager.update_process_status(
+                project_name, "mcp_tool", pid=mcp_pid, port=mcp_port, status="starting"
+            )
+
+            # Step 11: Health check MCP tool
+            self._log(f"Checking MCP tool health for {project_name}")
+            healthy, health_message = self.process_manager.check_mcp_tool_health(
+                mcp_port, config.mcp_bearer_token
+            )
+
+            if not healthy:
+                self.state_manager.update_process_status(
+                    project_name, "mcp_tool", status="failed", error=health_message
+                )
+                return {
+                    "status": "partial",
+                    "message": "OpenCode started but MCP tool unhealthy",
+                    "opencode_port": opencode_port,
+                    "mcp_tool_error": health_message,
+                }
+
+            self.state_manager.update_process_status(
+                project_name, "mcp_tool", status="running"
+            )
+
+            # Success!
+            self._log(f"Project {project_name} started successfully")
+
+            result = {
+                "status": "success",
+                "project": project_name,
+                "opencode_port": opencode_port,
+                "opencode_pid": opencode_pid,
+                "mcp_tool_port": mcp_port,
+                "mcp_tool_pid": mcp_pid,
+                "sandbox_dir": config.sandbox_dir,
+                "message": f"Project {project_name} started successfully",
+            }
+
+            if warning_message:
+                result["warning"] = warning_message
+
+            return result
+
+        except Exception as e:
+            self._log(f"Error bootstrapping project: {str(e)}", "error")
+            return {
+                "status": "error",
+                "error": "bootstrap_failed",
+                "message": f"Unexpected error: {str(e)}",
+            }
+
+    async def get_status(self, project_name: str) -> Dict[str, Any]:
+        """Get project status"""
+        project = self.state_manager.get_project(project_name)
+        if not project:
+            return {
+                "status": "not_found",
+                "project": project_name,
+                "message": f"Project {project_name} not found",
+            }
+
+        # Check process health
+        opencode_running = self.process_manager.is_process_running(
+            project.opencode.pid
+        )
+        mcp_tool_running = self.process_manager.is_process_running(
+            project.mcp_tool.pid
+        )
+
+        # Update status
+        if opencode_running:
+            self.state_manager.update_process_status(
+                project_name, "opencode", status="running"
+            )
+        else:
+            self.state_manager.update_process_status(
+                project_name, "opencode", status="stopped"
+            )
+
+        if mcp_tool_running:
+            self.state_manager.update_process_status(
+                project_name, "mcp_tool", status="running"
+            )
+        else:
+            self.state_manager.update_process_status(
+                project_name, "mcp_tool", status="stopped"
+            )
+
+        self.state_manager.update_health_check(project_name)
+
+        # Reload project state
+        project = self.state_manager.get_project(project_name)
+
+        return {
+            "status": "ok",
+            "project": project_name,
+            "opencode": {
+                "pid": project.opencode.pid,
+                "port": project.opencode.port,
+                "status": project.opencode.status,
+                "running": opencode_running,
+            },
+            "mcp_tool": {
+                "pid": project.mcp_tool.pid,
+                "port": project.mcp_tool.port,
+                "status": project.mcp_tool.status,
+                "running": mcp_tool_running,
+            },
+            "sandbox_dir": project.sandbox_dir,
+            "git_url": project.git_url,
+            "created_at": project.created_at,
+            "last_health_check": project.last_health_check,
+        }
+
+    async def stop_project(self, project_name: str) -> Dict[str, Any]:
+        """Stop a project"""
+        project = self.state_manager.get_project(project_name)
+        if not project:
+            return {"status": "not_found", "message": f"Project {project_name} not found"}
+
+        self._log(f"Stopping project: {project_name}")
+
+        # Stop OpenCode
+        if project.opencode.pid:
+            success, error = self.process_manager.stop_process(
+                project.opencode.pid, "OpenCode"
+            )
+            if success:
+                self.state_manager.update_process_status(
+                    project_name, "opencode", status="stopped"
+                )
+
+        # Stop MCP tool
+        if project.mcp_tool.pid:
+            success, error = self.process_manager.stop_process(
+                project.mcp_tool.pid, "MCP tool"
+            )
+            if success:
+                self.state_manager.update_process_status(
+                    project_name, "mcp_tool", status="stopped"
+                )
+
+        return {"status": "success", "project": project_name, "message": "Project stopped"}
+
+    async def restart_project(self, project_name: str) -> Dict[str, Any]:
+        """Restart a project"""
+        self._log(f"Restarting project: {project_name}")
+
+        # Stop first
+        await self.stop_project(project_name)
+
+        # Get configuration
+        try:
+            config = self.env_manager.load_project_config(project_name)
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to load config: {str(e)}"}
+
+        project = self.state_manager.get_project(project_name)
+        repo_dir = Path(config.sandbox_dir) / "repo"
+
+        # Start OpenCode
+        opencode_pid, opencode_port, opencode_error = (
+            self.process_manager.start_opencode(config, repo_dir)
+        )
+        if opencode_error:
+            return {"status": "error", "message": opencode_error}
+
+        self.state_manager.update_process_status(
+            project_name,
+            "opencode",
+            pid=opencode_pid,
+            port=opencode_port,
+            status="running",
+        )
+
+        # Start MCP tool
+        mcp_pid, mcp_port, mcp_error = self.process_manager.start_mcp_tool(
+            config, opencode_port
+        )
+        if mcp_error:
+            return {
+                "status": "partial",
+                "message": "OpenCode restarted but MCP tool failed",
+                "error": mcp_error,
+            }
+
+        self.state_manager.update_process_status(
+            project_name, "mcp_tool", pid=mcp_pid, port=mcp_port, status="running"
+        )
+
+        return {
+            "status": "success",
+            "project": project_name,
+            "message": "Project restarted",
+            "opencode_port": opencode_port,
+            "mcp_tool_port": mcp_port,
+        }
+
+    async def destroy_project(self, project_name: str) -> Dict[str, Any]:
+        """Destroy a project (stop + delete sandbox)"""
+        self._log(f"Destroying project: {project_name}")
+
+        # Stop first
+        await self.stop_project(project_name)
+
+        # Get project state
+        project = self.state_manager.get_project(project_name)
+        if project:
+            # Delete sandbox directory
+            sandbox_dir = Path(project.sandbox_dir)
+            if sandbox_dir.exists():
+                import shutil
+
+                shutil.rmtree(sandbox_dir)
+
+            # Delete from state
+            self.state_manager.delete_project(project_name)
+
+        return {
+            "status": "success",
+            "project": project_name,
+            "message": "Project destroyed",
+        }
+
+    async def list_projects(self) -> Dict[str, Any]:
+        """List all projects"""
+        projects = self.state_manager.get_all_projects()
+
+        result = {"status": "success", "projects": []}
+
+        for name, project in projects.items():
+            opencode_running = self.process_manager.is_process_running(
+                project.opencode.pid
+            )
+            mcp_tool_running = self.process_manager.is_process_running(
+                project.mcp_tool.pid
+            )
+
+            result["projects"].append(
+                {
+                    "name": name,
+                    "opencode_running": opencode_running,
+                    "mcp_tool_running": mcp_tool_running,
+                    "opencode_port": project.opencode.port,
+                    "mcp_tool_port": project.mcp_tool.port,
+                    "sandbox_dir": project.sandbox_dir,
+                }
+            )
+
+        return result
