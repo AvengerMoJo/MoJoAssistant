@@ -2,10 +2,12 @@
 Unified Application Configuration System
 Centralized configuration management for MoJoAssistant
 """
+
 import os
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from pathlib import Path
+
 # Import with fallback for environments without python-dotenv
 try:
     from dotenv import load_dotenv
@@ -18,6 +20,7 @@ except ImportError:
 @dataclass
 class ServerConfig:
     """HTTP Server configuration"""
+
     host: str = "0.0.0.0"
     port: int = 8000
     cors_origins: List[str] = field(default_factory=lambda: ["*"])
@@ -28,6 +31,7 @@ class ServerConfig:
 @dataclass
 class OAuthConfig:
     """OAuth 2.1 configuration"""
+
     enabled: bool = False
     issuer: Optional[str] = None
     audience: Optional[str] = None
@@ -47,7 +51,9 @@ class OAuthConfig:
     verify_exp: bool = True
 
     # Scopes
-    supported_scopes: List[str] = field(default_factory=lambda: ["mcp:read", "mcp:write", "mcp:admin"])
+    supported_scopes: List[str] = field(
+        default_factory=lambda: ["mcp:read", "mcp:write", "mcp:admin"]
+    )
     required_scope: Optional[str] = "mcp:read"
 
     # Advanced settings
@@ -55,7 +61,9 @@ class OAuthConfig:
     token_cache_ttl: int = 300
 
     # Authorization Server Settings (for full OAuth server mode)
-    enable_authorization_server: bool = False  # Enable full OAuth server vs resource-only
+    enable_authorization_server: bool = (
+        False  # Enable full OAuth server vs resource-only
+    )
     api_key_mode: bool = True  # Allow API key as Bearer token
     auto_approve: bool = True  # Auto-approve for personal use
     authorization_code_ttl: int = 600  # Authorization code TTL in seconds (10 minutes)
@@ -63,7 +71,9 @@ class OAuthConfig:
     refresh_token_ttl: int = 2592000  # Refresh token TTL in seconds (30 days)
     public_client_enabled: bool = True  # Allow requests without client_id
 
-    def get_protected_resource_metadata(self, base_url: Optional[str] = None) -> Dict[str, Any]:
+    def get_protected_resource_metadata(
+        self, base_url: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Generate OAuth 2.1 Protected Resource Metadata (RFC 9728)
 
@@ -73,24 +83,24 @@ class OAuthConfig:
         Returns:
             Protected resource metadata dict
         """
-        metadata = {
-            "authorization_servers": []
-        }
+        metadata = {"authorization_servers": []}
 
         # Add resource field (required by 2025-06-18 MCP spec update)
         if base_url:
             # Resource should be the MCP endpoint URL (typically base_url + /oauth or just base_url)
-            metadata["resource"] = base_url.rstrip('/')
+            metadata["resource"] = base_url.rstrip("/")
 
         # Priority: If OAUTH_ISSUER is set, always use it for Claude Desktop
         # Authorization server mode is for OTHER clients, not Claude
         if self.issuer:
             # Use external authorization server (Claude's OAuth)
-            auth_server_url = f"{self.issuer.rstrip('/')}/.well-known/oauth-authorization-server"
+            # Return base URL, not full metadata endpoint (client will append .well-known path)
+            auth_server_url = self.issuer.rstrip("/")
             metadata["authorization_servers"].append(auth_server_url)
         elif self.enable_authorization_server and base_url:
             # Fallback: Use THIS server as authorization server (for other clients)
-            auth_server_url = f"{base_url.rstrip('/')}/.well-known/oauth-authorization-server"
+            # Return base URL, not full metadata endpoint (client will append .well-known path)
+            auth_server_url = base_url.rstrip("/")
             metadata["authorization_servers"].append(auth_server_url)
 
         if self.resource_server_id:
@@ -112,12 +122,16 @@ class OAuthConfig:
         # Need either JWKS URI or token endpoint for validation
         has_validation_endpoint = self.jwks_uri or self.token_endpoint
 
-        return all(field is not None for field in required_fields) and has_validation_endpoint
+        return (
+            all(field is not None for field in required_fields)
+            and has_validation_endpoint
+        )
 
 
 @dataclass
 class LLMConfig:
     """LLM provider configuration"""
+
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
@@ -128,6 +142,7 @@ class LLMConfig:
 @dataclass
 class SearchConfig:
     """Search service configuration"""
+
     google_api_key: Optional[str] = None
     google_search_engine_id: Optional[str] = None
     enabled: bool = True
@@ -136,6 +151,7 @@ class SearchConfig:
 @dataclass
 class MemoryConfig:
     """Memory system configuration"""
+
     embedding_model: str = "all-MiniLM-L6-v2"
     multi_model_enabled: bool = False
     vector_store: str = "qdrant"
@@ -148,6 +164,7 @@ class MemoryConfig:
 @dataclass
 class LoggingConfig:
     """Logging configuration"""
+
     level: str = "INFO"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     file_path: Optional[str] = None
@@ -171,12 +188,12 @@ class AppConfig:
     debug: bool = False
 
     @classmethod
-    def from_env(cls, env_path: Optional[str] = None) -> 'AppConfig':
+    def from_env(cls, env_path: Optional[str] = None) -> "AppConfig":
         """Load configuration from environment variables and .env file"""
 
         # Load .env file
         if env_path is None:
-            env_path = Path(__file__).parent.parent.parent / '.env'
+            env_path = Path(__file__).parent.parent.parent / ".env"
 
         if env_path and Path(env_path).exists():
             load_dotenv(env_path)
@@ -188,68 +205,85 @@ class AppConfig:
                 port=int(os.getenv("SERVER_PORT", "8000")),
                 cors_origins=os.getenv("CORS_ORIGINS", "*").split(","),
                 api_key=os.getenv("MCP_API_KEY"),
-                require_auth=os.getenv("MCP_REQUIRE_AUTH", "false").lower() in ("true", "1", "yes")
+                require_auth=os.getenv("MCP_REQUIRE_AUTH", "false").lower()
+                in ("true", "1", "yes"),
             ),
-
             oauth=OAuthConfig(
-                enabled=os.getenv("OAUTH_ENABLED", "false").lower() in ("true", "1", "yes"),
+                enabled=os.getenv("OAUTH_ENABLED", "false").lower()
+                in ("true", "1", "yes"),
                 issuer=os.getenv("OAUTH_ISSUER"),
                 audience=os.getenv("OAUTH_AUDIENCE"),
                 jwks_uri=os.getenv("OAUTH_JWKS_URI"),
                 authorization_endpoint=os.getenv("OAUTH_AUTHORIZATION_ENDPOINT"),
                 token_endpoint=os.getenv("OAUTH_TOKEN_ENDPOINT"),
                 resource_server_id=os.getenv("OAUTH_RESOURCE_SERVER_ID"),
-                verify_signature=os.getenv("OAUTH_VERIFY_SIGNATURE", "true").lower() in ("true", "1", "yes"),
-                verify_audience=os.getenv("OAUTH_VERIFY_AUDIENCE", "true").lower() in ("true", "1", "yes"),
-                verify_issuer=os.getenv("OAUTH_VERIFY_ISSUER", "true").lower() in ("true", "1", "yes"),
-                verify_exp=os.getenv("OAUTH_VERIFY_EXP", "true").lower() in ("true", "1", "yes"),
-                supported_scopes=os.getenv("OAUTH_SUPPORTED_SCOPES", "mcp:read,mcp:write,mcp:admin").split(","),
+                verify_signature=os.getenv("OAUTH_VERIFY_SIGNATURE", "true").lower()
+                in ("true", "1", "yes"),
+                verify_audience=os.getenv("OAUTH_VERIFY_AUDIENCE", "true").lower()
+                in ("true", "1", "yes"),
+                verify_issuer=os.getenv("OAUTH_VERIFY_ISSUER", "true").lower()
+                in ("true", "1", "yes"),
+                verify_exp=os.getenv("OAUTH_VERIFY_EXP", "true").lower()
+                in ("true", "1", "yes"),
+                supported_scopes=os.getenv(
+                    "OAUTH_SUPPORTED_SCOPES", "mcp:read,mcp:write,mcp:admin"
+                ).split(","),
                 required_scope=os.getenv("OAUTH_REQUIRED_SCOPE"),
                 algorithm=os.getenv("OAUTH_ALGORITHM", "RS256"),
                 token_cache_ttl=int(os.getenv("OAUTH_TOKEN_CACHE_TTL", "300")),
                 # Authorization Server settings
-                enable_authorization_server=os.getenv("OAUTH_AUTHORIZATION_SERVER_ENABLED", "false").lower() in ("true", "1", "yes"),
-                api_key_mode=os.getenv("OAUTH_API_KEY_MODE", "true").lower() in ("true", "1", "yes"),
-                auto_approve=os.getenv("OAUTH_AUTO_APPROVE", "true").lower() in ("true", "1", "yes"),
-                authorization_code_ttl=int(os.getenv("OAUTH_AUTHORIZATION_CODE_TTL", "600")),
+                enable_authorization_server=os.getenv(
+                    "OAUTH_AUTHORIZATION_SERVER_ENABLED", "false"
+                ).lower()
+                in ("true", "1", "yes"),
+                api_key_mode=os.getenv("OAUTH_API_KEY_MODE", "true").lower()
+                in ("true", "1", "yes"),
+                auto_approve=os.getenv("OAUTH_AUTO_APPROVE", "true").lower()
+                in ("true", "1", "yes"),
+                authorization_code_ttl=int(
+                    os.getenv("OAUTH_AUTHORIZATION_CODE_TTL", "600")
+                ),
                 access_token_ttl=int(os.getenv("OAUTH_ACCESS_TOKEN_TTL", "3600")),
                 refresh_token_ttl=int(os.getenv("OAUTH_REFRESH_TOKEN_TTL", "2592000")),
-                public_client_enabled=os.getenv("OAUTH_PUBLIC_CLIENT_ENABLED", "true").lower() in ("true", "1", "yes")
+                public_client_enabled=os.getenv(
+                    "OAUTH_PUBLIC_CLIENT_ENABLED", "true"
+                ).lower()
+                in ("true", "1", "yes"),
             ),
-
             llm=LLMConfig(
                 openai_api_key=os.getenv("OPENAI_API_KEY"),
                 anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
                 google_api_key=os.getenv("GOOGLE_API_KEY"),
                 openrouter_api_key=os.getenv("OPEN_ROUTER_KEY"),
-                local_model_path=os.getenv("LOCAL_MODEL_PATH")
+                local_model_path=os.getenv("LOCAL_MODEL_PATH"),
             ),
-
             search=SearchConfig(
                 google_api_key=os.getenv("GOOGLE_API_KEY"),
                 google_search_engine_id=os.getenv("GOOGLE_SEARCH_ENGINE_ID"),
-                enabled=os.getenv("SEARCH_ENABLED", "true").lower() in ("true", "1", "yes")
+                enabled=os.getenv("SEARCH_ENABLED", "true").lower()
+                in ("true", "1", "yes"),
             ),
-
             memory=MemoryConfig(
                 embedding_model=os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
-                multi_model_enabled=os.getenv("MULTI_MODEL_ENABLED", "false").lower() in ("true", "1", "yes"),
+                multi_model_enabled=os.getenv("MULTI_MODEL_ENABLED", "false").lower()
+                in ("true", "1", "yes"),
                 vector_store=os.getenv("VECTOR_STORE", "qdrant"),
                 memory_path=os.getenv("MEMORY_PATH", ".memory"),
                 knowledge_path=os.getenv("KNOWLEDGE_PATH", ".knowledge"),
                 max_context_items=int(os.getenv("MAX_CONTEXT_ITEMS", "10")),
-                embedding_cache_ttl=int(os.getenv("EMBEDDING_CACHE_TTL", "3600"))
+                embedding_cache_ttl=int(os.getenv("EMBEDDING_CACHE_TTL", "3600")),
             ),
-
             logging=LoggingConfig(
                 level=os.getenv("LOG_LEVEL", "INFO").upper(),
-                format=os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"),
+                format=os.getenv(
+                    "LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                ),
                 file_path=os.getenv("LOG_FILE"),
-                enable_console=os.getenv("LOG_CONSOLE", "true").lower() in ("true", "1", "yes")
+                enable_console=os.getenv("LOG_CONSOLE", "true").lower()
+                in ("true", "1", "yes"),
             ),
-
             environment=os.getenv("ENVIRONMENT", "development"),
-            debug=os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+            debug=os.getenv("DEBUG", "false").lower() in ("true", "1", "yes"),
         )
 
     def get_oauth_protected_resource_metadata(self) -> Dict[str, Any]:
@@ -263,9 +297,9 @@ class AppConfig:
     def is_search_enabled(self) -> bool:
         """Check if web search is properly configured"""
         return (
-            self.search.enabled and
-            self.search.google_api_key is not None and
-            self.search.google_search_engine_id is not None
+            self.search.enabled
+            and self.search.google_api_key is not None
+            and self.search.google_search_engine_id is not None
         )
 
     def validate(self) -> List[str]:
@@ -274,7 +308,9 @@ class AppConfig:
 
         # OAuth validation
         if self.oauth.enabled and not self.is_oauth_valid():
-            issues.append("OAuth is enabled but missing required configuration (issuer, audience, jwks_uri)")
+            issues.append(
+                "OAuth is enabled but missing required configuration (issuer, audience, jwks_uri)"
+            )
 
         # Server validation
         if self.server.port < 1 or self.server.port > 65535:
@@ -298,7 +334,7 @@ class AppConfig:
                 "port": self.server.port,
                 "cors_origins": self.server.cors_origins,
                 "require_auth": self.server.require_auth,
-                "api_key_configured": bool(self.server.api_key)
+                "api_key_configured": bool(self.server.api_key),
             },
             "oauth": {
                 "enabled": self.oauth.enabled,
@@ -306,20 +342,20 @@ class AppConfig:
                 "audience": self.oauth.audience,
                 "supported_scopes": self.oauth.supported_scopes,
                 "required_scope": self.oauth.required_scope,
-                "algorithm": self.oauth.algorithm
+                "algorithm": self.oauth.algorithm,
             },
             "search": {
                 "enabled": self.search.enabled,
-                "configured": self.is_search_enabled()
+                "configured": self.is_search_enabled(),
             },
             "memory": {
                 "embedding_model": self.memory.embedding_model,
                 "multi_model_enabled": self.memory.multi_model_enabled,
                 "vector_store": self.memory.vector_store,
-                "max_context_items": self.memory.max_context_items
+                "max_context_items": self.memory.max_context_items,
             },
             "environment": self.environment,
-            "debug": self.debug
+            "debug": self.debug,
         }
 
 
