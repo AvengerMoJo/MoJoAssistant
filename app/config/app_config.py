@@ -63,15 +63,29 @@ class OAuthConfig:
     refresh_token_ttl: int = 2592000  # Refresh token TTL in seconds (30 days)
     public_client_enabled: bool = True  # Allow requests without client_id
 
-    def get_protected_resource_metadata(self) -> Dict[str, Any]:
-        """Generate OAuth 2.1 Protected Resource Metadata"""
+    def get_protected_resource_metadata(self, base_url: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Generate OAuth 2.1 Protected Resource Metadata
+
+        Args:
+            base_url: Base URL of the server (for authorization server mode)
+
+        Returns:
+            Protected resource metadata dict
+        """
         metadata = {
             "authorization_servers": []
         }
 
+        # Priority: If OAUTH_ISSUER is set, always use it for Claude Desktop
+        # Authorization server mode is for OTHER clients, not Claude
         if self.issuer:
-            # Standard OAuth 2.1 authorization server metadata URL
+            # Use external authorization server (Claude's OAuth)
             auth_server_url = f"{self.issuer.rstrip('/')}/.well-known/oauth-authorization-server"
+            metadata["authorization_servers"].append(auth_server_url)
+        elif self.enable_authorization_server and base_url:
+            # Fallback: Use THIS server as authorization server (for other clients)
+            auth_server_url = f"{base_url.rstrip('/')}/.well-known/oauth-authorization-server"
             metadata["authorization_servers"].append(auth_server_url)
 
         if self.resource_server_id:
