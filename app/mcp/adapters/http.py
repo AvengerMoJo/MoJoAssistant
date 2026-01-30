@@ -144,13 +144,15 @@ class HTTPAdapter(ProtocolAdapter):
 
         # OAuth 2.1 Protected Resource Metadata endpoint
         @app.get("/.well-known/oauth-protected-resource")
-        async def oauth_protected_resource_metadata():
+        async def oauth_protected_resource_metadata(request: Request):
             """OAuth 2.1 Protected Resource Metadata per RFC"""
             if not self.oauth_config.enabled:
                 return JSONResponse(
                     content={"error": "OAuth not enabled"}, status_code=501
                 )
-            return create_protected_resource_metadata_response()
+            # Get base URL from request
+            base_url = f"{request.url.scheme}://{request.url.netloc}"
+            return create_protected_resource_metadata_response(self.oauth_config, base_url)
 
         # OAuth-protected MCP endpoint for Claude Connectors
         @app.post("/oauth")
@@ -192,6 +194,7 @@ class HTTPAdapter(ProtocolAdapter):
             token: ValidatedOAuthToken = None,
             mcp_api_key: Optional[str] = Header(None, alias="MCP-API-Key"),
             mcp_env_api_key: Optional[str] = Header(None, alias="MCP_API_KEY"),
+            authorization: Optional[str] = Header(None),
         ):
             """
             Original MCP endpoint - enforces authentication based on MCP_REQUIRE_AUTH
@@ -199,19 +202,37 @@ class HTTPAdapter(ProtocolAdapter):
             Authentication logic:
             - If MCP_REQUIRE_AUTH=true: Requires EITHER valid OAuth token OR valid MCP-API-Key
             - If MCP_REQUIRE_AUTH=false: Allows all requests (no auth required)
-            - OAuth token validation is independent of MCP_REQUIRE_AUTH setting
+            - Special case: When OAuth enabled, allow requests with NO credentials (for OAuth discovery)
+              but still validate credentials if they ARE provided
             """
             # Check if authentication is required
             if self.mcp_require_auth:
                 # Extract provided API key from headers
                 provided_api_key = mcp_api_key or mcp_env_api_key
 
-                # Authentication required - must have EITHER valid OAuth token OR valid MCP-API-Key
+                # Check what credentials were provided
                 has_valid_oauth = token is not None
                 has_valid_api_key = provided_api_key and provided_api_key == self.mcp_api_key_expected
+                has_any_credentials = (token is not None) or (provided_api_key is not None)
 
-                if not has_valid_oauth and not has_valid_api_key:
+                # Decision logic when MCP_REQUIRE_AUTH=true:
+                # 1. Valid OAuth token → Allow
+                # 2. Valid API key → Allow
+                # 3. No valid credentials → Block
+                #
+                # Note: OAuth discovery endpoints (/.well-known/*) are separate routes
+                # and don't go through this check, so OAuth flow can still complete
+
+                if has_valid_oauth or has_valid_api_key:
+                    # Valid authentication provided
+                    if self.logger:
+                        auth_method = "OAuth" if has_valid_oauth else "API key"
+                        self.logger.debug(f"Request authenticated via {auth_method}")
+                else:
+                    # Block: no valid credentials provided
                     from fastapi import HTTPException, status
+                    if self.logger:
+                        self.logger.warning(f"MCP_REQUIRE_AUTH blocked: has_oauth={has_valid_oauth}, has_api_key={bool(provided_api_key)}, api_key_valid={has_valid_api_key}")
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Authentication required: provide valid Bearer token or MCP-API-Key header",

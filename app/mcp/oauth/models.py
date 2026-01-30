@@ -1,6 +1,7 @@
 """
 OAuth 2.1 data models and schemas
 """
+
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 
 class OAuthToken(BaseModel):
     """OAuth 2.1 token representation"""
+
     access_token: str
     token_type: str = "Bearer"
     expires_in: Optional[int] = None
@@ -30,6 +32,7 @@ class OAuthToken(BaseModel):
 
 class OAuthError(BaseModel):
     """OAuth 2.1 error response"""
+
     error: str
     error_description: Optional[str] = None
     error_uri: Optional[str] = None
@@ -38,27 +41,29 @@ class OAuthError(BaseModel):
 
 class ProtectedResourceMetadata(BaseModel):
     """OAuth 2.1 Protected Resource Metadata"""
+
     authorization_servers: List[str] = Field(
         description="List of authorization server metadata URLs"
     )
     resource_server: Optional[str] = Field(
-        default=None,
-        description="Resource server identifier"
+        default=None, description="Resource server identifier"
     )
     scopes_supported: List[str] = Field(
         default_factory=lambda: ["mcp:read", "mcp:write"],
-        description="List of OAuth scopes supported"
+        description="List of OAuth scopes supported",
     )
 
 
 class TokenIntrospectionRequest(BaseModel):
     """OAuth 2.1 Token Introspection Request"""
+
     token: str
     token_type_hint: Optional[str] = None
 
 
 class TokenIntrospectionResponse(BaseModel):
     """OAuth 2.1 Token Introspection Response"""
+
     active: bool
     scope: Optional[str] = None
     client_id: Optional[str] = None
@@ -74,12 +79,12 @@ class TokenIntrospectionResponse(BaseModel):
 
 class AuthorizationServerMetadata(BaseModel):
     """OAuth 2.1 Authorization Server Metadata (RFC 8414)"""
+
     issuer: str
     authorization_endpoint: str
     token_endpoint: str
-    response_types_supported: List[str] = Field(
-        default_factory=lambda: ["code"]
-    )
+    registration_endpoint: Optional[str] = None
+    response_types_supported: List[str] = Field(default_factory=lambda: ["code"])
     grant_types_supported: List[str] = Field(
         default_factory=lambda: ["authorization_code", "refresh_token"]
     )
@@ -96,6 +101,7 @@ class AuthorizationServerMetadata(BaseModel):
 
 class AuthorizationRequest(BaseModel):
     """OAuth 2.1 Authorization Request"""
+
     response_type: str  # "code"
     client_id: Optional[str] = None  # Optional for public clients
     redirect_uri: str
@@ -107,6 +113,7 @@ class AuthorizationRequest(BaseModel):
 
 class TokenRequest(BaseModel):
     """OAuth 2.1 Token Request"""
+
     grant_type: str  # "authorization_code" or "refresh_token"
     code: Optional[str] = None  # For authorization_code grant
     redirect_uri: Optional[str] = None  # For authorization_code grant
@@ -118,6 +125,7 @@ class TokenRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     """OAuth 2.1 Token Response"""
+
     access_token: str
     token_type: str = "Bearer"
     expires_in: int

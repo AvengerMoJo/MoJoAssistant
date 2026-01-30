@@ -2,11 +2,12 @@
 OAuth 2.1 JWT Token Validator
 Handles token validation for Claude Connectors compliance
 """
+
 import time
 import json
 import asyncio
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import jwt
 from jwt import PyJWKClient, PyJWKClientError
 import httpx
@@ -18,6 +19,7 @@ from app.config.logging_config import get_logger
 
 class TokenValidationError(Exception):
     """Token validation specific errors"""
+
     def __init__(self, message: str, error_code: str = "invalid_token"):
         self.message = message
         self.error_code = error_code
@@ -61,7 +63,10 @@ class TokenValidator:
 
             # If OAuth is disabled, only MCP_API_KEY is accepted
             if not self.config.enabled:
-                raise TokenValidationError("OAuth is not enabled - only MCP_API_KEY is accepted", "oauth_disabled")
+                raise TokenValidationError(
+                    "OAuth is not enabled - only MCP_API_KEY is accepted",
+                    "oauth_disabled",
+                )
 
             # Check if token is an opaque token from our token store (authorization server mode)
             if self.config.enable_authorization_server:
@@ -89,7 +94,7 @@ class TokenValidator:
                     "verify_aud": self.config.verify_audience,
                     "verify_iss": self.config.verify_issuer,
                     "verify_exp": self.config.verify_exp,
-                }
+                },
             )
 
             # Step 4: Create OAuthToken from payload
@@ -98,33 +103,53 @@ class TokenValidator:
             # Step 5: Validate scopes
             await self._validate_scopes(oauth_token)
 
-            self.logger.debug(f"Token validated successfully for subject: {oauth_token.sub}")
+            self.logger.debug(
+                f"Token validated successfully for subject: {oauth_token.sub}"
+            )
             return oauth_token
 
-        except jwt.ExpiredSignatureError:
+        except jwt.ExpiredSignatureError as e:
+            self.logger.warning(
+                f"Token validation failed: Token has expired - {str(e)}"
+            )
             raise TokenValidationError("Token has expired", "invalid_token")
-        except jwt.InvalidAudienceError:
+        except jwt.InvalidAudienceError as e:
+            self.logger.warning(
+                f"Token validation failed: Invalid audience - expected: {self.config.audience}, error: {str(e)}"
+            )
             raise TokenValidationError("Invalid token audience", "invalid_token")
-        except jwt.InvalidIssuerError:
+        except jwt.InvalidIssuerError as e:
+            self.logger.warning(
+                f"Token validation failed: Invalid issuer - expected: {self.config.issuer}, error: {str(e)}"
+            )
             raise TokenValidationError("Invalid token issuer", "invalid_token")
-        except jwt.InvalidSignatureError:
+        except jwt.InvalidSignatureError as e:
+            self.logger.warning(
+                f"Token validation failed: Invalid signature - JWKS URI: {self.config.jwks_uri}, error: {str(e)}"
+            )
             raise TokenValidationError("Invalid token signature", "invalid_token")
         except jwt.DecodeError as e:
+            self.logger.warning(f"Token validation failed: Decode error - {str(e)}")
             raise TokenValidationError(f"Token decode error: {str(e)}", "invalid_token")
         except Exception as e:
-            self.logger.error(f"Token validation error: {str(e)}")
-            raise TokenValidationError(f"Token validation failed: {str(e)}", "invalid_token")
+            self.logger.error(
+                f"Token validation error (unexpected): {type(e).__name__}: {str(e)}"
+            )
+            raise TokenValidationError(
+                f"Token validation failed: {str(e)}", "invalid_token"
+            )
 
     async def _get_signing_key(self, key_id: Optional[str], algorithm: str) -> str:
         """Get JWT signing key for validation"""
         # Check if MCP_REQUIRE_AUTH is enabled - if so, enforce signature verification
         import os
+
         mcp_require_auth = os.getenv("MCP_REQUIRE_AUTH", "false").lower() == "true"
 
         if mcp_require_auth and not self.config.verify_signature:
             raise TokenValidationError(
                 "Signature verification cannot be disabled when MCP_REQUIRE_AUTH=true",
-                "invalid_configuration"
+                "invalid_configuration",
             )
 
         if not self.config.verify_signature:
@@ -136,10 +161,13 @@ class TokenValidator:
                 signing_key = self.jwks_client.get_signing_key(key_id)
                 return signing_key.key
             except PyJWKClientError as e:
-                raise TokenValidationError(f"Failed to get signing key: {str(e)}", "invalid_token")
+                raise TokenValidationError(
+                    f"Failed to get signing key: {str(e)}", "invalid_token"
+                )
 
         # For development/testing: use environment variable
         import os
+
         jwt_secret = os.getenv("JWT_SECRET")
         if jwt_secret:
             return jwt_secret
@@ -150,7 +178,9 @@ class TokenValidator:
             self.logger.debug("Using MCP_API_KEY as JWT signing secret for development")
             return mcp_api_key
 
-        raise TokenValidationError("No signing key available for token validation", "server_error")
+        raise TokenValidationError(
+            "No signing key available for token validation", "server_error"
+        )
 
     def _create_oauth_token(self, token: str, payload: Dict[str, Any]) -> OAuthToken:
         """Create OAuthToken from JWT payload"""
@@ -177,7 +207,7 @@ class TokenValidator:
             scopes=scopes,
             user_id=payload.get("user_id") or payload.get("sub"),
             client_id=payload.get("client_id") or payload.get("azp"),
-            scope=" ".join(scopes) if scopes else None
+            scope=" ".join(scopes) if scopes else None,
         )
 
     async def _validate_scopes(self, token: OAuthToken) -> None:
@@ -193,10 +223,12 @@ class TokenValidator:
         if missing_scopes:
             raise TokenValidationError(
                 f"Token missing required scopes: {', '.join(missing_scopes)}",
-                "insufficient_scope"
+                "insufficient_scope",
             )
 
-    def extract_bearer_token(self, authorization_header: Optional[str]) -> Optional[str]:
+    def extract_bearer_token(
+        self, authorization_header: Optional[str]
+    ) -> Optional[str]:
         """
         Extract Bearer token from Authorization header
 
@@ -214,8 +246,9 @@ class TokenValidator:
 
         return authorization_header[7:]  # Remove "Bearer " prefix
 
-    def create_www_authenticate_header(self, error: str = "invalid_token",
-                                     description: Optional[str] = None) -> str:
+    def create_www_authenticate_header(
+        self, error: str = "invalid_token", description: Optional[str] = None
+    ) -> str:
         """
         Create WWW-Authenticate header for 401 responses per RFC 6750
 
@@ -226,7 +259,7 @@ class TokenValidator:
         Returns:
             WWW-Authenticate header value
         """
-        header = 'Bearer'
+        header = "Bearer"
 
         if self.config.audience:
             header += f' realm="{self.config.audience}"'
@@ -238,7 +271,9 @@ class TokenValidator:
 
         return header
 
-    async def validate_request_scope(self, token: OAuthToken, required_scope: str) -> bool:
+    async def validate_request_scope(
+        self, token: OAuthToken, required_scope: str
+    ) -> bool:
         """
         Validate if token has required scope for specific request
 
@@ -259,7 +294,7 @@ class TokenValidator:
         if not token.exp:
             return False
 
-        return datetime.utcnow().timestamp() > token.exp
+        return datetime.now(timezone.utc).timestamp() > token.exp
 
     async def _validate_mcp_api_key(self, token: str) -> bool:
         """
@@ -269,6 +304,7 @@ class TokenValidator:
         Works in all environments when MCP_API_KEY is configured.
         """
         import os
+
         mcp_api_key = os.getenv("MCP_API_KEY")
 
         if not mcp_api_key:
@@ -293,10 +329,14 @@ class TokenValidator:
             aud=self.config.audience or "mcp_server",
             exp=int(time.time()) + 3600,  # 1 hour expiry
             iat=int(time.time()),
-            scopes=["mcp:read", "mcp:write", "mcp:admin"],  # Full access with MCP_API_KEY
+            scopes=[
+                "mcp:read",
+                "mcp:write",
+                "mcp:admin",
+            ],  # Full access with MCP_API_KEY
             user_id="mcp_api_key_user",
             client_id="mcp_api_key",
-            scope="mcp:read mcp:write mcp:admin"
+            scope="mcp:read mcp:write mcp:admin",
         )
 
     async def _validate_opaque_token(self, token: str) -> Optional[OAuthToken]:
@@ -336,10 +376,12 @@ class TokenValidator:
                 iss="mcp_oauth_server",  # Our authorization server issuer
                 aud=self.config.audience or "mcp_server",
                 exp=int(token_data.expires_at.timestamp()),
-                iat=int(token_data.created_at.timestamp())
+                iat=int(token_data.created_at.timestamp()),
             )
 
-            self.logger.debug(f"Opaque token validated successfully for client: {token_data.client_id}")
+            self.logger.debug(
+                f"Opaque token validated successfully for client: {token_data.client_id}"
+            )
             return oauth_token
 
         except Exception as e:

@@ -2,10 +2,11 @@
 In-memory storage for OAuth 2.1 Authorization Server state
 Suitable for personal use, single-instance deployments
 """
+
 import secrets
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List
 from threading import Lock
 
@@ -13,6 +14,7 @@ from threading import Lock
 @dataclass
 class AuthorizationCodeData:
     """OAuth authorization code with PKCE support"""
+
     code: str
     client_id: Optional[str]
     redirect_uri: str
@@ -21,11 +23,11 @@ class AuthorizationCodeData:
     code_challenge_method: str  # "S256" or "plain"
     expires_at: datetime
     used: bool = False
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def is_expired(self) -> bool:
         """Check if authorization code has expired"""
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(timezone.utc) > self.expires_at
 
     def is_valid(self) -> bool:
         """Check if authorization code is valid (not used, not expired)"""
@@ -35,16 +37,17 @@ class AuthorizationCodeData:
 @dataclass
 class AccessTokenData:
     """OAuth access token"""
+
     token: str
     client_id: Optional[str]
     scope: str
     expires_at: datetime
     refresh_token: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def is_expired(self) -> bool:
         """Check if access token has expired"""
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(timezone.utc) > self.expires_at
 
     def is_valid(self) -> bool:
         """Check if access token is valid (not expired)"""
@@ -54,22 +57,23 @@ class AccessTokenData:
         """Get remaining time until expiration in seconds"""
         if self.is_expired():
             return 0
-        delta = self.expires_at - datetime.utcnow()
+        delta = self.expires_at - datetime.now(timezone.utc)
         return max(0, int(delta.total_seconds()))
 
 
 @dataclass
 class RefreshTokenData:
     """OAuth refresh token"""
+
     token: str
     client_id: Optional[str]
     scope: str
     expires_at: datetime
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def is_expired(self) -> bool:
         """Check if refresh token has expired"""
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(timezone.utc) > self.expires_at
 
     def is_valid(self) -> bool:
         """Check if refresh token is valid (not expired)"""
@@ -101,7 +105,7 @@ class AuthorizationCodeStore:
         scope: str,
         code_challenge: str,
         code_challenge_method: str,
-        ttl: int = 600
+        ttl: int = 600,
     ) -> AuthorizationCodeData:
         """
         Create new authorization code
@@ -118,7 +122,7 @@ class AuthorizationCodeStore:
             Authorization code data
         """
         code = secrets.token_urlsafe(32)
-        expires_at = datetime.utcnow() + timedelta(seconds=ttl)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
 
         code_data = AuthorizationCodeData(
             code=code,
@@ -127,7 +131,7 @@ class AuthorizationCodeStore:
             scope=scope,
             code_challenge=code_challenge,
             code_challenge_method=code_challenge_method,
-            expires_at=expires_at
+            expires_at=expires_at,
         )
 
         with self._lock:
@@ -192,8 +196,7 @@ class AuthorizationCodeStore:
     def _cleanup(self):
         """Remove expired or used codes"""
         expired_codes = [
-            code for code, data in self._codes.items()
-            if not data.is_valid()
+            code for code, data in self._codes.items() if not data.is_valid()
         ]
         for code in expired_codes:
             del self._codes[code]
@@ -229,7 +232,7 @@ class TokenStore:
         scope: str,
         ttl: int = 3600,
         create_refresh_token: bool = True,
-        refresh_token_ttl: int = 2592000
+        refresh_token_ttl: int = 2592000,
     ) -> AccessTokenData:
         """
         Create new access token (and optionally refresh token)
@@ -245,18 +248,20 @@ class TokenStore:
             Access token data
         """
         access_token = secrets.token_urlsafe(32)
-        expires_at = datetime.utcnow() + timedelta(seconds=ttl)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
 
         refresh_token = None
         if create_refresh_token:
             refresh_token = secrets.token_urlsafe(32)
-            refresh_expires_at = datetime.utcnow() + timedelta(seconds=refresh_token_ttl)
+            refresh_expires_at = datetime.now(timezone.utc) + timedelta(
+                seconds=refresh_token_ttl
+            )
 
             refresh_data = RefreshTokenData(
                 token=refresh_token,
                 client_id=client_id,
                 scope=scope,
-                expires_at=refresh_expires_at
+                expires_at=refresh_expires_at,
             )
 
             with self._lock:
@@ -267,7 +272,7 @@ class TokenStore:
             client_id=client_id,
             scope=scope,
             expires_at=expires_at,
-            refresh_token=refresh_token
+            refresh_token=refresh_token,
         )
 
         with self._lock:
@@ -350,15 +355,13 @@ class TokenStore:
     def _cleanup(self):
         """Remove expired tokens"""
         expired_access = [
-            token for token, data in self._access_tokens.items()
-            if not data.is_valid()
+            token for token, data in self._access_tokens.items() if not data.is_valid()
         ]
         for token in expired_access:
             del self._access_tokens[token]
 
         expired_refresh = [
-            token for token, data in self._refresh_tokens.items()
-            if not data.is_valid()
+            token for token, data in self._refresh_tokens.items() if not data.is_valid()
         ]
         for token in expired_refresh:
             del self._refresh_tokens[token]
@@ -374,9 +377,83 @@ class TokenStore:
             return len(self._refresh_tokens)
 
 
+@dataclass
+class ClientRegistration:
+    """OAuth client registration data"""
+
+    client_id: str
+    client_name: str
+    redirect_uris: List[str]
+    grant_types: List[str]
+    response_types: List[str]
+    scope: str
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ClientRegistrationStore:
+    """
+    Thread-safe in-memory store for client registrations
+    """
+
+    def __init__(self):
+        self._clients: Dict[str, ClientRegistration] = {}
+        self._lock = Lock()
+
+    def register_client(
+        self,
+        client_name: str,
+        redirect_uris: List[str],
+        grant_types: List[str],
+        response_types: List[str],
+        scope: str = "",
+    ) -> ClientRegistration:
+        """
+        Register a new OAuth client
+
+        Args:
+            client_name: Name of the client application
+            redirect_uris: List of allowed redirect URIs
+            grant_types: List of OAuth grant types
+            response_types: List of OAuth response types
+            scope: Requested scopes
+
+        Returns:
+            Client registration data
+        """
+        client_id = secrets.token_urlsafe(16)
+
+        client = ClientRegistration(
+            client_id=client_id,
+            client_name=client_name,
+            redirect_uris=redirect_uris,
+            grant_types=grant_types,
+            response_types=response_types,
+            scope=scope,
+        )
+
+        with self._lock:
+            self._clients[client_id] = client
+
+        return client
+
+    def get_client(self, client_id: str) -> Optional[ClientRegistration]:
+        """Get client by ID"""
+        with self._lock:
+            return self._clients.get(client_id)
+
+    def delete_client(self, client_id: str) -> bool:
+        """Delete client registration"""
+        with self._lock:
+            if client_id in self._clients:
+                del self._clients[client_id]
+                return True
+            return False
+
+
 # Global singleton instances
 _authorization_code_store: Optional[AuthorizationCodeStore] = None
 _token_store: Optional[TokenStore] = None
+_client_registration_store: Optional[ClientRegistrationStore] = None
 
 
 def get_authorization_code_store() -> AuthorizationCodeStore:
@@ -393,3 +470,11 @@ def get_token_store() -> TokenStore:
     if _token_store is None:
         _token_store = TokenStore()
     return _token_store
+
+
+def get_client_registration_store() -> ClientRegistrationStore:
+    """Get global client registration store instance"""
+    global _client_registration_store
+    if _client_registration_store is None:
+        _client_registration_store = ClientRegistrationStore()
+    return _client_registration_store

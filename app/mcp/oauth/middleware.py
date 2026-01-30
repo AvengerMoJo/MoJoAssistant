@@ -103,7 +103,7 @@ async def validated_oauth_token(
     except TokenValidationError as e:
         # Token was provided but is INVALID - reject the request
         logger = get_logger(__name__)
-        logger.warning(f"Invalid token rejected: {e.message}")
+        logger.warning(f"OAuth token validation failed - error_code: {e.error_code}, message: {e.message}, token_prefix: {credentials.credentials[:20]}...")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {e.message}",
@@ -234,10 +234,11 @@ class OAuthMiddleware:
         return response
 
 
-def create_protected_resource_metadata_response() -> dict:
+def create_protected_resource_metadata_response(config: Optional[OAuthConfig] = None, base_url: Optional[str] = None) -> dict:
     """Create OAuth 2.1 Protected Resource Metadata response"""
-    config = get_oauth_config()
-    return config.get_protected_resource_metadata()
+    if config is None:
+        config = get_oauth_config()
+    return config.get_protected_resource_metadata(base_url=base_url)
 
 
 # Scope validation helpers
