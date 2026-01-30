@@ -83,7 +83,7 @@ echo $! > {pid_file}"""
                 cmd,
                 shell=True,
                 executable="/bin/bash",
-                timeout=10,
+                timeout=30,
                 capture_output=True,
                 text=True,
             )
@@ -92,7 +92,7 @@ echo $! > {pid_file}"""
                 return 0, port, f"Failed to start OpenCode: {result.stderr}"
 
             # Read PID from file
-            time.sleep(0.5)  # Give process time to start
+            time.sleep(1)  # Give process time to start and write PID
             if pid_file.exists():
                 with open(pid_file, "r") as f:
                     pid = int(f.read().strip())
@@ -101,6 +101,16 @@ echo $! > {pid_file}"""
                 return 0, port, "PID file not created"
 
         except subprocess.TimeoutExpired:
+            # Even if timeout, check if PID file was created (process might be running)
+            time.sleep(1)
+            if pid_file.exists():
+                with open(pid_file, "r") as f:
+                    pid = int(f.read().strip())
+                # Check if process is actually running
+                if self.is_process_running(pid):
+                    return pid, port, None
+                else:
+                    return 0, port, "Process started but died immediately"
             return 0, port, "OpenCode start command timed out"
         except Exception as e:
             return 0, port, f"Error starting OpenCode: {str(e)}"
@@ -140,7 +150,7 @@ echo $! > {pid_file}"""
                 cmd,
                 shell=True,
                 executable="/bin/bash",
-                timeout=10,
+                timeout=30,
                 capture_output=True,
                 text=True,
             )
@@ -149,7 +159,7 @@ echo $! > {pid_file}"""
                 return 0, port, f"Failed to start MCP tool: {result.stderr}"
 
             # Read PID from file
-            time.sleep(1)  # Give npm time to start
+            time.sleep(2)  # Give npm time to start
             if pid_file.exists():
                 with open(pid_file, "r") as f:
                     pid = int(f.read().strip())
@@ -158,6 +168,16 @@ echo $! > {pid_file}"""
                 return 0, port, "PID file not created"
 
         except subprocess.TimeoutExpired:
+            # Even if timeout, check if PID file was created (process might be running)
+            time.sleep(2)
+            if pid_file.exists():
+                with open(pid_file, "r") as f:
+                    pid = int(f.read().strip())
+                # Check if process is actually running
+                if self.is_process_running(pid):
+                    return pid, port, None
+                else:
+                    return 0, port, "Process started but died immediately"
             return 0, port, "MCP tool start command timed out"
         except Exception as e:
             return 0, port, f"Error starting MCP tool: {str(e)}"
@@ -203,16 +223,19 @@ echo $! > {pid_file}"""
         except Exception as e:
             return False, f"Error stopping {process_name}: {str(e)}"
 
-    def is_process_running(self, pid: int) -> bool:
+    def is_process_running(self, pid: Optional[int]) -> bool:
         """
         Check if a process is running
 
         Args:
-            pid: Process ID
+            pid: Process ID (can be None)
 
         Returns:
             True if running, False otherwise
         """
+        if pid is None:
+            return False
+
         try:
             # Send signal 0 to check if process exists
             os.kill(pid, 0)
@@ -234,13 +257,15 @@ echo $! > {pid_file}"""
         Returns:
             Tuple of (is_healthy, message)
         """
-        url = f"http://127.0.0.1:{port}/health"
+        # OpenCode doesn't have a /health endpoint, so we check the root /
+        url = f"http://127.0.0.1:{port}/"
         auth = ("opencode", password)
 
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
                 response = requests.get(url, auth=auth, timeout=5)
+                # OpenCode returns 200 with HTML for the web interface
                 if response.status_code == 200:
                     return True, "OpenCode is healthy"
             except requests.exceptions.RequestException:

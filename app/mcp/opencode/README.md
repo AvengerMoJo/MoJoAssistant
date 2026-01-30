@@ -31,14 +31,23 @@ Memory MCP (This Project)
 All sensitive configuration (SSH keys, passwords, tokens) is stored in `.env` files within each project sandbox at `~/.memory/opencode-sandboxes/<project>/.env`.
 
 ### Development Mode
-- Auto-generates `.env` with random secrets
-- Auto-generates SSH keys if not provided
-- Shows warnings to review configuration
+- ✅ Auto-generates `.env` with random passwords/tokens
+- ✅ Auto-generates SSH keys automatically
+- ⚠️ Shows warnings to review configuration
+- Use for: Testing, learning, prototyping
 
 ### Production Mode
-- Requires manual `.env` creation
-- Fails if `.env` missing or invalid
-- Validates all paths and credentials
+- ✅ Creates minimal `.env` with SSH key path only
+- ⚠️ Requires you to set passwords/tokens manually
+- ✅ Auto-generates SSH keys automatically (low security risk)
+- ❌ Does NOT auto-generate passwords/tokens (high security risk)
+- Use for: Real projects, team collaboration
+
+**Key Insight:** SSH keys are auto-generated in BOTH modes because:
+- Private key stays local (never transmitted)
+- Public key is meant to be shared
+- User controls authorization by adding public key to GitHub
+- Same security whether you generate it or the system does
 
 ## File Structure
 
@@ -72,10 +81,11 @@ Start or bootstrap a project.
 
 **Workflow:**
 1. Check if `.env` exists
-   - Dev mode: Auto-generate with warnings
-   - Prod mode: Fail if missing
+   - Dev mode: Auto-generate with passwords/tokens
+   - Prod mode: Create minimal .env, return "waiting_for_passwords"
 2. Load and validate configuration
-3. Generate or validate SSH key
+   - Checks for placeholder passwords
+3. Auto-generate SSH key if missing (both modes)
 4. Test Git repository access
    - If fails: Return public key for user to add
 5. Clone repository
@@ -138,15 +148,21 @@ MCP_TOOL_BEARER_TOKEN=your-bearer-token
 # MCP_TOOL_DIR=/home/alex/Development/Sandbox/opencode-mcp-tool
 ```
 
-## Usage Example
+## Usage Examples
 
-### Starting a Project
+### Example 1: Development Mode (Fast Start)
+
+**Setup:**
+```bash
+export ENVIRONMENT=development
+python3 unified_mcp_server.py --mode http --port 8000
+```
 
 **User:** "Start my blog-api project"
 
 **AI:** Calls `opencode_start(project_name="blog-api", git_url="git@github.com:user/blog-api.git")`
 
-**If SSH key needed:**
+**Response (waiting for SSH key):**
 ```
 Status: waiting_for_key
 
@@ -155,10 +171,11 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5...
 
 Public key saved at: ~/.memory/opencode-keys/blog-api-deploy.pub
 
-After adding the key, run the command again to continue.
+⚠️ Development mode: Auto-generated .env with passwords
+Review: ~/.memory/opencode-sandboxes/blog-api/.env
 ```
 
-**User:** "Done, added the key"
+**User:** "Done, added the key to GitHub"
 
 **AI:** Calls `opencode_start(...)` again
 
@@ -171,8 +188,79 @@ Project blog-api started successfully!
 OpenCode Web: http://127.0.0.1:4101 (PID: 12345)
 MCP Tool: http://127.0.0.1:5101 (PID: 12346)
 
-Connect your MCP client to http://127.0.0.1:5101
-Bearer token: (stored in .env)
+⚠️ DEVELOPMENT MODE WARNING:
+Auto-generated passwords in .env - review before production use!
+```
+
+---
+
+### Example 2: Production Mode (Secure)
+
+**Setup:**
+```bash
+# Don't set ENVIRONMENT (defaults to production)
+python3 unified_mcp_server.py --mode http --port 8000
+```
+
+**User:** "Start my blog-api project"
+
+**AI:** Calls `opencode_start(project_name="blog-api", git_url="git@github.com:user/blog-api.git")`
+
+**Response (need passwords):**
+```
+Status: waiting_for_passwords
+
+📝 Configuration file created at:
+   ~/.memory/opencode-sandboxes/blog-api/.env
+
+⚠️ Please set secure passwords in the .env file:
+   - OPENCODE_SERVER_PASSWORD (generate: openssl rand -hex 16)
+   - MCP_TOOL_BEARER_TOKEN (generate: openssl rand -hex 32)
+
+SSH key will be auto-generated automatically.
+
+After setting passwords, call opencode_start again to continue.
+```
+
+**User edits .env:**
+```bash
+# Generate secure values
+openssl rand -hex 16  # Copy to OPENCODE_SERVER_PASSWORD
+openssl rand -hex 32  # Copy to MCP_TOOL_BEARER_TOKEN
+
+# Edit file
+nano ~/.memory/opencode-sandboxes/blog-api/.env
+```
+
+**User:** "Done, set the passwords"
+
+**AI:** Calls `opencode_start(...)` again
+
+**Response (waiting for SSH key):**
+```
+Status: waiting_for_key
+
+SSH key auto-generated at:
+   ~/.memory/opencode-keys/blog-api-deploy
+
+Please add this public key to your GitHub repository:
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5...
+
+Public key: ~/.memory/opencode-keys/blog-api-deploy.pub
+```
+
+**User:** "Added key to GitHub"
+
+**AI:** Calls `opencode_start(...)` again
+
+**Success:**
+```
+Status: success
+
+Project blog-api started successfully!
+
+OpenCode Web: http://127.0.0.1:4101 (PID: 12345)
+MCP Tool: http://127.0.0.1:5101 (PID: 12346)
 ```
 
 ### Checking Status

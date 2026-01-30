@@ -147,6 +147,68 @@ Review the .env file and customize as needed before production use!
 
         return env_path, warning
 
+    def generate_minimal_env(
+        self, project_name: str, git_url: str, ssh_key_path: Optional[str] = None
+    ) -> Path:
+        """
+        Generate minimal .env file for production mode (SSH key only, no passwords)
+
+        Args:
+            project_name: Name of the project
+            git_url: Git repository URL
+            ssh_key_path: Optional SSH key path (will generate if None)
+
+        Returns:
+            Path to created .env file
+        """
+        env_path = self.get_env_path(project_name)
+
+        # Use provided SSH key or generate path for new one
+        if ssh_key_path is None:
+            ssh_key_path = str(self.keys_dir / f"{project_name}-deploy")
+
+        # Create minimal .env content WITHOUT passwords
+        content = f"""# OpenCode Project Configuration - PRODUCTION MODE
+# ⚠️  Please fill in the required passwords and tokens below
+# Location: {env_path}
+
+# Git repository SSH URL
+GIT_URL={git_url}
+
+# SSH key for git clone/pull/push
+# This key will be auto-generated if it doesn't exist
+SSH_KEY_PATH={ssh_key_path}
+
+# OpenCode web server password (REQUIRED - set your own)
+OPENCODE_SERVER_PASSWORD=CHANGE_ME_REQUIRED
+
+# MCP tool bearer token (REQUIRED - set your own)
+# Generate with: openssl rand -hex 32
+MCP_TOOL_BEARER_TOKEN=CHANGE_ME_REQUIRED
+
+# Optional: Custom ports (will be auto-assigned if commented out)
+# OPENCODE_PORT=4101
+# MCP_TOOL_PORT=5101
+
+# Optional: OpenCode binary path
+OPENCODE_BIN={os.path.expanduser('~/.bun/bin/opencode')}
+
+# Optional: opencode-mcp-tool path
+MCP_TOOL_DIR=/home/alex/Development/Sandbox/opencode-mcp-tool
+"""
+
+        # Ensure directory exists
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write .env file
+        with open(env_path, "w") as f:
+            f.write(content)
+
+        # Set restrictive permissions
+        os.chmod(env_path, 0o600)
+
+        return env_path
+
     def load_project_config(self, project_name: str) -> ProjectConfig:
         """
         Load project configuration from .env file
@@ -159,7 +221,7 @@ Review the .env file and customize as needed before production use!
 
         Raises:
             FileNotFoundError: If .env doesn't exist
-            ValueError: If required fields are missing
+            ValueError: If required fields are missing or have placeholder values
         """
         env_vars = self.read_env(project_name)
 
@@ -170,6 +232,27 @@ Review the .env file and customize as needed before production use!
             raise ValueError(
                 f"Missing required fields in .env: {', '.join(missing)}\n"
                 f"Please edit {self.get_env_path(project_name)}"
+            )
+
+        # Check for placeholder values (production mode before passwords set)
+        placeholders = {
+            "OPENCODE_SERVER_PASSWORD": "CHANGE_ME_REQUIRED",
+            "MCP_TOOL_BEARER_TOKEN": "CHANGE_ME_REQUIRED",
+        }
+
+        needs_update = []
+        for key, placeholder in placeholders.items():
+            if env_vars.get(key) == placeholder:
+                needs_update.append(key)
+
+        if needs_update:
+            raise ValueError(
+                f"Please set real values for these fields in .env:\n"
+                f"{', '.join(needs_update)}\n\n"
+                f"Edit: {self.get_env_path(project_name)}\n\n"
+                f"Generate secure values:\n"
+                f"  Password: openssl rand -hex 16\n"
+                f"  Bearer token: openssl rand -hex 32"
             )
 
         # Build sandbox directory path
@@ -207,13 +290,8 @@ Review the .env file and customize as needed before production use!
         Returns:
             Tuple of (is_valid, error_message)
         """
-        # Check SSH key exists
-        if config.ssh_key_path and not os.path.exists(config.ssh_key_path):
-            return (
-                False,
-                f"SSH key not found at {config.ssh_key_path}\n"
-                f"Generate with: ssh-keygen -t ed25519 -f {config.ssh_key_path}",
-            )
+        # NOTE: SSH key is NOT validated here because it's auto-generated
+        # in the manager if missing. See manager.py Step 3.
 
         # Check OpenCode binary exists
         opencode_path = config.opencode_bin

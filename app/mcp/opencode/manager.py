@@ -104,21 +104,29 @@ class OpenCodeManager:
 
             if not self.env_manager.env_exists(project_name):
                 if self.is_dev_mode:
-                    # Development mode: Auto-generate .env
+                    # Development mode: Auto-generate .env with passwords
                     self._log(f"Development mode: Generating .env for {project_name}")
                     env_path, warning_message = self.env_manager.generate_env(
                         project_name, git_url, user_ssh_key
                     )
                 else:
-                    # Production mode: Fail if .env missing
+                    # Production mode: Create minimal .env (SSH key only, no passwords)
+                    self._log(f"Production mode: Creating minimal .env for {project_name}")
+                    env_path = self.env_manager.generate_minimal_env(
+                        project_name, git_url, user_ssh_key
+                    )
                     return {
-                        "status": "error",
-                        "error": "missing_config",
+                        "status": "waiting_for_passwords",
+                        "project": project_name,
                         "message": (
-                            f"Configuration file not found: {env_path}\n\n"
-                            f"In production mode, you must create the .env file manually.\n"
-                            f"See template at: {self.env_manager.template_path}"
+                            f"📝 Configuration file created at: {env_path}\n\n"
+                            f"⚠️  Please set secure passwords in the .env file:\n"
+                            f"   - OPENCODE_SERVER_PASSWORD (generate: openssl rand -hex 16)\n"
+                            f"   - MCP_TOOL_BEARER_TOKEN (generate: openssl rand -hex 32)\n\n"
+                            f"SSH key will be auto-generated automatically.\n\n"
+                            f"After setting passwords, call opencode_start again to continue."
                         ),
+                        "env_path": str(env_path),
                     }
 
             # Step 2: Load and validate configuration
