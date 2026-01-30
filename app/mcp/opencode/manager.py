@@ -437,6 +437,11 @@ class OpenCodeManager:
         """Restart a project"""
         self._log(f"Restarting project: {project_name}")
 
+        # Get existing project state to reuse ports
+        project = self.state_manager.get_project(project_name)
+        if not project:
+            return {"status": "error", "message": f"Project {project_name} not found"}
+
         # Stop first
         await self.stop_project(project_name)
 
@@ -446,7 +451,14 @@ class OpenCodeManager:
         except Exception as e:
             return {"status": "error", "message": f"Failed to load config: {str(e)}"}
 
-        project = self.state_manager.get_project(project_name)
+        # IMPORTANT: Reuse existing ports from state, don't assign new ones
+        if project.opencode.port:
+            config.opencode_port = project.opencode.port
+            self._log(f"Reusing OpenCode port: {project.opencode.port}")
+        if project.mcp_tool.port:
+            config.mcp_tool_port = project.mcp_tool.port
+            self._log(f"Reusing MCP tool port: {project.mcp_tool.port}")
+
         repo_dir = Path(config.sandbox_dir) / "repo"
 
         # Start OpenCode
