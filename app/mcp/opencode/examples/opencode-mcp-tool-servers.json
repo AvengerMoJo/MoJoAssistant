@@ -1,0 +1,51 @@
+{
+  "version": "1.0",
+  "servers": [
+    {
+      "id": "personal-update-version-of-chatmcp-client",
+      "title": "ChatMCP Client",
+      "description": "Web-based MCP chat interface - personal fork",
+      "url": "http://127.0.0.1:4100",
+      "password": "2400",
+      "status": "active",
+      "added_at": "2026-02-01T10:00:00Z"
+    },
+    {
+      "id": "blog-api",
+      "title": "Blog API",
+      "description": "REST API for blog platform with authentication",
+      "url": "http://127.0.0.1:4101",
+      "password": "a7f3e9d2c1b8a4f6e5d3c2b1a9f8e7d6",
+      "status": "active",
+      "added_at": "2026-01-28T14:30:00Z"
+    },
+    {
+      "id": "ecommerce-backend",
+      "title": "E-commerce Backend",
+      "description": "Payment processing and order management service",
+      "url": "http://127.0.0.1:4102",
+      "password": "b2c4d6e8f0a1c3e5d7f9b1a3c5e7d9f1",
+      "status": "active",
+      "added_at": "2026-01-15T08:00:00Z"
+    },
+    {
+      "id": "ml-training-pipeline",
+      "title": "ML Training Pipeline",
+      "description": "Machine learning model training infrastructure",
+      "url": "http://127.0.0.1:4103",
+      "password": "c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f3",
+      "status": "inactive",
+      "added_at": "2026-01-10T12:00:00Z"
+    },
+    {
+      "id": "microservices-gateway",
+      "title": "API Gateway",
+      "description": "Kong-based API gateway configuration",
+      "url": "http://127.0.0.1:4104",
+      "password": "d4e6f8a0b2c4d6e8f0a2b4c6d8e0f2a4",
+      "status": "inactive",
+      "added_at": "2025-12-20T16:45:00Z"
+    }
+  ],
+  "default_server": "personal-update-version-of-chatmcp-client"
+}

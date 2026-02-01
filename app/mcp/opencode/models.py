@@ -36,6 +36,44 @@ class ProcessInfo:
 
 
 @dataclass
+class GlobalMCPToolInfo:
+    """Information about the global MCP tool instance"""
+
+    pid: Optional[int] = None
+    port: Optional[int] = None
+    status: ProcessStatus = ProcessStatus.STOPPED
+    error: Optional[str] = None
+    started_at: Optional[str] = None
+    last_health_check: Optional[str] = None
+    active_project_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return {
+            "pid": self.pid,
+            "port": self.port,
+            "status": self.status.value,
+            "error": self.error,
+            "started_at": self.started_at,
+            "last_health_check": self.last_health_check,
+            "active_project_count": self.active_project_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "GlobalMCPToolInfo":
+        """Create from dictionary"""
+        return cls(
+            pid=data.get("pid"),
+            port=data.get("port"),
+            status=ProcessStatus(data.get("status", "stopped")),
+            error=data.get("error"),
+            started_at=data.get("started_at"),
+            last_health_check=data.get("last_health_check"),
+            active_project_count=data.get("active_project_count", 0),
+        )
+
+
+@dataclass
 class ProjectConfig:
     """Configuration for an OpenCode project"""
 
@@ -57,22 +95,19 @@ class ProjectConfig:
 
 @dataclass
 class ProjectState:
-    """Complete state of a managed project"""
+    """Complete state of a managed project (N:1 architecture - no mcp_tool)"""
 
     project_name: str
     sandbox_dir: str
     git_url: str
     ssh_key_path: Optional[str] = None
     opencode: ProcessInfo = None
-    mcp_tool: ProcessInfo = None
     created_at: Optional[str] = None
     last_health_check: Optional[str] = None
 
     def __post_init__(self):
         if self.opencode is None:
             self.opencode = ProcessInfo()
-        if self.mcp_tool is None:
-            self.mcp_tool = ProcessInfo()
         if self.created_at is None:
             self.created_at = datetime.utcnow().isoformat()
 
@@ -84,7 +119,6 @@ class ProjectState:
             "git_url": self.git_url,
             "ssh_key_path": self.ssh_key_path,
             "opencode": self.opencode.to_dict(),
-            "mcp_tool": self.mcp_tool.to_dict(),
             "created_at": self.created_at,
             "last_health_check": self.last_health_check,
         }
@@ -94,7 +128,6 @@ class ProjectState:
     def from_dict(cls, data: Dict[str, Any]) -> "ProjectState":
         """Create from dictionary"""
         opencode_data = data.get("opencode", {})
-        mcp_tool_data = data.get("mcp_tool", {})
 
         return cls(
             project_name=data["project_name"],
@@ -107,13 +140,6 @@ class ProjectState:
                 status=ProcessStatus(opencode_data.get("status", "unknown")),
                 started_at=opencode_data.get("started_at"),
                 last_error=opencode_data.get("last_error"),
-            ),
-            mcp_tool=ProcessInfo(
-                pid=mcp_tool_data.get("pid"),
-                port=mcp_tool_data.get("port"),
-                status=ProcessStatus(mcp_tool_data.get("status", "unknown")),
-                started_at=mcp_tool_data.get("started_at"),
-                last_error=mcp_tool_data.get("last_error"),
             ),
             created_at=data.get("created_at"),
             last_health_check=data.get("last_health_check"),

@@ -16,6 +16,7 @@ from app.mcp.opencode.env_manager import EnvManager
 from app.mcp.opencode.state_manager import StateManager
 from app.mcp.opencode.ssh_manager import SSHManager
 from app.mcp.opencode.process_manager import ProcessManager
+from app.mcp.opencode.config_manager import ConfigManager
 
 
 class OpenCodeManager:
@@ -36,6 +37,7 @@ class OpenCodeManager:
         self.state_manager = StateManager(self.memory_root)
         self.ssh_manager = SSHManager(self.memory_root)
         self.process_manager = ProcessManager(self.memory_root)
+        self.config_manager = ConfigManager(self.memory_root)
 
         # Check if we're in development mode
         self.is_dev_mode = os.getenv("ENVIRONMENT", "production").lower() in [
@@ -67,12 +69,15 @@ class OpenCodeManager:
         # Check if project already exists
         existing_project = self.state_manager.get_project(project_name)
         if existing_project:
-            # Check if processes are running
+            # Check if OpenCode is running
             opencode_running = self.process_manager.is_process_running(
                 existing_project.opencode.pid
             )
+
+            # Check if global MCP tool is running
+            mcp_tool = self.state_manager.get_global_mcp_tool()
             mcp_tool_running = self.process_manager.is_process_running(
-                existing_project.mcp_tool.pid
+                mcp_tool.pid if mcp_tool else None
             )
 
             if opencode_running and mcp_tool_running:
@@ -81,7 +86,7 @@ class OpenCodeManager:
                     "status": "already_running",
                     "project": project_name,
                     "opencode_port": existing_project.opencode.port,
-                    "mcp_tool_port": existing_project.mcp_tool.port,
+                    "mcp_tool_port": mcp_tool.port if mcp_tool else None,
                     "message": "Project is already running",
                 }
 
@@ -271,58 +276,36 @@ class OpenCodeManager:
                 project_name, "opencode", status="running"
             )
 
-            # Step 10: Start MCP tool
-            self._log(f"Starting MCP tool for {project_name}")
-            mcp_pid, mcp_port, mcp_error = self.process_manager.start_mcp_tool(
-                config, opencode_port
+            # Step 10: Add server to global configuration
+            self._log(f"Adding {project_name} to global server configuration")
+            self.config_manager.add_server(
+                project_name=project_name,
+                port=opencode_port,
+                password=config.opencode_password,
             )
 
-            if mcp_error:
-                self.state_manager.update_process_status(
-                    project_name, "mcp_tool", status="failed", error=mcp_error
-                )
+            # Step 11: Ensure global MCP tool is running
+            mcp_tool_started = await self._ensure_global_mcp_tool_running()
+            if not mcp_tool_started:
                 return {
                     "status": "partial",
-                    "message": "OpenCode started but MCP tool failed",
+                    "message": "OpenCode started but global MCP tool failed to start",
                     "opencode_port": opencode_port,
-                    "mcp_tool_error": mcp_error,
                 }
 
-            self.state_manager.update_process_status(
-                project_name, "mcp_tool", pid=mcp_pid, port=mcp_port, status="starting"
-            )
-
-            # Step 11: Health check MCP tool
-            self._log(f"Checking MCP tool health for {project_name}")
-            healthy, health_message = self.process_manager.check_mcp_tool_health(
-                mcp_port, config.mcp_bearer_token
-            )
-
-            if not healthy:
-                self.state_manager.update_process_status(
-                    project_name, "mcp_tool", status="failed", error=health_message
-                )
-                return {
-                    "status": "partial",
-                    "message": "OpenCode started but MCP tool unhealthy",
-                    "opencode_port": opencode_port,
-                    "mcp_tool_error": health_message,
-                }
-
-            self.state_manager.update_process_status(
-                project_name, "mcp_tool", status="running"
-            )
+            # Step 12: Increment active project count
+            self.state_manager.increment_active_projects()
 
             # Success!
             self._log(f"Project {project_name} started successfully")
 
+            mcp_tool = self.state_manager.get_global_mcp_tool()
             result = {
                 "status": "success",
                 "project": project_name,
                 "opencode_port": opencode_port,
                 "opencode_pid": opencode_pid,
-                "mcp_tool_port": mcp_port,
-                "mcp_tool_pid": mcp_pid,
+                "mcp_tool_port": mcp_tool.port if mcp_tool else None,
                 "sandbox_dir": config.sandbox_dir,
                 "message": f"Project {project_name} started successfully",
             }
@@ -354,9 +337,6 @@ class OpenCodeManager:
         opencode_running = self.process_manager.is_process_running(
             project.opencode.pid
         )
-        mcp_tool_running = self.process_manager.is_process_running(
-            project.mcp_tool.pid
-        )
 
         # Update status
         if opencode_running:
@@ -368,19 +348,16 @@ class OpenCodeManager:
                 project_name, "opencode", status="stopped"
             )
 
-        if mcp_tool_running:
-            self.state_manager.update_process_status(
-                project_name, "mcp_tool", status="running"
-            )
-        else:
-            self.state_manager.update_process_status(
-                project_name, "mcp_tool", status="stopped"
-            )
-
         self.state_manager.update_health_check(project_name)
 
         # Reload project state
         project = self.state_manager.get_project(project_name)
+
+        # Get global MCP tool status
+        mcp_tool = self.state_manager.get_global_mcp_tool()
+        mcp_tool_running = self.process_manager.is_process_running(
+            mcp_tool.pid if mcp_tool else None
+        )
 
         return {
             "status": "ok",
@@ -391,11 +368,12 @@ class OpenCodeManager:
                 "status": project.opencode.status,
                 "running": opencode_running,
             },
-            "mcp_tool": {
-                "pid": project.mcp_tool.pid,
-                "port": project.mcp_tool.port,
-                "status": project.mcp_tool.status,
+            "global_mcp_tool": {
+                "pid": mcp_tool.pid if mcp_tool else None,
+                "port": mcp_tool.port if mcp_tool else None,
+                "status": mcp_tool.status.value if mcp_tool else "not_started",
                 "running": mcp_tool_running,
+                "active_projects": mcp_tool.active_project_count if mcp_tool else 0,
             },
             "sandbox_dir": project.sandbox_dir,
             "git_url": project.git_url,
@@ -421,15 +399,17 @@ class OpenCodeManager:
                     project_name, "opencode", status="stopped"
                 )
 
-        # Stop MCP tool
-        if project.mcp_tool.pid:
-            success, error = self.process_manager.stop_process(
-                project.mcp_tool.pid, "MCP tool"
-            )
-            if success:
-                self.state_manager.update_process_status(
-                    project_name, "mcp_tool", status="stopped"
-                )
+        # Update server status in configuration
+        self.config_manager.update_server_status(project_name, "inactive")
+
+        # Decrement active project count
+        self.state_manager.decrement_active_projects()
+
+        # Check if we should stop global MCP tool
+        mcp_tool = self.state_manager.get_global_mcp_tool()
+        if mcp_tool and mcp_tool.active_project_count == 0:
+            self._log("No active projects, stopping global MCP tool")
+            await self._stop_global_mcp_tool()
 
         return {"status": "success", "project": project_name, "message": "Project stopped"}
 
@@ -442,8 +422,18 @@ class OpenCodeManager:
         if not project:
             return {"status": "error", "message": f"Project {project_name} not found"}
 
-        # Stop first
-        await self.stop_project(project_name)
+        # Stop OpenCode (but don't stop global MCP tool)
+        if project.opencode.pid:
+            success, error = self.process_manager.stop_process(
+                project.opencode.pid, "OpenCode"
+            )
+            if success:
+                self.state_manager.update_process_status(
+                    project_name, "opencode", status="stopped"
+                )
+
+        # Temporarily mark as inactive
+        self.config_manager.update_server_status(project_name, "inactive")
 
         # Get configuration
         try:
@@ -451,13 +441,10 @@ class OpenCodeManager:
         except Exception as e:
             return {"status": "error", "message": f"Failed to load config: {str(e)}"}
 
-        # IMPORTANT: Reuse existing ports from state, don't assign new ones
+        # IMPORTANT: Reuse existing port
         if project.opencode.port:
             config.opencode_port = project.opencode.port
             self._log(f"Reusing OpenCode port: {project.opencode.port}")
-        if project.mcp_tool.port:
-            config.mcp_tool_port = project.mcp_tool.port
-            self._log(f"Reusing MCP tool port: {project.mcp_tool.port}")
 
         repo_dir = Path(config.sandbox_dir) / "repo"
 
@@ -476,27 +463,24 @@ class OpenCodeManager:
             status="running",
         )
 
-        # Start MCP tool
-        mcp_pid, mcp_port, mcp_error = self.process_manager.start_mcp_tool(
-            config, opencode_port
+        # Update server configuration (mark as active, update password if changed)
+        self.config_manager.add_server(
+            project_name=project_name,
+            port=opencode_port,
+            password=config.opencode_password,
         )
-        if mcp_error:
-            return {
-                "status": "partial",
-                "message": "OpenCode restarted but MCP tool failed",
-                "error": mcp_error,
-            }
 
-        self.state_manager.update_process_status(
-            project_name, "mcp_tool", pid=mcp_pid, port=mcp_port, status="running"
-        )
+        # Ensure global MCP tool is running (will reload config automatically)
+        await self._ensure_global_mcp_tool_running()
+
+        mcp_tool = self.state_manager.get_global_mcp_tool()
 
         return {
             "status": "success",
             "project": project_name,
             "message": "Project restarted",
             "opencode_port": opencode_port,
-            "mcp_tool_port": mcp_port,
+            "mcp_tool_port": mcp_tool.port if mcp_tool else None,
         }
 
     async def destroy_project(self, project_name: str) -> Dict[str, Any]:
@@ -505,6 +489,9 @@ class OpenCodeManager:
 
         # Stop first
         await self.stop_project(project_name)
+
+        # Remove from global configuration
+        self.config_manager.remove_server(project_name)
 
         # Get project state
         project = self.state_manager.get_project(project_name)
@@ -535,19 +522,171 @@ class OpenCodeManager:
             opencode_running = self.process_manager.is_process_running(
                 project.opencode.pid
             )
-            mcp_tool_running = self.process_manager.is_process_running(
-                project.mcp_tool.pid
-            )
 
             result["projects"].append(
                 {
                     "name": name,
                     "opencode_running": opencode_running,
-                    "mcp_tool_running": mcp_tool_running,
                     "opencode_port": project.opencode.port,
-                    "mcp_tool_port": project.mcp_tool.port,
                     "sandbox_dir": project.sandbox_dir,
                 }
             )
 
+        # Add global MCP tool info
+        mcp_tool = self.state_manager.get_global_mcp_tool()
+        if mcp_tool:
+            result["global_mcp_tool"] = {
+                "pid": mcp_tool.pid,
+                "port": mcp_tool.port,
+                "status": mcp_tool.status.value,
+                "running": self.process_manager.is_process_running(mcp_tool.pid),
+                "active_projects": mcp_tool.active_project_count,
+            }
+
         return result
+
+    # ========================================================================
+    # Global MCP Tool Lifecycle Helpers (N:1 Architecture)
+    # ========================================================================
+
+    async def _ensure_global_mcp_tool_running(self) -> bool:
+        """
+        Ensure global MCP tool is running, start if needed
+
+        Returns:
+            True if running, False if failed to start
+        """
+        mcp_tool = self.state_manager.get_global_mcp_tool()
+
+        # Check if already running
+        if mcp_tool and self.process_manager.is_process_running(mcp_tool.pid):
+            self._log("Global MCP tool already running, configuration will auto-reload")
+            return True
+
+        # Start global MCP tool
+        self._log("Starting global MCP tool")
+
+        # Get bearer token from environment (fixed global token)
+        global_bearer_token = os.getenv(
+            "GLOBAL_MCP_BEARER_TOKEN",
+            "730d60768d2f6ac0bfd971b2cfb69eba0b3f3bf980745a13b98d3538b996ba6a",  # Fixed token
+        )
+
+        servers_config_path = self.config_manager.get_config_path()
+
+        # Determine port (reuse if exists, otherwise default)
+        port = mcp_tool.port if mcp_tool else 5100
+
+        pid, port, error = self.process_manager.start_global_mcp_tool(
+            bearer_token=global_bearer_token,
+            servers_config_path=servers_config_path,
+            port=port,
+        )
+
+        if error:
+            self._log(f"Failed to start global MCP tool: {error}", "error")
+            self.state_manager.update_global_mcp_tool_status(
+                status=ProcessStatus.FAILED,
+                error=error,
+            )
+            return False
+
+        # Update state
+        self.state_manager.update_global_mcp_tool_status(
+            pid=pid,
+            port=port,
+            status=ProcessStatus.STARTING,
+            started_at=datetime.utcnow().isoformat(),
+        )
+
+        # Health check
+        self._log("Checking global MCP tool health")
+        healthy, health_message = self.process_manager.check_global_mcp_tool_health(
+            port
+        )
+
+        if not healthy:
+            self._log(f"Global MCP tool unhealthy: {health_message}", "error")
+            self.state_manager.update_global_mcp_tool_status(
+                status=ProcessStatus.FAILED,
+                error=health_message,
+            )
+            return False
+
+        # Success
+        self.state_manager.update_global_mcp_tool_status(
+            status=ProcessStatus.RUNNING,
+            last_health_check=datetime.utcnow().isoformat(),
+        )
+
+        self._log(f"Global MCP tool started successfully on port {port}")
+        return True
+
+    async def _stop_global_mcp_tool(self):
+        """Stop global MCP tool"""
+        mcp_tool = self.state_manager.get_global_mcp_tool()
+        if not mcp_tool or not mcp_tool.pid:
+            return
+
+        self._log(f"Stopping global MCP tool (PID {mcp_tool.pid})")
+        success, error = self.process_manager.stop_process(
+            mcp_tool.pid, "Global MCP tool"
+        )
+
+        if success:
+            self.state_manager.update_global_mcp_tool_status(
+                status=ProcessStatus.STOPPED,
+                pid=None,
+            )
+            self._log("Global MCP tool stopped")
+        else:
+            self._log(f"Failed to stop global MCP tool: {error}", "error")
+
+    async def get_mcp_status(self) -> Dict[str, Any]:
+        """Get global MCP tool status"""
+        mcp_tool = self.state_manager.get_global_mcp_tool()
+
+        if not mcp_tool:
+            return {
+                "status": "not_started",
+                "message": "Global MCP tool has never been started",
+            }
+
+        running = self.process_manager.is_process_running(mcp_tool.pid)
+
+        return {
+            "status": "running" if running else "stopped",
+            "pid": mcp_tool.pid,
+            "port": mcp_tool.port,
+            "active_projects": mcp_tool.active_project_count,
+            "started_at": mcp_tool.started_at,
+            "last_health_check": mcp_tool.last_health_check,
+            "error": mcp_tool.error,
+        }
+
+    async def restart_mcp_tool(self) -> Dict[str, Any]:
+        """Manually restart global MCP tool"""
+        mcp_tool = self.state_manager.get_global_mcp_tool()
+
+        if mcp_tool and mcp_tool.active_project_count == 0:
+            return {
+                "status": "error",
+                "message": "No active projects - MCP tool will not be restarted",
+            }
+
+        # Stop if running
+        await self._stop_global_mcp_tool()
+
+        # Start again
+        success = await self._ensure_global_mcp_tool_running()
+
+        if success:
+            mcp_tool = self.state_manager.get_global_mcp_tool()
+            return {
+                "status": "success",
+                "message": "Global MCP tool restarted",
+                "pid": mcp_tool.pid,
+                "port": mcp_tool.port,
+            }
+        else:
+            return {"status": "error", "message": "Failed to restart global MCP tool"}

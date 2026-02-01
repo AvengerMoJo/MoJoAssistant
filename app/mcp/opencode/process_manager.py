@@ -348,3 +348,105 @@ echo $! > {pid_file}"""
             return False, "Git clone timed out after 5 minutes"
         except Exception as e:
             return False, f"Error cloning repository: {str(e)}"
+
+    # ========================================================================
+    # Global MCP Tool Process Management (N:1 Architecture)
+    # ========================================================================
+
+    def start_global_mcp_tool(
+        self, bearer_token: str, servers_config_path: str, port: int = None
+    ) -> Tuple[int, int, Optional[str]]:
+        """
+        Start global opencode-mcp-tool server
+
+        Args:
+            bearer_token: MCP tool bearer token
+            servers_config_path: Path to servers configuration JSON
+            port: Port to use (will find free port if None)
+
+        Returns:
+            Tuple of (pid, port, error_message)
+        """
+        port = port or self.find_free_port(5100, 5199)
+
+        # Determine MCP tool directory from environment or default
+        mcp_tool_dir = os.getenv(
+            "OPENCODE_MCP_TOOL_PATH",
+            "/home/alex/Development/Sandbox/opencode-mcp-tool",
+        )
+
+        log_file = self.logs_dir / "global-mcp-tool.log"
+        pid_file = Path(self.memory_root) / "global-mcp-tool.pid"
+
+        # Build command for multi-server mode
+        cmd = f"""cd {mcp_tool_dir} && \\
+nohup npm run dev:http -- \\
+  --servers-config {servers_config_path} \\
+  >> {log_file} 2>&1 & \\
+echo $! > {pid_file}"""
+
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                executable="/bin/bash",
+                timeout=30,
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                return 0, port, f"Failed to start global MCP tool: {result.stderr}"
+
+            # Read PID from file
+            time.sleep(2)  # Give npm time to start
+            if pid_file.exists():
+                with open(pid_file, "r") as f:
+                    pid = int(f.read().strip())
+                return pid, port, None
+            else:
+                return 0, port, "PID file not created"
+
+        except subprocess.TimeoutExpired:
+            # Check if PID file was created
+            time.sleep(2)
+            if pid_file.exists():
+                with open(pid_file, "r") as f:
+                    pid = int(f.read().strip())
+                if self.is_process_running(pid):
+                    return pid, port, None
+                else:
+                    return 0, port, "Process started but died immediately"
+            return 0, port, "Global MCP tool start command timed out"
+        except Exception as e:
+            return 0, port, f"Error starting global MCP tool: {str(e)}"
+
+    def check_global_mcp_tool_health(
+        self, port: int, timeout: int = 60
+    ) -> Tuple[bool, str]:
+        """
+        Check if global MCP tool server is healthy
+
+        Args:
+            port: MCP tool port
+            timeout: Timeout in seconds
+
+        Returns:
+            Tuple of (is_healthy, message)
+        """
+        # Note: We don't use bearer token for health check
+        # The opencode-mcp-tool /health endpoint should be public
+        url = f"http://127.0.0.1:{port}/health"
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    return True, "Global MCP tool is healthy"
+            except requests.exceptions.RequestException:
+                pass
+
+            time.sleep(2)
+
+        return False, f"Global MCP tool health check failed after {timeout}s"

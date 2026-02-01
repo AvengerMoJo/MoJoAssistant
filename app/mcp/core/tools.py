@@ -521,6 +521,16 @@ class ToolRegistry:
                 "description": "List all OpenCode projects. Shows project names, running status, ports, and sandbox locations. Use this to see what projects are available.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
+            {
+                "name": "opencode_mcp_status",
+                "description": "Get status of the global opencode-mcp-tool instance that serves all projects. Shows PID, port, number of active projects, and health status. Use this to check if the MCP tool is running.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "opencode_mcp_restart",
+                "description": "Manually restart the global opencode-mcp-tool instance. Useful after updating the opencode-mcp-tool repository or when the MCP tool needs to reload configuration. Will only restart if there are active projects.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -886,6 +896,10 @@ class ToolRegistry:
             return await self._execute_opencode_destroy(args)
         elif name == "opencode_list":
             return await self._execute_opencode_list(args)
+        elif name == "opencode_mcp_status":
+            return await self._execute_opencode_mcp_status(args)
+        elif name == "opencode_mcp_restart":
+            return await self._execute_opencode_mcp_restart(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1318,4 +1332,30 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to list projects: {str(e)}",
+            }
+
+    async def _execute_opencode_mcp_status(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_mcp_status tool"""
+        try:
+            result = await self.opencode_manager.get_mcp_status()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get MCP status: {str(e)}",
+            }
+
+    async def _execute_opencode_mcp_restart(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_mcp_restart tool"""
+        try:
+            result = await self.opencode_manager.restart_mcp_tool()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to restart MCP tool: {str(e)}",
             }
