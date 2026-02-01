@@ -574,8 +574,10 @@ class OpenCodeManager:
 
         servers_config_path = self.config_manager.get_config_path()
 
-        # Determine port (reuse if exists, otherwise default)
-        port = mcp_tool.port if mcp_tool else 5100
+        # Determine port (reuse if exists, otherwise use configured default)
+        # GLOBAL_MCP_TOOL_PORT allows setting a fixed port (e.g., 3005 for cloudflared)
+        default_port = int(os.getenv("GLOBAL_MCP_TOOL_PORT", "3005"))
+        port = mcp_tool.port if mcp_tool else default_port
 
         pid, port, error = self.process_manager.start_global_mcp_tool(
             bearer_token=global_bearer_token,

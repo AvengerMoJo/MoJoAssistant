@@ -362,12 +362,14 @@ echo $! > {pid_file}"""
         Args:
             bearer_token: MCP tool bearer token
             servers_config_path: Path to servers configuration JSON
-            port: Port to use (will find free port if None)
+            port: Port to use (will use configured default if None)
 
         Returns:
             Tuple of (pid, port, error_message)
         """
-        port = port or self.find_free_port(5100, 5199)
+        # Use configured port from environment, or default to 3005
+        if port is None:
+            port = int(os.getenv("GLOBAL_MCP_TOOL_PORT", "3005"))
 
         # Determine MCP tool directory from environment or default
         mcp_tool_dir = os.getenv(
@@ -383,6 +385,7 @@ echo $! > {pid_file}"""
 nohup npm run dev:http -- \\
   --bearer-token {bearer_token} \\
   --servers-config {servers_config_path} \\
+  --port {port} \\
   >> {log_file} 2>&1 & \\
 echo $! > {pid_file}"""
 
