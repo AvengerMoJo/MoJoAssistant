@@ -426,26 +426,26 @@ echo $! > {pid_file}"""
             return 0, port, f"Error starting global MCP tool: {str(e)}"
 
     def check_global_mcp_tool_health(
-        self, port: int, timeout: int = 60
+        self, port: int, bearer_token: str, timeout: int = 60
     ) -> Tuple[bool, str]:
         """
         Check if global MCP tool server is healthy
 
         Args:
             port: MCP tool port
+            bearer_token: Bearer token for authentication
             timeout: Timeout in seconds
 
         Returns:
             Tuple of (is_healthy, message)
         """
-        # Note: We don't use bearer token for health check
-        # The opencode-mcp-tool /health endpoint should be public
         url = f"http://127.0.0.1:{port}/health"
+        headers = {"Authorization": f"Bearer {bearer_token}"}
 
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
-                response = requests.get(url, timeout=5)
+                response = requests.get(url, headers=headers, timeout=5)
                 if response.status_code == 200:
                     return True, "Global MCP tool is healthy"
             except requests.exceptions.RequestException:

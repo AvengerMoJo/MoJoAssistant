@@ -604,7 +604,7 @@ class OpenCodeManager:
         # Health check
         self._log("Checking global MCP tool health")
         healthy, health_message = self.process_manager.check_global_mcp_tool_health(
-            port
+            port, global_bearer_token
         )
 
         if not healthy:
