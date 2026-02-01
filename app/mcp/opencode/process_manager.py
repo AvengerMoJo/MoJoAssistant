@@ -381,6 +381,7 @@ echo $! > {pid_file}"""
         # Build command for multi-server mode
         cmd = f"""cd {mcp_tool_dir} && \\
 nohup npm run dev:http -- \\
+  --bearer-token {bearer_token} \\
   --servers-config {servers_config_path} \\
   >> {log_file} 2>&1 & \\
 echo $! > {pid_file}"""

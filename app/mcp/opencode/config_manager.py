@@ -46,7 +46,7 @@ class ConfigManager:
         port: int,
         password: str,
         title: str = None,
-        description: str = "",
+        description: str = None,
     ):
         """Add OpenCode server to configuration"""
         config = self._read_config()
@@ -66,7 +66,7 @@ class ConfigManager:
             {
                 "id": project_name,
                 "title": title or project_name.replace("-", " ").title(),
-                "description": description,
+                "description": description or f"OpenCode server for {project_name}",
                 "url": f"http://127.0.0.1:{port}",
                 "password": password,
                 "status": "active",
