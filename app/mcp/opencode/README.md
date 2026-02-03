@@ -6,7 +6,11 @@ Infrastructure manager for OpenCode coding agent instances.
 
 The OpenCode Manager provides MCP tools to bootstrap, manage, and monitor OpenCode server instances. Each project runs in an isolated sandbox with its own OpenCode web server and opencode-mcp-tool instance.
 
-## Architecture
+## Architecture (N:1 Design)
+
+**Version: 1.1 Beta - Agent Management Pattern** (Updated Feb 2026)
+
+> **Note**: This is the first implementation of MoJoAssistant's reusable Agent Manager architecture. The pattern established here (N:1 lifecycle management, configuration hot-reload, process monitoring) will be extended to manage other AI agents (Gemini CLI, custom tools, etc.).
 
 ```
 Memory MCP (This Project)
@@ -16,19 +20,42 @@ Memory MCP (This Project)
 │  ├─ opencode_stop
 │  ├─ opencode_restart
 │  ├─ opencode_destroy
-│  └─ opencode_list
+│  ├─ opencode_list
+│  ├─ opencode_mcp_status
+│  └─ opencode_mcp_restart
 │
 └─ Spawns & Monitors
-    ├─ OpenCode Web (port 4100-4199)
-    └─ opencode-mcp-tool (port 5100-5199)
-         └─ MCP Client connects here for coding operations
+    ├─ Project A: OpenCode Web (port 4100) ──┐
+    ├─ Project B: OpenCode Web (port 4101) ──┤
+    ├─ Project C: OpenCode Web (port 4102) ──┼→ Global MCP Tool (port 3005)
+    └─ Project N: OpenCode Web (port 41xx) ──┘    └─ MCP Client connects here
 ```
+
+**Key Changes:**
+- **One global MCP tool** serves all OpenCode servers
+- **Resource efficient**: Single Node.js process instead of N processes
+- **Simpler client config**: Always connect to port 3005
+- **Auto-lifecycle**: Global tool starts with first project, stops with last
+- **Hot-reload config**: Projects can be added/removed without restart
+
+For detailed architecture documentation, see [ARCHITECTURE_N_TO_1.md](ARCHITECTURE_N_TO_1.md)
 
 ## Security Model
 
 **Secrets are NEVER passed through MCP chat!**
 
 All sensitive configuration (SSH keys, passwords, tokens) is stored in `.env` files within each project sandbox at `~/.memory/opencode-sandboxes/<project>/.env`.
+
+### Security Improvements (v1.1 Beta)
+
+✅ **Bearer Token Protection** (Feb 2026)
+- Bearer tokens passed via environment variables (not CLI arguments)
+- Tokens NOT visible in process listings (`ps aux`)
+- Prevents credential leakage in logs and process monitors
+
+✅ **File Permissions**
+- All sensitive files created with 0600 permissions (owner read/write only)
+- SSH keys, state files, and server configs properly secured
 
 ### Development Mode
 - ✅ Auto-generates `.env` with random passwords/tokens
@@ -55,19 +82,22 @@ All sensitive configuration (SSH keys, passwords, tokens) is stored in `.env` fi
 ~/.memory/
 ├── opencode-sandboxes/          # Project sandboxes
 │   └── <project-name>/
-│       ├── .env                 # Secrets (gitignored)
+│       ├── .env                 # Secrets (gitignored, 0600)
 │       ├── .gitignore           # Auto-created
 │       ├── repo/                # Git clone
-│       ├── opencode.pid         # Process ID
-│       └── mcp-tool.pid         # Process ID
+│       └── opencode.pid         # Process ID
 ├── opencode-keys/               # Generated SSH keys
-│   ├── <project>-deploy
-│   └── <project>-deploy.pub
+│   ├── <project>-deploy         # Private key (0600)
+│   └── <project>-deploy.pub     # Public key
 ├── opencode-logs/               # Process logs
 │   ├── <project>-opencode.log
-│   └── <project>-mcp-tool.log
-└── opencode-state.json          # Persistent state
+│   └── global-mcp-tool.log      # ← Global MCP tool log (N:1)
+├── opencode-state.json          # Persistent state (0600)
+├── opencode-mcp-tool-servers.json  # ← Global server config (0600, N:1)
+└── global-mcp-tool.pid          # ← Global MCP tool PID (N:1)
 ```
+
+**Note**: Files marked with `(N:1)` are new in v1.1 beta N:1 architecture.
 
 ## MCP Tools
 
@@ -321,6 +351,100 @@ export ENVIRONMENT=development
 3. All processes run as **current user** (not root)
 4. Services bind to **127.0.0.1 only** (localhost)
 5. Random tokens generated with **cryptographic randomness**
+6. **Bearer tokens** passed via environment (not CLI args) - v2.0+
+7. All sensitive files have **0600 permissions** (owner only)
+
+## Migration Guide: v1.0 (1:1) → v1.1 Beta (N:1)
+
+### What Changed?
+
+**Old (1:1)**: Each project had its own MCP tool instance on a separate port (5100, 5101, 5102...)
+**New (N:1)**: One global MCP tool on port 3005 serves all projects
+
+### Automatic Migration
+
+The OpenCode Manager **automatically migrates** your state file on first run with v1.1 beta:
+
+1. Creates `global_mcp_tool` section in state
+2. Removes per-project `mcp_tool` sections
+3. Creates `opencode-mcp-tool-servers.json` configuration file
+4. Preserves all project data (OpenCode servers still on their ports)
+
+**No data loss, zero downtime!**
+
+### Manual Steps (if needed)
+
+If you encounter issues after upgrade:
+
+```bash
+# 1. Stop all old MCP tool processes
+ps aux | grep "opencode-mcp-tool" | awk '{print $2}' | xargs kill
+
+# 2. Clean up old PID files
+rm ~/.memory/opencode-sandboxes/*/mcp-tool.pid
+
+# 3. Restart projects (global MCP tool will auto-start)
+# Use opencode_restart tool or:
+python3 -c "
+import asyncio
+from app.mcp.opencode.manager import OpenCodeManager
+asyncio.run(OpenCodeManager().restart_project('YOUR_PROJECT_NAME'))
+"
+```
+
+### Client Configuration Update
+
+**Old client config** (per-project ports):
+```json
+{
+  "project-a": {"url": "http://127.0.0.1:5100"},
+  "project-b": {"url": "http://127.0.0.1:5101"}
+}
+```
+
+**New client config** (single global port):
+```json
+{
+  "mojoassistant-opencode": {"url": "http://127.0.0.1:3005"}
+}
+```
+
+Connect to port **3005** for all projects!
+
+### Verification
+
+Check migration succeeded:
+
+```python
+from app.mcp.opencode.manager import OpenCodeManager
+import asyncio
+
+status = asyncio.run(OpenCodeManager().list_projects())
+print(f"Global MCP Tool: {status['global_mcp_tool']['status']}")
+print(f"Active projects: {status['global_mcp_tool']['active_projects']}")
+```
+
+Expected output:
+```
+Global MCP Tool: running
+Active projects: 2
+```
+
+### Rollback (if needed)
+
+If you need to rollback to v1.0:
+
+```bash
+# 1. Stop all processes
+kill $(cat ~/.memory/global-mcp-tool.pid)
+kill $(cat ~/.memory/opencode-sandboxes/*/opencode.pid)
+
+# 2. Restore old state backup
+cp ~/.memory/opencode-state.json.backup ~/.memory/opencode-state.json
+
+# 3. Checkout v1.0 code
+git checkout v1.0
+```
 
 ## Future Enhancements
 

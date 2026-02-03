@@ -49,6 +49,46 @@ class ProcessManager:
 
         raise RuntimeError(f"No free port found in range {start_port}-{end_port}")
 
+    def kill_process_on_port(self, port: int) -> Tuple[bool, Optional[str]]:
+        """
+        Kill any process listening on the specified port
+
+        Args:
+            port: Port number
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            # Find process using the port
+            result = subprocess.run(
+                f"lsof -ti :{port}",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                for pid_str in pids:
+                    try:
+                        pid = int(pid_str)
+                        os.kill(pid, 9)  # SIGKILL
+                        time.sleep(0.5)
+                    except (ValueError, ProcessLookupError):
+                        continue
+
+                return True, None
+            else:
+                # No process found on port
+                return True, None
+
+        except subprocess.TimeoutExpired:
+            return False, f"Timeout finding process on port {port}"
+        except Exception as e:
+            return False, f"Error killing process on port {port}: {str(e)}"
+
     def start_opencode(
         self, config: ProjectConfig, repo_dir: Path
     ) -> Tuple[int, int, Optional[str]]:
@@ -64,6 +104,11 @@ class ProcessManager:
         """
         # Find free port if not specified
         port = config.opencode_port or self.find_free_port(4100, 4199)
+
+        # Kill any process already on this port
+        success, error = self.kill_process_on_port(port)
+        if not success:
+            return 0, port, error
 
         log_file = self.logs_dir / f"{config.project_name}-opencode.log"
         pid_file = Path(config.sandbox_dir) / "opencode.pid"
@@ -381,13 +426,17 @@ echo $! > {pid_file}"""
         pid_file = Path(self.memory_root) / "global-mcp-tool.pid"
 
         # Build command for multi-server mode
+        # NOTE: Bearer token is passed via environment variable (not CLI arg) for security
         cmd = f"""cd {mcp_tool_dir} && \\
 nohup npm run dev:http -- \\
-  --bearer-token {bearer_token} \\
   --servers-config {servers_config_path} \\
   --port {port} \\
   >> {log_file} 2>&1 & \\
 echo $! > {pid_file}"""
+
+        # Prepare environment with bearer token (secure: not visible in ps aux)
+        env = os.environ.copy()
+        env["MCP_BEARER_TOKEN"] = bearer_token
 
         try:
             result = subprocess.run(
@@ -397,6 +446,7 @@ echo $! > {pid_file}"""
                 timeout=30,
                 capture_output=True,
                 text=True,
+                env=env,  # Pass bearer token via environment
             )
 
             if result.returncode != 0:

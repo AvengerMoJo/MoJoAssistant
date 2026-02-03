@@ -422,7 +422,7 @@ class OpenCodeManager:
         if not project:
             return {"status": "error", "message": f"Project {project_name} not found"}
 
-        # Stop OpenCode (but don't stop global MCP tool)
+        # Stop OpenCode (but don't stop global MCP tool or change active count)
         if project.opencode.pid:
             success, error = self.process_manager.stop_process(
                 project.opencode.pid, "OpenCode"
@@ -460,7 +460,27 @@ class OpenCodeManager:
             "opencode",
             pid=opencode_pid,
             port=opencode_port,
-            status="running",
+            status="starting",
+        )
+
+        # Health check OpenCode
+        self._log("Checking OpenCode health")
+        healthy, health_message = self.process_manager.check_opencode_health(
+            opencode_port, config.opencode_password
+        )
+
+        if not healthy:
+            self.state_manager.update_process_status(
+                project_name, "opencode", status="failed", error=health_message
+            )
+            return {
+                "status": "error",
+                "error": "opencode_unhealthy",
+                "message": health_message,
+            }
+
+        self.state_manager.update_process_status(
+            project_name, "opencode", status="running"
         )
 
         # Update server configuration (mark as active, update password if changed)
@@ -469,6 +489,10 @@ class OpenCodeManager:
             port=opencode_port,
             password=config.opencode_password,
         )
+
+        # NOTE: Do NOT modify active_project_count during restart
+        # Restart is just stop+start of same project, count should stay the same
+        # Only start_project() should increment, only stop_project() should decrement
 
         # Ensure global MCP tool is running (will reload config automatically)
         await self._ensure_global_mcp_tool_running()
@@ -561,6 +585,16 @@ class OpenCodeManager:
         # Check if already running
         if mcp_tool and self.process_manager.is_process_running(mcp_tool.pid):
             self._log("Global MCP tool already running, configuration will auto-reload")
+
+            # If process is running but marked as failed, update status
+            if mcp_tool.status == ProcessStatus.FAILED:
+                self._log("Updating global MCP tool status from failed to running")
+                self.state_manager.update_global_mcp_tool_status(
+                    status=ProcessStatus.RUNNING,
+                    error=None,
+                    last_health_check=datetime.utcnow().isoformat(),
+                )
+
             return True
 
         # Start global MCP tool
