@@ -116,7 +116,9 @@ class OpenCodeManager:
                     )
                 else:
                     # Production mode: Create minimal .env (SSH key only, no passwords)
-                    self._log(f"Production mode: Creating minimal .env for {project_name}")
+                    self._log(
+                        f"Production mode: Creating minimal .env for {project_name}"
+                    )
                     env_path = self.env_manager.generate_minimal_env(
                         project_name, git_url, user_ssh_key
                     )
@@ -334,9 +336,7 @@ class OpenCodeManager:
             }
 
         # Check process health
-        opencode_running = self.process_manager.is_process_running(
-            project.opencode.pid
-        )
+        opencode_running = self.process_manager.is_process_running(project.opencode.pid)
 
         # Update status
         if opencode_running:
@@ -385,7 +385,10 @@ class OpenCodeManager:
         """Stop a project"""
         project = self.state_manager.get_project(project_name)
         if not project:
-            return {"status": "not_found", "message": f"Project {project_name} not found"}
+            return {
+                "status": "not_found",
+                "message": f"Project {project_name} not found",
+            }
 
         self._log(f"Stopping project: {project_name}")
 
@@ -411,7 +414,11 @@ class OpenCodeManager:
             self._log("No active projects, stopping global MCP tool")
             await self._stop_global_mcp_tool()
 
-        return {"status": "success", "project": project_name, "message": "Project stopped"}
+        return {
+            "status": "success",
+            "project": project_name,
+            "message": "Project stopped",
+        }
 
     async def restart_project(self, project_name: str) -> Dict[str, Any]:
         """Restart a project"""
@@ -726,3 +733,46 @@ class OpenCodeManager:
             }
         else:
             return {"status": "error", "message": "Failed to restart global MCP tool"}
+
+    async def stop_mcp_tool(self) -> Dict[str, Any]:
+        """Manually stop global MCP tool (even with active projects)"""
+        mcp_tool = self.state_manager.get_global_mcp_tool()
+
+        if not mcp_tool or not mcp_tool.pid:
+            return {
+                "status": "error",
+                "message": "Global MCP tool is not running",
+            }
+
+        # Check if there are active projects
+        if mcp_tool.active_project_count > 0:
+            self._log(
+                f"Stopping global MCP tool with {mcp_tool.active_project_count} active project(s)"
+            )
+        else:
+            self._log("Stopping global MCP tool")
+
+        # Stop the process
+        success, error = self.process_manager.stop_process(
+            mcp_tool.pid, "Global MCP tool"
+        )
+
+        if success:
+            self.state_manager.update_global_mcp_tool_status(
+                status=ProcessStatus.STOPPED,
+                pid=None,
+                error=None,
+            )
+            self._log("Global MCP tool stopped successfully")
+            return {
+                "status": "success",
+                "message": "Global MCP tool stopped",
+                "active_projects": mcp_tool.active_project_count,
+            }
+        else:
+            self._log(f"Failed to stop global MCP tool: {error}", "error")
+            return {
+                "status": "error",
+                "message": f"Failed to stop global MCP tool: {error}",
+                "active_projects": mcp_tool.active_project_count,
+            }

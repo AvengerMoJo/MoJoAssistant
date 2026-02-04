@@ -12,7 +12,9 @@ from app.git.git_service import GitService
 class ToolRegistry:
     """Registry of available tools and their execution"""
 
-    def __init__(self, memory_service, config: Dict[str, Any] | None = None, logger=None):
+    def __init__(
+        self, memory_service, config: Dict[str, Any] | None = None, logger=None
+    ):
         self.memory_service = memory_service
         self.logger = logger
 
@@ -34,6 +36,7 @@ class ToolRegistry:
 
         # Initialize OpenCode manager
         from app.mcp.opencode.manager import OpenCodeManager
+
         self.opencode_manager = OpenCodeManager(logger=logger)
 
         self.tools = self._define_tools()
@@ -157,6 +160,14 @@ class ToolRegistry:
                     "What day of the week is it today?",
                 ],
                 "usage_tip": "Use for questions about today's date, current day, time, or year information.",
+            },
+            "opencode_stop_mcp_tool": {
+                "template": "Stop the global opencode-mcp-tool instance",
+                "examples": [
+                    "Stop the global opencode-mcp-tool",
+                    "Terminate the MCP tool that serves all OpenCode projects",
+                ],
+                "usage_tip": "Use when you need to manually stop the global MCP tool, even when there are active projects running.",
             },
         }
 
@@ -531,6 +542,11 @@ class ToolRegistry:
                 "description": "Manually restart the global opencode-mcp-tool instance. Useful after updating the opencode-mcp-tool repository or when the MCP tool needs to reload configuration. Will only restart if there are active projects.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
+            {
+                "name": "opencode_stop_mcp_tool",
+                "description": "Manually stop the global opencode-mcp-tool instance. Can be used even when there are active projects. Useful for maintenance or when the MCP tool needs to be completely stopped.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -583,6 +599,7 @@ class ToolRegistry:
             "knowledge": [],
             "git": [],
             "utilities": [],
+            "opencode": [],
         }
 
         tools = self.get_tools()
@@ -620,6 +637,8 @@ class ToolRegistry:
                 "get_current_time",
             ]:
                 categories["utilities"].append(tool)
+            elif tool_name.startswith("opencode_"):
+                categories["opencode"].append(tool)
 
         return categories
 
@@ -676,6 +695,7 @@ class ToolRegistry:
             "conversation": "Conversation management tools for preserving and organizing dialogue history",
             "knowledge": "Knowledge base tools for managing reference materials and documents",
             "utilities": "Utility tools for web search, time information, and system configuration",
+            "opencode": "OpenCode project management tools for managing coding agent projects and the global MCP tool",
         }
         return descriptions.get(category, "General tools")
 
@@ -900,6 +920,8 @@ class ToolRegistry:
             return await self._execute_opencode_mcp_status(args)
         elif name == "opencode_mcp_restart":
             return await self._execute_opencode_mcp_restart(args)
+        elif name == "opencode_stop_mcp_tool":
+            return await self._execute_opencode_stop_mcp_tool(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1358,4 +1380,17 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to restart MCP tool: {str(e)}",
+            }
+
+    async def _execute_opencode_stop_mcp_tool(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_stop_mcp_tool tool"""
+        try:
+            result = await self.opencode_manager.stop_mcp_tool()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to stop MCP tool: {str(e)}",
             }
