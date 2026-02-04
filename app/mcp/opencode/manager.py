@@ -608,6 +608,20 @@ class OpenCodeManager:
         # Start global MCP tool
         self._log("Starting global MCP tool")
 
+        # Check for and clean up stale PID file (process killed externally)
+        pid_file = Path(self.memory_root) / "global-mcp-tool.pid"
+        if pid_file.exists():
+            try:
+                with open(pid_file, "r") as f:
+                    stale_pid = int(f.read().strip())
+                if not self.process_manager.is_process_running(stale_pid):
+                    self._log(
+                        f"Cleaning up stale PID file for dead process (PID {stale_pid})"
+                    )
+                    pid_file.unlink()
+            except Exception as e:
+                self._log(f"Error checking stale PID file: {e}", "warning")
+
         # Get bearer token from environment (fixed global token)
         global_bearer_token = os.getenv(
             "GLOBAL_MCP_BEARER_TOKEN",
@@ -696,6 +710,25 @@ class OpenCodeManager:
             }
 
         running = self.process_manager.is_process_running(mcp_tool.pid)
+
+        # Check for stale state (process killed but PID file remains)
+        pid_file = Path(self.memory_root) / "global-mcp-tool.pid"
+        if not running and mcp_tool.pid and pid_file.exists():
+            self._log(
+                f"Process killed externally (PID {mcp_tool.pid}), cleaning up stale state"
+            )
+            # Remove stale PID file
+            try:
+                pid_file.unlink()
+            except Exception as e:
+                self._log(f"Failed to remove stale PID file: {e}", "warning")
+
+            # Update state to stopped
+            self.state_manager.update_global_mcp_tool_status(
+                status=ProcessStatus.STOPPED,
+                pid=None,
+            )
+            running = False
 
         return {
             "status": "running" if running else "stopped",
