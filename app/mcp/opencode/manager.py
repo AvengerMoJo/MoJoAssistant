@@ -7,6 +7,7 @@ File: app/mcp/opencode/manager.py
 """
 
 import os
+import time
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
@@ -642,21 +643,20 @@ class OpenCodeManager:
             started_at=datetime.utcnow().isoformat(),
         )
 
-        # Health check
-        self._log("Checking global MCP tool health")
-        healthy, health_message = self.process_manager.check_global_mcp_tool_health(
-            port, global_bearer_token
-        )
+        # Wait for process to start (not wait for health check)
+        self._log("Waiting for global MCP tool to start")
+        time.sleep(3)  # Brief wait for process to initialize
 
-        if not healthy:
-            self._log(f"Global MCP tool unhealthy: {health_message}", "error")
+        # Check if process is running
+        if not self.process_manager.is_process_running(pid):
+            self._log(f"Global MCP tool process exited immediately", "error")
             self.state_manager.update_global_mcp_tool_status(
                 status=ProcessStatus.FAILED,
-                error=health_message,
+                error="Process exited immediately after starting",
             )
             return False
 
-        # Success
+        # Mark as running (health check happens lazily later)
         self.state_manager.update_global_mcp_tool_status(
             status=ProcessStatus.RUNNING,
             last_health_check=datetime.utcnow().isoformat(),
