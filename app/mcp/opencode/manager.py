@@ -8,7 +8,7 @@ File: app/mcp/opencode/manager.py
 
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from datetime import datetime
 
 from app.mcp.opencode.models import ProjectState, ProcessStatus
@@ -223,7 +223,7 @@ class OpenCodeManager:
                 import shutil
 
                 shutil.copy(gitignore_template, sandbox_gitignore)
-                self._log(f"Created .gitignore in sandbox to protect secrets")
+                self._log("Created .gitignore in sandbox to protect secrets")
 
             # Step 7: Create initial project state
             project_state = ProjectState(

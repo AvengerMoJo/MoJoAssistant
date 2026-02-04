@@ -3,7 +3,7 @@ Tool definitions and execution logic
 File: app/mcp/core/tools.py
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import time
 from datetime import datetime
 from app.git.git_service import GitService
