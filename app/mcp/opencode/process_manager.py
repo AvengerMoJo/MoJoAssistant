@@ -70,7 +70,7 @@ class ProcessManager:
             )
 
             if result.returncode == 0 and result.stdout.strip():
-                pids = result.stdout.strip().split('\n')
+                pids = result.stdout.strip().split("\n")
                 for pid_str in pids:
                     try:
                         pid = int(pid_str)
@@ -425,12 +425,12 @@ echo $! > {pid_file}"""
         log_file = self.logs_dir / "global-mcp-tool.log"
         pid_file = Path(self.memory_root) / "global-mcp-tool.pid"
 
-        # Build command for multi-server mode
+        # Build command for multi-server mode (provide dummy model for setServerConfig validation)
         # NOTE: Bearer token is passed via environment variable (not CLI arg) for security
+        # The dummy model is used for validation only; actual server configs come from the JSON file
         cmd = f"""cd {mcp_tool_dir} && \\
-nohup npm run dev:http -- \\
+nohup node dist/index-http.js --model "" --port {port} \\
   --servers-config {servers_config_path} \\
-  --port {port} \\
   >> {log_file} 2>&1 & \\
 echo $! > {pid_file}"""
 
