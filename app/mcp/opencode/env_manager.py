@@ -24,10 +24,78 @@ class EnvManager:
         self.template_path = (
             Path(__file__).parent / "templates" / "project.env.template"
         )
+        self.global_config_path = self.memory_root / "opencode-manager.env"
+        self.global_template_path = (
+            Path(__file__).parent / "templates" / "opencode-manager.env.template"
+        )
 
     def get_env_path(self, project_name: str) -> Path:
         """Get path to project's .env file"""
         return self.sandboxes_dir / project_name / ".env"
+
+    def global_config_exists(self) -> bool:
+        """Check if global config file exists"""
+        return self.global_config_path.exists()
+
+    def read_global_config(self) -> Dict[str, str]:
+        """
+        Read global configuration file
+
+        Returns:
+            Dictionary of global environment variables
+
+        Raises:
+            FileNotFoundError: If global config doesn't exist
+        """
+        if not self.global_config_path.exists():
+            raise FileNotFoundError(
+                f"Global config not found at {self.global_config_path}\n\n"
+                f"Please create it using the template:\n"
+                f"cp {self.global_template_path} {self.global_config_path}\n\n"
+                f"Then edit with your passwords:\n"
+                f"  OPENCODE_PASSWORD (generate: openssl rand -hex 16)\n"
+                f"  MCP_BEARER_TOKEN (generate: openssl rand -hex 32)\n\n"
+                f"Set permissions: chmod 600 {self.global_config_path}"
+            )
+
+        env_vars = {}
+        with open(self.global_config_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith("#"):
+                    continue
+                # Parse KEY=VALUE
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    env_vars[key.strip()] = value.strip()
+
+        # Validate required fields
+        required = ["OPENCODE_PASSWORD", "MCP_BEARER_TOKEN"]
+        missing = [key for key in required if key not in env_vars]
+        if missing:
+            raise ValueError(
+                f"Missing required fields in global config: {', '.join(missing)}\n"
+                f"Please edit {self.global_config_path}"
+            )
+
+        # Check for placeholder values
+        needs_update = []
+        for key in required:
+            if env_vars.get(key) == "CHANGE_ME_REQUIRED":
+                needs_update.append(key)
+
+        if needs_update:
+            raise ValueError(
+                f"Please set real values for these fields in global config:\n"
+                f"{', '.join(needs_update)}\n\n"
+                f"Edit: {self.global_config_path}\n\n"
+                f"Generate secure values:\n"
+                f"  Password: openssl rand -hex 16\n"
+                f"  Bearer token: openssl rand -hex 32"
+            )
+
+        return env_vars
 
     def env_exists(self, project_name: str) -> bool:
         """Check if .env file exists for project"""
@@ -70,7 +138,7 @@ class EnvManager:
         self, project_name: str, git_url: str, ssh_key_path: Optional[str] = None
     ) -> Tuple[Path, str]:
         """
-        Generate .env file for development mode with auto-generated secrets
+        Generate .env file for project (no passwords, uses global config)
 
         Args:
             project_name: Name of the project
@@ -78,23 +146,19 @@ class EnvManager:
             ssh_key_path: Optional SSH key path (will generate if None)
 
         Returns:
-            Tuple of (.env path, warning message)
+            Tuple of (.env path, info message)
         """
         env_path = self.get_env_path(project_name)
-
-        # Generate secrets
-        password = secrets.token_hex(16)
-        bearer_token = secrets.token_hex(32)
 
         # Use provided SSH key or generate path for new one
         if ssh_key_path is None:
             ssh_key_path = str(self.keys_dir / f"{project_name}-deploy")
 
-        # Create .env content
-        content = f"""# OpenCode Project Configuration - AUTO-GENERATED
-# ⚠️  WARNING: This file was auto-generated in DEVELOPMENT mode
-# Review and customize before production use!
+        # Create .env content (NO PASSWORDS - they're in global config)
+        content = f"""# OpenCode Project Configuration
 # Location: {env_path}
+#
+# NOTE: Passwords are in global config: ~/.memory/opencode-manager.env
 
 # Git repository SSH URL
 GIT_URL={git_url}
@@ -103,15 +167,8 @@ GIT_URL={git_url}
 # ⚠️  Key will be auto-generated if it doesn't exist
 SSH_KEY_PATH={ssh_key_path}
 
-# OpenCode web server password (auto-generated)
-OPENCODE_SERVER_PASSWORD={password}
-
-# MCP tool bearer token (auto-generated)
-MCP_TOOL_BEARER_TOKEN={bearer_token}
-
 # Optional: Custom ports (will be auto-assigned if commented out)
 # OPENCODE_PORT=4101
-# MCP_TOOL_PORT=5101
 
 # Optional: OpenCode binary path
 OPENCODE_BIN={os.path.expanduser('~/.bun/bin/opencode')}
@@ -130,28 +187,25 @@ MCP_TOOL_DIR=/home/alex/Development/Sandbox/opencode-mcp-tool
         # Set restrictive permissions
         os.chmod(env_path, 0o600)
 
-        warning = f"""⚠️  DEVELOPMENT MODE: Auto-generated .env file
-
-Configuration saved to: {env_path}
-
-Auto-generated secrets:
-- OpenCode password: {password}
-- MCP bearer token: {bearer_token[:16]}... (truncated)
+        info = f"""Configuration saved to: {env_path}
 
 SSH key path: {ssh_key_path}
 - Public key will be at: {ssh_key_path}.pub
 - You'll need to add the public key to your Git repository
 
-Review the .env file and customize as needed before production use!
+Passwords are stored in global config: {self.global_config_path}
 """
 
-        return env_path, warning
+        return env_path, info
 
     def generate_minimal_env(
         self, project_name: str, git_url: str, ssh_key_path: Optional[str] = None
     ) -> Path:
         """
-        Generate minimal .env file for production mode (SSH key only, no passwords)
+        Generate minimal .env file (same as generate_env, no passwords in either)
+
+        This method is kept for backward compatibility but now does the same
+        as generate_env since passwords moved to global config.
 
         Args:
             project_name: Name of the project
@@ -161,72 +215,35 @@ Review the .env file and customize as needed before production use!
         Returns:
             Path to created .env file
         """
-        env_path = self.get_env_path(project_name)
-
-        # Use provided SSH key or generate path for new one
-        if ssh_key_path is None:
-            ssh_key_path = str(self.keys_dir / f"{project_name}-deploy")
-
-        # Create minimal .env content WITHOUT passwords
-        content = f"""# OpenCode Project Configuration - PRODUCTION MODE
-# ⚠️  Please fill in the required passwords and tokens below
-# Location: {env_path}
-
-# Git repository SSH URL
-GIT_URL={git_url}
-
-# SSH key for git clone/pull/push
-# This key will be auto-generated if it doesn't exist
-SSH_KEY_PATH={ssh_key_path}
-
-# OpenCode web server password (REQUIRED - set your own)
-OPENCODE_SERVER_PASSWORD=CHANGE_ME_REQUIRED
-
-# MCP tool bearer token (REQUIRED - set your own)
-# Generate with: openssl rand -hex 32
-MCP_TOOL_BEARER_TOKEN=CHANGE_ME_REQUIRED
-
-# Optional: Custom ports (will be auto-assigned if commented out)
-# OPENCODE_PORT=4101
-# MCP_TOOL_PORT=5101
-
-# Optional: OpenCode binary path
-OPENCODE_BIN={os.path.expanduser('~/.bun/bin/opencode')}
-
-# Optional: opencode-mcp-tool path
-MCP_TOOL_DIR=/home/alex/Development/Sandbox/opencode-mcp-tool
-"""
-
-        # Ensure directory exists
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write .env file
-        with open(env_path, "w") as f:
-            f.write(content)
-
-        # Set restrictive permissions
-        os.chmod(env_path, 0o600)
-
+        env_path, _ = self.generate_env(project_name, git_url, ssh_key_path)
         return env_path
 
-    def load_project_config(self, project_name: str) -> ProjectConfig:
+    def load_project_config(
+        self, project_name: str, global_config: Optional[Dict[str, str]] = None
+    ) -> ProjectConfig:
         """
-        Load project configuration from .env file
+        Load project configuration from .env file + global config
 
         Args:
             project_name: Name of the project
+            global_config: Optional global config dict (will load if None)
 
         Returns:
             ProjectConfig object
 
         Raises:
-            FileNotFoundError: If .env doesn't exist
-            ValueError: If required fields are missing or have placeholder values
+            FileNotFoundError: If .env doesn't exist or global config missing
+            ValueError: If required fields are missing
         """
+        # Load global config if not provided
+        if global_config is None:
+            global_config = self.read_global_config()
+
+        # Load project-specific config
         env_vars = self.read_env(project_name)
 
-        # Validate required fields
-        required = ["GIT_URL", "SSH_KEY_PATH", "OPENCODE_SERVER_PASSWORD", "MCP_TOOL_BEARER_TOKEN"]
+        # Validate required fields in project .env
+        required = ["GIT_URL", "SSH_KEY_PATH"]
         missing = [key for key in required if key not in env_vars]
         if missing:
             raise ValueError(
@@ -234,38 +251,17 @@ MCP_TOOL_DIR=/home/alex/Development/Sandbox/opencode-mcp-tool
                 f"Please edit {self.get_env_path(project_name)}"
             )
 
-        # Check for placeholder values (production mode before passwords set)
-        placeholders = {
-            "OPENCODE_SERVER_PASSWORD": "CHANGE_ME_REQUIRED",
-            "MCP_TOOL_BEARER_TOKEN": "CHANGE_ME_REQUIRED",
-        }
-
-        needs_update = []
-        for key, placeholder in placeholders.items():
-            if env_vars.get(key) == placeholder:
-                needs_update.append(key)
-
-        if needs_update:
-            raise ValueError(
-                f"Please set real values for these fields in .env:\n"
-                f"{', '.join(needs_update)}\n\n"
-                f"Edit: {self.get_env_path(project_name)}\n\n"
-                f"Generate secure values:\n"
-                f"  Password: openssl rand -hex 16\n"
-                f"  Bearer token: openssl rand -hex 32"
-            )
-
         # Build sandbox directory path
         sandbox_dir = str(self.sandboxes_dir / project_name)
 
-        # Create ProjectConfig
+        # Create ProjectConfig using global passwords + project settings
         config = ProjectConfig(
             project_name=project_name,
             git_url=env_vars["GIT_URL"],
             sandbox_dir=sandbox_dir,
             ssh_key_path=os.path.expanduser(env_vars["SSH_KEY_PATH"]),
-            opencode_password=env_vars["OPENCODE_SERVER_PASSWORD"],
-            mcp_bearer_token=env_vars["MCP_TOOL_BEARER_TOKEN"],
+            opencode_password=global_config["OPENCODE_PASSWORD"],
+            mcp_bearer_token=global_config["MCP_BEARER_TOKEN"],
             opencode_bin=env_vars.get("OPENCODE_BIN", "opencode"),
             mcp_tool_dir=env_vars.get(
                 "MCP_TOOL_DIR", "/home/alex/Development/Sandbox/opencode-mcp-tool"
@@ -273,9 +269,7 @@ MCP_TOOL_DIR=/home/alex/Development/Sandbox/opencode-mcp-tool
             opencode_port=int(env_vars["OPENCODE_PORT"])
             if "OPENCODE_PORT" in env_vars
             else None,
-            mcp_tool_port=int(env_vars["MCP_TOOL_PORT"])
-            if "MCP_TOOL_PORT" in env_vars
-            else None,
+            mcp_tool_port=None,  # No longer per-project, global MCP tool only
         )
 
         return config

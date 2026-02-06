@@ -46,6 +46,18 @@ class OpenCodeManager:
             "dev",
         ]
 
+        # Load global configuration (fail fast if missing)
+        try:
+            self.global_config = self.env_manager.read_global_config()
+            self._log("Global configuration loaded successfully")
+        except (FileNotFoundError, ValueError) as e:
+            error_msg = (
+                f"Failed to load global configuration:\n\n{str(e)}\n\n"
+                f"OpenCode Manager cannot start without global configuration."
+            )
+            self._log(error_msg, level="error")
+            raise RuntimeError(error_msg) from e
+
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
         if self.logger:
@@ -104,42 +116,21 @@ class OpenCodeManager:
         self._log(f"Bootstrapping project: {project_name}")
 
         try:
-            # Step 1: Handle .env configuration
+            # Step 1: Handle .env configuration (project-specific, no passwords)
             env_path = self.env_manager.get_env_path(project_name)
-            warning_message = None
+            info_message = None
 
             if not self.env_manager.env_exists(project_name):
-                if self.is_dev_mode:
-                    # Development mode: Auto-generate .env with passwords
-                    self._log(f"Development mode: Generating .env for {project_name}")
-                    env_path, warning_message = self.env_manager.generate_env(
-                        project_name, git_url, user_ssh_key
-                    )
-                else:
-                    # Production mode: Create minimal .env (SSH key only, no passwords)
-                    self._log(
-                        f"Production mode: Creating minimal .env for {project_name}"
-                    )
-                    env_path = self.env_manager.generate_minimal_env(
-                        project_name, git_url, user_ssh_key
-                    )
-                    return {
-                        "status": "waiting_for_passwords",
-                        "project": project_name,
-                        "message": (
-                            f"📝 Configuration file created at: {env_path}\n\n"
-                            f"⚠️  Please set secure passwords in the .env file:\n"
-                            f"   - OPENCODE_SERVER_PASSWORD (generate: openssl rand -hex 16)\n"
-                            f"   - MCP_TOOL_BEARER_TOKEN (generate: openssl rand -hex 32)\n\n"
-                            f"SSH key will be auto-generated automatically.\n\n"
-                            f"After setting passwords, call opencode_start again to continue."
-                        ),
-                        "env_path": str(env_path),
-                    }
+                self._log(f"Generating project .env for {project_name}")
+                env_path, info_message = self.env_manager.generate_env(
+                    project_name, git_url, user_ssh_key
+                )
 
-            # Step 2: Load and validate configuration
+            # Step 2: Load and validate configuration (uses global passwords)
             try:
-                config = self.env_manager.load_project_config(project_name)
+                config = self.env_manager.load_project_config(
+                    project_name, self.global_config
+                )
             except (FileNotFoundError, ValueError) as e:
                 return {"status": "error", "error": "invalid_config", "message": str(e)}
 
@@ -446,9 +437,11 @@ class OpenCodeManager:
         # Temporarily mark as inactive
         self.config_manager.update_server_status(project_name, "inactive")
 
-        # Get configuration
+        # Get configuration (uses global passwords)
         try:
-            config = self.env_manager.load_project_config(project_name)
+            config = self.env_manager.load_project_config(
+                project_name, self.global_config
+            )
         except Exception as e:
             return {"status": "error", "message": f"Failed to load config: {str(e)}"}
 
