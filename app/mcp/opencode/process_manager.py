@@ -114,13 +114,15 @@ class ProcessManager:
         pid_file = Path(config.sandbox_dir) / "opencode.pid"
 
         # Build command
+        # Use pgrep to find actual process PID (not bash wrapper)
         cmd = f"""cd {repo_dir} && \\
 OPENCODE_SERVER_PASSWORD={config.opencode_password} \\
 nohup {config.opencode_bin} web \\
   --hostname 127.0.0.1 \\
   --port {port} \\
   >> {log_file} 2>&1 & \\
-echo $! > {pid_file}"""
+sleep 1 && \\
+pgrep -f "opencode.*web.*--port {port}" | tail -1 > {pid_file}"""
 
         try:
             # Execute command
@@ -180,6 +182,7 @@ echo $! > {pid_file}"""
         pid_file = Path(config.sandbox_dir) / "mcp-tool.pid"
 
         # Build command
+        # Use pgrep to find actual node process PID (not npm wrapper)
         cmd = f"""cd {config.mcp_tool_dir} && \\
 nohup npm run dev:http -- \\
   --bearer-token {config.mcp_bearer_token} \\
@@ -187,7 +190,8 @@ nohup npm run dev:http -- \\
   --opencode-password {config.opencode_password} \\
   --port {port} \\
   >> {log_file} 2>&1 & \\
-echo $! > {pid_file}"""
+sleep 2 && \\
+pgrep -f "node.*index-http.*--port {port}" | tail -1 > {pid_file}"""
 
         try:
             # Execute command
@@ -428,11 +432,13 @@ echo $! > {pid_file}"""
         # Build command for multi-server mode (provide dummy model for setServerConfig validation)
         # NOTE: Bearer token is passed via environment variable (not CLI arg) for security
         # The dummy model is used for validation only; actual server configs come from the JSON file
+        # Use pgrep to find actual node process PID (not bash wrapper)
         cmd = f"""cd {mcp_tool_dir} && \\
 nohup node dist/index-http.js --model "" --port {port} \\
   --servers-config {servers_config_path} \\
   >> {log_file} 2>&1 & \\
-echo $! > {pid_file}"""
+sleep 1 && \\
+pgrep -f "node dist/index-http.js.*--port {port}" | tail -1 > {pid_file}"""
 
         # Prepare environment with bearer token (secure: not visible in ps aux)
         env = os.environ.copy()
