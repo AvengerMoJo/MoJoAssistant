@@ -285,6 +285,9 @@ class OpenCodeManager:
                 project_name=project_name,
                 port=opencode_port,
                 password=config.opencode_password,
+                ssh_key_path=ssh_key_path,
+                git_url=git_url,
+                sandbox_dir=config.sandbox_dir,
             )
 
             # Step 11: Ensure global MCP tool is running
@@ -496,6 +499,9 @@ class OpenCodeManager:
             project_name=project_name,
             port=opencode_port,
             password=config.opencode_password,
+            ssh_key_path=project.ssh_key_path,
+            git_url=project.git_url,
+            sandbox_dir=project.sandbox_dir,
         )
 
         # NOTE: Do NOT modify active_project_count during restart

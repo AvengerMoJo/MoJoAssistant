@@ -115,8 +115,10 @@ class ProcessManager:
 
         # Build command
         # Use pgrep to find actual process PID (not bash wrapper)
+        # Set GIT_SSH_COMMAND so OpenCode can use the project's SSH key for git operations
         cmd = f"""cd {repo_dir} && \\
 OPENCODE_SERVER_PASSWORD={config.opencode_password} \\
+GIT_SSH_COMMAND='ssh -i {config.ssh_key_path} -o StrictHostKeyChecking=accept-new' \\
 nohup {config.opencode_bin} web \\
   --hostname 127.0.0.1 \\
   --port {port} \\

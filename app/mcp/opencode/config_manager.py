@@ -47,6 +47,9 @@ class ConfigManager:
         password: str,
         title: str = None,
         description: str = None,
+        ssh_key_path: str = None,
+        git_url: str = None,
+        sandbox_dir: str = None,
     ):
         """Add OpenCode server to configuration"""
         config = self._read_config()
@@ -58,21 +61,35 @@ class ConfigManager:
                 server["url"] = f"http://127.0.0.1:{port}"
                 server["password"] = password
                 server["status"] = "active"
+                if ssh_key_path:
+                    server["ssh_key_path"] = ssh_key_path
+                if git_url:
+                    server["git_url"] = git_url
+                if sandbox_dir:
+                    server["sandbox_dir"] = sandbox_dir
                 self._write_config(config)
                 return
 
         # Add new server
-        config["servers"].append(
-            {
-                "id": project_name,
-                "title": title or project_name.replace("-", " ").title(),
-                "description": description or f"OpenCode server for {project_name}",
-                "url": f"http://127.0.0.1:{port}",
-                "password": password,
-                "status": "active",
-                "added_at": datetime.utcnow().isoformat() + "Z",
-            }
-        )
+        server_entry = {
+            "id": project_name,
+            "title": title or project_name.replace("-", " ").title(),
+            "description": description or f"OpenCode server for {project_name}",
+            "url": f"http://127.0.0.1:{port}",
+            "password": password,
+            "status": "active",
+            "added_at": datetime.utcnow().isoformat() + "Z",
+        }
+
+        # Add optional metadata
+        if ssh_key_path:
+            server_entry["ssh_key_path"] = ssh_key_path
+        if git_url:
+            server_entry["git_url"] = git_url
+        if sandbox_dir:
+            server_entry["sandbox_dir"] = sandbox_dir
+
+        config["servers"].append(server_entry)
 
         # Set as default if it's the first server
         if not config["default_server"]:
