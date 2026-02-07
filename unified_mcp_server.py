@@ -27,6 +27,41 @@ if env_path.exists():
     load_dotenv(env_path)
 
 
+def create_app():
+    """
+    Factory function to create FastAPI app for uvicorn reload mode
+    This is called by uvicorn when using factory=True
+    """
+    import asyncio
+    from app.mcp.adapters.http import HTTPAdapter
+
+    server = UnifiedMCPServer()
+
+    # Initialize engine synchronously for factory mode
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(server.engine.initialize())
+    server.logger = server.engine.logger
+
+    # Create adapter
+    legacy_config = {
+        "api_key": server.app_config.server.api_key,
+        "cors_origins": ",".join(server.app_config.server.cors_origins),
+        "log_level": server.app_config.logging.level,
+    }
+
+    adapter = HTTPAdapter(server.engine, legacy_config)
+    adapter.set_logger(server.logger)
+
+    # Create and return FastAPI app
+    app = adapter.create_app()
+
+    if server.logger:
+        server.logger.info("Development server initialized with hot reload")
+
+    return app
+
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
