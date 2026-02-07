@@ -36,27 +36,36 @@ def main():
 Examples:
   # STDIO mode (Claude Desktop)
   python unified_mcp_server.py --mode stdio
-  
+
   # HTTP mode (Web/Mobile)
   python unified_mcp_server.py --mode http --port 8000
+
+  # HTTP mode with auto-reload (Development)
+  python unified_mcp_server.py --mode http --port 8000 --reload
         """
     )
     
     parser.add_argument("--mode", choices=["stdio", "http"], default="stdio")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload on code changes (development only)"
+    )
+
     args = parser.parse_args()
-    
+
     server = UnifiedMCPServer()
-    
+
     try:
         if args.mode == "stdio":
             print("Starting MCP Server in STDIO mode", file=sys.stderr)
             asyncio.run(server.run_stdio())
         else:
-            print(f"Starting MCP Server in HTTP mode on {args.host}:{args.port}", file=sys.stderr)
-            asyncio.run(server.run_http(args.host, args.port))
+            reload_mode = " (auto-reload enabled)" if args.reload else ""
+            print(f"Starting MCP Server in HTTP mode on {args.host}:{args.port}{reload_mode}", file=sys.stderr)
+            asyncio.run(server.run_http(args.host, args.port, reload=args.reload))
     except KeyboardInterrupt:
         print("\nShutdown requested", file=sys.stderr)
     except Exception as e:
