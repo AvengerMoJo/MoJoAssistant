@@ -769,6 +769,8 @@ class OpenCodeManager:
 
     async def get_llm_config(self) -> Dict[str, Any]:
         """Get global OpenCode LLM configuration (providers, models, default model)"""
+        import subprocess
+
         config_path = Path.home() / ".config" / "opencode" / "opencode.json"
 
         if not config_path.exists():
@@ -782,21 +784,38 @@ class OpenCodeManager:
             with open(config_path, "r") as f:
                 config = json.load(f)
 
-            providers = config.get("provider", {})
             current_model = config.get("model", None)
 
-            provider_summary = {}
-            for provider_id, provider_config in providers.items():
-                models = list(provider_config.get("models", {}).keys())
-                provider_summary[provider_id] = {
-                    "name": provider_config.get("name", provider_id),
-                    "models": models,
-                }
+            # Get all available models from opencode CLI (includes built-in providers)
+            try:
+                result = subprocess.run(
+                    ["opencode", "models"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                all_models = [
+                    line.strip()
+                    for line in result.stdout.splitlines()
+                    if line.strip()
+                ]
+            except Exception:
+                all_models = []
+
+            # Group models by provider prefix
+            providers_from_models = {}
+            for model in all_models:
+                parts = model.split("/", 1)
+                provider_id = parts[0] if len(parts) > 1 else "unknown"
+                if provider_id not in providers_from_models:
+                    providers_from_models[provider_id] = []
+                providers_from_models[provider_id].append(model)
 
             return {
                 "status": "success",
                 "current_model": current_model,
-                "providers": provider_summary,
+                "available_models": all_models,
+                "providers": providers_from_models,
                 "config_path": str(config_path),
             }
         except Exception as e:
