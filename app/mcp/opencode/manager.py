@@ -6,6 +6,7 @@ Main orchestrator for OpenCode project lifecycle management.
 File: app/mcp/opencode/manager.py
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -765,6 +766,81 @@ class OpenCodeManager:
             }
         else:
             return {"status": "error", "message": "Failed to restart global MCP tool"}
+
+    async def get_llm_config(self) -> Dict[str, Any]:
+        """Get global OpenCode LLM configuration (providers, models, default model)"""
+        config_path = Path.home() / ".config" / "opencode" / "opencode.json"
+
+        if not config_path.exists():
+            return {
+                "status": "not_found",
+                "message": "OpenCode global config not found",
+                "config_path": str(config_path),
+            }
+
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+
+            providers = config.get("provider", {})
+            current_model = config.get("model", None)
+
+            provider_summary = {}
+            for provider_id, provider_config in providers.items():
+                models = list(provider_config.get("models", {}).keys())
+                provider_summary[provider_id] = {
+                    "name": provider_config.get("name", provider_id),
+                    "models": models,
+                }
+
+            return {
+                "status": "success",
+                "current_model": current_model,
+                "providers": provider_summary,
+                "config_path": str(config_path),
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to read LLM config: {str(e)}",
+            }
+
+    async def set_llm_model(self, model: str) -> Dict[str, Any]:
+        """Set the default LLM model for all OpenCode instances"""
+        config_path = Path.home() / ".config" / "opencode" / "opencode.json"
+
+        if not config_path.exists():
+            return {
+                "status": "not_found",
+                "message": "OpenCode global config not found",
+                "config_path": str(config_path),
+            }
+
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+
+            old_model = config.get("model", None)
+            config["model"] = model
+
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent="\t")
+                f.write("\n")
+
+            self._log(f"Default model changed: {old_model} -> {model}")
+
+            return {
+                "status": "success",
+                "previous_model": old_model,
+                "current_model": model,
+                "message": f"Default model set to {model}",
+                "note": "Restart OpenCode sessions to use the new model",
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to set model: {str(e)}",
+            }
 
     async def stop_mcp_tool(self) -> Dict[str, Any]:
         """Manually stop global MCP tool (even with active projects)"""

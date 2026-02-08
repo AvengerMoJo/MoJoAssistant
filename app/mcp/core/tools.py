@@ -547,6 +547,26 @@ class ToolRegistry:
                 "description": "Manually stop the global opencode-mcp-tool instance. Can be used even when there are active projects. Useful for maintenance or when the MCP tool needs to be completely stopped.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
+            {
+                "name": "opencode_llm_config",
+                "description": "Get the global OpenCode LLM configuration: current default model, available providers, and their configured models. This shows what AI models OpenCode can use.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "opencode_llm_set_model",
+                "description": "Set the default LLM model for all OpenCode instances. The model format is 'provider-id/model-id' (e.g., 'MoJoLLM/zai-org/glm-4.7-flash'). Use opencode_llm_config to see available providers and models first.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "model": {
+                            "type": "string",
+                            "description": "Model identifier in format 'provider-id/model-id'",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["model"],
+                },
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -922,6 +942,10 @@ class ToolRegistry:
             return await self._execute_opencode_mcp_restart(args)
         elif name == "opencode_stop_mcp_tool":
             return await self._execute_opencode_stop_mcp_tool(args)
+        elif name == "opencode_llm_config":
+            return await self._execute_opencode_llm_config(args)
+        elif name == "opencode_llm_set_model":
+            return await self._execute_opencode_llm_set_model(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1393,4 +1417,31 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to stop MCP tool: {str(e)}",
+            }
+
+    async def _execute_opencode_llm_config(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_llm_config tool"""
+        try:
+            result = await self.opencode_manager.get_llm_config()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get LLM config: {str(e)}",
+            }
+
+    async def _execute_opencode_llm_set_model(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_llm_set_model tool"""
+        model = args.get("model")
+        try:
+            result = await self.opencode_manager.set_llm_model(model)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to set LLM model: {str(e)}",
             }
