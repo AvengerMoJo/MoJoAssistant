@@ -425,6 +425,12 @@ class OpenCodeManager:
         if not project:
             return {"status": "error", "message": f"Project {project_name} not found"}
 
+        # Check if project was already running before restart
+        was_running = (
+            project.opencode.status == "running"
+            and self.process_manager.is_process_running(project.opencode.pid)
+        )
+
         # Stop OpenCode (but don't stop global MCP tool or change active count)
         if project.opencode.pid:
             success, error = self.process_manager.stop_process(
@@ -498,9 +504,14 @@ class OpenCodeManager:
             sandbox_dir=project.sandbox_dir,
         )
 
-        # NOTE: Do NOT modify active_project_count during restart
-        # Restart is just stop+start of same project, count should stay the same
-        # Only start_project() should increment, only stop_project() should decrement
+        # Increment active_project_count if the project was not running before
+        # This handles the case where we restart a project after all projects were stopped
+        if not was_running:
+            self._log(f"Project was stopped, incrementing active_project_count")
+            self.state_manager.increment_active_projects()
+
+        # Ensure global MCP tool is running (will reload config automatically)
+        await self._ensure_global_mcp_tool_running()
 
         # Ensure global MCP tool is running (will reload config automatically)
         await self._ensure_global_mcp_tool_running()
@@ -795,9 +806,7 @@ class OpenCodeManager:
                     timeout=10,
                 )
                 all_models = [
-                    line.strip()
-                    for line in result.stdout.splitlines()
-                    if line.strip()
+                    line.strip() for line in result.stdout.splitlines() if line.strip()
                 ]
             except Exception:
                 all_models = []
