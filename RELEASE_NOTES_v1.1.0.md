@@ -6,236 +6,252 @@
 
 ---
 
-## 🚀 The Data Protection Imperative
+## 🎯 Overview
 
-### Why MoJoAssistant with OpenCode Manager Matters
+**MoJoAssistant v1.1.0 introduces the OpenCode Manager extension** - a production-ready system for orchestrating and managing OpenCode AI agent instances.
 
-**Everyone is using auto-agent tools like OpenClaw** - but at what cost?
-
-These agents often:
-- ❌ Send your code to external servers without clear consent
-- ❌ Store your private repositories in third-party cloud infrastructure
-- ❌ Lack transparency about where your data goes
-- ❌ Offer no control over data retention or deletion
-- ❌ Expose your intellectual property to potential security risks
-
-**MoJoAssistant v1.1.0 changes the game.**
-
-### 🛡️ Your Data, Your Control
-
-MoJoAssistant with OpenCode Manager provides **enterprise-grade data protection** for your AI coding workflow:
-
-| Feature | Auto-Agent Tools | MoJoAssistant v1.1.0 |
-|----------|-----------------|----------------------|
-| **Data Storage** | Third-party cloud | **Local-only by default** |
-| **Code Processing** | Remote servers | **Your own machines** |
-| **SSH Keys** | Managed by others | **Generated locally, never shared** |
-| **Git Access** | Through their infrastructure | **Direct access via your keys** |
-| **Data Retention** | Unknown/black-box | **Full transparency and control** |
-| **Security** | Trust us | **Open source, auditable** |
+This release focuses on extending MoJoAssistant's capabilities to work seamlessly with external AI agents (OpenCode), with a roadmap to support additional agents like OpenClaw.
 
 ---
 
-## 🎯 What's New in v1.1.0
+## 🤖 What is OpenCode Manager?
 
-### OpenCode Manager - Production-Ready AI Agent Orchestration
+OpenCode Manager is an **AI agent orchestration layer** that enables you to:
 
-**The first privacy-first AI coding agent system** that keeps your data on your infrastructure.
+1. **Run multiple OpenCode instances** - Each project gets its own isolated OpenCode server
+2. **Manage lifecycle programmatically** - Start, stop, restart via MCP tools
+3. **Integrate with MoJoAssistant** - Seamlessly connect AI agents to your memory system
+4. **Future-proof architecture** - Ready to support OpenClaw and other agents
 
-#### Core Capabilities
+### Architecture
 
-**1. Multi-Project Management**
+```
+MoJoAssistant Core
+    ↓
+OpenCode Manager (Extension)
+    ↓
+┌─────────────────────────────────────┐
+│  OpenCode Instance 1 (port 4100)   │  ← AI Agent 1
+│  OpenCode Instance 2 (port 4101)   │  ← AI Agent 2
+│  OpenCode Instance 3 (port 4102)   │  ← AI Agent 3
+│         ↓                           │
+│  Global MCP Tool (port 3005)         │  ← Unified MCP Interface
+│         ↓                           │
+│  AI Clients (Claude Desktop, etc.)   │
+└─────────────────────────────────────┘
+```
+
+---
+
+## 🚀 What's New in v1.1.0
+
+### 1. OpenCode Manager - Production Ready
+
+**Core Features:**
+
+#### Multi-Project Management
 ```bash
-# Run multiple AI coding projects simultaneously
+# Run multiple OpenCode instances for different projects
 opencode_start blog-api git@github.com:user/blog-api.git
 opencode_start mobile-app git@github.com:user/mobile-app.git
 opencode_start backend-service git@github.com:user/backend.git
 
-# All managed through your own infrastructure
+# Each gets isolated OpenCode AI agent
 ```
 
-**2. N:1 Architecture - Efficient and Secure**
+#### N:1 Architecture - Unified MCP Interface
 ```
-Your Local Environment:
-┌─────────────────────────────────────────────────────────────┐
-│  OpenCode Instance 1 (port 4100)                    │
-│  OpenCode Instance 2 (port 4101)                      │
-│  OpenCode Instance 3 (port 4102)                      │
-│         ↓                                            │
-│  Global MCP Tool (port 3005)                          │
-│  - Routes to all instances                              │
-│  - Single point of control                              │
-│  - Locally hosted                                       │
-│         ↓                                            │
-│  Your AI Clients (Claude Desktop, etc.)                │
-└─────────────────────────────────────────────────────────────┘
+Before (1:1):
+  Project 1 → MCP Tool 1 (port 5100)
+  Project 2 → MCP Tool 2 (port 5101)
+  Project 3 → MCP Tool 3 (port 5102)
 
-❌ No external data transmission
-✅ No third-party infrastructure
-✅ Full data sovereignty
+Now (N:1):
+  Project 1 ─┐
+  Project 2 ─┼→ Global MCP Tool (port 3005)
+  Project 3 ─┘
+
+Benefits:
+✅ Single port (3005) for all projects
+✅ Unified configuration
+✅ Efficient resource usage
+✅ Centralized control
 ```
 
-**3. Enterprise Security Features**
-
-**SSH Key Management:**
-- ✅ Per-project SSH keys generated locally
-- ✅ Keys never leave your environment
-- ✅ Automatic generation with `ssh-keygen`
-- ✅ Full control over key rotation and deletion
-
-**Configuration Security:**
-- ✅ Password-protected OpenCode instances
-- ✅ Bearer token authentication for MCP tool
-- ✅ File permissions enforced (0600 for secrets)
-- ✅ No hardcoded credentials in codebase
-
-**Network Security:**
-- ✅ Bind to specific interfaces (0.0.0.0 for remote access, localhost for local)
-- ✅ Password authentication required for all connections
-- ✅ Support for cloudflared tunnels (no open ports)
-
-**4. State Persistence & Recovery**
+#### Process Lifecycle Management
 ```bash
-# Your AI agents survive system restarts
+# Start - Bootstrap new project with OpenCode agent
+opencode_start my-project git@github.com:user/repo.git
+
+# Status - Check OpenCode and MCP tool status
+opencode_status my-project
+
+# Restart - Stop and start with same configuration
+opencode_restart my-project
+
+# Stop - Graceful shutdown
+opencode_stop my-project
+
+# List - All managed projects
+opencode_list
+```
+
+### 2. SSH Key Management
+
+**Per-Project SSH Deploy Keys:**
+- ✅ Auto-generated using `ssh-keygen`
+- ✅ Isolated per project (no cross-contamination)
+- ✅ Stored securely in `~/.memory/opencode-keys/`
+- ✅ Automatic deployment to Git repositories
+
+```bash
+# Key locations
+~/.memory/opencode-keys/project1-deploy
+~/.memory/opencode-keys/project2-deploy
+~/.memory/opencode-keys/project3-deploy
+```
+
+### 3. Global Configuration
+
+**Single Configuration File**: `~/.memory/opencode-manager.env`
+
+```env
+# Paths to external AI agents
+OPENCODE_MCP_TOOL_PATH=/path/to/opencode-mcp-tool
+OPENCODE_BIN=/path/to/opencode
+
+# Security credentials
+OPENCODE_SERVER_PASSWORD=your-password
+GLOBAL_MCP_BEARER_TOKEN=your-token
+
+# Port configuration
+GLOBAL_MCP_TOOL_PORT=3005
+```
+
+### 4. State Persistence
+
+**Projects Survive System Restarts:**
+```bash
+# System restart
 sudo reboot
 
 # Projects automatically resume
-opencode_status blog-api
-# → Running (auto-recovered from persistent state)
+opencode_status my-project
+# → Running (recovered from persistent state)
 ```
 
-**5. Health Monitoring & Auto-Recovery**
-- ✅ Automatic health checks for OpenCode instances
-- ✅ Automatic health checks for MCP tool
+**State Files:**
+- `~/.memory/opencode-state.json` - Project states
+- `~/.memory/opencode-mcp-tool-servers.json` - Server configuration
+
+### 5. Health Monitoring & Auto-Recovery
+
+**Automatic Health Checks:**
+- ✅ Periodic OpenCode instance health checks
+- ✅ Periodic MCP tool health checks
 - ✅ Auto-restart on failure
 - ✅ Detailed logging for troubleshooting
 
-**6. Process Lifecycle Management**
+### 6. Development Tools
 
+**Hot Reload Support:**
 ```bash
-# Start - Bootstrap new project
-opencode_start my-project git@github.com:user/repo.git
-# → Clones repo
-# → Generates SSH key
-# → Starts OpenCode server
-# → Adds to global config
-# → Starts MCP tool if needed
+# Development server with auto-reload
+./run_dev.sh
 
-# Status - Check health and running state
-opencode_status my-project
-# → Shows OpenCode status
-# → Shows MCP tool status
-# → Shows PID, ports, health
-
-# Restart - Reuse ports and config
-opencode_restart my-project
-# → Stops OpenCode gracefully
-# → Restarts with same port
-# → Preserves all settings
-
-# Stop - Clean shutdown
-opencode_stop my-project
-# → Stops OpenCode
-# → Updates config to inactive
-# → Auto-stops MCP tool if no projects left
+# Or with file watching
+./run_dev_watch.sh
 ```
 
 ---
 
-## 🔒 Privacy & Security Guarantees
+## 🔧 Available MCP Tools
 
-### What We Don't Do
-
-❌ We don't send your code to external servers
-❌ We don't store your private SSH keys
-❌ We don't require cloud infrastructure
-❌ We don't collect telemetry by default
-❌ We don't lock your data in proprietary formats
-
-### What We Do
-
-✅ **Local-First Architecture**: All processing happens on your machines
-✅ **Transparent Data Flow**: You can see exactly where your data goes
-✅ **Open Source**: Full codebase visibility - audit anytime
-✅ **You Own Your Data**: Delete anytime, export anytime
-✅ **Enterprise-Grade Security**: Password protection, SSH key isolation, secure authentication
-✅ **Compliance Ready**: Suitable for regulated industries (healthcare, finance, government)
+| Tool | Description | Usage |
+|------|-------------|---------|
+| `opencode_start` | Bootstrap new OpenCode project | `opencode_start <name> <git_url>` |
+| `opencode_stop` | Stop OpenCode project | `opencode_stop <name>` |
+| `opencode_restart` | Restart OpenCode project | `opencode_restart <name>` |
+| `opencode_status` | Get project status | `opencode_status <name>` |
+| `opencode_list` | List all projects | `opencode_list` |
+| `opencode_mcp_restart` | Restart global MCP tool | `opencode_mcp_restart` |
+| `opencode_mcp_status` | Get MCP tool status | `opencode_mcp_status` |
+| `opencode_llm_config` | Get/set LLM configuration | `opencode_llm_config` |
 
 ---
 
-## 📊 Comparison: MoJoAssistant vs Auto-Agent Tools
+## 🏗️ Architecture Deep Dive
 
-| Aspect | Auto-Agent (OpenClaw, etc.) | MoJoAssistant v1.1.0 |
-|---------|-------------------------------|--------------------------|
-| **Data Location** | Cloud (unknown region) | Your infrastructure |
-| **SSH Key Access** | They hold your keys | You hold your keys |
-| **Git Operations** | Through their servers | Direct via SSH |
-| **Code Privacy** | Unclear, terms vary | 100% private by design |
-| **Transparency** | Black-box operation | Fully auditable open source |
-| **Data Export** | Maybe | Always, full control |
-| **Data Deletion** | Request-based | Immediate, you control it |
-| **Compliance** | Questionable | Ready for enterprise |
-| **Cost** | Subscription-based | Self-hosted, free software |
-| **Multi-Project** | Limited | Unlimited, local control |
+### N:1 Architecture
 
----
+**Why N:1?**
 
-## 🎓 Use Cases
+Efficient resource management and unified control:
 
-### 1. Individual Developers
+1. **Port Management**: Single port (3005) instead of multiple ports
+2. **Configuration**: Single `opencode-mcp-tool-servers.json` file
+3. **Resource Usage**: One MCP tool process instead of N processes
+4. **Routing**: Dynamic server selection based on requests
 
-**Before (Auto-Agent):**
-- Sign up for SaaS service
-- Give them access to your GitHub
-- Hope they don't store your code
-- Pay monthly subscription
-- Data leaves your control
-
-**After (MoJoAssistant v1.1.0):**
-```bash
-# 5 minutes setup, no signup
-opencode_start my-project git@github.com:user/repo.git
-
-# Your code never leaves your infrastructure
-# You control everything
-# No subscription fees
-# Enterprise-grade security
+**Server Configuration:**
+```json
+{
+  "version": "1.0",
+  "servers": [
+    {
+      "id": "blog-api",
+      "title": "Blog API",
+      "description": "OpenCode server for blog-api",
+      "url": "http://127.0.0.1:4100",
+      "password": "2400",
+      "status": "active",
+      "added_at": "2026-02-09T12:00:00Z",
+      "ssh_key_path": "/home/user/.memory/opencode-keys/blog-api-deploy",
+      "git_url": "git@github.com:user/blog.git",
+      "sandbox_dir": "/home/user/.memory/opencode-sandboxes/blog-api"
+    }
+  ],
+  "default_server": "blog-api"
+}
 ```
 
-### 2. Small Teams
+### Project Isolation
 
-**Challenge**: Multiple developers need AI coding assistance, but can't share sensitive code externally.
-
-**Solution with MoJoAssistant:**
-```bash
-# Developer 1: Start their project
-opencode_start backend-api git@github.com:company/backend.git
-
-# Developer 2: Start their project  
-opencode_start mobile-app git@github.com:company/mobile.git
-
-# Developer 3: Start their project
-opencode_start web-frontend git@github.com:company/web.git
-
-# All running locally, all data stays in company infrastructure
-# No external data exposure
-# Full compliance with data governance policies
+**Each project gets isolated sandbox:**
 ```
-
-### 3. Enterprise / Regulated Industries
-
-**Requirement**: AI coding assistance for healthcare, finance, or government projects with strict data governance.
-
-**MoJoAssistant provides:**
-- ✅ **Data Sovereignty**: Never leaves approved infrastructure
-- ✅ **Audit Trail**: Full logging of all operations
-- ✅ **Access Control**: Password-protected, SSH key isolation
-- ✅ **Compliance**: Meets HIPAA, GDPR, SOX requirements (when configured correctly)
-- ✅ **No Third-Party Risk**: Open source, self-hosted, auditable
+~/.memory/opencode-sandboxes/
+├── project1/
+│   ├── repo/              # Cloned git repository
+│   ├── .env              # Project-specific env (no passwords)
+│   ├── opencode.pid       # OpenCode process ID
+│   └── .gitignore        # Protects .env
+├── project2/
+│   ├── repo/
+│   ├── .env
+│   ├── opencode.pid
+│   └── .gitignore
+└── project3/
+    ├── repo/
+    ├── .env
+    ├── opencode.pid
+    └── .gitignore
+```
 
 ---
 
-## 🚦 Quick Start (5 Minutes)
+## 📋 Bug Fixes
+
+| Issue | Impact | Fix |
+|-------|---------|------|
+| `active_project_count` not incrementing | Global MCP tool wouldn't start after all projects stopped | Added logic to increment count when restarting stopped projects |
+| Built-in models missing in LLM config | Can't use OpenCode built-in providers | Query `opencode models` CLI to get all models |
+| Redundant OpenCode tools | Confusing tool names | Consolidated to essential tools |
+| Hot reload broken | Development workflow interrupted | Fixed with watchfiles alternative |
+| PID tracking issues | Stale processes not detected | Improved process lifecycle management |
+
+---
+
+## 🚀 Quick Start (5 Minutes)
 
 ### Prerequisites
 
@@ -264,13 +280,13 @@ nano ~/.memory/opencode-manager.env
 
 **Configuration (`~/.memory/opencode-manager.env`):**
 ```env
-# Paths (update to your actual locations)
+# Paths to external AI agents
 OPENCODE_MCP_TOOL_PATH=/home/user/Development/Sandbox/opencode-mcp-tool
 OPENCODE_BIN=/home/user/.bun/install/global/node_modules/opencode-linux-x64/bin/opencode
 
-# Passwords (use strong, unique passwords)
-OPENCODE_SERVER_PASSWORD=your-strong-password-here
-GLOBAL_MCP_BEARER_TOKEN=your-bearer-token-here
+# Security credentials
+OPENCODE_SERVER_PASSWORD=your-strong-password
+GLOBAL_MCP_BEARER_TOKEN=your-bearer-token
 
 # Port (optional, defaults to 3005)
 GLOBAL_MCP_TOOL_PORT=3005
@@ -292,186 +308,23 @@ opencode_start my-project git@github.com:user/repo.git
 
 # Check status
 opencode_status my-project
-
-# Expected output:
-{
-  "status": "ok",
-  "project": "my-project",
-  "opencode": {
-    "pid": 12345,
-    "port": 4100,
-    "status": "running",
-    "running": true
-  },
-  "global_mcp_tool": {
-    "pid": 12346,
-    "port": 3005,
-    "status": "running",
-    "running": true,
-    "active_projects": 1
-  }
-}
 ```
 
 ---
 
-## 📚 Available Tools
-
-| Tool | Description | Example |
-|------|-------------|----------|
-| `opencode_start` | Bootstrap new OpenCode project | `opencode_start blog-api git@github.com:user/blog.git` |
-| `opencode_stop` | Stop OpenCode project | `opencode_stop blog-api` |
-| `opencode_restart` | Restart OpenCode project | `opencode_restart blog-api` |
-| `opencode_status` | Get project status | `opencode_status blog-api` |
-| `opencode_list` | List all projects | `opencode_list` |
-| `opencode_mcp_restart` | Restart global MCP tool | `opencode_mcp_restart` |
-| `opencode_mcp_status` | Get MCP tool status | `opencode_mcp_status` |
-| `opencode_llm_config` | Get/set LLM configuration | `opencode_llm_config` |
-
----
-
-## 🏗️ Architecture Deep Dive
-
-### N:1 Architecture Explained
-
-**Why N:1?**
-
-Traditional approach (1:1):
-```
-Project 1 → MCP Tool 1 (port 5100)
-Project 2 → MCP Tool 2 (port 5101)
-Project 3 → MCP Tool 3 (port 5102)
-```
-
-**Problems:**
-- Port conflicts
-- Resource waste
-- Hard to manage
-- No unified control
-
-**MoJoAssistant N:1:**
-```
-Project 1 ─┐
-Project 2 ─┼→ Global MCP Tool (port 3005) → AI Clients
-Project 3 ─┘
-```
-
-**Benefits:**
-- ✅ Single port (3005) for all projects
-- ✅ Unified configuration
-- ✅ Efficient resource usage
-- ✅ Centralized control
-- ✅ Server config file (`opencode-mcp-tool-servers.json`)
-- ✅ Dynamic server selection
-
-### Server Configuration
-
-**Location**: `~/.memory/opencode-mcp-tool-servers.json`
-
-**Example:**
-```json
-{
-  "version": "1.0",
-  "servers": [
-    {
-      "id": "blog-api",
-      "title": "Blog API",
-      "description": "OpenCode server for blog-api",
-      "url": "http://127.0.0.1:4100",
-      "password": "2400",
-      "status": "active",
-      "added_at": "2026-02-09T12:00:00Z",
-      "ssh_key_path": "/home/user/.memory/opencode-keys/blog-api-deploy",
-      "git_url": "git@github.com:user/blog.git",
-      "sandbox_dir": "/home/user/.memory/opencode-sandboxes/blog-api"
-    }
-  ],
-  "default_server": "blog-api"
-}
-```
-
-**Security:**
-- ✅ File permissions: 0600 (owner read/write only)
-- ✅ Auto-generated per project
-- ✅ Hot-reload supported (opencode-mcp-tool watches file)
-- ✅ No hardcoded passwords in codebase
-
----
-
-## 🔧 Advanced Configuration
-
-### Environment Variables
-
-```env
-# MCP Tool Configuration
-GLOBAL_MCP_BEARER_TOKEN=your-secure-token
-GLOBAL_MCP_TOOL_PORT=3005
-OPENCODE_MCP_TOOL_PATH=/path/to/opencode-mcp-tool
-
-# OpenCode Configuration
-OPENCODE_SERVER_PASSWORD=your-password
-OPENCODE_BIN=/path/to/opencode
-OPENCODE_SERVER_HOSTNAME=0.0.0.0
-
-# Development Mode
-ENVIRONMENT=development
-LOG_LEVEL=INFO
-```
-
-### Port Management
-
-**Automatic Port Allocation:**
-- OpenCode servers: 4100-4199 (auto-assign)
-- MCP tool: 3005 (configurable)
-
-**Port Reuse:**
-- Restart operations preserve ports
-- Prevents connection issues for clients
-
-### Network Configuration
-
-**Local Access Only:**
-```env
-OPENCODE_SERVER_HOSTNAME=127.0.0.1
-```
-
-**Remote Access (Password Protected):**
-```env
-OPENCODE_SERVER_HOSTNAME=0.0.0.0
-```
-
-**Cloudflared Tunnel (No Open Ports):**
-```bash
-# Use cloudflared to expose without opening ports
-cloudflared tunnel --url http://127.0.0.1:4100
-```
-
----
-
-## 🐛 Bug Fixes in v1.1.0
-
-| Issue | Impact | Fix |
-|-------|---------|------|
-| `active_project_count` not incrementing | Global MCP tool wouldn't start after all projects stopped | Added logic to increment count when restarting stopped projects |
-| Built-in models missing in LLM config | Can't use OpenCode built-in providers | Query `opencode models` CLI to get all models |
-| Redundant OpenCode tools | Confusing tool names | Consolidated to essential tools |
-| Hot reload broken | Development workflow interrupted | Fixed with watchfiles alternative |
-| PID tracking issues | Stale processes not detected | Improved process lifecycle management |
-
----
-
-## 📖 Documentation
+## 📚 Documentation
 
 **Complete documentation available in `app/mcp/opencode/`:**
 
-- `README.md` - Comprehensive feature documentation
-- `ARCHITECTURE_N_TO_1.md` - N:1 architecture deep dive
-- `CONFIGURATION.md` - Setup and configuration guide
-- `GLOBAL_CONFIG_MIGRATION.md` - Migration from v1.0
-- `SSH_KEY_ARCHITECTURE.md` - SSH key management
-- `SECURITY_AUDIT_RESULTS.md` - Security review
-- `TEST_RESULTS_v1.1_BETA.md` - Test results
-- `SETUP_GLOBAL_CONFIG.md` - Step-by-step setup
+| File | Description |
+|------|-------------|
+| `README.md` | Comprehensive feature documentation |
+| `ARCHITECTURE_N_TO_1.md` | N:1 architecture deep dive |
+| `CONFIGURATION.md` | Setup and configuration guide |
+| `GLOBAL_CONFIG_MIGRATION.md` | Migration from v1.0 |
+| `SSH_KEY_ARCHITECTURE.md` | SSH key management |
+| `TEST_RESULTS_v1.1_BETA.md` | Test results |
+| `SETUP_GLOBAL_CONFIG.md` | Step-by-step setup |
 
 ---
 
@@ -492,7 +345,62 @@ cloudflared tunnel --url http://127.0.0.1:4100
 
 ---
 
-## 🎓 Migration from v1.0
+## 🛣️ Roadmap
+
+### v1.2.0 - OpenClaw Support
+
+**Planned Features:**
+- [ ] **OpenClaw Agent Integration** - Add OpenClaw as supported AI agent
+- [ ] **Scheduler** - Automated task scheduling for AI agents
+- [ ] **Security Policy Engine** - Fine-grained access control and policies
+- [ ] **Multi-Agent Support** - Simultaneous OpenCode + OpenClaw instances
+
+**Why OpenClaw?**
+
+OpenClaw provides additional capabilities that complement OpenCode:
+- Different coding paradigms
+- Specialized agents for specific tasks
+- Alternative when OpenCode is unavailable
+
+**Challenges to Address:**
+
+1. **Scheduler Implementation**
+   - When to run which agent?
+   - Task prioritization
+   - Resource allocation
+   - Cost optimization
+
+2. **Security Policy Engine**
+   - Access control per project
+   - Data governance policies
+   - Compliance enforcement (GDPR, HIPAA, etc.)
+   - Audit logging
+
+### Future Vision
+
+```
+MoJoAssistant Core
+    ↓
+Agent Orchestrator (v1.2+)
+    ├─→ OpenCode Manager
+    │   ├─→ OpenCode Instance 1
+    │   ├─→ OpenCode Instance 2
+    │   └─→ OpenCode Instance 3
+    │
+    └─→ OpenClaw Manager (v1.2+)
+        ├─→ OpenClaw Instance 1
+        ├─→ OpenClaw Instance 2
+        └─→ OpenClaw Instance 3
+
+Shared:
+    ├─→ Global Scheduler
+    ├─→ Security Policy Engine
+    └─→ Unified MCP Interface
+```
+
+---
+
+## 🔄 Migration from v1.0
 
 ### What Changed?
 
@@ -527,32 +435,77 @@ See `GLOBAL_CONFIG_MIGRATION.md` for detailed instructions.
 
 ---
 
-## 🚀 What's Next
+## 💡 Use Cases
 
-### Roadmap
+### 1. Individual Developer
 
-- [ ] Web UI for project management
-- [ ] Auto-scaling based on project load
-- [ ] Integration with cloud providers (AWS, GCP, Azure)
-- [ ] Backup and disaster recovery
-- [ ] Team collaboration features
-- [ ] Performance monitoring and analytics
-- [ ] Integration with CI/CD pipelines
+**Scenario:** Multiple projects need AI coding assistance.
+
+**Solution:**
+```bash
+# Start OpenCode agents for each project
+opencode_start blog-api git@github.com:user/blog.git
+opencode_start mobile-app git@github.com:user/mobile.git
+
+# Work on projects with AI assistance
+# All managed through unified MCP interface
+```
+
+### 2. Small Team
+
+**Scenario:** Team members need AI assistance on different codebases.
+
+**Solution:**
+```bash
+# Developer 1: Start their project
+opencode_start backend-api git@github.com:company/backend.git
+
+# Developer 2: Start their project
+opencode_start mobile-app git@github.com:company/mobile.git
+
+# Developer 3: Start their project
+opencode_start web-frontend git@github.com:company/web.git
+
+# All running locally, unified management
+```
+
+### 3. Continuous Integration
+
+**Scenario:** AI agents need to run in CI/CD pipeline.
+
+**Solution:**
+```bash
+# CI Script:
+opencode_start project-$BUILD_ID $REPO_URL
+# Run tests with AI assistance
+opencode_stop project-$BUILD_ID
+
+# Project isolation prevents conflicts
+```
 
 ---
 
-## 💡 Why Choose MoJoAssistant?
+## 🎓 Key Takeaways
 
-**When everyone is racing to send your data to the cloud, MoJoAssistant does the opposite.**
+### What v1.1.0 Provides
 
-We believe:
-- Your code should stay on your infrastructure
-- You should have full transparency about data flow
-- Security through obscurity is not security
-- Open source is better than proprietary black-boxes
-- Privacy is a right, not a premium feature
+1. **Agent Orchestration Layer** - Manages external AI agents (OpenCode)
+2. **Multi-Project Support** - Run multiple AI agent instances
+3. **Unified MCP Interface** - Single port (3005) for all agents
+4. **Production-Ready** - Health monitoring, state persistence, auto-recovery
+5. **Future-Proof** - Architecture ready for OpenClaw and other agents
 
-**v1.1.0 is our commitment to that vision.**
+### What's Coming Next
+
+1. **OpenClaw Integration** (v1.2.0)
+   - Support for OpenClaw AI agent
+   - Scheduler for task routing
+   - Security policy engine
+
+2. **Multi-Agent Support** (v1.2.0+)
+   - Simultaneous OpenCode + OpenClaw
+   - Intelligent task routing
+   - Resource optimization
 
 ---
 
@@ -572,13 +525,13 @@ MIT License - See LICENSE file for details
 
 ## 🙏 Acknowledgments
 
-- OpenCode team for the amazing AI coding agent
-- opencode-mcp-tool contributors
-- The MCP (Model Context Protocol) community
-- All contributors who made v1.1.0 possible
+- **OpenCode team** - Amazing AI coding agent
+- **opencode-mcp-tool contributors** - MCP protocol implementation
+- **MCP (Model Context Protocol) community** - Open protocol
+- **All contributors** - Made v1.1.0 possible
 
 ---
 
-**MoJoAssistant v1.1.0 - Your Data, Your Control.**
+**MoJoAssistant v1.1.0 - Extending AI Agent Capabilities**
 
-*Protect your intellectual property. Choose privacy by design.*
+*Orchestrate multiple AI agents. Prepare for OpenClaw. Build the future.*
