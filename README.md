@@ -2,6 +2,8 @@
 
 MoJoAssistant is your intelligent memory companion that learns from your conversations and helps you remember, search, and build upon your knowledge over time. It maintains a private, persistent memory system while serving as a bridge to enhance your interactions with AI assistants.
 
+**🎉 v1.1.0-beta Released!** - Featuring OpenCode Manager for managing AI coding agent instances with N:1 architecture.
+
 ## What is MoJoAssistant?
 
 MoJoAssistant helps you:
@@ -39,6 +41,20 @@ MoJoAssistant consists of several integrated components:
 - **Hybrid Mode**: Combine local and cloud-based intelligence
 - **Model Switching**: Runtime model selection based on needs
 
+### 4. OpenCode Manager (NEW v1.1.0-beta)
+- **Multi-Project Management**: Run multiple OpenCode AI coding agent instances
+- **N:1 Architecture**: Single global MCP tool for all projects (port 3005)
+- **Process Lifecycle**: Start, stop, restart OpenCode instances
+- **SSH Key Management**: Per-project deploy keys for git operations
+- **Global Configuration**: Unified password and credential management
+- **State Persistence**: Projects survive system restarts
+- **Health Monitoring**: Automatic health checks and recovery
+
+**Architecture:**
+```
+N OpenCode Projects → 1 Global MCP Tool (port 3005) → AI Clients
+```
+
 ### 4. Web Integration
 - **Web Search**: Google Custom Search API with DuckDuckGo fallback
 - **Document Processing**: Add documents to your knowledge base
@@ -69,6 +85,14 @@ MoJoAssistant consists of several integrated components:
 - **Hardware Optimization**: CPU/GPU support with automatic detection
 - **Model Switching**: Runtime model changes without restart
 - **Customizable Architecture**: Modular design for easy extension
+
+### 🚀 OpenCode Manager (v1.1.0-beta)
+- **Isolated Sandboxes**: Each project runs in isolated environment
+- **Network Accessibility**: OpenCode servers bind to all interfaces (0.0.0.0)
+- **Port Management**: Automatic port allocation and reuse on restart
+- **Auto-Scale MCP Tool**: Global MCP tool starts/stops based on active projects
+- **Secure Configuration**: Password-protected OpenCode instances
+- **Development Hot Reload**: Automatic server restarts during development
 
 ## Try MoJoAssistant in 5 Minutes
 
@@ -103,6 +127,7 @@ python app/interactive-cli.py
 |----------|------------------|---------------|
 | **Quick Demo** | Interactive CLI | 2 minutes |
 | **Claude Desktop** | MCP Server | 10 minutes |
+| **OpenCode Manager** | Project Management | 15 minutes |
 | **Web Integration** | HTTP API | 15 minutes |
 | **Custom Development** | Web API | 20 minutes |
 
@@ -127,6 +152,87 @@ cp .env.example .env
 # Edit .env with your API keys if using cloud services
 ```
 
+## OpenCode Manager (v1.1.0-beta)
+
+Manage multiple OpenCode AI coding agent instances with the new OpenCode Manager:
+
+### 🚀 Quick Start
+
+```bash
+# 1. Create global configuration
+cp app/mcp/opencode/templates/opencode-manager.env.template ~/.memory/opencode-manager.env
+chmod 600 ~/.memory/opencode-manager.env
+
+# 2. Start a new OpenCode project
+opencode_start my-project git@github.com:user/repo.git
+
+# 3. Check project status
+opencode_status my-project
+
+# 4. Restart a project
+opencode_restart my-project
+
+# 5. Stop a project
+opencode_stop my-project
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `opencode_start` | Bootstrap a new OpenCode project (clone repo, start server) |
+| `opencode_stop` | Stop an OpenCode project |
+| `opencode_restart` | Restart an OpenCode project |
+| `opencode_status` | Get project status (OpenCode and MCP tool) |
+| `opencode_mcp_restart` | Restart the global MCP tool |
+| `opencode_mcp_status` | Get global MCP tool status |
+| `opencode_llm_config` | Get/set LLM configuration |
+
+### Configuration
+
+**Global Configuration** (`~/.memory/opencode-manager.env`):
+```env
+# OpenCode Manager Configuration
+OPENCODE_MCP_TOOL_PATH=/path/to/opencode-mcp-tool
+OPENCODE_BIN=/path/to/opencode
+
+# Passwords
+OPENCODE_SERVER_PASSWORD=your-opencode-password
+GLOBAL_MCP_BEARER_TOKEN=your-mcp-bearer-token
+
+# Port Configuration (optional)
+GLOBAL_MCP_TOOL_PORT=3005
+```
+
+For complete setup instructions, see `RELEASE_NOTES_v1.1.0-beta.md` and `app/mcp/opencode/README.md`.
+
+---
+
+## What's New in v1.1.0-beta
+
+### 🎉 OpenCode Manager
+- **Multi-Project Support**: Manage multiple OpenCode instances simultaneously
+- **N:1 Architecture**: Single global MCP tool (port 3005) routes to all projects
+- **Process Lifecycle**: Start, stop, restart OpenCode servers
+- **SSH Key Management**: Per-project deploy keys with auto-generation
+- **Global Configuration**: Unified `~/.memory/opencode-manager.env` for all projects
+- **State Persistence**: Projects survive system restarts
+- **Health Monitoring**: Automatic health checks and recovery
+- **Network Accessibility**: OpenCode servers bind to all interfaces (0.0.0.0)
+
+### 🔧 Bug Fixes
+- Fixed `active_project_count` when restarting stopped projects
+- Fixed `opencode_llm_config` to include built-in provider models
+- Added proper LLM configuration management
+- Fixed hot reload with watchfiles alternative
+
+### 📚 Documentation
+- Comprehensive OpenCode Manager documentation in `app/mcp/opencode/`
+- Setup guides and architecture diagrams
+- Security audit results and configuration examples
+
+---
+
 ## What You Can Do With MoJoAssistant
 
 ### 📝 **Personal Knowledge Base**
@@ -143,6 +249,14 @@ Maintain context across work sessions:
 > We're designing a new API for our mobile app
 > What were we discussing about the API design?
 > Remind me of the decisions we made last week
+```
+
+### 📦 **OpenCode Manager (v1.1.0-beta NEW)**
+Manage multiple AI coding agent projects with isolated environments:
+```
+> opencode_start blog-api git@github.com:user/blog-api.git
+> opencode_status blog-api
+> opencode_restart blog-api
 ```
 
 ### 🎓 **Learning Companion**
