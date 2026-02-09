@@ -3,7 +3,7 @@ Tool definitions and execution logic
 File: app/mcp/core/tools.py
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import time
 from datetime import datetime
 from app.git.git_service import GitService
@@ -12,8 +12,12 @@ from app.git.git_service import GitService
 class ToolRegistry:
     """Registry of available tools and their execution"""
 
-    def __init__(self, memory_service, config: Dict[str, Any] | None = None):
+    def __init__(
+        self, memory_service, config: Dict[str, Any] | None = None, logger=None
+    ):
         self.memory_service = memory_service
+        self.logger = logger
+
         # Load Google API config from environment if not provided
         if config is None:
             config = {}
@@ -29,6 +33,12 @@ class ToolRegistry:
 
         # Initialize git service
         self.git_service = GitService()
+
+        # Initialize OpenCode manager
+        from app.mcp.opencode.manager import OpenCodeManager
+
+        self.opencode_manager = OpenCodeManager(logger=logger)
+
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
         self.placeholder_tools = {
@@ -150,6 +160,14 @@ class ToolRegistry:
                     "What day of the week is it today?",
                 ],
                 "usage_tip": "Use for questions about today's date, current day, time, or year information.",
+            },
+            "opencode_stop_mcp_tool": {
+                "template": "Stop the global opencode-mcp-tool instance",
+                "examples": [
+                    "Stop the global opencode-mcp-tool",
+                    "Terminate the MCP tool that serves all OpenCode projects",
+                ],
+                "usage_tip": "Use when you need to manually stop the global MCP tool, even when there are active projects running.",
             },
         }
 
@@ -423,6 +441,132 @@ class ToolRegistry:
                 "description": "List all registered git repositories. When to use: Use to see which repositories are available for code analysis and their current status. How it works: Shows all registered repositories with their URLs, branches, and status. Why useful: Helps you understand what codebases are available for analysis.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
+            # OpenCode Manager Tools
+            {
+                "name": "opencode_start",
+                "description": "Start or bootstrap an OpenCode coding agent project. This launches an OpenCode server and MCP tool for hands-free development. SECRETS ARE NEVER PASSED - they're read from .env files in the sandbox. In development mode, .env is auto-generated with warnings. Use this when you need to start working on a codebase with AI assistance.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project (alphanumeric, no spaces)",
+                            "minLength": 1,
+                            "pattern": "^[a-zA-Z0-9_-]+$",
+                        },
+                        "git_url": {
+                            "type": "string",
+                            "description": "Git repository SSH URL (e.g., git@github.com:user/repo.git)",
+                            "minLength": 1,
+                        },
+                        "user_ssh_key": {
+                            "type": "string",
+                            "description": "Optional: Path to user's SSH key (will auto-generate if not provided)",
+                        },
+                    },
+                    "required": ["project_name", "git_url"],
+                },
+            },
+            {
+                "name": "opencode_status",
+                "description": "Check the status of an OpenCode project. Shows if processes are running, ports, PIDs, and health status. Use this to verify a project is running correctly.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["project_name"],
+                },
+            },
+            {
+                "name": "opencode_stop",
+                "description": "Stop an OpenCode project. Terminates both the OpenCode server and MCP tool processes. The sandbox files remain intact. Use this to free up resources when not actively working on a project.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["project_name"],
+                },
+            },
+            {
+                "name": "opencode_restart",
+                "description": "Restart an OpenCode project. Stops and starts both processes. Useful when processes have crashed or need to reload configuration.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["project_name"],
+                },
+            },
+            {
+                "name": "opencode_destroy",
+                "description": "⚠️ DESTRUCTIVE: Stop project and DELETE sandbox directory. This permanently removes all local code and configuration. The remote Git repository is NOT affected. Use only when you're completely done with a project and want to free up disk space.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "Name of the project",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["project_name"],
+                },
+            },
+            {
+                "name": "opencode_list",
+                "description": "List all OpenCode projects. Shows project names, running status, ports, and sandbox locations. Use this to see what projects are available.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "opencode_mcp_status",
+                "description": "Get status of the global opencode-mcp-tool instance that serves all projects. Shows PID, port, number of active projects, and health status. Use this to check if the MCP tool is running.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "opencode_mcp_restart",
+                "description": "Manually restart the global opencode-mcp-tool instance. Useful after updating the opencode-mcp-tool repository or when the MCP tool needs to reload configuration. Will only restart if there are active projects.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "opencode_stop_mcp_tool",
+                "description": "Manually stop the global opencode-mcp-tool instance. Can be used even when there are active projects. Useful for maintenance or when the MCP tool needs to be completely stopped.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "opencode_llm_config",
+                "description": "Get the global OpenCode LLM configuration: current default model, available providers, and their configured models. This shows what AI models OpenCode can use.",
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "opencode_llm_set_model",
+                "description": "Set the default LLM model for all OpenCode instances. The model format is 'provider-id/model-id' (e.g., 'MoJoLLM/zai-org/glm-4.7-flash'). Use opencode_llm_config to see available providers and models first.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "model": {
+                            "type": "string",
+                            "description": "Model identifier in format 'provider-id/model-id'",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["model"],
+                },
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -475,6 +619,7 @@ class ToolRegistry:
             "knowledge": [],
             "git": [],
             "utilities": [],
+            "opencode": [],
         }
 
         tools = self.get_tools()
@@ -512,6 +657,8 @@ class ToolRegistry:
                 "get_current_time",
             ]:
                 categories["utilities"].append(tool)
+            elif tool_name.startswith("opencode_"):
+                categories["opencode"].append(tool)
 
         return categories
 
@@ -568,6 +715,7 @@ class ToolRegistry:
             "conversation": "Conversation management tools for preserving and organizing dialogue history",
             "knowledge": "Knowledge base tools for managing reference materials and documents",
             "utilities": "Utility tools for web search, time information, and system configuration",
+            "opencode": "OpenCode project management tools for managing coding agent projects and the global MCP tool",
         }
         return descriptions.get(category, "General tools")
 
@@ -776,6 +924,28 @@ class ToolRegistry:
             return await self._execute_get_git_file_content(args)
         elif name == "list_git_repositories":
             return await self._execute_list_git_repositories(args)
+        elif name == "opencode_start":
+            return await self._execute_opencode_start(args)
+        elif name == "opencode_status":
+            return await self._execute_opencode_status(args)
+        elif name == "opencode_stop":
+            return await self._execute_opencode_stop(args)
+        elif name == "opencode_restart":
+            return await self._execute_opencode_restart(args)
+        elif name == "opencode_destroy":
+            return await self._execute_opencode_destroy(args)
+        elif name == "opencode_list":
+            return await self._execute_opencode_list(args)
+        elif name == "opencode_mcp_status":
+            return await self._execute_opencode_mcp_status(args)
+        elif name == "opencode_mcp_restart":
+            return await self._execute_opencode_mcp_restart(args)
+        elif name == "opencode_stop_mcp_tool":
+            return await self._execute_opencode_stop_mcp_tool(args)
+        elif name == "opencode_llm_config":
+            return await self._execute_opencode_llm_config(args)
+        elif name == "opencode_llm_set_model":
+            return await self._execute_opencode_llm_set_model(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1127,4 +1297,151 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to list repositories: {str(e)}",
+            }
+
+    # OpenCode Manager execution methods
+    async def _execute_opencode_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_start tool"""
+        project_name = args.get("project_name")
+        git_url = args.get("git_url")
+        user_ssh_key = args.get("user_ssh_key")
+
+        try:
+            result = await self.opencode_manager.start_project(
+                project_name, git_url, user_ssh_key
+            )
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to start project: {str(e)}",
+            }
+
+    async def _execute_opencode_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_status tool"""
+        project_name = args.get("project_name")
+
+        try:
+            result = await self.opencode_manager.get_status(project_name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get status: {str(e)}",
+            }
+
+    async def _execute_opencode_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_stop tool"""
+        project_name = args.get("project_name")
+
+        try:
+            result = await self.opencode_manager.stop_project(project_name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to stop project: {str(e)}",
+            }
+
+    async def _execute_opencode_restart(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_restart tool"""
+        project_name = args.get("project_name")
+
+        try:
+            result = await self.opencode_manager.restart_project(project_name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to restart project: {str(e)}",
+            }
+
+    async def _execute_opencode_destroy(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_destroy tool"""
+        project_name = args.get("project_name")
+
+        try:
+            result = await self.opencode_manager.destroy_project(project_name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to destroy project: {str(e)}",
+            }
+
+    async def _execute_opencode_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_list tool"""
+        try:
+            result = await self.opencode_manager.list_projects()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to list projects: {str(e)}",
+            }
+
+    async def _execute_opencode_mcp_status(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_mcp_status tool"""
+        try:
+            result = await self.opencode_manager.get_mcp_status()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get MCP status: {str(e)}",
+            }
+
+    async def _execute_opencode_mcp_restart(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_mcp_restart tool"""
+        try:
+            result = await self.opencode_manager.restart_mcp_tool()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to restart MCP tool: {str(e)}",
+            }
+
+    async def _execute_opencode_stop_mcp_tool(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_stop_mcp_tool tool"""
+        try:
+            result = await self.opencode_manager.stop_mcp_tool()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to stop MCP tool: {str(e)}",
+            }
+
+    async def _execute_opencode_llm_config(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_llm_config tool"""
+        try:
+            result = await self.opencode_manager.get_llm_config()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get LLM config: {str(e)}",
+            }
+
+    async def _execute_opencode_llm_set_model(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_llm_set_model tool"""
+        model = args.get("model")
+        try:
+            result = await self.opencode_manager.set_llm_model(model)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to set LLM model: {str(e)}",
             }

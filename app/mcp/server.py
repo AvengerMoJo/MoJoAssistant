@@ -59,8 +59,14 @@ class UnifiedMCPServer:
                 self.logger.error(f"Error in STDIO loop: {e}", exc_info=True)
                 continue
 
-    async def run_http(self, host: str = None, port: int = None):
-        """Run server in HTTP mode (for Web/Mobile)"""
+    async def run_http(self, host: str = None, port: int = None, reload: bool = False):
+        """Run server in HTTP mode (for Web/Mobile)
+
+        Args:
+            host: Host to bind to
+            port: Port to bind to
+            reload: Enable auto-reload on code changes (development only)
+        """
         # Use configuration values if not provided
         if host is None:
             host = self.app_config.server.host
@@ -86,7 +92,7 @@ class UnifiedMCPServer:
             self.logger.info(f"OAuth issuer: {self.app_config.oauth.issuer}")
 
         try:
-            await adapter.run(host, port)
+            await adapter.run(host, port, reload=reload)
         except Exception as e:
             self.logger.error(f"HTTP server error: {e}", exc_info=True)
             raise

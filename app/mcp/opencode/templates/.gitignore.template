@@ -1,0 +1,13 @@
+# OpenCode Sandbox .gitignore
+# This file is auto-created by OpenCode Manager to protect secrets
+
+# Environment configuration (NEVER COMMIT)
+.env
+.env.*
+*.env
+
+# Process management
+*.pid
+
+# Logs
+*.log

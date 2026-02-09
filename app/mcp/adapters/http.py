@@ -349,17 +349,37 @@ class HTTPAdapter(ProtocolAdapter):
     async def send_response(self, response: Optional[MCPResponse]):
         raise NotImplementedError("HTTP adapter uses FastAPI for response handling")
 
-    async def run(self, host: str = "0.0.0.0", port: int = 8000):
-        """Run HTTP server"""
+    async def run(self, host: str = "0.0.0.0", port: int = 8000, reload: bool = False):
+        """Run HTTP server
+
+        Args:
+            host: Host to bind to
+            port: Port to bind to
+            reload: Enable auto-reload on code changes (development only)
+        """
         import uvicorn
+        import os
 
         if not self.app:
             self.app = self.create_app()
 
         if self.logger:
             self.logger.info(f"Starting HTTP server on {host}:{port}")
+            if reload:
+                self.logger.info("Auto-reload enabled (development mode)")
 
-        config = uvicorn.Config(self.app, host=host, port=port, log_level="info")
+        # Check if we're in development mode
+        is_dev = os.getenv("ENVIRONMENT", "production").lower() in ["development", "dev"]
+        use_reload = reload or is_dev
+
+        config = uvicorn.Config(
+            self.app,
+            host=host,
+            port=port,
+            log_level="info",
+            reload=use_reload,
+            reload_dirs=["./app"] if use_reload else None
+        )
         server = uvicorn.Server(config)
 
         try:
