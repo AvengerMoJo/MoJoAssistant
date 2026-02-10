@@ -441,22 +441,16 @@ class ToolRegistry:
                 "description": "List all registered git repositories. When to use: Use to see which repositories are available for code analysis and their current status. How it works: Shows all registered repositories with their URLs, branches, and status. Why useful: Helps you understand what codebases are available for analysis.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
-            # OpenCode Manager Tools
+            # OpenCode Manager Tools (Phase 3: git_url-based)
             {
-                "name": "opencode_start",
-                "description": "Start or bootstrap an OpenCode coding agent project. This launches an OpenCode server and MCP tool for hands-free development. SECRETS ARE NEVER PASSED - they're read from .env files in the sandbox. In development mode, .env is auto-generated with warnings. Use this when you need to start working on a codebase with AI assistance.",
+                "name": "opencode_project_start",
+                "description": "Start an OpenCode project by git URL. The project name is auto-generated from the repository (e.g., git@github.com:user/repo.git becomes 'user-repo'). Creates base directory at ~/.opencode-projects/{owner}-{repo} by default. SECRETS ARE NEVER PASSED - they're read from .env files. Use this when you need to start working on a codebase with AI assistance.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project_name": {
-                            "type": "string",
-                            "description": "Name of the project (alphanumeric, no spaces)",
-                            "minLength": 1,
-                            "pattern": "^[a-zA-Z0-9_-]+$",
-                        },
                         "git_url": {
                             "type": "string",
-                            "description": "Git repository SSH URL (e.g., git@github.com:user/repo.git)",
+                            "description": "Git repository URL (SSH or HTTPS format, will be normalized to SSH). Example: git@github.com:user/repo.git or https://github.com/user/repo",
                             "minLength": 1,
                         },
                         "user_ssh_key": {
@@ -464,73 +458,158 @@ class ToolRegistry:
                             "description": "Optional: Path to user's SSH key (will auto-generate if not provided)",
                         },
                     },
-                    "required": ["project_name", "git_url"],
+                    "required": ["git_url"],
                 },
             },
             {
-                "name": "opencode_status",
-                "description": "Check the status of an OpenCode project. Shows if processes are running, ports, PIDs, and health status. Use this to verify a project is running correctly.",
+                "name": "opencode_project_status",
+                "description": "Check the status of an OpenCode project by git URL. Shows if processes are running, ports, PIDs, and health status. Use this to verify a project is running correctly.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project_name": {
+                        "git_url": {
                             "type": "string",
-                            "description": "Name of the project",
+                            "description": "Git repository URL",
                             "minLength": 1,
                         }
                     },
-                    "required": ["project_name"],
+                    "required": ["git_url"],
                 },
             },
             {
-                "name": "opencode_stop",
-                "description": "Stop an OpenCode project. Terminates both the OpenCode server and MCP tool processes. The sandbox files remain intact. Use this to free up resources when not actively working on a project.",
+                "name": "opencode_project_stop",
+                "description": "Stop an OpenCode project by git URL. Terminates the OpenCode server process. The base directory and files remain intact. Use this to free up resources when not actively working on a project.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project_name": {
+                        "git_url": {
                             "type": "string",
-                            "description": "Name of the project",
+                            "description": "Git repository URL",
                             "minLength": 1,
                         }
                     },
-                    "required": ["project_name"],
+                    "required": ["git_url"],
                 },
             },
             {
-                "name": "opencode_restart",
-                "description": "Restart an OpenCode project. Stops and starts both processes. Useful when processes have crashed or need to reload configuration.",
+                "name": "opencode_project_restart",
+                "description": "Restart an OpenCode project by git URL. Stops and starts the process. Useful when processes have crashed or need to reload configuration.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project_name": {
+                        "git_url": {
                             "type": "string",
-                            "description": "Name of the project",
+                            "description": "Git repository URL",
                             "minLength": 1,
                         }
                     },
-                    "required": ["project_name"],
+                    "required": ["git_url"],
                 },
             },
             {
-                "name": "opencode_destroy",
-                "description": "⚠️ DESTRUCTIVE: Stop project and DELETE sandbox directory. This permanently removes all local code and configuration. The remote Git repository is NOT affected. Use only when you're completely done with a project and want to free up disk space.",
+                "name": "opencode_project_destroy",
+                "description": "⚠️ DESTRUCTIVE: Stop project and DELETE base directory by git URL. This permanently removes all local code, worktrees, and configuration. The remote Git repository is NOT affected. Use only when you're completely done with a project and want to free up disk space.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project_name": {
+                        "git_url": {
                             "type": "string",
-                            "description": "Name of the project",
+                            "description": "Git repository URL",
                             "minLength": 1,
                         }
                     },
-                    "required": ["project_name"],
+                    "required": ["git_url"],
                 },
             },
             {
-                "name": "opencode_list",
-                "description": "List all OpenCode projects. Shows project names, running status, ports, and sandbox locations. Use this to see what projects are available.",
+                "name": "opencode_project_list",
+                "description": "List all OpenCode projects. Shows git URLs, project names, running status, ports, and base directory locations. Use this to see what projects are available.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
+            # Sandbox/Worktree Management Tools (Phase 2)
+            {
+                "name": "opencode_sandbox_create",
+                "description": "Create a git worktree (sandbox) for isolated development. Worktrees share the same .git database but have separate working directories and can be on different branches. Perfect for testing changes without affecting your main workspace.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "git_url": {
+                            "type": "string",
+                            "description": "Git repository URL",
+                            "minLength": 1,
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Worktree name (unique within project, alphanumeric with hyphens/underscores)",
+                            "minLength": 1,
+                            "pattern": "^[a-zA-Z0-9_-]+$",
+                        },
+                        "branch": {
+                            "type": "string",
+                            "description": "Optional: Branch to checkout (default: current branch)",
+                        },
+                        "start_command": {
+                            "type": "string",
+                            "description": "Optional: Command to run after worktree creation",
+                        },
+                    },
+                    "required": ["git_url", "name"],
+                },
+            },
+            {
+                "name": "opencode_sandbox_list",
+                "description": "List all worktrees (sandboxes) for a project. Shows worktree paths and their status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "git_url": {
+                            "type": "string",
+                            "description": "Git repository URL",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["git_url"],
+                },
+            },
+            {
+                "name": "opencode_sandbox_delete",
+                "description": "Delete a git worktree (sandbox). This removes the worktree directory but does not affect the main repository or other worktrees.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "git_url": {
+                            "type": "string",
+                            "description": "Git repository URL",
+                            "minLength": 1,
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Worktree name to delete",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["git_url", "name"],
+                },
+            },
+            {
+                "name": "opencode_sandbox_reset",
+                "description": "Reset a worktree to clean state (default branch). Discards all uncommitted changes and resets to the default branch. Use this to start fresh in a sandbox.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "git_url": {
+                            "type": "string",
+                            "description": "Git repository URL",
+                            "minLength": 1,
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Worktree name to reset",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["git_url", "name"],
+                },
             },
             {
                 "name": "opencode_mcp_status",
@@ -924,24 +1003,36 @@ class ToolRegistry:
             return await self._execute_get_git_file_content(args)
         elif name == "list_git_repositories":
             return await self._execute_list_git_repositories(args)
-        elif name == "opencode_start":
-            return await self._execute_opencode_start(args)
-        elif name == "opencode_status":
-            return await self._execute_opencode_status(args)
-        elif name == "opencode_stop":
-            return await self._execute_opencode_stop(args)
-        elif name == "opencode_restart":
-            return await self._execute_opencode_restart(args)
-        elif name == "opencode_destroy":
-            return await self._execute_opencode_destroy(args)
-        elif name == "opencode_list":
-            return await self._execute_opencode_list(args)
+        # OpenCode Project Lifecycle (Phase 3: git_url-based)
+        elif name == "opencode_project_start":
+            return await self._execute_opencode_project_start(args)
+        elif name == "opencode_project_status":
+            return await self._execute_opencode_project_status(args)
+        elif name == "opencode_project_stop":
+            return await self._execute_opencode_project_stop(args)
+        elif name == "opencode_project_restart":
+            return await self._execute_opencode_project_restart(args)
+        elif name == "opencode_project_destroy":
+            return await self._execute_opencode_project_destroy(args)
+        elif name == "opencode_project_list":
+            return await self._execute_opencode_project_list(args)
+        # OpenCode Sandbox Management (Phase 2)
+        elif name == "opencode_sandbox_create":
+            return await self._execute_opencode_sandbox_create(args)
+        elif name == "opencode_sandbox_list":
+            return await self._execute_opencode_sandbox_list(args)
+        elif name == "opencode_sandbox_delete":
+            return await self._execute_opencode_sandbox_delete(args)
+        elif name == "opencode_sandbox_reset":
+            return await self._execute_opencode_sandbox_reset(args)
+        # OpenCode Global MCP Tool
         elif name == "opencode_mcp_status":
             return await self._execute_opencode_mcp_status(args)
         elif name == "opencode_mcp_restart":
             return await self._execute_opencode_mcp_restart(args)
         elif name == "opencode_stop_mcp_tool":
             return await self._execute_opencode_stop_mcp_tool(args)
+        # OpenCode LLM Configuration
         elif name == "opencode_llm_config":
             return await self._execute_opencode_llm_config(args)
         elif name == "opencode_llm_set_model":
@@ -1299,16 +1390,19 @@ class ToolRegistry:
                 "message": f"Failed to list repositories: {str(e)}",
             }
 
-    # OpenCode Manager execution methods
-    async def _execute_opencode_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_start tool"""
-        project_name = args.get("project_name")
+    # ========================================================================
+    # OpenCode Manager execution methods (Phase 3: git_url-based)
+    # ========================================================================
+
+    # Project Lifecycle Methods
+    async def _execute_opencode_project_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_project_start tool (Phase 3)"""
         git_url = args.get("git_url")
         user_ssh_key = args.get("user_ssh_key")
 
         try:
             result = await self.opencode_manager.start_project(
-                project_name, git_url, user_ssh_key
+                git_url, user_ssh_key
             )
             return result
         except Exception as e:
@@ -1317,12 +1411,12 @@ class ToolRegistry:
                 "message": f"Failed to start project: {str(e)}",
             }
 
-    async def _execute_opencode_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_status tool"""
-        project_name = args.get("project_name")
+    async def _execute_opencode_project_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_project_status tool (Phase 3)"""
+        git_url = args.get("git_url")
 
         try:
-            result = await self.opencode_manager.get_status(project_name)
+            result = await self.opencode_manager.get_status(git_url)
             return result
         except Exception as e:
             return {
@@ -1330,12 +1424,12 @@ class ToolRegistry:
                 "message": f"Failed to get status: {str(e)}",
             }
 
-    async def _execute_opencode_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_stop tool"""
-        project_name = args.get("project_name")
+    async def _execute_opencode_project_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_project_stop tool (Phase 3)"""
+        git_url = args.get("git_url")
 
         try:
-            result = await self.opencode_manager.stop_project(project_name)
+            result = await self.opencode_manager.stop_project(git_url)
             return result
         except Exception as e:
             return {
@@ -1343,12 +1437,12 @@ class ToolRegistry:
                 "message": f"Failed to stop project: {str(e)}",
             }
 
-    async def _execute_opencode_restart(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_restart tool"""
-        project_name = args.get("project_name")
+    async def _execute_opencode_project_restart(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_project_restart tool (Phase 3)"""
+        git_url = args.get("git_url")
 
         try:
-            result = await self.opencode_manager.restart_project(project_name)
+            result = await self.opencode_manager.restart_project(git_url)
             return result
         except Exception as e:
             return {
@@ -1356,12 +1450,12 @@ class ToolRegistry:
                 "message": f"Failed to restart project: {str(e)}",
             }
 
-    async def _execute_opencode_destroy(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_destroy tool"""
-        project_name = args.get("project_name")
+    async def _execute_opencode_project_destroy(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_project_destroy tool (Phase 3)"""
+        git_url = args.get("git_url")
 
         try:
-            result = await self.opencode_manager.destroy_project(project_name)
+            result = await self.opencode_manager.destroy_project(git_url)
             return result
         except Exception as e:
             return {
@@ -1369,8 +1463,8 @@ class ToolRegistry:
                 "message": f"Failed to destroy project: {str(e)}",
             }
 
-    async def _execute_opencode_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_list tool"""
+    async def _execute_opencode_project_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_project_list tool (Phase 3)"""
         try:
             result = await self.opencode_manager.list_projects()
             return result
@@ -1378,6 +1472,66 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to list projects: {str(e)}",
+            }
+
+    # Sandbox/Worktree Management Methods (Phase 2)
+    async def _execute_opencode_sandbox_create(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_sandbox_create tool (Phase 2)"""
+        git_url = args.get("git_url")
+        name = args.get("name")
+        branch = args.get("branch")
+        start_command = args.get("start_command")
+
+        try:
+            result = await self.opencode_manager.create_sandbox(
+                git_url, name, branch, start_command
+            )
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to create sandbox: {str(e)}",
+            }
+
+    async def _execute_opencode_sandbox_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_sandbox_list tool (Phase 2)"""
+        git_url = args.get("git_url")
+
+        try:
+            result = await self.opencode_manager.list_sandboxes(git_url)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to list sandboxes: {str(e)}",
+            }
+
+    async def _execute_opencode_sandbox_delete(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_sandbox_delete tool (Phase 2)"""
+        git_url = args.get("git_url")
+        name = args.get("name")
+
+        try:
+            result = await self.opencode_manager.delete_sandbox(git_url, name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to delete sandbox: {str(e)}",
+            }
+
+    async def _execute_opencode_sandbox_reset(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute opencode_sandbox_reset tool (Phase 2)"""
+        git_url = args.get("git_url")
+        name = args.get("name")
+
+        try:
+            result = await self.opencode_manager.reset_sandbox(git_url, name)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to reset sandbox: {str(e)}",
             }
 
     async def _execute_opencode_mcp_status(
