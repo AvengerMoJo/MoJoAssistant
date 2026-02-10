@@ -4,8 +4,8 @@ OpenCode Manager Data Models
 File: app/mcp/opencode/models.py
 """
 
-from dataclasses import dataclass, asdict
-from typing import Optional, Dict, Any
+from dataclasses import dataclass, asdict, field
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from enum import Enum
 
@@ -75,18 +75,27 @@ class GlobalMCPToolInfo:
 
 @dataclass
 class ProjectConfig:
-    """Configuration for an OpenCode project"""
+    """Configuration for an OpenCode project (Phase 1 Refactor)"""
 
-    project_name: str
-    git_url: str
-    sandbox_dir: str
+    git_url: str  # PRIMARY KEY: Normalized git remote URL
+    project_id: Optional[str] = None  # OpenCode's project ID (hash of git URL)
+    base_dir: str = None  # Base directory where repo is cloned
+    project_name: Optional[str] = None  # Display name (generated from git_url)
+    worktrees: List[str] = None  # List of worktree names/paths
     ssh_key_path: Optional[str] = None
     opencode_password: Optional[str] = None
     mcp_bearer_token: Optional[str] = None
     opencode_bin: str = "opencode"
     mcp_tool_dir: str = "/home/alex/Development/Sandbox/opencode-mcp-tool"
     opencode_port: Optional[int] = None
-    mcp_tool_port: Optional[int] = None
+
+    def __post_init__(self):
+        if self.worktrees is None:
+            self.worktrees = []
+        if self.project_name is None:
+            # Generate from git_url
+            from app.mcp.opencode.utils import generate_project_name
+            self.project_name = generate_project_name(self.git_url)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -95,44 +104,64 @@ class ProjectConfig:
 
 @dataclass
 class ProjectState:
-    """Complete state of a managed project (N:1 architecture - no mcp_tool)"""
+    """Complete state of a managed project (Phase 1 Refactor)"""
 
-    project_name: str
-    sandbox_dir: str
-    git_url: str
+    git_url: str  # PRIMARY KEY: Normalized git remote URL
+    project_id: Optional[str] = None  # OpenCode's project ID
+    base_dir: str = None  # Base directory where repo is cloned
+    project_name: Optional[str] = None  # Display name (backward compat)
+    worktrees: List[str] = None  # List of worktree names
     ssh_key_path: Optional[str] = None
     opencode: ProcessInfo = None
     created_at: Optional[str] = None
     last_health_check: Optional[str] = None
+
+    # Deprecated fields (backward compat, will be removed in Phase 2)
+    sandbox_dir: Optional[str] = None  # Use base_dir instead
 
     def __post_init__(self):
         if self.opencode is None:
             self.opencode = ProcessInfo()
         if self.created_at is None:
             self.created_at = datetime.utcnow().isoformat()
+        if self.worktrees is None:
+            self.worktrees = []
+        if self.project_name is None:
+            from app.mcp.opencode.utils import generate_project_name
+            self.project_name = generate_project_name(self.git_url)
+        # Migrate sandbox_dir → base_dir
+        if self.base_dir is None and self.sandbox_dir:
+            self.base_dir = self.sandbox_dir
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         data = {
-            "project_name": self.project_name,
-            "sandbox_dir": self.sandbox_dir,
             "git_url": self.git_url,
+            "project_id": self.project_id,
+            "base_dir": self.base_dir,
+            "project_name": self.project_name,
+            "worktrees": self.worktrees,
             "ssh_key_path": self.ssh_key_path,
             "opencode": self.opencode.to_dict(),
             "created_at": self.created_at,
             "last_health_check": self.last_health_check,
         }
+        # Backward compat: include sandbox_dir if base_dir exists
+        if self.base_dir:
+            data["sandbox_dir"] = self.base_dir
         return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ProjectState":
-        """Create from dictionary"""
+        """Create from dictionary (handles both old and new formats)"""
         opencode_data = data.get("opencode", {})
 
         return cls(
-            project_name=data["project_name"],
-            sandbox_dir=data["sandbox_dir"],
-            git_url=data["git_url"],
+            git_url=data.get("git_url") or data.get("git_url", ""),
+            project_id=data.get("project_id"),
+            base_dir=data.get("base_dir") or data.get("sandbox_dir"),
+            project_name=data.get("project_name"),
+            worktrees=data.get("worktrees", []),
             ssh_key_path=data.get("ssh_key_path"),
             opencode=ProcessInfo(
                 pid=opencode_data.get("pid"),
@@ -143,4 +172,5 @@ class ProjectState:
             ),
             created_at=data.get("created_at"),
             last_health_check=data.get("last_health_check"),
+            sandbox_dir=data.get("sandbox_dir"),  # For backward compat
         )
