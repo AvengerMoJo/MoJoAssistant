@@ -19,6 +19,7 @@ from app.mcp.opencode.state_manager import StateManager
 from app.mcp.opencode.ssh_manager import SSHManager
 from app.mcp.opencode.process_manager import ProcessManager
 from app.mcp.opencode.config_manager import ConfigManager
+from app.mcp.opencode.worktree_manager import WorktreeManager
 
 
 class OpenCodeManager:
@@ -40,6 +41,7 @@ class OpenCodeManager:
         self.ssh_manager = SSHManager(self.memory_root)
         self.process_manager = ProcessManager(self.memory_root)
         self.config_manager = ConfigManager(self.memory_root)
+        self.worktree_manager = WorktreeManager(logger=logger)
 
         # Check if we're in development mode
         self.is_dev_mode = os.getenv("ENVIRONMENT", "production").lower() in [
@@ -208,7 +210,7 @@ class OpenCodeManager:
                 }
 
             # Step 5: Clone repository
-            repo_dir = Path(config.sandbox_dir) / "repo"
+            repo_dir = Path(config.base_dir) / "repo"
             if not repo_dir.exists():
                 self._log(f"Cloning repository for {project_name}")
                 success, clone_message = self.process_manager.clone_repository(
@@ -225,7 +227,7 @@ class OpenCodeManager:
             gitignore_template = (
                 Path(__file__).parent / "templates" / ".gitignore.template"
             )
-            sandbox_gitignore = Path(config.sandbox_dir) / ".gitignore"
+            sandbox_gitignore = Path(config.base_dir) / ".gitignore"
             if gitignore_template.exists() and not sandbox_gitignore.exists():
                 import shutil
 
@@ -236,8 +238,8 @@ class OpenCodeManager:
             project_state = ProjectState(
                 git_url=git_url,  # PRIMARY KEY
                 project_name=project_name,  # Display name
-                base_dir=config.sandbox_dir,  # Base directory
-                sandbox_dir=config.sandbox_dir,  # Backward compat
+                base_dir=config.base_dir,  # Base directory
+                sandbox_dir=config.base_dir,  # Backward compat
                 ssh_key_path=ssh_key_path,
             )
             self.state_manager.save_project(project_state)
@@ -294,7 +296,7 @@ class OpenCodeManager:
                 password=config.opencode_password,
                 project_name=project_name,  # Display name
                 ssh_key_path=ssh_key_path,
-                base_dir=config.sandbox_dir,
+                base_dir=config.base_dir,
             )
 
             # Step 11: Ensure global MCP tool is running
@@ -320,7 +322,7 @@ class OpenCodeManager:
                 "opencode_port": opencode_port,
                 "opencode_pid": opencode_pid,
                 "mcp_tool_port": mcp_tool.port if mcp_tool else None,
-                "sandbox_dir": config.sandbox_dir,
+                "sandbox_dir": config.base_dir,
                 "message": f"Project {project_name} started successfully",
             }
 
@@ -504,7 +506,7 @@ class OpenCodeManager:
             config.opencode_port = project.opencode.port
             self._log(f"Reusing OpenCode port: {project.opencode.port}")
 
-        repo_dir = Path(config.sandbox_dir) / "repo"
+        repo_dir = Path(config.base_dir) / "repo"
 
         # Start OpenCode
         opencode_pid, opencode_port, opencode_error = (
@@ -972,4 +974,302 @@ class OpenCodeManager:
                 "status": "error",
                 "message": f"Failed to stop global MCP tool: {error}",
                 "active_projects": mcp_tool.active_project_count,
+            }
+
+    # ========================================================================
+    # Worktree/Sandbox Management (Phase 2)
+    # ========================================================================
+
+    async def create_sandbox(
+        self,
+        git_url: str,
+        name: str,
+        branch: Optional[str] = None,
+        start_command: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a git worktree (sandbox) for a project
+
+        Args:
+            git_url: Git repository URL (will be normalized)
+            name: Worktree name (must be unique within project)
+            branch: Optional branch to checkout (default: current branch)
+            start_command: Optional command to run on creation
+
+        Returns:
+            Dictionary with status and worktree details
+        """
+        from app.mcp.opencode.utils import normalize_git_url
+
+        normalized_url = normalize_git_url(git_url)
+        project = self.state_manager.get_project(normalized_url)
+
+        if not project:
+            return {
+                "status": "error",
+                "message": f"Project not found for git_url: {normalized_url}",
+            }
+
+        # Check if OpenCode is running
+        if not self.process_manager.is_process_running(project.opencode.pid):
+            return {
+                "status": "error",
+                "message": f"OpenCode instance is not running for project {project.project_name}",
+            }
+
+        self._log(
+            f"Creating sandbox '{name}' for {project.project_name} (branch: {branch or 'default'})"
+        )
+
+        # Get OpenCode server details
+        port = project.opencode.port
+        config = self.env_manager.load_project_config(
+            project.project_name, self.global_config
+        )
+
+        # Call worktree API
+        success, data, error = self.worktree_manager.create_worktree(
+            host="127.0.0.1",
+            port=port,
+            password=config.opencode_password,
+            name=name,
+            branch=branch,
+            start_command=start_command,
+        )
+
+        if success:
+            # Update project state with new worktree
+            if name not in project.worktrees:
+                project.worktrees.append(name)
+                self.state_manager.save_project(project)
+
+            return {
+                "status": "success",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "worktree": data,
+                "message": f"Sandbox '{name}' created successfully",
+            }
+        else:
+            return {
+                "status": "error",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "message": f"Failed to create sandbox: {error}",
+            }
+
+    async def list_sandboxes(self, git_url: str) -> Dict[str, Any]:
+        """
+        List all worktrees (sandboxes) for a project
+
+        Args:
+            git_url: Git repository URL (will be normalized)
+
+        Returns:
+            Dictionary with status and list of worktrees
+        """
+        from app.mcp.opencode.utils import normalize_git_url
+
+        normalized_url = normalize_git_url(git_url)
+        project = self.state_manager.get_project(normalized_url)
+
+        if not project:
+            return {
+                "status": "error",
+                "message": f"Project not found for git_url: {normalized_url}",
+            }
+
+        # Check if OpenCode is running
+        if not self.process_manager.is_process_running(project.opencode.pid):
+            return {
+                "status": "error",
+                "message": f"OpenCode instance is not running for project {project.project_name}",
+            }
+
+        self._log(f"Listing sandboxes for {project.project_name}")
+
+        # Get OpenCode server details
+        port = project.opencode.port
+        config = self.env_manager.load_project_config(
+            project.project_name, self.global_config
+        )
+
+        # Call worktree API
+        success, data, error = self.worktree_manager.list_worktrees(
+            host="127.0.0.1",
+            port=port,
+            password=config.opencode_password,
+        )
+
+        if success:
+            return {
+                "status": "success",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "worktrees": data or [],
+                "count": len(data) if data else 0,
+            }
+        else:
+            return {
+                "status": "error",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "message": f"Failed to list sandboxes: {error}",
+            }
+
+    async def delete_sandbox(self, git_url: str, name: str) -> Dict[str, Any]:
+        """
+        Delete a git worktree (sandbox)
+
+        Args:
+            git_url: Git repository URL (will be normalized)
+            name: Worktree name to delete
+
+        Returns:
+            Dictionary with status and message
+        """
+        from app.mcp.opencode.utils import normalize_git_url
+
+        normalized_url = normalize_git_url(git_url)
+        project = self.state_manager.get_project(normalized_url)
+
+        if not project:
+            return {
+                "status": "error",
+                "message": f"Project not found for git_url: {normalized_url}",
+            }
+
+        # Check if OpenCode is running
+        if not self.process_manager.is_process_running(project.opencode.pid):
+            return {
+                "status": "error",
+                "message": f"OpenCode instance is not running for project {project.project_name}",
+            }
+
+        self._log(f"Deleting sandbox '{name}' from {project.project_name}")
+
+        # Get OpenCode server details
+        port = project.opencode.port
+        config = self.env_manager.load_project_config(
+            project.project_name, self.global_config
+        )
+
+        # First, list worktrees to find the directory path
+        success, worktrees, error = self.worktree_manager.list_worktrees(
+            host="127.0.0.1",
+            port=port,
+            password=config.opencode_password,
+        )
+
+        if not success:
+            return {
+                "status": "error",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "message": f"Failed to list worktrees: {error}",
+            }
+
+        # Find the worktree directory that matches the name
+        target_directory = None
+        for wt_path in worktrees or []:
+            # Extract name from path (last component)
+            wt_name = wt_path.rstrip('/').split('/')[-1]
+            if wt_name == name:
+                target_directory = wt_path
+                break
+
+        if not target_directory:
+            return {
+                "status": "error",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "message": f"Worktree '{name}' not found",
+            }
+
+        # Call worktree delete API with directory path
+        success, error = self.worktree_manager.delete_worktree(
+            host="127.0.0.1",
+            port=port,
+            password=config.opencode_password,
+            directory=target_directory,
+        )
+
+        if success:
+            # Update project state - remove worktree
+            if name in project.worktrees:
+                project.worktrees.remove(name)
+                self.state_manager.save_project(project)
+
+            return {
+                "status": "success",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "message": f"Sandbox '{name}' deleted successfully",
+            }
+        else:
+            return {
+                "status": "error",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "message": f"Failed to delete sandbox: {error}",
+            }
+
+    async def reset_sandbox(self, git_url: str, name: str) -> Dict[str, Any]:
+        """
+        Reset a worktree to clean state (default branch)
+
+        Args:
+            git_url: Git repository URL (will be normalized)
+            name: Worktree name to reset
+
+        Returns:
+            Dictionary with status and message
+        """
+        from app.mcp.opencode.utils import normalize_git_url
+
+        normalized_url = normalize_git_url(git_url)
+        project = self.state_manager.get_project(normalized_url)
+
+        if not project:
+            return {
+                "status": "error",
+                "message": f"Project not found for git_url: {normalized_url}",
+            }
+
+        # Check if OpenCode is running
+        if not self.process_manager.is_process_running(project.opencode.pid):
+            return {
+                "status": "error",
+                "message": f"OpenCode instance is not running for project {project.project_name}",
+            }
+
+        self._log(f"Resetting sandbox '{name}' for {project.project_name}")
+
+        # Get OpenCode server details
+        port = project.opencode.port
+        config = self.env_manager.load_project_config(
+            project.project_name, self.global_config
+        )
+
+        # Call worktree API
+        success, error = self.worktree_manager.reset_worktree(
+            host="127.0.0.1",
+            port=port,
+            password=config.opencode_password,
+            name=name,
+        )
+
+        if success:
+            return {
+                "status": "success",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "message": f"Sandbox '{name}' reset successfully",
+            }
+        else:
+            return {
+                "status": "error",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "message": f"Failed to reset sandbox: {error}",
             }
