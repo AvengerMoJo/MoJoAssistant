@@ -646,6 +646,22 @@ class ToolRegistry:
                     "required": ["model"],
                 },
             },
+            # SSH Deploy Key Management (Phase 4)
+            {
+                "name": "opencode_get_deploy_key",
+                "description": "Get the SSH public key for a git repository. Use this to retrieve the deploy key that OpenCode generated, which you need to add to your repository's deploy keys on GitHub/GitLab. The key is auto-generated when you first start a project.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "git_url": {
+                            "type": "string",
+                            "description": "Git repository URL",
+                            "minLength": 1,
+                        }
+                    },
+                    "required": ["git_url"],
+                },
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -1037,6 +1053,9 @@ class ToolRegistry:
             return await self._execute_opencode_llm_config(args)
         elif name == "opencode_llm_set_model":
             return await self._execute_opencode_llm_set_model(args)
+        # OpenCode SSH Deploy Key
+        elif name == "opencode_get_deploy_key":
+            return await self._execute_opencode_get_deploy_key(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1598,4 +1617,20 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to set LLM model: {str(e)}",
+            }
+
+    # SSH Deploy Key Management (Phase 4)
+    async def _execute_opencode_get_deploy_key(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_get_deploy_key tool (Phase 4)"""
+        git_url = args.get("git_url")
+
+        try:
+            result = await self.opencode_manager.get_deploy_key(git_url)
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get deploy key: {str(e)}",
             }

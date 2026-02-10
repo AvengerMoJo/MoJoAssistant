@@ -1273,3 +1273,77 @@ class OpenCodeManager:
                 "git_url": normalized_url,
                 "message": f"Failed to reset sandbox: {error}",
             }
+
+    # ========================================================================
+    # SSH Deploy Key Management (Phase 4)
+    # ========================================================================
+
+    async def get_deploy_key(self, git_url: str) -> Dict[str, Any]:
+        """
+        Get SSH deploy key for a git repository
+
+        Args:
+            git_url: Git repository URL (will be normalized)
+
+        Returns:
+            Dictionary with public key and instructions for adding to GitHub
+        """
+        from app.mcp.opencode.utils import normalize_git_url, generate_project_name, extract_repo_name
+
+        normalized_url = normalize_git_url(git_url)
+        project = self.state_manager.get_project(normalized_url)
+
+        # Generate project name for key lookup
+        project_name = project.project_name if project else generate_project_name(normalized_url)
+
+        # Check if key exists
+        ssh_key_path = self.ssh_manager.keys_dir / f"{project_name}-deploy"
+
+        if not ssh_key_path.exists():
+            # Generate key if it doesn't exist
+            self._log(f"Generating SSH key for {project_name}")
+            try:
+                private_key, public_key_path, public_key = self.ssh_manager.generate_key(project_name)
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "message": f"Failed to generate SSH key: {str(e)}",
+                }
+        else:
+            # Read existing key
+            public_key = self.ssh_manager.get_public_key(str(ssh_key_path))
+            if not public_key:
+                return {
+                    "status": "error",
+                    "message": f"Public key not found for {project_name}",
+                }
+            public_key_path = str(ssh_key_path) + ".pub"
+
+        # Extract owner/repo for GitHub URL
+        owner, repo = extract_repo_name(normalized_url)
+
+        # Construct GitHub deploy keys URL
+        if "github.com" in normalized_url:
+            github_url = f"https://github.com/{owner}/{repo}/settings/keys"
+        else:
+            github_url = None
+
+        return {
+            "status": "success",
+            "project": project_name,
+            "git_url": normalized_url,
+            "public_key": public_key,
+            "public_key_path": public_key_path,
+            "github_deploy_keys_url": github_url,
+            "instructions": (
+                f"Add this SSH key to your repository's deploy keys:\n\n"
+                f"1. Copy the public key above\n"
+                f"2. Go to: {github_url if github_url else 'your repository settings -> Deploy keys'}\n"
+                f"3. Click 'Add deploy key'\n"
+                f"4. Title: OpenCode MCP - {project_name}\n"
+                f"5. Paste the public key\n"
+                f"6. Enable 'Allow write access' if you need to push changes\n"
+                f"7. Click 'Add key'\n\n"
+                f"After adding the key, OpenCode will be able to clone and pull from the repository."
+            ),
+        }
