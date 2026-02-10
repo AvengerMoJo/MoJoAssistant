@@ -65,23 +65,27 @@ class OpenCodeManager:
             getattr(self.logger, level)(f"[OpenCode Manager] {message}")
 
     async def start_project(
-        self, project_name: str, git_url: str, user_ssh_key: Optional[str] = None
+        self, git_url: str, user_ssh_key: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Start or bootstrap an OpenCode project
+        Start or bootstrap an OpenCode project (Phase 1 Refactor)
 
         Args:
-            project_name: Name of the project
-            git_url: Git repository URL
+            git_url: Git repository URL (will be normalized, used as primary key)
             user_ssh_key: Optional user-provided SSH key path
 
         Returns:
             Dictionary with status and details
         """
-        self._log(f"Starting project: {project_name}")
+        from app.mcp.opencode.utils import normalize_git_url, generate_project_name
+
+        normalized_url = normalize_git_url(git_url)
+        project_name = generate_project_name(normalized_url)  # For display/logging
+
+        self._log(f"Starting project: {project_name} ({normalized_url})")
 
         # Check if project already exists
-        existing_project = self.state_manager.get_project(project_name)
+        existing_project = self.state_manager.get_project(normalized_url)
         if existing_project:
             # Check if OpenCode is running
             opencode_running = self.process_manager.is_process_running(
@@ -99,22 +103,32 @@ class OpenCodeManager:
                 return {
                     "status": "already_running",
                     "project": project_name,
+                    "git_url": normalized_url,
                     "opencode_port": existing_project.opencode.port,
                     "mcp_tool_port": mcp_tool.port if mcp_tool else None,
                     "message": "Project is already running",
                 }
 
             # Restart if stopped/failed
-            return await self.restart_project(project_name)
+            return await self.restart_project(normalized_url)
 
         # Bootstrap new project
-        return await self._bootstrap_project(project_name, git_url, user_ssh_key)
+        return await self._bootstrap_project(normalized_url, user_ssh_key)
 
     async def _bootstrap_project(
-        self, project_name: str, git_url: str, user_ssh_key: Optional[str] = None
+        self, git_url: str, user_ssh_key: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Bootstrap a new project from scratch"""
-        self._log(f"Bootstrapping project: {project_name}")
+        """
+        Bootstrap a new project from scratch (Phase 1 Refactor)
+
+        Args:
+            git_url: Normalized git repository URL
+            user_ssh_key: Optional user-provided SSH key path
+        """
+        from app.mcp.opencode.utils import generate_project_name
+
+        project_name = generate_project_name(git_url)  # For display/env_manager
+        self._log(f"Bootstrapping project: {project_name} ({git_url})")
 
         try:
             # Step 1: Handle .env configuration (project-specific, no passwords)
@@ -220,9 +234,10 @@ class OpenCodeManager:
 
             # Step 7: Create initial project state
             project_state = ProjectState(
-                project_name=project_name,
-                sandbox_dir=config.sandbox_dir,
-                git_url=git_url,
+                git_url=git_url,  # PRIMARY KEY
+                project_name=project_name,  # Display name
+                base_dir=config.sandbox_dir,  # Base directory
+                sandbox_dir=config.sandbox_dir,  # Backward compat
                 ssh_key_path=ssh_key_path,
             )
             self.state_manager.save_project(project_state)
@@ -235,7 +250,7 @@ class OpenCodeManager:
 
             if opencode_error:
                 self.state_manager.update_process_status(
-                    project_name, "opencode", status="failed", error=opencode_error
+                    git_url, "opencode", status="failed", error=opencode_error
                 )
                 return {
                     "status": "error",
@@ -244,7 +259,7 @@ class OpenCodeManager:
                 }
 
             self.state_manager.update_process_status(
-                project_name,
+                git_url,
                 "opencode",
                 pid=opencode_pid,
                 port=opencode_port,
@@ -259,7 +274,7 @@ class OpenCodeManager:
 
             if not healthy:
                 self.state_manager.update_process_status(
-                    project_name, "opencode", status="failed", error=health_message
+                    git_url, "opencode", status="failed", error=health_message
                 )
                 return {
                     "status": "error",
@@ -268,18 +283,18 @@ class OpenCodeManager:
                 }
 
             self.state_manager.update_process_status(
-                project_name, "opencode", status="running"
+                git_url, "opencode", status="running"
             )
 
             # Step 10: Add server to global configuration
             self._log(f"Adding {project_name} to global server configuration")
             self.config_manager.add_server(
-                project_name=project_name,
+                git_url=git_url,  # PRIMARY KEY
                 port=opencode_port,
                 password=config.opencode_password,
+                project_name=project_name,  # Display name
                 ssh_key_path=ssh_key_path,
-                git_url=git_url,
-                sandbox_dir=config.sandbox_dir,
+                base_dir=config.sandbox_dir,
             )
 
             # Step 11: Ensure global MCP tool is running
@@ -301,6 +316,7 @@ class OpenCodeManager:
             result = {
                 "status": "success",
                 "project": project_name,
+                "git_url": git_url,
                 "opencode_port": opencode_port,
                 "opencode_pid": opencode_pid,
                 "mcp_tool_port": mcp_tool.port if mcp_tool else None,
@@ -308,8 +324,8 @@ class OpenCodeManager:
                 "message": f"Project {project_name} started successfully",
             }
 
-            if warning_message:
-                result["warning"] = warning_message
+            if info_message:
+                result["info"] = info_message
 
             return result
 
@@ -321,14 +337,23 @@ class OpenCodeManager:
                 "message": f"Unexpected error: {str(e)}",
             }
 
-    async def get_status(self, project_name: str) -> Dict[str, Any]:
-        """Get project status"""
-        project = self.state_manager.get_project(project_name)
+    async def get_status(self, git_url: str) -> Dict[str, Any]:
+        """
+        Get project status (Phase 1 Refactor)
+
+        Args:
+            git_url: Git repository URL (will be normalized)
+        """
+        from app.mcp.opencode.utils import normalize_git_url
+
+        normalized_url = normalize_git_url(git_url)
+        project = self.state_manager.get_project(normalized_url)
+
         if not project:
             return {
                 "status": "not_found",
-                "project": project_name,
-                "message": f"Project {project_name} not found",
+                "git_url": normalized_url,
+                "message": f"Project not found for git_url: {normalized_url}",
             }
 
         # Check process health
@@ -337,17 +362,17 @@ class OpenCodeManager:
         # Update status
         if opencode_running:
             self.state_manager.update_process_status(
-                project_name, "opencode", status="running"
+                normalized_url, "opencode", status="running"
             )
         else:
             self.state_manager.update_process_status(
-                project_name, "opencode", status="stopped"
+                normalized_url, "opencode", status="stopped"
             )
 
-        self.state_manager.update_health_check(project_name)
+        self.state_manager.update_health_check(normalized_url)
 
         # Reload project state
-        project = self.state_manager.get_project(project_name)
+        project = self.state_manager.get_project(normalized_url)
 
         # Get global MCP tool status
         mcp_tool = self.state_manager.get_global_mcp_tool()
@@ -357,7 +382,8 @@ class OpenCodeManager:
 
         return {
             "status": "ok",
-            "project": project_name,
+            "project": project.project_name,  # Display name
+            "git_url": project.git_url,  # Primary key
             "opencode": {
                 "pid": project.opencode.pid,
                 "port": project.opencode.port,
@@ -371,22 +397,31 @@ class OpenCodeManager:
                 "running": mcp_tool_running,
                 "active_projects": mcp_tool.active_project_count if mcp_tool else 0,
             },
-            "sandbox_dir": project.sandbox_dir,
-            "git_url": project.git_url,
+            "base_dir": project.base_dir,
+            "sandbox_dir": project.sandbox_dir,  # Backward compat
             "created_at": project.created_at,
             "last_health_check": project.last_health_check,
         }
 
-    async def stop_project(self, project_name: str) -> Dict[str, Any]:
-        """Stop a project"""
-        project = self.state_manager.get_project(project_name)
+    async def stop_project(self, git_url: str) -> Dict[str, Any]:
+        """
+        Stop a project (Phase 1 Refactor)
+
+        Args:
+            git_url: Git repository URL (will be normalized)
+        """
+        from app.mcp.opencode.utils import normalize_git_url
+
+        normalized_url = normalize_git_url(git_url)
+        project = self.state_manager.get_project(normalized_url)
+
         if not project:
             return {
                 "status": "not_found",
-                "message": f"Project {project_name} not found",
+                "message": f"Project not found for git_url: {normalized_url}",
             }
 
-        self._log(f"Stopping project: {project_name}")
+        self._log(f"Stopping project: {project.project_name} ({normalized_url})")
 
         # Stop OpenCode
         if project.opencode.pid:
@@ -395,11 +430,11 @@ class OpenCodeManager:
             )
             if success:
                 self.state_manager.update_process_status(
-                    project_name, "opencode", status="stopped"
+                    normalized_url, "opencode", status="stopped"
                 )
 
         # Update server status in configuration
-        self.config_manager.update_server_status(project_name, "inactive")
+        self.config_manager.update_server_status(normalized_url, "inactive")
 
         # Decrement active project count
         self.state_manager.decrement_active_projects()
@@ -412,18 +447,30 @@ class OpenCodeManager:
 
         return {
             "status": "success",
-            "project": project_name,
+            "project": project.project_name,
+            "git_url": normalized_url,
             "message": "Project stopped",
         }
 
-    async def restart_project(self, project_name: str) -> Dict[str, Any]:
-        """Restart a project"""
-        self._log(f"Restarting project: {project_name}")
+    async def restart_project(self, git_url: str) -> Dict[str, Any]:
+        """
+        Restart a project (Phase 1 Refactor)
+
+        Args:
+            git_url: Git repository URL (will be normalized)
+        """
+        from app.mcp.opencode.utils import normalize_git_url, generate_project_name
+
+        normalized_url = normalize_git_url(git_url)
+        project_name = None
 
         # Get existing project state to reuse ports
-        project = self.state_manager.get_project(project_name)
+        project = self.state_manager.get_project(normalized_url)
         if not project:
-            return {"status": "error", "message": f"Project {project_name} not found"}
+            return {"status": "error", "message": f"Project not found for git_url: {normalized_url}"}
+
+        project_name = project.project_name or generate_project_name(normalized_url)
+        self._log(f"Restarting project: {project_name} ({normalized_url})")
 
         # Check if project was already running before restart
         was_running = (
@@ -438,11 +485,11 @@ class OpenCodeManager:
             )
             if success:
                 self.state_manager.update_process_status(
-                    project_name, "opencode", status="stopped"
+                    normalized_url, "opencode", status="stopped"
                 )
 
         # Temporarily mark as inactive
-        self.config_manager.update_server_status(project_name, "inactive")
+        self.config_manager.update_server_status(normalized_url, "inactive")
 
         # Get configuration (uses global passwords)
         try:
@@ -467,7 +514,7 @@ class OpenCodeManager:
             return {"status": "error", "message": opencode_error}
 
         self.state_manager.update_process_status(
-            project_name,
+            normalized_url,
             "opencode",
             pid=opencode_pid,
             port=opencode_port,
@@ -482,7 +529,7 @@ class OpenCodeManager:
 
         if not healthy:
             self.state_manager.update_process_status(
-                project_name, "opencode", status="failed", error=health_message
+                normalized_url, "opencode", status="failed", error=health_message
             )
             return {
                 "status": "error",
@@ -491,17 +538,17 @@ class OpenCodeManager:
             }
 
         self.state_manager.update_process_status(
-            project_name, "opencode", status="running"
+            normalized_url, "opencode", status="running"
         )
 
         # Update server configuration (mark as active, update password if changed)
         self.config_manager.add_server(
-            project_name=project_name,
+            git_url=normalized_url,
             port=opencode_port,
             password=config.opencode_password,
+            project_name=project_name,
             ssh_key_path=project.ssh_key_path,
-            git_url=project.git_url,
-            sandbox_dir=project.sandbox_dir,
+            base_dir=project.base_dir or project.sandbox_dir,
         )
 
         # Increment active_project_count if the project was not running before
@@ -521,57 +568,71 @@ class OpenCodeManager:
         return {
             "status": "success",
             "project": project_name,
+            "git_url": normalized_url,
             "message": "Project restarted",
             "opencode_port": opencode_port,
             "mcp_tool_port": mcp_tool.port if mcp_tool else None,
         }
 
-    async def destroy_project(self, project_name: str) -> Dict[str, Any]:
-        """Destroy a project (stop + delete sandbox)"""
-        self._log(f"Destroying project: {project_name}")
+    async def destroy_project(self, git_url: str) -> Dict[str, Any]:
+        """
+        Destroy a project (stop + delete sandbox) (Phase 1 Refactor)
+
+        Args:
+            git_url: Git repository URL (will be normalized)
+        """
+        from app.mcp.opencode.utils import normalize_git_url
+
+        normalized_url = normalize_git_url(git_url)
+        project = self.state_manager.get_project(normalized_url)
+        project_name = project.project_name if project else "unknown"
+
+        self._log(f"Destroying project: {project_name} ({normalized_url})")
 
         # Stop first
-        await self.stop_project(project_name)
+        await self.stop_project(normalized_url)
 
         # Remove from global configuration
-        self.config_manager.remove_server(project_name)
+        self.config_manager.remove_server(normalized_url)
 
         # Get project state
-        project = self.state_manager.get_project(project_name)
         if project:
-            # Delete sandbox directory
-            sandbox_dir = Path(project.sandbox_dir)
-            if sandbox_dir.exists():
+            # Delete base directory
+            base_dir = Path(project.base_dir or project.sandbox_dir)
+            if base_dir.exists():
                 import shutil
 
-                shutil.rmtree(sandbox_dir)
+                shutil.rmtree(base_dir)
 
             # Delete from state
-            self.state_manager.delete_project(project_name)
+            self.state_manager.delete_project(normalized_url)
 
         return {
             "status": "success",
             "project": project_name,
+            "git_url": normalized_url,
             "message": "Project destroyed",
         }
 
     async def list_projects(self) -> Dict[str, Any]:
-        """List all projects"""
+        """List all projects (Phase 1 Refactor)"""
         projects = self.state_manager.get_all_projects()
 
         result = {"status": "success", "projects": []}
 
-        for name, project in projects.items():
+        for git_url, project in projects.items():
             opencode_running = self.process_manager.is_process_running(
                 project.opencode.pid
             )
 
             result["projects"].append(
                 {
-                    "name": name,
+                    "git_url": git_url,  # Primary key
+                    "name": project.project_name,  # Display name
                     "opencode_running": opencode_running,
                     "opencode_port": project.opencode.port,
-                    "sandbox_dir": project.sandbox_dir,
+                    "base_dir": project.base_dir,
+                    "sandbox_dir": project.sandbox_dir,  # Backward compat
                 }
             )
 

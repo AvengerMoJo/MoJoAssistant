@@ -49,68 +49,96 @@ class StateManager:
 
     def save_project(self, project_state: ProjectState):
         """
-        Save or update project state
+        Save or update project state (Phase 1: keyed by git_url)
 
         Args:
             project_state: Project state to save
         """
+        from app.mcp.opencode.utils import normalize_git_url
+
         state = self._read_state()
-        state["projects"][project_state.project_name] = project_state.to_dict()
+        git_url = normalize_git_url(project_state.git_url)
+        state["projects"][git_url] = project_state.to_dict()
         self._write_state(state)
 
-    def get_project(self, project_name: str) -> Optional[ProjectState]:
+    def get_project(self, git_url: str) -> Optional[ProjectState]:
         """
-        Get project state by name
+        Get project state by git URL (Phase 1 Refactor)
 
         Args:
-            project_name: Name of the project
+            git_url: Git repository URL (will be normalized)
+
+        Returns:
+            ProjectState if found, None otherwise
+        """
+        from app.mcp.opencode.utils import normalize_git_url
+
+        state = self._read_state()
+        normalized_url = normalize_git_url(git_url)
+        project_data = state["projects"].get(normalized_url)
+        if project_data:
+            return ProjectState.from_dict(project_data)
+        return None
+
+    def get_project_by_name(self, project_name: str) -> Optional[ProjectState]:
+        """
+        Get project by display name (backward compat helper)
+
+        Note: This is slower than get_project() as it scans all projects.
+        Use get_project(git_url) when possible.
+
+        Args:
+            project_name: Display name of project
 
         Returns:
             ProjectState if found, None otherwise
         """
         state = self._read_state()
-        project_data = state["projects"].get(project_name)
-        if project_data:
-            return ProjectState.from_dict(project_data)
+        for git_url, project_data in state["projects"].items():
+            if project_data.get("project_name") == project_name:
+                return ProjectState.from_dict(project_data)
         return None
 
-    def delete_project(self, project_name: str):
+    def delete_project(self, git_url: str):
         """
-        Delete project from state
+        Delete project from state (Phase 1: keyed by git_url)
 
         Args:
-            project_name: Name of the project
+            git_url: Git repository URL
         """
+        from app.mcp.opencode.utils import normalize_git_url
+
         state = self._read_state()
-        if project_name in state["projects"]:
-            del state["projects"][project_name]
+        normalized_url = normalize_git_url(git_url)
+        if normalized_url in state["projects"]:
+            del state["projects"][normalized_url]
             self._write_state(state)
 
     def list_projects(self) -> List[str]:
         """
-        List all project names
+        List all git URLs (primary keys)
 
         Returns:
-            List of project names
+            List of git URLs
         """
         state = self._read_state()
         return list(state["projects"].keys())
 
-    def update_health_check(self, project_name: str):
+    def update_health_check(self, git_url: str):
         """
         Update last health check timestamp
 
         Args:
-            project_name: Name of the project
+            git_url: Git repository URL
         """
-        project = self.get_project(project_name)
+        project = self.get_project(git_url)
         if project:
             project.last_health_check = datetime.utcnow().isoformat()
             self.save_project(project)
 
     def update_process_status(
         self,
-        project_name: str,
+        git_url: str,
         process_type: str,  # "opencode" only (N:1 architecture)
         pid: Optional[int] = None,
         port: Optional[int] = None,
@@ -121,14 +149,14 @@ class StateManager:
         Update process status for a project
 
         Args:
-            project_name: Name of the project
+            git_url: Git repository URL
             process_type: "opencode" (mcp_tool is now global, use update_global_mcp_tool_status instead)
             pid: Process ID
             port: Port number
             status: Process status
             error: Error message if failed
         """
-        project = self.get_project(project_name)
+        project = self.get_project(git_url)
         if not project:
             return
 
@@ -156,12 +184,12 @@ class StateManager:
         Get all projects
 
         Returns:
-            Dictionary mapping project names to ProjectState objects
+            Dictionary mapping git_urls to ProjectState objects
         """
         state = self._read_state()
         projects = {}
-        for name, data in state["projects"].items():
-            projects[name] = ProjectState.from_dict(data)
+        for git_url, data in state["projects"].items():
+            projects[git_url] = ProjectState.from_dict(data)
         return projects
 
     # ========================================================================
@@ -203,7 +231,7 @@ class StateManager:
             self.save_global_mcp_tool(mcp_tool)
 
     # ========================================================================
-    # State Migration (1:1 → N:1 Architecture)
+    # State Migration
     # ========================================================================
 
     def _migrate_state_to_n_to_1(self):
@@ -242,3 +270,64 @@ class StateManager:
 
         self._write_state(state)
         print("[OpenCode State Manager] Migration complete!")
+
+    def _migrate_to_phase1(self):
+        """
+        Migrate state to Phase 1: project_name keys → git_url keys
+
+        Changes:
+        - Re-key projects dict from project_name to git_url
+        - Add project_id, base_dir, worktrees fields
+        - Rename sandbox_dir → base_dir
+        """
+        from app.mcp.opencode.utils import normalize_git_url
+
+        state = self._read_state()
+        projects = state.get("projects", {})
+
+        # Check if already migrated (if any key looks like a git URL)
+        if projects:
+            first_key = next(iter(projects))
+            if "@" in first_key or first_key.startswith("http"):
+                return  # Already migrated
+
+        print("[OpenCode State Manager] Migrating to Phase 1 (git_url keys)...")
+
+        new_projects = {}
+        for project_name, project_data in projects.items():
+            git_url = project_data.get("git_url")
+            if not git_url:
+                print(f"  ⚠️  WARNING: Project '{project_name}' has no git_url, skipping")
+                continue
+
+            # Normalize git_url
+            normalized_url = normalize_git_url(git_url)
+
+            # Migrate fields
+            project_data["git_url"] = normalized_url
+            project_data["project_name"] = project_name
+            project_data["base_dir"] = project_data.get("sandbox_dir")
+            project_data["worktrees"] = []
+            project_data["project_id"] = None  # Will be set by OpenCode
+
+            # Check for duplicates
+            if normalized_url in new_projects:
+                print(
+                    f"  ⚠️  WARNING: Duplicate git_url detected!\n"
+                    f"     Project '{project_name}' has same git_url as existing project.\n"
+                    f"     URL: {normalized_url}\n"
+                    f"     Keeping first instance only."
+                )
+                continue
+
+            new_projects[normalized_url] = project_data
+            print(f"  ✓ Migrated: {project_name} → {normalized_url}")
+
+        state["projects"] = new_projects
+        self._write_state(state)
+        print(f"[OpenCode State Manager] Phase 1 migration complete! ({len(new_projects)} projects)")
+
+    def migrate_all(self):
+        """Run all migrations in sequence"""
+        self._migrate_state_to_n_to_1()
+        self._migrate_to_phase1()
