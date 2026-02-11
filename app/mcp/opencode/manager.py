@@ -582,11 +582,8 @@ class OpenCodeManager:
         except Exception as e:
             return {"status": "error", "message": f"Failed to load config: {str(e)}"}
 
-        # IMPORTANT: Reuse existing port
-        if project.opencode.port:
-            config.opencode_port = project.opencode.port
-            self._log(f"Reusing OpenCode port: {project.opencode.port}")
-
+        # Port will be deterministically assigned by process_manager based on git_url
+        # (unless user has OPENCODE_PORT set in .env)
         repo_dir = Path(config.base_dir) / "repo"
 
         # Start OpenCode

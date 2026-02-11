@@ -102,8 +102,13 @@ class ProcessManager:
         Returns:
             Tuple of (pid, port, error_message)
         """
-        # Find free port if not specified
-        port = config.opencode_port or self.find_free_port(4100, 4199)
+        # Use deterministic port based on git_url, or user-specified port
+        if config.opencode_port:
+            port = config.opencode_port
+        else:
+            # Import here to avoid circular dependency
+            from app.mcp.opencode.utils import deterministic_port_for_git_url
+            port = deterministic_port_for_git_url(config.git_url, start_port=4100, port_range=100)
 
         # Kill any process already on this port
         success, error = self.kill_process_on_port(port)

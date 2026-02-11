@@ -143,3 +143,33 @@ def generate_base_dir(git_url: str, custom_base: str = None) -> str:
     managed_dir = os.path.expanduser("~/.opencode-projects")
     project_name = generate_project_name(git_url)
     return os.path.join(managed_dir, project_name)
+
+
+def deterministic_port_for_git_url(git_url: str, start_port: int = 4100, port_range: int = 100) -> int:
+    """
+    Generate a deterministic port number for a git URL
+
+    This ensures the same repository always gets the same port assignment,
+    preventing port conflicts and workspace confusion in OpenCode.
+
+    Args:
+        git_url: Git repository URL (will be normalized)
+        start_port: Starting port number (default: 4100)
+        port_range: Size of port range (default: 100, so ports 4100-4199)
+
+    Returns:
+        Port number consistently mapped to this git_url
+
+    Examples:
+        git@github.com:user/repo1.git -> 4132 (always)
+        git@github.com:user/repo2.git -> 4187 (always)
+    """
+    normalized = normalize_git_url(git_url)
+
+    # Use first 4 bytes of SHA256 hash to generate port offset
+    hash_bytes = hashlib.sha256(normalized.encode()).digest()[:4]
+    hash_int = int.from_bytes(hash_bytes, byteorder='big')
+
+    # Map to port range
+    port_offset = hash_int % port_range
+    return start_port + port_offset
