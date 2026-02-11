@@ -1347,3 +1347,215 @@ class OpenCodeManager:
                 f"After adding the key, OpenCode will be able to clone and pull from the repository."
             ),
         }
+
+    # ========================================================================
+    # Diagnostic & Cleanup Tools (Phase 5)
+    # ========================================================================
+
+    async def detect_duplicates(self) -> Dict[str, Any]:
+        """
+        Detect duplicate projects (same git_url in multiple instances)
+
+        Returns:
+            Dictionary with duplicate detection results and recommendations
+        """
+        try:
+            # Get all projects from state
+            git_urls = self.state_manager.list_projects()
+
+            # Count occurrences of each git_url (normalized)
+            from collections import defaultdict
+            from app.mcp.opencode.utils import normalize_git_url
+
+            url_to_projects = defaultdict(list)
+
+            for git_url in git_urls:
+                normalized = normalize_git_url(git_url)
+                project = self.state_manager.get_project(normalized)
+
+                if project:
+                    # Handle both dict (from state file) and ProcessInfo object
+                    if project.opencode:
+                        if isinstance(project.opencode, dict):
+                            opencode_port = project.opencode.get("port")
+                            opencode_running = project.opencode.get("running", False)
+                            opencode_pid = project.opencode.get("pid")
+                        else:
+                            # ProcessInfo object
+                            opencode_port = project.opencode.port
+                            opencode_running = project.opencode.status.value == "running"
+                            opencode_pid = project.opencode.pid
+                    else:
+                        opencode_port = None
+                        opencode_running = False
+                        opencode_pid = None
+
+                    url_to_projects[normalized].append(
+                        {
+                            "git_url": normalized,
+                            "project_name": project.project_name,
+                            "base_dir": project.base_dir,
+                            "opencode_port": opencode_port,
+                            "opencode_running": opencode_running,
+                            "pid": opencode_pid,
+                        }
+                    )
+
+            # Find duplicates (git_url with more than 1 instance)
+            duplicates = []
+            for git_url, instances in url_to_projects.items():
+                if len(instances) > 1:
+                    # Determine which instance to recommend keeping
+                    # Prefer: running > stopped, main dev dir > managed dir
+                    running_instances = [i for i in instances if i["opencode_running"]]
+
+                    if running_instances:
+                        recommended = running_instances[0]
+                    else:
+                        # Prefer non-managed directories
+                        non_managed = [
+                            i
+                            for i in instances
+                            if not i["base_dir"].startswith(
+                                str(self.env_manager.sandboxes_dir)
+                            )
+                        ]
+                        recommended = (
+                            non_managed[0] if non_managed else instances[0]
+                        )
+
+                    duplicates.append(
+                        {
+                            "git_url": git_url,
+                            "count": len(instances),
+                            "instances": instances,
+                            "recommended_to_keep": recommended["project_name"],
+                            "recommended_base_dir": recommended["base_dir"],
+                            "recommendation": (
+                                f"Keep '{recommended['project_name']}' at {recommended['base_dir']}, "
+                                f"convert others to worktrees or stop them"
+                            ),
+                        }
+                    )
+
+            return {
+                "status": "success",
+                "total_projects": len(git_urls),
+                "unique_repositories": len(url_to_projects),
+                "duplicates_found": len(duplicates),
+                "duplicates": duplicates,
+                "message": (
+                    f"Found {len(duplicates)} duplicate(s) out of {len(git_urls)} project(s)"
+                    if duplicates
+                    else f"No duplicates found. All {len(git_urls)} projects are unique."
+                ),
+            }
+
+        except Exception as e:
+            self._log(f"Failed to detect duplicates: {str(e)}", "error")
+            return {
+                "status": "error",
+                "message": f"Failed to detect duplicates: {str(e)}",
+            }
+
+    async def cleanup_orphaned_processes(self) -> Dict[str, Any]:
+        """
+        Detect and clean up orphaned OpenCode processes
+
+        An orphaned process is one where the PID in state doesn't exist,
+        but the project is marked as running.
+
+        Returns:
+            Dictionary with cleanup results
+        """
+        import psutil
+
+        try:
+            git_urls = self.state_manager.list_projects()
+            orphaned = []
+            cleaned = []
+
+            for git_url in git_urls:
+                from app.mcp.opencode.utils import normalize_git_url
+
+                normalized = normalize_git_url(git_url)
+                project = self.state_manager.get_project(normalized)
+
+                if not project or not project.opencode:
+                    continue
+
+                # Handle both dict (from state file) and ProcessInfo object
+                if isinstance(project.opencode, dict):
+                    is_running = project.opencode.get("running", False)
+                    pid = project.opencode.get("pid")
+                else:
+                    # ProcessInfo object
+                    is_running = project.opencode.status.value == "running"
+                    pid = project.opencode.pid
+
+                # Check if marked as running but process doesn't exist
+                if is_running:
+
+                    if pid:
+                        # Check if process exists
+                        try:
+                            process = psutil.Process(pid)
+                            # Verify it's actually an OpenCode process
+                            if "opencode" not in " ".join(process.cmdline()).lower():
+                                # PID exists but not OpenCode - orphaned
+                                orphaned.append(
+                                    {
+                                        "project": project.project_name,
+                                        "git_url": normalized,
+                                        "pid": pid,
+                                        "reason": "PID exists but not OpenCode process",
+                                    }
+                                )
+                        except psutil.NoSuchProcess:
+                            # Process doesn't exist - orphaned
+                            orphaned.append(
+                                {
+                                    "project": project.project_name,
+                                    "git_url": normalized,
+                                    "pid": pid,
+                                    "reason": "Process does not exist",
+                                }
+                            )
+
+            # Clean up orphaned entries
+            for orphan in orphaned:
+                try:
+                    # Update state to mark as stopped
+                    self.state_manager.update_process_status(
+                        orphan["git_url"],
+                        opencode_running=False,
+                        opencode_pid=None,
+                    )
+                    cleaned.append(orphan["project"])
+                    self._log(
+                        f"Cleaned up orphaned process for {orphan['project']} (PID: {orphan['pid']})"
+                    )
+                except Exception as e:
+                    self._log(
+                        f"Failed to clean up {orphan['project']}: {str(e)}", "error"
+                    )
+
+            return {
+                "status": "success",
+                "orphaned_count": len(orphaned),
+                "cleaned_count": len(cleaned),
+                "orphaned_processes": orphaned,
+                "cleaned_projects": cleaned,
+                "message": (
+                    f"Found and cleaned {len(cleaned)} orphaned process(es)"
+                    if cleaned
+                    else "No orphaned processes found"
+                ),
+            }
+
+        except Exception as e:
+            self._log(f"Failed to cleanup orphaned processes: {str(e)}", "error")
+            return {
+                "status": "error",
+                "message": f"Failed to cleanup orphaned processes: {str(e)}",
+            }

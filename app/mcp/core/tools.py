@@ -662,6 +662,25 @@ class ToolRegistry:
                     "required": ["git_url"],
                 },
             },
+            # Diagnostic & Cleanup Tools (Phase 5)
+            {
+                "name": "opencode_detect_duplicates",
+                "description": "Detect duplicate projects (same git repository running in multiple OpenCode instances). Provides recommendations on which instance to keep and suggests converting others to worktrees. Useful for cleaning up resource usage and avoiding session confusion.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+            {
+                "name": "opencode_cleanup_orphaned",
+                "description": "Detect and clean up orphaned OpenCode processes. An orphaned process is one where the PID in state doesn't exist (process crashed or was killed), but the project is still marked as running. This tool will automatically update the state to reflect reality.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -1056,6 +1075,11 @@ class ToolRegistry:
         # OpenCode SSH Deploy Key
         elif name == "opencode_get_deploy_key":
             return await self._execute_opencode_get_deploy_key(args)
+        # OpenCode Diagnostic & Cleanup Tools
+        elif name == "opencode_detect_duplicates":
+            return await self._execute_opencode_detect_duplicates(args)
+        elif name == "opencode_cleanup_orphaned":
+            return await self._execute_opencode_cleanup_orphaned(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1633,4 +1657,31 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to get deploy key: {str(e)}",
+            }
+
+    # Diagnostic & Cleanup Tools (Phase 5)
+    async def _execute_opencode_detect_duplicates(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_detect_duplicates tool (Phase 5)"""
+        try:
+            result = await self.opencode_manager.detect_duplicates()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to detect duplicates: {str(e)}",
+            }
+
+    async def _execute_opencode_cleanup_orphaned(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute opencode_cleanup_orphaned tool (Phase 5)"""
+        try:
+            result = await self.opencode_manager.cleanup_orphaned_processes()
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to cleanup orphaned processes: {str(e)}",
             }
