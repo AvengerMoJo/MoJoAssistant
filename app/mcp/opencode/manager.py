@@ -88,6 +88,29 @@ class OpenCodeManager:
         self._log(f"Error: {str(error)}", level="error")
         return format_error_response(error, git_url)
 
+    def _get_server_ip(self) -> str:
+        """
+        Get server IP address for remote access URLs
+
+        Returns:
+            IP address string (falls back to 'localhost' if unavailable)
+        """
+        import subprocess
+        try:
+            # Get first non-loopback IP address
+            result = subprocess.run(
+                ["hostname", "-I"],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Return first IP address
+                return result.stdout.strip().split()[0]
+        except Exception:
+            pass
+        return "localhost"
+
     async def start_project(
         self, git_url: str, user_ssh_key: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -124,11 +147,13 @@ class OpenCodeManager:
 
             if opencode_running and mcp_tool_running:
                 self._log(f"Project {project_name} is already running")
+                server_ip = self._get_server_ip()
                 return {
                     "status": "already_running",
                     "project": project_name,
                     "git_url": normalized_url,
                     "opencode_port": existing_project.opencode.port,
+                    "opencode_url": f"http://{server_ip}:{existing_project.opencode.port}",
                     "mcp_tool_port": mcp_tool.port if mcp_tool else None,
                     "message": "Project is already running",
                 }
@@ -357,12 +382,14 @@ class OpenCodeManager:
             # Success!
             self._log(f"Project {project_name} started successfully")
 
+            server_ip = self._get_server_ip()
             mcp_tool = self.state_manager.get_global_mcp_tool()
             result = {
                 "status": "success",
                 "project": project_name,
                 "git_url": git_url,
                 "opencode_port": opencode_port,
+                "opencode_url": f"http://{server_ip}:{opencode_port}",
                 "opencode_pid": opencode_pid,
                 "mcp_tool_port": mcp_tool.port if mcp_tool else None,
                 "sandbox_dir": config.base_dir,
@@ -425,6 +452,7 @@ class OpenCodeManager:
             mcp_tool.pid if mcp_tool else None
         )
 
+        server_ip = self._get_server_ip()
         return {
             "status": "ok",
             "project": project.project_name,  # Display name
@@ -432,6 +460,7 @@ class OpenCodeManager:
             "opencode": {
                 "pid": project.opencode.pid,
                 "port": project.opencode.port,
+                "url": f"http://{server_ip}:{project.opencode.port}",
                 "status": project.opencode.status,
                 "running": opencode_running,
             },
@@ -617,6 +646,7 @@ class OpenCodeManager:
         # Ensure global MCP tool is running (will reload config automatically)
         await self._ensure_global_mcp_tool_running()
 
+        server_ip = self._get_server_ip()
         mcp_tool = self.state_manager.get_global_mcp_tool()
 
         return {
@@ -625,6 +655,7 @@ class OpenCodeManager:
             "git_url": normalized_url,
             "message": "Project restarted",
             "opencode_port": opencode_port,
+            "opencode_url": f"http://{server_ip}:{opencode_port}",
             "mcp_tool_port": mcp_tool.port if mcp_tool else None,
         }
 
