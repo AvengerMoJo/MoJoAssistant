@@ -39,6 +39,11 @@ class ToolRegistry:
 
         self.opencode_manager = OpenCodeManager(logger=logger)
 
+        # Initialize Scheduler
+        from app.scheduler.core import Scheduler
+
+        self.scheduler = Scheduler(logger=logger)
+
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
         self.placeholder_tools = {
@@ -681,6 +686,113 @@ class ToolRegistry:
                     "required": [],
                 },
             },
+            # Scheduler Tools
+            {
+                "name": "scheduler_add_task",
+                "description": "Add a new task to the scheduler queue. Supports immediate execution, scheduled execution (specific datetime), and recurring execution (cron expression). Use this to schedule background tasks like memory consolidation (dreaming), periodic maintenance, or custom jobs.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "Unique identifier for the task",
+                            "minLength": 1,
+                        },
+                        "task_type": {
+                            "type": "string",
+                            "enum": ["dreaming", "scheduled", "agent", "custom"],
+                            "description": "Type of task (dreaming=memory consolidation, scheduled=calendar event, agent=OpenCode/OpenClaw, custom=shell command)",
+                        },
+                        "schedule": {
+                            "type": "string",
+                            "description": "When to run (ISO datetime format, e.g., '2026-02-12T03:00:00'). Omit for immediate execution.",
+                        },
+                        "cron_expression": {
+                            "type": "string",
+                            "description": "Recurring schedule (cron format, e.g., '0 3 * * *' for daily at 3 AM). Overrides 'schedule'.",
+                        },
+                        "priority": {
+                            "type": "string",
+                            "enum": ["critical", "high", "medium", "low"],
+                            "description": "Task priority (default: medium). Critical tasks run first.",
+                        },
+                        "config": {
+                            "type": "object",
+                            "description": "Task-specific configuration (for custom tasks, include 'command' key with shell command)",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Human-readable description of what this task does",
+                        },
+                    },
+                    "required": ["task_id", "task_type"],
+                },
+            },
+            {
+                "name": "scheduler_list_tasks",
+                "description": "List all scheduled tasks with optional filtering. Shows task status, priority, schedule, and execution results. Use this to monitor what tasks are pending, running, or completed.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "running", "completed", "failed", "cancelled"],
+                            "description": "Filter by task status",
+                        },
+                        "priority": {
+                            "type": "string",
+                            "enum": ["critical", "high", "medium", "low"],
+                            "description": "Filter by priority",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of tasks to return (default: 100)",
+                            "minimum": 1,
+                            "maximum": 1000,
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "scheduler_get_status",
+                "description": "Get current scheduler status including running state, tick count, current task being executed, and overall statistics. Use this to check if the scheduler is healthy and see performance metrics.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+            {
+                "name": "scheduler_get_task",
+                "description": "Get detailed information about a specific task by ID. Shows full task configuration, execution status, result, and retry count. Use this to check on a specific task's progress.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "Task identifier",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["task_id"],
+                },
+            },
+            {
+                "name": "scheduler_remove_task",
+                "description": "Remove a task from the scheduler queue. Only pending tasks can be removed. Use this to cancel a scheduled task before it runs.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "Task identifier",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["task_id"],
+                },
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -1080,6 +1192,17 @@ class ToolRegistry:
             return await self._execute_opencode_detect_duplicates(args)
         elif name == "opencode_cleanup_orphaned":
             return await self._execute_opencode_cleanup_orphaned(args)
+        # Scheduler Tools
+        elif name == "scheduler_add_task":
+            return await self._execute_scheduler_add_task(args)
+        elif name == "scheduler_list_tasks":
+            return await self._execute_scheduler_list_tasks(args)
+        elif name == "scheduler_get_status":
+            return await self._execute_scheduler_get_status(args)
+        elif name == "scheduler_get_task":
+            return await self._execute_scheduler_get_task(args)
+        elif name == "scheduler_remove_task":
+            return await self._execute_scheduler_remove_task(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1690,4 +1813,161 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to cleanup orphaned processes: {str(e)}",
+            }
+
+    # ========================================================================
+    # Scheduler execution methods
+    # ========================================================================
+
+    async def _execute_scheduler_add_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_add_task tool"""
+        from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
+        from datetime import datetime
+
+        try:
+            task_id = args.get("task_id")
+            task_type_str = args.get("task_type")
+            schedule_str = args.get("schedule")
+            cron_expression = args.get("cron_expression")
+            priority_str = args.get("priority", "medium")
+            config = args.get("config", {})
+            description = args.get("description")
+
+            # Convert strings to enums
+            task_type = TaskType(task_type_str)
+            priority = TaskPriority(priority_str)
+
+            # Parse schedule
+            schedule = None
+            if schedule_str:
+                schedule = datetime.fromisoformat(schedule_str)
+
+            # Create task
+            task = Task(
+                id=task_id,
+                type=task_type,
+                schedule=schedule,
+                cron_expression=cron_expression,
+                priority=priority,
+                config=config,
+                description=description
+            )
+
+            # Add to scheduler
+            success = self.scheduler.add_task(task)
+
+            if success:
+                return {
+                    "status": "success",
+                    "message": f"Task {task_id} added to scheduler",
+                    "task": task.to_dict()
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Task {task_id} already exists"
+                }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to add task: {str(e)}"
+            }
+
+    async def _execute_scheduler_list_tasks(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_list_tasks tool"""
+        from app.scheduler.models import TaskStatus, TaskPriority
+
+        try:
+            # Parse filters
+            status_filter = None
+            if "status" in args:
+                status_filter = TaskStatus(args["status"])
+
+            priority_filter = None
+            if "priority" in args:
+                priority_filter = TaskPriority(args["priority"])
+
+            limit = args.get("limit", 100)
+
+            # Get tasks
+            tasks = self.scheduler.list_tasks(
+                status=status_filter,
+                priority=priority_filter,
+                limit=limit
+            )
+
+            # Convert to dict
+            tasks_data = [task.to_dict() for task in tasks]
+
+            return {
+                "status": "success",
+                "tasks": tasks_data,
+                "total": len(tasks_data)
+            }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to list tasks: {str(e)}"
+            }
+
+    async def _execute_scheduler_get_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_get_status tool"""
+        try:
+            status = self.scheduler.get_status()
+            return {
+                "status": "success",
+                "scheduler": status
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get scheduler status: {str(e)}"
+            }
+
+    async def _execute_scheduler_get_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_get_task tool"""
+        try:
+            task_id = args.get("task_id")
+            task = self.scheduler.get_task(task_id)
+
+            if task:
+                return {
+                    "status": "success",
+                    "task": task.to_dict()
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Task {task_id} not found"
+                }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get task: {str(e)}"
+            }
+
+    async def _execute_scheduler_remove_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_remove_task tool"""
+        try:
+            task_id = args.get("task_id")
+            success = self.scheduler.remove_task(task_id)
+
+            if success:
+                return {
+                    "status": "success",
+                    "message": f"Task {task_id} removed from scheduler"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Task {task_id} not found"
+                }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to remove task: {str(e)}"
             }
