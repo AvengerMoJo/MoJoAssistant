@@ -20,6 +20,14 @@ from app.mcp.opencode.ssh_manager import SSHManager
 from app.mcp.opencode.process_manager import ProcessManager
 from app.mcp.opencode.config_manager import ConfigManager
 from app.mcp.opencode.worktree_manager import WorktreeManager
+from app.mcp.opencode.errors import (
+    OpenCodeError,
+    ProjectNotFoundError,
+    ProjectAlreadyRunningError,
+    ProjectNotRunningError,
+    WorktreeError,
+    format_error_response,
+)
 
 
 class OpenCodeManager:
@@ -65,6 +73,20 @@ class OpenCodeManager:
         """Log message if logger available"""
         if self.logger:
             getattr(self.logger, level)(f"[OpenCode Manager] {message}")
+
+    def _handle_error(self, error: Exception, git_url: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Convert exceptions to user-friendly error responses
+
+        Args:
+            error: The exception to handle
+            git_url: Optional git_url for context
+
+        Returns:
+            Dictionary formatted for MCP response with helpful suggestions
+        """
+        self._log(f"Error: {str(error)}", level="error")
+        return format_error_response(error, git_url)
 
     async def start_project(
         self, git_url: str, user_ssh_key: Optional[str] = None
@@ -411,48 +433,57 @@ class OpenCodeManager:
 
         Args:
             git_url: Git repository URL (will be normalized)
+
+        Raises:
+            ProjectNotFoundError: If project doesn't exist
         """
         from app.mcp.opencode.utils import normalize_git_url
 
-        normalized_url = normalize_git_url(git_url)
-        project = self.state_manager.get_project(normalized_url)
+        try:
+            normalized_url = normalize_git_url(git_url)
+            project = self.state_manager.get_project(normalized_url)
 
-        if not project:
+            if not project:
+                raise ProjectNotFoundError(normalized_url)
+
+            self._log(f"Stopping project: {project.project_name} ({normalized_url})")
+
+            # Stop OpenCode
+            if project.opencode.pid:
+                success, error = self.process_manager.stop_process(
+                    project.opencode.pid, "OpenCode"
+                )
+                if success:
+                    self.state_manager.update_process_status(
+                        normalized_url, "opencode", status="stopped"
+                    )
+
+            # Update server status in configuration
+            self.config_manager.update_server_status(normalized_url, "inactive")
+
+            # Decrement active project count
+            self.state_manager.decrement_active_projects()
+
+            # Check if we should stop global MCP tool
+            mcp_tool = self.state_manager.get_global_mcp_tool()
+            if mcp_tool and mcp_tool.active_project_count == 0:
+                self._log("No active projects, stopping global MCP tool")
+                await self._stop_global_mcp_tool()
+
             return {
-                "status": "not_found",
-                "message": f"Project not found for git_url: {normalized_url}",
+                "status": "success",
+                "project": project.project_name,
+                "git_url": normalized_url,
+                "message": "Project stopped successfully",
             }
 
-        self._log(f"Stopping project: {project.project_name} ({normalized_url})")
-
-        # Stop OpenCode
-        if project.opencode.pid:
-            success, error = self.process_manager.stop_process(
-                project.opencode.pid, "OpenCode"
-            )
-            if success:
-                self.state_manager.update_process_status(
-                    normalized_url, "opencode", status="stopped"
-                )
-
-        # Update server status in configuration
-        self.config_manager.update_server_status(normalized_url, "inactive")
-
-        # Decrement active project count
-        self.state_manager.decrement_active_projects()
-
-        # Check if we should stop global MCP tool
-        mcp_tool = self.state_manager.get_global_mcp_tool()
-        if mcp_tool and mcp_tool.active_project_count == 0:
-            self._log("No active projects, stopping global MCP tool")
-            await self._stop_global_mcp_tool()
-
-        return {
-            "status": "success",
-            "project": project.project_name,
-            "git_url": normalized_url,
-            "message": "Project stopped",
-        }
+        except OpenCodeError:
+            # Re-raise our custom errors (they're already well-formatted)
+            raise
+        except Exception as e:
+            # Catch and wrap unexpected errors
+            self._log(f"Unexpected error stopping project: {str(e)}", level="error")
+            return self._handle_error(e, git_url)
 
     async def restart_project(self, git_url: str) -> Dict[str, Any]:
         """

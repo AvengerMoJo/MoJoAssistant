@@ -1475,6 +1475,12 @@ class ToolRegistry:
             result = await self.opencode_manager.stop_project(git_url)
             return result
         except Exception as e:
+            # Check if it's an OpenCodeError with formatted response
+            from app.mcp.opencode.errors import OpenCodeError
+            if isinstance(e, OpenCodeError):
+                return e.to_dict()
+
+            # Generic error
             return {
                 "status": "error",
                 "message": f"Failed to stop project: {str(e)}",
