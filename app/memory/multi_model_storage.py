@@ -13,11 +13,15 @@ class MultiModelEmbeddingStorage:
     def __init__(self, data_dir: str = ".memory"):
         self.data_dir = data_dir
         self.conversations_file = os.path.join(data_dir, "conversations_multi_model.json")
-        self.documents_file = os.path.join(data_dir, "knowledge_multi_model.json") 
-        
+        self.documents_file = os.path.join(data_dir, "knowledge_multi_model.json")
+
         # Load existing data
         self.conversations = self._load_data(self.conversations_file)
         self.documents = self._load_data(self.documents_file)
+
+        # Print actual counts
+        print(f"📚 [MultiModelStorage] Loaded {len(self.documents)} documents from knowledge base")
+        print(f"💬 [MultiModelStorage] Loaded {len(self.conversations)} conversation messages")
     
     def _load_data(self, file_path: str) -> List[Dict[str, Any]]:
         """Load data from JSON file"""

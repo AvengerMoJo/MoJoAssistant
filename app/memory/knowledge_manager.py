@@ -37,7 +37,7 @@ class KnowledgeManager:
                     data = json.load(f)
                     self.documents = data.get("documents", [])
                     self.chunk_embeddings = data.get("embeddings", [])
-                print(f"Loaded {len(self.documents)} documents from knowledge base")
+                print(f"📚 [KnowledgeManager] Loaded {len(self.documents)} documents from {knowledge_file}")
             except Exception as e:
                 print(f"Error loading knowledge base: {e}")
                 self.documents = []
