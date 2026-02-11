@@ -111,7 +111,7 @@ class ProcessManager:
             return 0, port, error
 
         log_file = self.logs_dir / f"{config.project_name}-opencode.log"
-        pid_file = Path(config.sandbox_dir) / "opencode.pid"
+        pid_file = Path(config.base_dir) / "opencode.pid"
 
         # Build command
         # Use pgrep to find actual process PID (not bash wrapper)
@@ -182,7 +182,7 @@ pgrep -f "opencode.*web.*--port {port}" | tail -1 > {pid_file}"""
         port = config.mcp_tool_port or self.find_free_port(5100, 5199)
 
         log_file = self.logs_dir / f"{config.project_name}-mcp-tool.log"
-        pid_file = Path(config.sandbox_dir) / "mcp-tool.pid"
+        pid_file = Path(config.base_dir) / "mcp-tool.pid"
 
         # Build command
         # Use pgrep to find actual node process PID (not npm wrapper)
