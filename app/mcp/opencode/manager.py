@@ -651,12 +651,19 @@ class OpenCodeManager:
 
         # Get project state
         if project:
-            # Delete base directory
+            # Delete base directory (project workspace)
             base_dir = Path(project.base_dir or project.sandbox_dir)
             if base_dir.exists():
                 import shutil
-
                 shutil.rmtree(base_dir)
+                self._log(f"Deleted base directory: {base_dir}")
+
+            # Delete .env config directory (in ~/.memory/opencode-sandboxes/)
+            env_dir = self.env_manager.get_env_path(project_name).parent
+            if env_dir.exists():
+                import shutil
+                shutil.rmtree(env_dir)
+                self._log(f"Deleted .env directory: {env_dir}")
 
             # Delete from state
             self.state_manager.delete_project(normalized_url)
