@@ -37,7 +37,7 @@ class KnowledgeManager:
                     data = json.load(f)
                     self.documents = data.get("documents", [])
                     self.chunk_embeddings = data.get("embeddings", [])
-                print(f"Loaded {len(self.documents)} documents from knowledge base")
+                print(f"📚 [KnowledgeManager] Loaded {len(self.documents)} documents from {knowledge_file}")
             except Exception as e:
                 print(f"Error loading knowledge base: {e}")
                 self.documents = []
@@ -46,17 +46,29 @@ class KnowledgeManager:
     def _save_data(self) -> None:
         """Save knowledge data to disk"""
         knowledge_file = os.path.join(self.data_dir, f"{self.collection_name}.json")
-        
+
         try:
             data = {
                 "documents": self.documents,
                 "embeddings": self.chunk_embeddings,
                 "updated_at": datetime.datetime.now().isoformat()
             }
-            with open(knowledge_file, 'w') as f:
-                json.dump(data, f)
+
+            # Write to temp file first, then rename (atomic operation)
+            temp_file = knowledge_file + ".tmp"
+            with open(temp_file, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            # Atomic rename
+            os.replace(temp_file, knowledge_file)
+
+            print(f"✅ Saved {len(self.documents)} documents to {knowledge_file}")
+
         except Exception as e:
-            print(f"Error saving knowledge base: {e}")
+            print(f"❌ Error saving knowledge base to {knowledge_file}: {e}")
+            import traceback
+            traceback.print_exc()
+            raise  # Re-raise so we know save failed
     
     def _chunk_text(self, text: str, chunk_size: int = 1000, overlap: int = 100) -> List[str]:
         """

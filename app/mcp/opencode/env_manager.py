@@ -251,14 +251,14 @@ Passwords are stored in global config: {self.global_config_path}
                 f"Please edit {self.get_env_path(project_name)}"
             )
 
-        # Build sandbox directory path
-        sandbox_dir = str(self.sandboxes_dir / project_name)
+        # Build base directory path (Phase 1: was sandbox_dir)
+        base_dir = str(self.sandboxes_dir / project_name)
 
-        # Create ProjectConfig using global passwords + project settings
+        # Create ProjectConfig using global passwords + project settings (Phase 1 signature)
         config = ProjectConfig(
-            project_name=project_name,
-            git_url=env_vars["GIT_URL"],
-            sandbox_dir=sandbox_dir,
+            git_url=env_vars["GIT_URL"],  # PRIMARY KEY
+            project_name=project_name,  # Display name
+            base_dir=base_dir,  # Base directory
             ssh_key_path=os.path.expanduser(env_vars["SSH_KEY_PATH"]),
             opencode_password=global_config["OPENCODE_PASSWORD"],
             mcp_bearer_token=global_config["MCP_BEARER_TOKEN"],
@@ -269,7 +269,6 @@ Passwords are stored in global config: {self.global_config_path}
             opencode_port=int(env_vars["OPENCODE_PORT"])
             if "OPENCODE_PORT" in env_vars
             else None,
-            mcp_tool_port=None,  # No longer per-project, global MCP tool only
         )
 
         return config
