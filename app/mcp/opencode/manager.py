@@ -185,28 +185,49 @@ class OpenCodeManager:
             ssh_key_path = config.ssh_key_path
             public_key = None
 
-            if not os.path.exists(ssh_key_path):
-                # Generate SSH key
-                self._log(f"Generating SSH key for {project_name}")
-                (
-                    ssh_key_path,
-                    public_key_path,
-                    public_key,
-                ) = self.ssh_manager.generate_key(project_name)
+            # Check if user explicitly provided an SSH key path
+            user_provided_key = user_ssh_key is not None
 
-                # Update config with generated key path
-                config.ssh_key_path = ssh_key_path
+            if not os.path.exists(ssh_key_path):
+                if user_provided_key:
+                    # User provided a path but the file doesn't exist
+                    return {
+                        "status": "error",
+                        "error": "ssh_key_not_found",
+                        "message": (
+                            f"SSH key not found at provided path: {ssh_key_path}\n\n"
+                            f"Please ensure the key file exists or omit the ssh_key parameter "
+                            f"to auto-generate a new key."
+                        ),
+                        "provided_path": ssh_key_path,
+                    }
+                else:
+                    # No user key provided, auto-generate
+                    self._log(f"Generating SSH key for {project_name}")
+                    (
+                        ssh_key_path,
+                        public_key_path,
+                        public_key,
+                    ) = self.ssh_manager.generate_key(project_name)
+
+                    # Update config with generated key path
+                    config.ssh_key_path = ssh_key_path
 
             else:
-                # Validate existing key
+                # Key exists, validate it
                 valid, error = self.ssh_manager.validate_key(ssh_key_path)
                 if not valid:
                     return {
                         "status": "error",
                         "error": "invalid_ssh_key",
-                        "message": error,
+                        "message": (
+                            f"SSH key at {ssh_key_path} is invalid: {error}\n\n"
+                            f"Please provide a valid SSH private key file."
+                        ),
+                        "provided_path": ssh_key_path if user_provided_key else None,
                     }
                 public_key = self.ssh_manager.get_public_key(ssh_key_path)
+                self._log(f"Using {'user-provided' if user_provided_key else 'existing'} SSH key: {ssh_key_path}")
 
             # Step 4: Test Git access
             self._log(f"Testing Git access for {project_name}")
