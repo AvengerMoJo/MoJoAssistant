@@ -1,0 +1,75 @@
+{
+  "comment": "Unified LLM Configuration - Supports task-specific model selection",
+  "comment2": "Copy to llm_config.json and customize for your setup",
+
+  "local_models": {
+    "qwen-coder-small": {
+      "type": "llama",
+      "description": "Qwen2.5-Coder-1.7B - Fast, good JSON, multi-language (recommended default)",
+      "model_path": "~/.cache/mojoassistant/models/qwen2.5-coder-1.5b-instruct-q5_k_m.gguf",
+      "context_length": 32768,
+      "server_url": null,
+      "temperature": 0.1,
+      "recommended_for": ["dreaming", "chunking", "basic_chat"]
+    },
+
+    "qwen-coder-large": {
+      "type": "llama",
+      "description": "Qwen3-Coder-Next - Premium quality (48.49 GB)",
+      "model_path": "/path/to/qwen3-coder-next.gguf",
+      "context_length": 32768,
+      "server_url": null,
+      "temperature": 0.3,
+      "recommended_for": ["complex_reasoning", "code_generation"]
+    },
+
+    "lmstudio": {
+      "provider": "openai",
+      "description": "LMStudio local server (user-managed models)",
+      "base_url": "http://localhost:1234/v1",
+      "api_key": "lm-studio",
+      "model": "any-model-loaded-in-lmstudio",
+      "recommended_for": ["chat", "general"]
+    },
+
+    "ollama-qwen": {
+      "type": "ollama",
+      "description": "Ollama with Qwen 2.5 7B",
+      "server_url": "http://localhost:11434",
+      "model": "qwen2.5:7b",
+      "context_length": 32768,
+      "recommended_for": ["multi-language", "dreaming"]
+    }
+  },
+
+  "api_models": {
+    "anthropic-haiku": {
+      "provider": "anthropic",
+      "model": "claude-haiku-3-5",
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "temperature": 0.3,
+      "max_tokens": 4096,
+      "recommended_for": ["api_chat", "premium_dreaming"]
+    },
+
+    "openai-mini": {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "api_key": "${OPENAI_API_KEY}",
+      "temperature": 0.3,
+      "max_tokens": 4096,
+      "recommended_for": ["api_chat", "cost_effective"]
+    }
+  },
+
+  "task_assignments": {
+    "interactive_cli": "lmstudio",
+    "dreaming_chunking": "qwen-coder-small",
+    "dreaming_synthesis": "qwen-coder-small",
+    "dreaming_upgrade_good": "anthropic-haiku",
+    "dreaming_upgrade_premium": "anthropic-sonnet",
+    "default": "qwen-coder-small"
+  },
+
+  "default_interface": "lmstudio"
+}
