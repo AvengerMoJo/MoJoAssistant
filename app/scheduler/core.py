@@ -84,9 +84,18 @@ class Scheduler:
         self.stats['started_at'] = datetime.now()
         self._log("Scheduler started")
 
-        # Set up signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        # Set up signal handlers for graceful shutdown (only in main thread)
+        try:
+            import threading
+            if threading.current_thread() is threading.main_thread():
+                signal.signal(signal.SIGINT, self._signal_handler)
+                signal.signal(signal.SIGTERM, self._signal_handler)
+                self._log("Signal handlers registered (main thread)")
+            else:
+                self._log("Running in background thread, signal handlers skipped", "debug")
+        except ValueError:
+            # Signal registration failed, continue without it
+            self._log("Signal handlers not available in this context", "debug")
 
         try:
             await self._ticker_loop()
@@ -127,8 +136,13 @@ class Scheduler:
                 else:
                     self._log("No tasks ready", "debug")
 
-                # Sleep until next tick
-                await asyncio.sleep(self.tick_interval)
+                # Sleep until next tick (in 1-second increments for responsiveness)
+                # This allows for quicker shutdown when stop() is called
+                remaining = self.tick_interval
+                while remaining > 0 and self.running:
+                    sleep_time = min(1, remaining)
+                    await asyncio.sleep(sleep_time)
+                    remaining -= sleep_time
 
             except Exception as e:
                 self._log(f"Error in ticker loop: {e}", "error")

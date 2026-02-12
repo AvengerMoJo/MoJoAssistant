@@ -5,6 +5,8 @@ File: app/mcp/core/tools.py
 
 from typing import Dict, Any, List
 import time
+import threading
+import asyncio
 from datetime import datetime
 from app.git.git_service import GitService
 
@@ -43,6 +45,10 @@ class ToolRegistry:
         from app.scheduler.core import Scheduler
 
         self.scheduler = Scheduler(logger=logger)
+        self.scheduler_thread = None
+
+        # Auto-start scheduler in background thread
+        self._start_scheduler_daemon()
 
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
@@ -175,6 +181,111 @@ class ToolRegistry:
                 "usage_tip": "Use when you need to manually stop the global MCP tool, even when there are active projects running.",
             },
         }
+
+    # ========================================================================
+    # Scheduler Daemon Lifecycle Management
+    # ========================================================================
+
+    def _start_scheduler_daemon(self):
+        """
+        Start scheduler in background thread with its own event loop
+
+        Similar to how OpenCodeManager starts processes, but the scheduler
+        needs to run continuously in the background.
+        """
+        # Check if scheduler is actually running (not just thread alive)
+        if self.scheduler_thread and self.scheduler_thread.is_alive() and self.scheduler.running:
+            self._log("Scheduler daemon already running")
+            return True
+
+        # If old thread exists but scheduler stopped, wait for it to finish
+        if self.scheduler_thread and self.scheduler_thread.is_alive():
+            self._log("Waiting for old thread to finish...")
+            self.scheduler_thread.join(timeout=3)
+            if self.scheduler_thread.is_alive():
+                self._log("Old thread still alive, may cause issues", "warning")
+
+        def run_scheduler():
+            """Run scheduler in dedicated thread with event loop"""
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                if self.logger:
+                    self.logger.info("[ToolRegistry] Scheduler daemon thread started")
+
+                # Start scheduler (blocks until stopped)
+                loop.run_until_complete(self.scheduler.start())
+
+                if self.logger:
+                    self.logger.info("[ToolRegistry] Scheduler daemon thread exiting normally")
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"[ToolRegistry] Scheduler daemon error: {e}")
+                    import traceback
+                    self.logger.error(traceback.format_exc())
+                else:
+                    import traceback
+                    print(f"[ToolRegistry] Scheduler daemon error: {e}")
+                    traceback.print_exc()
+            finally:
+                loop.close()
+
+        # Start scheduler thread
+        self.scheduler_thread = threading.Thread(
+            target=run_scheduler,
+            name="SchedulerDaemon",
+            daemon=True  # Dies when main thread exits
+        )
+        self.scheduler_thread.start()
+
+        if self.logger:
+            self.logger.info("[ToolRegistry] Scheduler daemon started in background")
+
+        # Give thread a moment to actually start and set running flag
+        import time
+        time.sleep(1.0)
+
+        return True
+
+    def _stop_scheduler_daemon(self):
+        """Stop scheduler gracefully"""
+        # Check if scheduler is marked as running (even if thread has already died)
+        was_running = self.scheduler.running or (self.scheduler_thread and self.scheduler_thread.is_alive())
+
+        if not was_running:
+            self._log("Scheduler daemon not running")
+            return False
+
+        # Signal scheduler to stop
+        self.scheduler.stop()
+
+        # Wait for thread to finish (with timeout) if it exists and is alive
+        if self.scheduler_thread and self.scheduler_thread.is_alive():
+            self.scheduler_thread.join(timeout=5)
+
+            if self.scheduler_thread.is_alive():
+                self._log("Scheduler thread did not stop gracefully", "warning")
+                return False
+
+        self._log("Scheduler daemon stopped")
+        self.scheduler_thread = None
+        return True
+
+    def _restart_scheduler_daemon(self):
+        """Restart scheduler daemon"""
+        self._stop_scheduler_daemon()
+        return self._start_scheduler_daemon()
+
+    def _log(self, message: str, level: str = "info"):
+        """Log message if logger available"""
+        if self.logger:
+            getattr(self.logger, level)(f"[ToolRegistry] {message}")
+
+    # ========================================================================
+    # Tool Definitions
+    # ========================================================================
 
     def _define_tools(self) -> List[Dict[str, Any]]:
         """Define all available tools"""
@@ -793,6 +904,39 @@ class ToolRegistry:
                     "required": ["task_id"],
                 },
             },
+            # Scheduler Daemon Control Tools
+            {
+                "name": "scheduler_start_daemon",
+                "description": "Manually start the scheduler daemon if it's not running. The scheduler daemon is the background process that executes scheduled tasks. Normally it starts automatically with the MCP service, but you can use this to restart it if needed.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+            {
+                "name": "scheduler_stop_daemon",
+                "description": "Stop the scheduler daemon gracefully. This will stop the background ticker loop that processes scheduled tasks. Tasks in the queue will be preserved and can be processed when the daemon restarts.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+            {
+                "name": "scheduler_restart_daemon",
+                "description": "Restart the scheduler daemon. Useful if the scheduler appears stuck or you want to force a clean restart of the background processing loop.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+            {
+                "name": "scheduler_daemon_status",
+                "description": "Check if the scheduler daemon is running and get basic health information. Shows whether the background ticker is active, thread status, and basic statistics.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -1203,6 +1347,15 @@ class ToolRegistry:
             return await self._execute_scheduler_get_task(args)
         elif name == "scheduler_remove_task":
             return await self._execute_scheduler_remove_task(args)
+        # Scheduler Daemon Control
+        elif name == "scheduler_start_daemon":
+            return await self._execute_scheduler_start_daemon(args)
+        elif name == "scheduler_stop_daemon":
+            return await self._execute_scheduler_stop_daemon(args)
+        elif name == "scheduler_restart_daemon":
+            return await self._execute_scheduler_restart_daemon(args)
+        elif name == "scheduler_daemon_status":
+            return await self._execute_scheduler_daemon_status(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1970,4 +2123,106 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to remove task: {str(e)}"
+            }
+
+    # ========================================================================
+    # Scheduler Daemon Control execution methods
+    # ========================================================================
+
+    async def _execute_scheduler_start_daemon(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_start_daemon tool"""
+        try:
+            success = self._start_scheduler_daemon()
+
+            if success:
+                return {
+                    "status": "success",
+                    "message": "Scheduler daemon started",
+                    "running": self.scheduler.running,
+                    "tick_count": self.scheduler.tick_count,
+                    "thread_alive": self.scheduler_thread.is_alive() if self.scheduler_thread else False
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": "Scheduler daemon is already running"
+                }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to start scheduler daemon: {str(e)}"
+            }
+
+    async def _execute_scheduler_stop_daemon(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_stop_daemon tool"""
+        try:
+            success = self._stop_scheduler_daemon()
+
+            if success:
+                return {
+                    "status": "success",
+                    "message": "Scheduler daemon stopped gracefully",
+                    "running": self.scheduler.running
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": "Scheduler daemon was not running"
+                }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to stop scheduler daemon: {str(e)}"
+            }
+
+    async def _execute_scheduler_restart_daemon(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_restart_daemon tool"""
+        try:
+            success = self._restart_scheduler_daemon()
+
+            if success:
+                return {
+                    "status": "success",
+                    "message": "Scheduler daemon restarted",
+                    "running": self.scheduler.running,
+                    "tick_count": self.scheduler.tick_count,
+                    "thread_alive": self.scheduler_thread.is_alive() if self.scheduler_thread else False
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": "Failed to restart scheduler daemon"
+                }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to restart scheduler daemon: {str(e)}"
+            }
+
+    async def _execute_scheduler_daemon_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_daemon_status tool"""
+        try:
+            thread_alive = self.scheduler_thread.is_alive() if self.scheduler_thread else False
+
+            # Get scheduler statistics
+            status = self.scheduler.get_status()
+
+            return {
+                "status": "success",
+                "daemon": {
+                    "running": self.scheduler.running,
+                    "thread_alive": thread_alive,
+                    "thread_name": self.scheduler_thread.name if self.scheduler_thread else None,
+                },
+                "scheduler": status,
+                "message": f"Scheduler daemon is {'running' if thread_alive and self.scheduler.running else 'stopped'}"
+            }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get scheduler daemon status: {str(e)}"
             }
