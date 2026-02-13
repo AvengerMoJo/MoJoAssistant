@@ -332,6 +332,48 @@ def handle_command(cmd: str, memory_service, embedding_config: dict, logger) -> 
             log_cli_command("/add", "", False, logger)
         return True
     
+    elif cmd_root == "/dream":
+        try:
+            conversation_id = parts[1] if len(parts) > 1 else None
+            task_ids = memory_service.trigger_dreaming(conversation_id)
+            if task_ids:
+                print(f"✅ Triggered {len(task_ids)} dreaming tasks")
+                for tid in task_ids:
+                    print(f"   - {tid}")
+                log_cli_command("/dream", str(task_ids), True, logger)
+            else:
+                print("ℹ️  No new dreaming tasks created (maybe already scheduled?)")
+                log_cli_command("/dream", "no_tasks", True, logger)
+        except Exception as e:
+            print(f"❌ Error triggering dreaming: {e}")
+            logger.error(f"Failed to trigger dreaming: {e}")
+            log_cli_command("/dream", "", False, logger)
+        return True
+
+    elif cmd_root == "/scheduler":
+        try:
+            status = memory_service.scheduler.get_status()
+            print("\n===== SCHEDULER STATUS =====")
+            print(f"Running: {status['running']}")
+            print(f"Tick Count: {status['tick_count']}")
+            
+            if status['current_task']:
+                print(f"Current Task: {status['current_task']['id']} ({status['current_task']['type']})")
+            else:
+                print("Current Task: None")
+                
+            print(f"Queue: {status['queue']['total']} tasks")
+            for status_key, count in status['queue']['by_status'].items():
+                print(f"  - {status_key}: {count}")
+                
+            print("==========================\n")
+            log_cli_command("/scheduler", "", True, logger)
+        except Exception as e:
+            print(f"❌ Error getting scheduler status: {e}")
+            logger.error(f"Failed to get scheduler status: {e}")
+            log_cli_command("/scheduler", "", False, logger)
+        return True
+
     elif cmd_root == "/end":
         try:
             memory_service.end_conversation()
@@ -459,6 +501,7 @@ def main() -> int:
     parser.add_argument("--embedding", help="Name of the embedding model configuration to use", default="default")
     parser.add_argument("--embedding-config", help="Path to embedding configuration file", 
                        default="config/embedding_config.json")
+    parser.add_argument("--scheduler", help="Enable background scheduler (true/false)", default="true")
     parser.add_argument("--log-level", help="Logging level", default="INFO", 
                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
     parser.add_argument("--log-file", help="Log file path (optional)")
@@ -500,6 +543,15 @@ def main() -> int:
         # Initialize LLM interface
         llm_interface = create_llm_interface(args.config, args.model)
         
+        # Start scheduler if enabled
+        if args.scheduler.lower() == "true":
+            try:
+                memory_service.start_scheduler()
+                logger.info("Background scheduler started")
+            except Exception as e:
+                logger.error(f"Failed to start scheduler: {e}")
+                print(f"⚠️  Warning: Failed to start scheduler: {e}")
+
         # Load initial memory state if specified
         if args.load:
             if os.path.exists(args.load):

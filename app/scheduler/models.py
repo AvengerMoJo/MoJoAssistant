@@ -12,6 +12,7 @@ from enum import Enum
 
 class TaskStatus(Enum):
     """Task execution status"""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -21,39 +22,79 @@ class TaskStatus(Enum):
 
 class TaskPriority(Enum):
     """Task priority levels"""
+
     CRITICAL = "critical"  # System tasks, must run immediately
-    HIGH = "high"         # User-initiated, urgent
-    MEDIUM = "medium"     # Scheduled maintenance
-    LOW = "low"           # Background, non-urgent
+    HIGH = "high"  # User-initiated, urgent
+    MEDIUM = "medium"  # Scheduled maintenance
+    LOW = "low"  # Background, non-urgent
 
 
 class TaskType(Enum):
     """Types of tasks the scheduler can execute"""
-    DREAMING = "dreaming"      # Memory consolidation (A→B→C→D pipeline)
-    SCHEDULED = "scheduled"    # User calendar events
-    AGENT = "agent"            # OpenCode/OpenClaw operations
-    CUSTOM = "custom"          # User-defined tasks
+
+    DREAMING = "dreaming"  # Memory consolidation (A→B→C→D pipeline)
+    SCHEDULED = "scheduled"  # User calendar events
+    AGENT = "agent"  # OpenCode/OpenClaw operations
+    CUSTOM = "custom"  # User-defined tasks
 
 
 @dataclass
 class TaskResources:
     """Resource requirements and limits for a task"""
+
     llm_provider: Optional[str] = None  # local|openai|anthropic
     max_tokens: Optional[int] = None
     max_duration_seconds: Optional[int] = None
     requires_gpu: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        """Convert to dictionary"""
+        result = {}
+        if self.when:
+            result["when"] = self.when.isoformat()
+        if self.cron_expression:
+            result["cron_expression"] = self.cron_expression
+        return result
+
+
+@dataclass
+class Schedule:
+    """Task schedule - can be datetime or cron expression"""
+
+    when: Optional[datetime] = None  # When to run (None = immediate)
+    cron_expression: Optional[str] = None  # Recurring schedule (e.g., "0 3 * * *")
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'TaskResources':
+    def from_dict(cls, data: Dict[str, Any]) -> "Schedule":
+        """Create Schedule instance from dictionary"""
+        return cls(
+            when=datetime.fromisoformat(data.get("when")) if data.get("when") else None,
+            cron_expression=data.get("cron_expression"),
+        )
+
+    """Task schedule - can be datetime or cron expression"""
+
+    when: Optional[datetime] = None  # When to run (None = immediate)
+    cron_expression: Optional[str] = None  # Recurring schedule (e.g., "0 3 * * *")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        result = {}
+        if self.when:
+            result["when"] = self.when.isoformat()
+        if self.cron_expression:
+            result["cron_expression"] = self.cron_expression
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskResources":
         return cls(**data)
 
 
 @dataclass
 class TaskResult:
     """Result of task execution"""
+
     success: bool
     output_file: Optional[str] = None
     metrics: Dict[str, Any] = field(default_factory=dict)
@@ -66,13 +107,13 @@ class TaskResult:
 
     def to_dict(self) -> Dict[str, Any]:
         result = asdict(self)
-        result['created_at'] = self.created_at.isoformat() if self.created_at else None
+        result["created_at"] = self.created_at.isoformat() if self.created_at else None
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'TaskResult':
-        if 'created_at' in data and data['created_at']:
-            data['created_at'] = datetime.fromisoformat(data['created_at'])
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskResult":
+        if "created_at" in data and data["created_at"]:
+            data["created_at"] = datetime.fromisoformat(data["created_at"])
         return cls(**data)
 
 
@@ -139,55 +180,54 @@ class Task:
         """Mark task as failed"""
         self.status = TaskStatus.FAILED
         self.completed_at = datetime.now()
-        self.result = TaskResult(
-            success=False,
-            error_message=error_message
-        )
+        self.result = TaskResult(success=False, error_message=error_message)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         data = {
-            'id': self.id,
-            'type': self.type.value,
-            'schedule': self.schedule.isoformat() if self.schedule else None,
-            'cron_expression': self.cron_expression,
-            'status': self.status.value,
-            'priority': self.priority.value,
-            'config': self.config,
-            'resources': self.resources.to_dict(),
-            'result': self.result.to_dict() if self.result else None,
-            'retry_count': self.retry_count,
-            'max_retries': self.max_retries,
-            'created_at': self.created_at.isoformat(),
-            'started_at': self.started_at.isoformat() if self.started_at else None,
-            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
-            'created_by': self.created_by,
-            'description': self.description
+            "id": self.id,
+            "type": self.type.value,
+            "schedule": self.schedule.isoformat() if self.schedule else None,
+            "cron_expression": self.cron_expression,
+            "status": self.status.value,
+            "priority": self.priority.value,
+            "config": self.config,
+            "resources": self.resources.to_dict(),
+            "result": self.result.to_dict() if self.result else None,
+            "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
+            "created_at": self.created_at.isoformat(),
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat()
+            if self.completed_at
+            else None,
+            "created_by": self.created_by,
+            "description": self.description,
         }
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Task':
+    def from_dict(cls, data: Dict[str, Any]) -> "Task":
         """Create task from dictionary"""
         # Convert enums
-        data['type'] = TaskType(data['type'])
-        data['status'] = TaskStatus(data['status'])
-        data['priority'] = TaskPriority(data['priority'])
+        data["type"] = TaskType(data["type"])
+        data["status"] = TaskStatus(data["status"])
+        data["priority"] = TaskPriority(data["priority"])
 
         # Convert datetime strings
-        if 'schedule' in data and data['schedule']:
-            data['schedule'] = datetime.fromisoformat(data['schedule'])
-        if 'created_at' in data:
-            data['created_at'] = datetime.fromisoformat(data['created_at'])
-        if 'started_at' in data and data['started_at']:
-            data['started_at'] = datetime.fromisoformat(data['started_at'])
-        if 'completed_at' in data and data['completed_at']:
-            data['completed_at'] = datetime.fromisoformat(data['completed_at'])
+        if "schedule" in data and data["schedule"]:
+            data["schedule"] = datetime.fromisoformat(data["schedule"])
+        if "created_at" in data:
+            data["created_at"] = datetime.fromisoformat(data["created_at"])
+        if "started_at" in data and data["started_at"]:
+            data["started_at"] = datetime.fromisoformat(data["started_at"])
+        if "completed_at" in data and data["completed_at"]:
+            data["completed_at"] = datetime.fromisoformat(data["completed_at"])
 
         # Convert nested objects
-        if 'resources' in data and isinstance(data['resources'], dict):
-            data['resources'] = TaskResources.from_dict(data['resources'])
-        if 'result' in data and data['result']:
-            data['result'] = TaskResult.from_dict(data['result'])
+        if "resources" in data and isinstance(data["resources"], dict):
+            data["resources"] = TaskResources.from_dict(data["resources"])
+        if "result" in data and data["result"]:
+            data["result"] = TaskResult.from_dict(data["result"])
 
         return cls(**data)

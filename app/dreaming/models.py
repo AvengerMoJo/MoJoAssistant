@@ -64,6 +64,12 @@ class BChunk:
     # Embedding
     embedding: Optional[List[float]] = None
 
+    # Quality tracking
+    quality_level: str = "basic"  # basic/good/premium
+    needs_upgrade: bool = True
+    llm_used: Optional[str] = None
+    language: Optional[str] = None
+
     # Timestamps
     created_at: datetime = field(default_factory=datetime.now)
 

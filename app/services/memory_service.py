@@ -8,7 +8,10 @@ import math
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import threading
 
+from app.scheduler.core import Scheduler
+from app.scheduler.models import Task, TaskType, TaskPriority
 from app.memory.simplified_embeddings import SimpleEmbedding
 from app.memory.working_memory import WorkingMemory
 from app.memory.active_memory import ActiveMemory
@@ -100,9 +103,90 @@ class MemoryService:
         )
         self.memory_paging_threshold = self.config.get("memory_paging_threshold", 0.5)
 
+        # Initialize Scheduler
+        self.scheduler = Scheduler(
+            storage_path=os.path.join(data_dir, "scheduler_tasks.json"),
+            logger=self.logger
+        )
+        self.scheduler_thread = None
+
         self.logger.info(
             f"Memory manager initialized with {self.embedding.backend} embeddings using model: {self.embedding.model_name}"
         )
+
+    def start_scheduler(self):
+        """Start the scheduler in a background thread"""
+        if self.scheduler_thread and self.scheduler_thread.is_alive():
+            self.logger.warning("Scheduler thread already running")
+            return
+
+        def run_scheduler_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.scheduler.start())
+
+        self.scheduler_thread = threading.Thread(target=run_scheduler_loop, daemon=True)
+        self.scheduler_thread.start()
+        self.logger.info("Scheduler thread started")
+
+    def trigger_dreaming(self, conversation_id: str = None) -> List[str]:
+        """
+        Trigger dreaming tasks for conversations
+        
+        Args:
+            conversation_id: Optional specific conversation ID. If None, scans for recent ones.
+        
+        Returns:
+            List of created task IDs
+        """
+        created_tasks = []
+        
+        # Helper to create task
+        def create_task_for_conversation(memory_item):
+            conv_id = memory_item.get("id")
+            if not conv_id:
+                return None
+                
+            task_id = f"dreaming_{conv_id}"
+            
+            # Check if task already exists
+            if self.scheduler.get_task(task_id):
+                return None
+            
+            task = Task(
+                id=task_id,
+                type=TaskType.DREAMING,
+                priority=TaskPriority.MEDIUM,
+                config={
+                    "conversation_id": conv_id,
+                    "conversation_text": memory_item.get("text", ""),
+                    "metadata": memory_item.get("metadata", {})
+                }
+            )
+            
+            if self.scheduler.add_task(task):
+                return task_id
+            return None
+
+        if conversation_id:
+            # Find specific conversation
+            for memory in self.archival_memory.memories:
+                if memory.get("id") == conversation_id:
+                    tid = create_task_for_conversation(memory)
+                    if tid: created_tasks.append(tid)
+                    break
+        else:
+            # Scan all conversations
+            # TODO: Add filter to only process recent ones
+            for memory in self.archival_memory.memories:
+                if memory.get("metadata", {}).get("type") == "conversation":
+                    tid = create_task_for_conversation(memory)
+                    if tid: created_tasks.append(tid)
+
+        if created_tasks:
+            self.logger.info(f"Triggered {len(created_tasks)} dreaming tasks")
+        
+        return created_tasks
 
     def _setup_embedding(
         self, model_name: str, backend: str, device: str | None = None

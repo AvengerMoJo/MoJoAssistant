@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 
 from app.scheduler.queue import TaskQueue
-from app.scheduler.models import Task, TaskStatus, TaskType
+from app.scheduler.models import Task, TaskStatus, TaskType, Schedule
 from app.scheduler.executor import TaskExecutor
 
 
@@ -27,12 +27,7 @@ class Scheduler:
     - Performance monitoring
     """
 
-    def __init__(
-        self,
-        storage_path: str = None,
-        tick_interval: int = 60,
-        logger = None
-    ):
+    def __init__(self, storage_path: str = None, tick_interval: int = 60, logger=None):
         """
         Initialize scheduler
 
@@ -49,15 +44,16 @@ class Scheduler:
         # State
         self.running = False
         self.current_task: Optional[Task] = None
+        self._state_lock = asyncio.Lock()  # Thread-safe state access
         self.tick_count = 0
 
         # Statistics
         self.stats = {
-            'started_at': None,
-            'tasks_executed': 0,
-            'tasks_succeeded': 0,
-            'tasks_failed': 0,
-            'last_tick': None
+            "started_at": None,
+            "tasks_executed": 0,
+            "tasks_succeeded": 0,
+            "tasks_failed": 0,
+            "last_tick": None,
         }
 
         self._log("Scheduler initialized")
@@ -81,18 +77,21 @@ class Scheduler:
             return
 
         self.running = True
-        self.stats['started_at'] = datetime.now()
+        self.stats["started_at"] = datetime.now()
         self._log("Scheduler started")
 
         # Set up signal handlers for graceful shutdown (only in main thread)
         try:
             import threading
+
             if threading.current_thread() is threading.main_thread():
                 signal.signal(signal.SIGINT, self._signal_handler)
                 signal.signal(signal.SIGTERM, self._signal_handler)
                 self._log("Signal handlers registered (main thread)")
             else:
-                self._log("Running in background thread, signal handlers skipped", "debug")
+                self._log(
+                    "Running in background thread, signal handlers skipped", "debug"
+                )
         except ValueError:
             # Signal registration failed, continue without it
             self._log("Signal handlers not available in this context", "debug")
@@ -123,7 +122,7 @@ class Scheduler:
         while self.running:
             try:
                 self.tick_count += 1
-                self.stats['last_tick'] = datetime.now()
+                self.stats["last_tick"] = datetime.now()
 
                 self._log(f"Tick #{self.tick_count}", "debug")
 
@@ -157,7 +156,7 @@ class Scheduler:
             task: Task to execute
         """
         self.current_task = task
-        self.stats['tasks_executed'] += 1
+        self.stats["tasks_executed"] += 1
 
         try:
             # Mark task as running
@@ -168,21 +167,62 @@ class Scheduler:
 
             # Execute via executor
             result = await self.executor.execute(task)
-
-            # Update task with result
             if result.success:
                 task.mark_completed(result)
-                self.stats['tasks_succeeded'] += 1
+                self.stats["tasks_succeeded"] += 1
                 self._log(f"Task {task.id} completed successfully")
+
+                # Check if recurring task needs rescheduling
+                if task.schedule and task.schedule.cron_expression:
+                    from app.scheduler.triggers import CronTrigger
+                    from app.scheduler.models import Schedule
+
+                    # Parse the schedule
+                    if isinstance(task.schedule, Schedule):
+                        # Already a Schedule object, use directly
+                        trigger = CronTrigger(task.schedule.cron_expression)
+                        schedule_obj = task.schedule
+                    else:
+                        # Legacy datetime-based schedule, convert to Schedule
+                        if isinstance(task.schedule, datetime):
+                            trigger = CronTrigger(f"* * * *")  # Daily at schedule time
+                            schedule_obj = Schedule(when=task.schedule)
+                        else:
+                            # Assume it's a cron expression string
+                            trigger = CronTrigger(task.schedule)
+                            schedule_obj = Schedule(cron_expression=task.schedule)
+
+                    # Calculate next run time
+                    next_run = trigger.get_next_run_time(after=datetime.now())
+
+                    # Create new task instance for next execution
+                    new_task = Task(
+                        id=task.id,  # Reuse ID for tracking
+                        type=task.type,
+                        description=task.description,
+                        config=task.config,
+                        priority=task.priority,
+                        schedule=schedule_obj,
+                        status=TaskStatus.PENDING,
+                    )
+
+                    self.queue.add(new_task)
+                    self._log(
+                        f"Task {task.id} rescheduled for next run at {next_run.isoformat()}"
+                    )
+                else:
+                    self._log(f"Task {task.id} completed (non-recurring)")
             else:
                 # Check if can retry
                 if task.can_retry():
                     task.retry_count += 1
                     task.status = TaskStatus.PENDING  # Re-queue for retry
-                    self._log(f"Task {task.id} failed, will retry ({task.retry_count}/{task.max_retries})")
+                    self._log(
+                        f"Task {task.id} failed, will retry ({task.retry_count}/{task.max_retries})"
+                    )
                 else:
                     task.mark_failed(result.error_message or "Unknown error")
-                    self.stats['tasks_failed'] += 1
+                    self.stats["tasks_failed"] += 1
                     self._log(f"Task {task.id} failed permanently", "error")
 
             # Save updated task
@@ -191,7 +231,7 @@ class Scheduler:
         except Exception as e:
             self._log(f"Error executing task {task.id}: {e}", "error")
             task.mark_failed(str(e))
-            self.stats['tasks_failed'] += 1
+            self.stats["tasks_failed"] += 1
             self.queue.update(task)
 
         finally:
@@ -244,18 +284,26 @@ class Scheduler:
         queue_stats = self.queue.get_statistics()
 
         return {
-            'running': self.running,
-            'tick_count': self.tick_count,
-            'tick_interval': self.tick_interval,
-            'current_task': {
-                'id': self.current_task.id,
-                'type': self.current_task.type.value,
-                'started_at': self.current_task.started_at.isoformat() if self.current_task.started_at else None
-            } if self.current_task else None,
-            'statistics': {
+            "running": self.running,
+            "tick_count": self.tick_count,
+            "tick_interval": self.tick_interval,
+            "current_task": {
+                "id": self.current_task.id,
+                "type": self.current_task.type.value,
+                "started_at": self.current_task.started_at.isoformat()
+                if self.current_task.started_at
+                else None,
+            }
+            if self.current_task
+            else None,
+            "statistics": {
                 **self.stats,
-                'started_at': self.stats['started_at'].isoformat() if self.stats['started_at'] else None,
-                'last_tick': self.stats['last_tick'].isoformat() if self.stats['last_tick'] else None
+                "started_at": self.stats["started_at"].isoformat()
+                if self.stats["started_at"]
+                else None,
+                "last_tick": self.stats["last_tick"].isoformat()
+                if self.stats["last_tick"]
+                else None,
             },
-            'queue': queue_stats
+            "queue": queue_stats,
         }
