@@ -536,7 +536,8 @@ async def run_setup_wizard():
 ║                                                              ║
 ║          MoJoAssistant AI Setup Wizard                        ║
 ║                                                              ║
-║  I'll help you configure MoJoAssistant using Qwen3 1.7B      ║
+║  Conversational chat interface to configure MoJoAssistant   ║
+║  Chat naturally with AI, I'll guide you through setup       ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
     """)

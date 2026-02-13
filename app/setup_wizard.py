@@ -6,20 +6,23 @@ Conversational setup wizard that uses Qwen3 1.7B to guide users through
 configuration with access to all documentation.
 
 This wizard:
-- Reads all documentation files
-- Asks questions one-by-one
-- Fills out .env file based on answers
-- Handles complex scenarios (MCP modes, passwords, OpenCode, etc.)
+- Works like interactive-cli chat interface
+- Has continuous conversation with AI
+- LLM naturally asks questions based on context
+- No rigid question sequences
+- Full documentation access for intelligent responses
 """
 
 import asyncio
 import sys
 import os
 import json
-import glob
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
 
 
 class SetupWizard:
@@ -60,6 +63,27 @@ class SetupWizard:
         print(f"\n✓ Loaded {len(self.docs_to_load)} documentation files")
         return docs_context
 
+    async def get_user_input(self) -> str:
+        """Get user input with proper encoding handling"""
+        try:
+            response = input("\n> ")
+            # Decode if bytes received (handle encoding issues)
+            if isinstance(response, bytes):
+                response = response.decode("utf-8")
+            return response
+        except UnicodeDecodeError:
+            # If encoding fails, return raw bytes
+            response = input("\n> ")
+            if isinstance(response, bytes):
+                try:
+                    return response.decode("utf-8")
+                except:
+                    return response.decode("latin-1", errors="replace")
+            return response
+        except Exception as e:
+            print(f"\nError getting input: {e}")
+            return ""
+
     async def start_setup(self) -> bool:
         """Start the conversational setup flow"""
         print("""
@@ -68,9 +92,7 @@ class SetupWizard:
 ║          MoJoAssistant AI Setup Wizard                        ║
 ║                                                              ║
 ║  I'll help you configure MoJoAssistant using Qwen3 1.7B      ║
-║                                                              ║
-║  I have access to all documentation to answer your questions  ║
-║  about MoJoAssistant, OpenCode Manager, and configuration    ║
+║  Chat with me naturally, and I'll guide you through setup    ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
@@ -78,159 +100,110 @@ class SetupWizard:
         # Load documentation
         docs = await self.load_documentation()
 
-        # Start conversational flow
-        conversation = [
-            "Welcome to MoJoAssistant setup!",
-            "I'm your AI setup assistant. I'll ask you questions one-by-one",
-            "and configure everything for you based on your answers.",
-            "",
-            "First, tell me: What do you want to use MoJoAssistant for?",
+        # Add documentation to conversation context
+        context = f"""
+You are helping configure MoJoAssistant. I have the following documentation available:
+{docs}
+
+You should guide the user through setup by asking questions naturally.
+"""
+        self.conversation_history.append({"role": "system", "content": context})
+
+        # Print welcome message
+        welcome = "Welcome! I'm your AI setup assistant. Let's configure MoJoAssistant together. What would you like to do today?"
+        await self.add_message(welcome)
+        print(f"\n🤖 {welcome}")
+
+        # Chat loop
+        try:
+            history = FileHistory(".mojo_setup_history")
+            session = PromptSession(history=history)
+
+            max_rounds = 20  # Limit to prevent infinite loops
+            round_num = 0
+
+            while round_num < max_rounds:
+                round_num += 1
+                print(f"\n{'─' * 60}")
+                print(f"Round {round_num}/{max_rounds}")
+
+                # Get user input
+                user_input = await self.get_user_input()
+
+                if not user_input.strip():
+                    # Empty input, just ask again
+                    continue
+
+                # Add user message to history
+                await self.add_message(f"User: {user_input}")
+
+                # Get AI response
+                ai_response = await self.llm.generate_response(
+                    user_input, self.conversation_history
+                )
+
+                if not ai_response:
+                    print(
+                        "❌ AI couldn't generate a response. Let me try a different approach."
+                    )
+                    ai_response = "I apologize, but I'm having trouble responding. Let's continue our conversation."
+
+                # Add AI response to history
+                await self.add_message(f"Assistant: {ai_response}")
+
+                # Print AI response
+                print(f"\n🤖 {ai_response}")
+
+                # Check if setup is complete
+                if await self.check_setup_complete(user_input, ai_response):
+                    print("\n" + "=" * 60)
+                    print("✓ Setup complete!")
+                    print("=" * 60)
+                    await self.generate_config()
+                    return True
+
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Setup interrupted by user")
+            print("You can continue by running the CLI normally")
+            return False
+        except Exception as e:
+            print(f"\n\n❌ Error during setup: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return False
+
+        return False
+
+    async def check_setup_complete(self, user_input: str, ai_response: str) -> bool:
+        """Check if setup is complete based on conversation"""
+        # Simple heuristics:
+        # - If user says they're done or asks to finish
+        # - If AI indicates we have enough information
+
+        user_lower = user_input.lower()
+        response_lower = ai_response.lower()
+
+        # Check for completion indicators
+        completion_indicators = [
+            "complete",
+            "done",
+            "finish",
+            "all set",
+            "good",
+            "thanks",
+            "ready",
         ]
 
-        # Run conversation loop
-        answer = None
-        for message in conversation:
-            await self.add_message(message)
-            print(f"\n🤖 {message}")
-            answer = await self.get_user_input()
-            await self.add_message(f"User: {answer}")
-            print(f"\n✓ Got: {answer}")
-            await asyncio.sleep(0.5)
+        if any(indicator in user_lower for indicator in completion_indicators):
+            print("\n👍 You're all set!")
+            return True
 
-        # Analyze response and ask next questions
-        if answer:
-            await self.ask_for_use_case(answer, docs)
-        else:
-            await self.ask_for_use_case("No specific use case provided", docs)
-        await self.ask_for_llm_preference(docs)
-        await self.ask_for_mcp_mode(docs)
-        await self.ask_for_passwords(docs)
-        await self.ask_for_opencode(docs)
-        await self.ask_for_advanced_options(docs)
+        if any(indicator in response_lower for indicator in completion_indicators):
+            print("\n✓ Setup complete!")
+            return True
 
-        # Generate configuration
-        print("\n" + "=" * 60)
-        print("✓ Setup complete! Generating configuration...")
-        print("=" * 60)
-
-        await self.generate_config()
-
-        return True
-
-    async def ask_for_use_case(self, first_answer: str, docs: str):
-        """Ask about the user's use case"""
-        response = await self.llm.generate_response(first_answer, docs)
-        if response:
-            await self.add_message(response)
-            print(f"\n{response}")
-
-            self.setup_data["priorities"] = response
-        else:
-            self.setup_data["priorities"] = "Balanced approach"
-
-    async def ask_for_llm_preference(self, docs: str):
-        """Ask about LLM preferences"""
-        prompt = f"""What LLM would you like to use? I have these options:
-
- 1. Local Qwen3 1.7B (free, private, no API needed)
- 2. OpenAI GPT-4 (paid, high quality)
- 3. Anthropic Claude (paid, high quality)
- 4. Local model (you have, no API needed)
-
- Tell me your preference."""
-
-        response = await self.llm.generate_response(prompt, docs)
-        await self.add_message(response)
-        print(f"\n{response}")
-
-        self.setup_data["llm_choice"] = response
-
-    async def ask_for_mcp_mode(self, docs: str):
-        """Ask about MCP mode"""
-        prompt = f"""How do you want to connect AI clients?
-
- 1. STDIO mode (e.g., Claude Desktop, chatmcp)
-    - Local connection, no network
-    - Simple setup
-    - Recommended for desktop apps
-
- 2. HTTP Stream mode (e.g., web apps, browser extensions)
-    - Network connection
-    - More flexible
-    - Requires HTTP server
-
- Tell me your preference."""
-
-        response = await self.llm.generate_response(prompt, docs)
-        await self.add_message(response)
-        print(f"\n{response}")
-
-        self.setup_data["mcp_mode"] = response
-
-    async def ask_for_passwords(self, docs: str):
-        """Ask about password configuration"""
-        prompt = f"""Security: What password do you want to use?
-
- 1. Generate a strong random password (recommended)
-    - I'll generate one for you
-    - Changes regularly
-    - No copy-paste needed
-
- 2. Use a specific password
-    - You provide the password
-    - You manage it
-    - You can change it later"""
-
-        response = await self.llm.generate_response(prompt, docs)
-        await self.add_message(response)
-        print(f"\n{response}")
-
-        self.setup_data["password_choice"] = response
-
-    async def ask_for_opencode(self, docs: str):
-        """Ask about OpenCode Manager"""
-        prompt = f"""Do you want to set up OpenCode Manager for AI coding agents?
-
- 1. Yes, set up OpenCode Manager
-    - Manage AI coding projects
-    - SSH key management
-    - Multiple AI agent orchestration
-
- 2. No, skip OpenCode Manager
-    - Skip for now
-    - Set up later
-
- 3. Maybe, ask me more"""
-
-        response = await self.llm.generate_response(prompt, docs)
-        await self.add_message(response)
-        print(f"\n{response}")
-
-        self.setup_data["opencode_choice"] = response
-
-    async def ask_for_advanced_options(self, docs: str):
-        """Ask about advanced options"""
-        prompt = f"""Additional features to enable:
-
- 1. Dreaming (memory consolidation)
-    - Automatic nightly memory consolidation
-    - Improves search accuracy
-    - 3 AM schedule
-
- 2. Scheduler (background tasks)
-    - Background job execution
-    - Recurring tasks
-    - Resource management
-
- 3. Both dreaming and scheduler
-
- 4. None (basic setup)"""
-
-        response = await self.llm.generate_response(prompt, docs)
-        await self.add_message(response)
-        print(f"\n{response}")
-
-        self.setup_data["features"] = response
+        return False
 
     async def generate_config(self):
         """Generate configuration based on setup data"""
@@ -267,13 +240,7 @@ class SetupWizard:
         print("\n" + "=" * 60)
         print("Configuration Generated!")
         print("=" * 60)
-        print(f"\nUse case: {self.setup_data.get('use_case', 'N/A')}")
-        print(f"LLM: {self.setup_data.get('llm_choice', 'N/A')}")
-        print(f"MCP Mode: {self.setup_data.get('mcp_mode', 'N/A')}")
-        print(f"OpenCode: {self.setup_data.get('opencode_choice', 'N/A')}")
-        print(f"Features: {self.setup_data.get('features', 'N/A')}")
-
-        print("\n✓ Setup wizard complete!")
+        print(f"\n✓ Setup wizard complete!")
         print("\nNext steps:")
         print("  1. Review the .env file")
         print("  2. Adjust any settings if needed")
@@ -423,27 +390,6 @@ OPENCODE_BIN=auto-detected
         """Add message to conversation history"""
         self.conversation_history.append({"role": "assistant", "content": message})
 
-    async def get_user_input(self) -> str:
-        """Get user input"""
-        try:
-            response = input("\nYour answer: ")
-            # Decode if bytes received (handle encoding issues)
-            if isinstance(response, bytes):
-                response = response.decode("utf-8")
-            return response
-        except UnicodeDecodeError:
-            # If encoding fails, return raw bytes
-            response = input("\nYour answer: ")
-            if isinstance(response, bytes):
-                try:
-                    return response.decode("utf-8")
-                except:
-                    return response.decode("latin-1", errors="replace")
-            return response
-        except Exception as e:
-            print(f"\nError getting input: {e}")
-            return ""
-
 
 async def main():
     """Main entry point"""
@@ -459,27 +405,30 @@ async def main():
 
     try:
         llm = LLMInterface()
-        if "local" in str(llm).lower():
+        try:
             llm.set_active_interface("qwen3-1.7b")
-    except Exception as e:
-        print(f"Warning: Could not initialize LLM: {e}")
+        except:
+            pass  # This is expected if model isn't downloaded
+
+        wizard = SetupWizard(llm)
+
+        try:
+            success = await wizard.start_setup()
+            return 0 if success else 1
+        except KeyboardInterrupt:
+            print("\n\n✗ Setup interrupted by user")
+            return 1
+        except Exception as e:
+            print(f"\n✗ Error during setup: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return 1
+
+    except ImportError as e:
+        print(f"Warning: Could not import setup components: {e}")
         print("Setup wizard requires LLM to work properly")
         print("Please install LLM or provide correct configuration")
-        return 1
-
-    wizard = SetupWizard(llm)
-
-    try:
-        await wizard.start_setup()
-        return 0
-    except KeyboardInterrupt:
-        print("\n\n✗ Setup interrupted by user")
-        return 1
-    except Exception as e:
-        print(f"\n✗ Error during setup: {e}")
-        import traceback
-
-        traceback.print_exc()
         return 1
 
 
