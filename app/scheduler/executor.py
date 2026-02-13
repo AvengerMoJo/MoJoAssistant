@@ -7,8 +7,11 @@ Routes tasks to appropriate execution handlers based on task type.
 import asyncio
 from typing import Optional
 from datetime import datetime
+from pathlib import Path
 
 from app.scheduler.models import Task, TaskType, TaskResult
+from app.dreaming.pipeline import DreamingPipeline
+from app.llm.llm_interface import LLMInterface
 
 
 class TaskExecutor:
@@ -22,14 +25,17 @@ class TaskExecutor:
     - Custom tasks (user-defined)
     """
 
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, llm_config_path: Optional[str] = None):
         """
         Initialize executor
 
         Args:
             logger: Optional logger instance
+            llm_config_path: Path to LLM configuration file for dreaming
         """
         self.logger = logger
+        self.llm_config_path = llm_config_path or "config/llm_config.json"
+        self._dreaming_pipeline = None
 
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
@@ -71,24 +77,81 @@ class TaskExecutor:
                 error_message=str(e)
             )
 
+    def _get_dreaming_pipeline(self, quality_level: str = "basic") -> DreamingPipeline:
+        """Get or initialize dreaming pipeline"""
+        if self._dreaming_pipeline is None:
+            # Initialize LLM interface
+            llm = LLMInterface(config_file=self.llm_config_path)
+
+            # Set active interface for dreaming tasks
+            if 'qwen-coder-small' in llm.interfaces:
+                llm.set_active_interface('qwen-coder-small')
+
+            # Create pipeline
+            self._dreaming_pipeline = DreamingPipeline(
+                llm_interface=llm,
+                quality_level=quality_level,
+                logger=self.logger
+            )
+
+        return self._dreaming_pipeline
+
     async def _execute_dreaming(self, task: Task) -> TaskResult:
         """
         Execute dreaming task (memory consolidation)
 
-        TODO: Implement full A→B→C→D pipeline
-        For now, returns placeholder result
+        Task config should contain:
+        - conversation_id: Unique ID for the conversation
+        - conversation_text: Raw conversation content
+        - quality_level: Optional quality level (basic/good/premium)
         """
-        self._log(f"Dreaming task {task.id} - not yet implemented", "warning")
+        self._log(f"Dreaming task {task.id} - processing conversation")
 
-        # Simulate work
-        await asyncio.sleep(1)
+        try:
+            # Extract configuration
+            conversation_id = task.config.get('conversation_id')
+            conversation_text = task.config.get('conversation_text')
+            quality_level = task.config.get('quality_level', 'basic')
 
-        return TaskResult(
-            success=True,
-            output_file=None,
-            metrics={'placeholder': True},
-            error_message=None
-        )
+            if not conversation_id or not conversation_text:
+                return TaskResult(
+                    success=False,
+                    error_message="Missing conversation_id or conversation_text in task config"
+                )
+
+            # Get pipeline
+            pipeline = self._get_dreaming_pipeline(quality_level)
+
+            # Process conversation through A→B→C→D pipeline
+            results = await pipeline.process_conversation(
+                conversation_id=conversation_id,
+                conversation_text=conversation_text,
+                metadata=task.config.get('metadata', {})
+            )
+
+            if results.get('status') == 'success':
+                return TaskResult(
+                    success=True,
+                    output_file=results['stages']['D_archive']['path'],
+                    metrics={
+                        'b_chunks_count': results['stages']['B_chunks']['count'],
+                        'c_clusters_count': results['stages']['C_clusters']['count'],
+                        'quality_level': quality_level,
+                        'archive_path': results['stages']['D_archive']['path']
+                    }
+                )
+            else:
+                return TaskResult(
+                    success=False,
+                    error_message=results.get('error', 'Unknown error during dreaming')
+                )
+
+        except Exception as e:
+            self._log(f"Dreaming task {task.id} failed: {e}", "error")
+            return TaskResult(
+                success=False,
+                error_message=f"Dreaming execution error: {e}"
+            )
 
     async def _execute_scheduled(self, task: Task) -> TaskResult:
         """

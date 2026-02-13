@@ -937,6 +937,85 @@ class ToolRegistry:
                     "properties": {},
                 },
             },
+            # Dreaming Tools
+            {
+                "name": "dreaming_process",
+                "description": "Process a conversation through the dreaming pipeline (A→B→C→D). Transforms raw conversation into semantic chunks, synthesized clusters, and archived knowledge. Use this for immediate memory consolidation or to test the dreaming system.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "conversation_id": {
+                            "type": "string",
+                            "description": "Unique identifier for this conversation",
+                            "minLength": 1,
+                        },
+                        "conversation_text": {
+                            "type": "string",
+                            "description": "Raw conversation content (multi-language supported)",
+                            "minLength": 1,
+                        },
+                        "quality_level": {
+                            "type": "string",
+                            "enum": ["basic", "good", "premium"],
+                            "description": "Processing quality level (basic=local free, good=API budget, premium=extra cost). Default: basic",
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "description": "Optional metadata (topic, date, participants, etc.)",
+                        },
+                    },
+                    "required": ["conversation_id", "conversation_text"],
+                },
+            },
+            {
+                "name": "dreaming_list_archives",
+                "description": "List all archived conversations from the dreaming system. Shows conversation IDs, quality levels, entity counts, and archive metadata. Use this to see what has been consolidated into long-term memory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+            {
+                "name": "dreaming_get_archive",
+                "description": "Retrieve a specific archived conversation with all its chunks, clusters, entities, and relationships. Use this to recall consolidated knowledge from past conversations.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "conversation_id": {
+                            "type": "string",
+                            "description": "ID of the archived conversation",
+                            "minLength": 1,
+                        },
+                        "version": {
+                            "type": "integer",
+                            "description": "Specific version to retrieve (omit for latest version)",
+                            "minimum": 1,
+                        },
+                    },
+                    "required": ["conversation_id"],
+                },
+            },
+            {
+                "name": "dreaming_upgrade_quality",
+                "description": "Upgrade an existing archive to higher quality by reprocessing with better LLM. Progressive enhancement: basic→good (uses API budget), good→premium (extra cost). Use when you need better quality consolidation for important conversations.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "conversation_id": {
+                            "type": "string",
+                            "description": "ID of the conversation to upgrade",
+                            "minLength": 1,
+                        },
+                        "target_quality": {
+                            "type": "string",
+                            "enum": ["good", "premium"],
+                            "description": "Target quality level to upgrade to",
+                        },
+                    },
+                    "required": ["conversation_id", "target_quality"],
+                },
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -1356,6 +1435,15 @@ class ToolRegistry:
             return await self._execute_scheduler_restart_daemon(args)
         elif name == "scheduler_daemon_status":
             return await self._execute_scheduler_daemon_status(args)
+        # Dreaming Tools
+        elif name == "dreaming_process":
+            return await self._execute_dreaming_process(args)
+        elif name == "dreaming_list_archives":
+            return await self._execute_dreaming_list_archives(args)
+        elif name == "dreaming_get_archive":
+            return await self._execute_dreaming_get_archive(args)
+        elif name == "dreaming_upgrade_quality":
+            return await self._execute_dreaming_upgrade_quality(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -2225,4 +2313,168 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Failed to get scheduler daemon status: {str(e)}"
+            }
+
+    # ========================================================================
+    # Dreaming Tool Executors
+    # ========================================================================
+
+    async def _execute_dreaming_process(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute dreaming_process tool"""
+        try:
+            conversation_id = args.get("conversation_id")
+            conversation_text = args.get("conversation_text")
+            quality_level = args.get("quality_level", "basic")
+            metadata = args.get("metadata", {})
+
+            # Initialize dreaming pipeline
+            from app.dreaming.pipeline import DreamingPipeline
+            from app.llm.llm_interface import LLMInterface
+
+            llm = LLMInterface(config_file=self.config.get("llm_config_path", "config/llm_config.json"))
+
+            # Set active interface for dreaming
+            if 'qwen-coder-small' in llm.interfaces:
+                llm.set_active_interface('qwen-coder-small')
+
+            pipeline = DreamingPipeline(
+                llm_interface=llm,
+                quality_level=quality_level,
+                logger=self.logger
+            )
+
+            # Process conversation
+            results = await pipeline.process_conversation(
+                conversation_id=conversation_id,
+                conversation_text=conversation_text,
+                metadata=metadata
+            )
+
+            if results.get('status') == 'success':
+                return {
+                    "status": "success",
+                    "conversation_id": conversation_id,
+                    "quality_level": quality_level,
+                    "stages": results.get('stages', {}),
+                    "message": f"Successfully processed conversation {conversation_id}"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": results.get('error', 'Unknown error during processing')
+                }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Dreaming processing failed: {str(e)}"
+            }
+
+    async def _execute_dreaming_list_archives(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute dreaming_list_archives tool"""
+        try:
+            from app.dreaming.pipeline import DreamingPipeline
+            from app.llm.llm_interface import LLMInterface
+
+            llm = LLMInterface(config_file=self.config.get("llm_config_path", "config/llm_config.json"))
+
+            pipeline = DreamingPipeline(
+                llm_interface=llm,
+                quality_level="basic",
+                logger=self.logger
+            )
+
+            archives = pipeline.list_archives()
+
+            return {
+                "status": "success",
+                "archives": archives,
+                "count": len(archives),
+                "message": f"Found {len(archives)} archived conversations"
+            }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to list archives: {str(e)}"
+            }
+
+    async def _execute_dreaming_get_archive(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute dreaming_get_archive tool"""
+        try:
+            conversation_id = args.get("conversation_id")
+            version = args.get("version")
+
+            from app.dreaming.pipeline import DreamingPipeline
+            from app.llm.llm_interface import LLMInterface
+
+            llm = LLMInterface(config_file=self.config.get("llm_config_path", "config/llm_config.json"))
+
+            pipeline = DreamingPipeline(
+                llm_interface=llm,
+                quality_level="basic",
+                logger=self.logger
+            )
+
+            archive = pipeline.get_archive(conversation_id=conversation_id, version=version)
+
+            if archive:
+                return {
+                    "status": "success",
+                    "archive": archive,
+                    "message": f"Retrieved archive for {conversation_id}"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Archive not found for conversation {conversation_id}"
+                }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get archive: {str(e)}"
+            }
+
+    async def _execute_dreaming_upgrade_quality(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute dreaming_upgrade_quality tool"""
+        try:
+            conversation_id = args.get("conversation_id")
+            target_quality = args.get("target_quality")
+
+            from app.dreaming.pipeline import DreamingPipeline
+            from app.llm.llm_interface import LLMInterface
+
+            llm = LLMInterface(config_file=self.config.get("llm_config_path", "config/llm_config.json"))
+
+            pipeline = DreamingPipeline(
+                llm_interface=llm,
+                quality_level="basic",  # Will be upgraded
+                logger=self.logger
+            )
+
+            results = await pipeline.upgrade_quality(
+                conversation_id=conversation_id,
+                target_quality=target_quality
+            )
+
+            if results.get('status') == 'success':
+                return {
+                    "status": "success",
+                    "conversation_id": conversation_id,
+                    "upgraded_from": results.get('upgraded_from'),
+                    "upgraded_to": results.get('upgraded_to'),
+                    "stages": results.get('stages', {}),
+                    "message": f"Successfully upgraded {conversation_id} to {target_quality}"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": results.get('error', 'Unknown error during upgrade')
+                }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Quality upgrade failed: {str(e)}"
             }

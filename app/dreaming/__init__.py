@@ -10,9 +10,15 @@ File: app/dreaming/__init__.py
 """
 
 from app.dreaming.models import BChunk, CCluster, DArchive
+from app.dreaming.pipeline import DreamingPipeline
+from app.dreaming.chunker import ConversationChunker
+from app.dreaming.synthesizer import DreamingSynthesizer
 
 __all__ = [
     'BChunk',
     'CCluster',
     'DArchive',
+    'DreamingPipeline',
+    'ConversationChunker',
+    'DreamingSynthesizer',
 ]
