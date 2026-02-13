@@ -404,11 +404,36 @@ async def main():
     print("📊 Loading documentation knowledge base...")
 
     try:
-        llm = LLMInterface()
-        try:
-            llm.set_active_interface("qwen3-1.7b")
-        except:
-            pass  # This is expected if model isn't downloaded
+        # Load LLM interface with configuration
+        llm = LLMInterface(config_file="config/llm_config.json")
+        # Get available interfaces
+        available = llm.get_available_interfaces()
+        if available:
+            print(f"  Available interfaces: {', '.join(available)}")
+
+            # Try to get default from config, otherwise use first available
+            import json
+
+            try:
+                with open("config/llm_config.json", "r") as f:
+                    config = json.load(f)
+                    default = config.get("default_interface")
+                    if default in available:
+                        llm.set_active_interface(default)
+                    else:
+                        print(
+                            f"  ⚠️  Default interface '{default}' not found in available interfaces"
+                        )
+                        print(f"  Using first available: {available[0]}")
+                        llm.set_active_interface(available[0])
+            except:
+                # Config loading failed, use first available
+                print(f"  Using first available interface: {available[0]}")
+                llm.set_active_interface(available[0])
+        else:
+            print("  ⚠️  No LLM interfaces configured!")
+            print("  Please ensure config/llm_config.json is configured")
+            print("  Or run: python install_mojo.py")
 
         wizard = SetupWizard(llm)
 
