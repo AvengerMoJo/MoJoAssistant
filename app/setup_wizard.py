@@ -425,8 +425,24 @@ OPENCODE_BIN=auto-detected
 
     async def get_user_input(self) -> str:
         """Get user input"""
-        response = input("\nYour answer: ")
-        return response
+        try:
+            response = input("\nYour answer: ")
+            # Decode if bytes received (handle encoding issues)
+            if isinstance(response, bytes):
+                response = response.decode("utf-8")
+            return response
+        except UnicodeDecodeError:
+            # If encoding fails, return raw bytes
+            response = input("\nYour answer: ")
+            if isinstance(response, bytes):
+                try:
+                    return response.decode("utf-8")
+                except:
+                    return response.decode("latin-1", errors="replace")
+            return response
+        except Exception as e:
+            print(f"\nError getting input: {e}")
+            return ""
 
 
 async def main():
