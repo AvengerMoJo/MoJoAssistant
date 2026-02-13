@@ -137,8 +137,8 @@ You should guide the user through setup by asking questions naturally.
                 # Add user message to history
                 await self.add_message(f"User: {user_input}")
 
-                # Get AI response
-                ai_response = await self.llm.generate_response(
+                # Get AI response (synchronous method)
+                ai_response = self.llm.generate_response(
                     user_input, self.conversation_history
                 )
 
