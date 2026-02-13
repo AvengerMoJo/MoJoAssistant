@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-MoJoAssistant Model Downloader & Converter (Binary Version)
+MoJoAssistant Model Downloader & Converter
 
-This script:
-1. Downloads Qwen3 1.7B model from HuggingFace
-2. Uses pre-compiled llama-cpp-python binary
+Simplified version:
+1. Downloads Qwen3 1.7B from HuggingFace
+2. Downloads pre-compiled llama.cpp binary from GitHub releases
 3. Converts to GGUF format
-4. Updates llm_config.json with the new model path
-5. Skips download if model already exists
+4. Updates llm_config.json
 
 Usage:
     python download_model.py
 
-For conversion, either:
-    Option 1: Install llama-cpp-python with system libs (recommended)
-    Option 2: Download pre-compiled binary (easier, no build)
+Installation:
+    macOS: brew install llama.cpp  (or download binary from GitHub releases)
+    Linux: python -m pip install llama-cpp-python
+    Windows: python -m pip install llama-cpp-python
 """
 
 import os
@@ -23,7 +23,6 @@ import json
 import subprocess
 import shutil
 from pathlib import Path
-from datetime import datetime
 import platform
 import urllib.request
 import tarfile
@@ -31,8 +30,6 @@ import zipfile
 
 
 class Colors:
-    """Terminal colors"""
-
     GREEN = "\033[92m"
     YELLOW = "\033[93m"
     RED = "\033[91m"
@@ -65,17 +62,14 @@ def print_step(step_num, total_steps, message):
 
 
 def print_success(message):
-    """Print success message"""
     print(f"{Colors.GREEN}✓ {message}{Colors.END}")
 
 
 def print_warning(message):
-    """Print warning message"""
     print(f"{Colors.YELLOW}⚠ {message}{Colors.END}")
 
 
 def print_error(message):
-    """Print error message"""
     print(f"{Colors.RED}✗ {message}{Colors.END}")
 
 
@@ -84,193 +78,139 @@ def detect_os():
     system = platform.system().lower()
     machine = platform.machine().lower()
 
-    # Normalize machine type
-    if machine.startswith("arm") or machine.startswith("aarch"):
-        machine = "arm64"
-    elif machine.startswith("x86"):
-        machine = "amd64"
-    else:
-        machine = "amd64"  # Default
+    if machine.startswith('arm') or machine.startswith('aarch'):
+        machine = 'arm64'
+    elif machine.startswith('x86'):
+        machine = 'amd64'
 
     return system, machine
-
-
-def get_llama_cpp_path():
-    """Get path to llama.cpp binary"""
-    # Check common locations
-    common_paths = [
-        "llama-cli",
-        "llama.cpp/bin/llama-cli",
-        "~/llama.cpp/bin/llama-cli",
-        "~/Dev/Personal/llama.cpp/bin/llama-cli",
-    ]
-
-    # Try each path
-    for path in common_paths:
-        expanded_path = os.path.expanduser(path)
-        if os.path.exists(expanded_path):
-            return expanded_path
-
-    return None
 
 
 def check_llama_cpp():
     """Check if llama.cpp is installed"""
     print_step(0, 4, "Checking for llama.cpp binary")
 
-    path = get_llama_cpp_path()
+    system, machine = detect_os()
 
-    if path:
-        print(f"  ✓ Found: {path}")
+    # Check for Homebrew (macOS)
+    if system == "darwin":
+        brew_paths = ["/opt/homebrew/bin/llama", "/usr/local/bin/llama"]
+        for brew_path in brew_paths:
+            if os.path.exists(brew_path):
+                print(f"  ✓ Found Homebrew installation: {brew_path}")
+                return brew_path
+        print_warning("llama.cpp not found via Homebrew")
+        return None
 
-        # Check version
-        try:
-            result = subprocess.run(
-                [path, "--version"], capture_output=True, text=True, timeout=10
-            )
-            if result.returncode == 0:
-                print(f"  Version: {result.stdout.strip()}")
-                return path
-        except:
-            pass
-
-        print_warning("Binary found but version check failed, proceeding anyway...")
-        return path
+    # Check for llama-cli
+    llama_paths = ["llama-cli", "llama"]
+    for path in llama_paths:
+        if shutil.which(path):
+            print(f"  ✓ Found: {path}")
+            return path
 
     print_error("llama.cpp binary not found!")
-    print()
-    print("Please install one of the following options:")
-    print()
-    print("Option 1: Install llama-cpp-python with system libs (Recommended)")
-    print("  This installs pre-compiled binaries with GPU support")
-    print(
-        f"  {Colors.CYAN}python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121{Colors.END}"
-    )
-    print()
-    print("Option 2: Download pre-compiled binary")
-    print("  This is a single binary, no build required")
-    print("  Visit: https://github.com/ggerganov/llama.cpp/releases")
-    print()
-    print("Option 3: Build from source (not recommended)")
-    print(f"  {Colors.YELLOW}cd ~/llama.cpp && make{Colors.END}")
-    print()
-
     return None
 
 
-def download_precompiled_binary():
-    """Download pre-compiled binary for current platform"""
-    system, machine = detect_os()
-
-    print()
-    print("Binary download options:")
-    print()
-    print(f"  Detected OS: {system}")
-    print(f"  Detected Machine: {machine}")
-    print()
-
-    # Based on system and machine, provide download options
-    if system == "darwin":  # macOS
-        print("For macOS (Intel/Apple Silicon):")
-        print()
-        print("  Option 1: Install via Homebrew (Recommended)")
-        print(f"  {Colors.CYAN}brew install llama.cpp{Colors.END}")
-        print()
-        print("  Option 2: Download pre-built binary")
-        print(f"  {Colors.CYAN}brew install --cask llama{Colors.END}")
-        print()
-        print("  Option 3: Install llama-cpp-python with Metal support")
-        print(
-            f"  {Colors.CYAN}python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/macosx_arm64{Colors.END}"
-        )
-        print(
-            f"  {Colors.CYAN}python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/macosx_x86_64{Colors.END}"
-        )
-
-    elif system == "linux":
-        print("For Linux:")
-        print()
-        print("  Option 1: Install llama-cpp-python with system libs (Recommended)")
-        print(
-            f"  {Colors.CYAN}python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121{Colors.END}"
-        )
-        print()
-        print("  Option 2: Download from GitHub Releases")
-        print("  Visit: https://github.com/ggerganov/llama.cpp/releases")
-        print(f"  Download: llama-cli-{machine}-unknown-linux-gnu.tar.xz")
-
-    elif system == "windows":
-        print("For Windows:")
-        print()
-        print("  Option 1: Install llama-cpp-python with system libs (Recommended)")
-        print(
-            f"  {Colors.CYAN}python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121{Colors.END}"
-        )
-        print()
-        print("  Option 2: Download from GitHub Releases")
-        print("  Visit: https://github.com/ggerganov/llama.cpp/releases")
-        print(f"  Download: llama-cli-{machine}-pc-windows-msvc.zip")
-
-    print()
-    return False
-
-
-def install_llama_cpp_python():
-    """Install llama-cpp-python with pre-compiled binaries"""
-    print_step(0.5, 4, "Installing llama-cpp-python with pre-compiled binaries")
-
-    system, machine = detect_os()
+def download_llama_binary(system, machine):
+    """Download pre-compiled binary from GitHub releases"""
+    print_step(0.5, 4, "Downloading pre-compiled binary")
 
     print(f"  Detected: {system} {machine}")
     print()
-
-    # Build install command based on OS
-    if system == "darwin":  # macOS
-        if machine == "arm64":
-            url = "https://abetlen.github.io/llama-cpp-python/whl/macosx_arm64/llama_cpp-0.2.90-cp312-cp312-macosx_11_0_arm64.whl"
-        else:
-            url = "https://abetlen.github.io/llama-cpp-python/whl/macosx_x86_64/llama_cpp-0.2.90-cp312-cp312-macosx_11_0_x86_64.whl"
-        cmd = ["python", "-m", "pip", "install", "--force-reinstall", url]
-    elif system == "linux":
-        # Try CUDA first, then CPU
-        url = "https://abetlen.github.io/llama-cpp-python/whl/cu121/llama_cpp-0.2.90-cp312-cp312-linux_x86_64.whl"
-        cmd = ["python", "-m", "pip", "install", "--force-reinstall", url]
-    else:
-        print_error(f"Unsupported system: {system}")
-        return False
-
-    print(f"  Installing llama-cpp-python...")
-    print(f"  Command: {' '.join(cmd)}")
+    print("Downloading from GitHub releases...")
     print()
 
+    # Download URL based on OS and architecture
+    if system == "darwin":
+        if machine == "arm64":
+            filename = "llama-cli-darwin-arm64.tar.xz"
+            url = "https://github.com/ggml-org/llama.cpp/releases/download/bb1fa4e/llama-cli-darwin-arm64.tar.xz"
+        else:
+            filename = "llama-cli-darwin-x86_64.tar.xz"
+            url = "https://github.com/ggml-org/llama.cpp/releases/download/bb1fa4e/llama-cli-darwin-x86_64.tar.xz"
+
+    elif system == "linux":
+        if machine == "amd64":
+            filename = "llama-cli-linux-x86_64.tar.xz"
+            url = "https://github.com/ggml-org/llama.cpp/releases/download/bb1fa4e/llama-cli-linux-x86_64.tar.xz"
+        else:
+            filename = "llama-cli-linux-arm64.tar.xz"
+            url = "https://github.com/ggml-org/llama.cpp/releases/download/bb1fa4e/llama-cli-linux-arm64.tar.xz"
+
+    elif system == "windows":
+        if machine == "amd64":
+            filename = "llama-cli-windows-x86_64.zip"
+            url = "https://github.com/ggml-org/llama.cpp/releases/download/bb1fa4e/llama-cli-windows-x86_64.zip"
+        else:
+            print_error("Windows ARM not supported yet")
+            return None
+    else:
+        print_error(f"Unsupported system: {system}")
+        return None
+
+    print(f"  Download URL: {url}")
+    print(f"  File: {filename}")
+    print()
+
+    # Download directory
+    download_dir = Path.home() / "Downloads"
+    download_dir.mkdir(exist_ok=True)
+
+    local_file = download_dir / filename
+
+    # Download file
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-
-        if result.stdout:
-            print(result.stdout[-500:])  # Show last 500 chars
-
-        print_success("llama-cpp-python installed successfully!")
+        print(f"  Downloading {filename}...")
+        urllib.request.urlretrieve(url, local_file)
+        print(f"  ✓ Downloaded to: {local_file}")
+    except Exception as e:
+        print_error(f"Download failed: {e}")
         print()
-        print("  You can now convert models with:")
-        print(
-            f"  {Colors.CYAN}python -c \"from llama_cpp import Llama; Llama(model_path='model.gguf'){Colors.END}\""
-        )
-        print()
+        print("  Alternative: Download manually from:")
+        print(f"  {url}")
+        return None
 
-        return True
+    # Extract file
+    print()
+    print(f"  Extracting {filename}...")
 
-    except subprocess.CalledProcessError as e:
-        print_error(f"Installation failed: {e}")
-        if e.stderr:
-            print(f"  Error: {e.stderr[-500:]}")
-        return False
+    try:
+        if filename.endswith(".tar.xz"):
+            with tarfile.open(local_file, "r:xz") as tar:
+                tar.extractall(path=download_dir)
+        elif filename.endswith(".zip"):
+            with zipfile.ZipFile(local_file, "r") as zip_ref:
+                zip_ref.extractall(path=download_dir)
+
+        print(f"  ✓ Extracted to: {download_dir}")
+
+        # Find extracted binary
+        extracted_dir = download_dir / filename.replace(".tar.xz", "").replace(".zip", "")
+
+        # Look for llama-cli binary
+        if extracted_dir.exists():
+            binaries = list(extracted_dir.glob("llama-cli"))
+            if binaries:
+                return str(binaries[0])
+
+        # If not found in subdirectory, look in download directory
+        binaries = list(download_dir.glob("llama-cli"))
+        if binaries:
+            return str(binaries[0])
+
+        print_error("Could not find extracted binary")
+        return None
+
+    except Exception as e:
+        print_error(f"Extraction failed: {e}")
+        return None
 
 
 def check_model_exists():
     """Check if model already exists"""
-    hf_path = (
-        Path.home() / ".cache" / "huggingface" / "hub" / "models--Qwen--Qwen3-1.7B"
-    )
+    hf_path = Path.home() / ".cache" / "huggingface" / "hub" / "models--Qwen--Qwen3-1.7B"
     if hf_path.exists() and (hf_path / "snapshots").exists():
         print_step(1, 4, "Checking for existing model...")
         print(f"  Model found at: {hf_path}")
@@ -330,7 +270,10 @@ except Exception as e:
 
     try:
         success = subprocess.run(
-            ["python", script_path], capture_output=True, text=True, check=True
+            ["python", script_path],
+            capture_output=True,
+            text=True,
+            check=True
         )
         print(success.stdout)
         print_success("Qwen3 1.7B model downloaded")
@@ -345,8 +288,8 @@ except Exception as e:
             os.remove(script_path)
 
 
-def convert_to_gguf(hf_path):
-    """Convert safetensors model to GGUF format using llama-cpp-python"""
+def convert_to_gguf(hf_path, llama_path):
+    """Convert safetensors model to GGUF format"""
     print_step(3, 4, "Converting model to GGUF format")
 
     snapshots_dir = hf_path / "snapshots"
@@ -371,61 +314,58 @@ def convert_to_gguf(hf_path):
             return True
 
     print(f"  Output file: {output_file}")
-
-    # Check if llama-cpp-python is available
-    try:
-        import llama_cpp
-
-        print(f"  llama-cpp-python version: {llama_cpp.__version__}")
-    except ImportError:
-        print_error("llama-cpp-python not installed!")
-        print()
-        print("Please install it first:")
-        print(
-            f"  {Colors.CYAN}python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121{Colors.END}"
-        )
-        return False
-
-    # Convert using llama-cpp-python
-    print(f"  Converting model...")
+    print(f"  Using: {llama_path}")
     print()
 
+    # Convert using llama.cpp binary
     try:
-        from llama_cpp import Llama
-
-        # List snapshot files
-        snapshot_files = list(newest_snapshot.glob("*"))
-        safetensors_files = [
-            f for f in snapshot_files if f.suffix in [".safetensors", ".bin"]
-        ]
-        tokenizer_files = [
-            f
-            for f in snapshot_files
-            if f.name
-            in ["tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"]
-        ]
-
-        if not safetensors_files:
-            print_error("No safetensors file found in snapshot")
+        # Check if llama.cpp binary exists and is executable
+        if not os.path.exists(llama_path):
+            print_error(f"Binary not found: {llama_path}")
             return False
 
-        print(f"  Found {len(safetensors_files)} safetensors file(s)")
+        if not os.access(llama_path, os.X_OK):
+            print_error(f"Binary not executable: {llama_path}")
+            print("  Try: chmod +x", llama_path)
+            return False
 
-        # Convert model
-        llm = Llama(
-            model_path=str(newest_snapshot),
-            n_gpu_layers=-1,  # Use all layers
-            verbose=True,
+        print(f"  Running conversion...")
+
+        # Prepare conversion command
+        cmd = [
+            llama_path,
+            "--hf-repo", "Qwen/Qwen3-1.7B",
+            "--hf-file", "README.md",  # Just to test
+            "--verbose"
+        ]
+
+        print(f"  Command: {' '.join(cmd)}")
+        print()
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True
         )
 
-        print()
-        print_success("Model converted to GGUF: " + str(output_file))
-        return True
+        print(result.stdout)
+        if result.stderr:
+            for line in result.stderr.split('\n'):
+                if line.strip() and 'iter' not in line.lower():
+                    print(f"    {line}")
+
+        # Check if conversion completed
+        if output_file.exists():
+            size_gb = output_file.stat().st_size / (1024**3)
+            print_success(f"Model converted to GGUF: {output_file} ({size_gb:.2f} GB)")
+            return True
+        else:
+            print_error("Conversion failed: output file not created")
+            return False
 
     except Exception as e:
         print_error(f"Conversion failed: {e}")
         import traceback
-
         traceback.print_exc()
         return False
 
@@ -441,7 +381,7 @@ def update_config_file(output_file):
         return False
 
     try:
-        with open(config_file, "r") as f:
+        with open(config_file, 'r') as f:
             config = json.load(f)
     except json.JSONDecodeError as e:
         print_error(f"Invalid JSON in config file: {e}")
@@ -452,20 +392,18 @@ def update_config_file(output_file):
         "type": "llama",
         "path": str(output_file),
         "n_threads": 4,
-        "timeout": 60,
+        "timeout": 60
     }
 
     # Update default_interface
     config["default_interface"] = "qwen3-1.7b"
 
     # Add description
-    config["local_models"]["qwen3-1.7b"]["description"] = (
-        "Qwen3-1.7B in GGUF format - Ready for llama-cpp-python"
-    )
+    config["local_models"]["qwen3-1.7b"]["description"] = "Qwen3-1.7B in GGUF format"
 
     # Write updated config
     try:
-        with open(config_file, "w") as f:
+        with open(config_file, 'w') as f:
             json.dump(config, f, indent=2)
 
         print(f"  ✓ Updated: {config_file}")
@@ -485,26 +423,32 @@ def main():
     llama_path = check_llama_cpp()
 
     if not llama_path:
-        # Try to install llama-cpp-python
+        # Install llama.cpp binary
         print()
-        choice = (
-            input("Install llama-cpp-python with pre-compiled binaries? [Y/n]: ")
-            .strip()
-            .lower()
-        )
-        if choice == "n":
-            download_precompiled_binary()
-            return 1
+        print("llama.cpp binary not found!")
+        print()
+        print("Installation options:")
+        print()
+        print("1. Install via Homebrew (macOS):")
+        print(f"   {Colors.CYAN}brew install llama.cpp{Colors.END}")
+        print()
+        print("2. Download pre-compiled binary:")
+        system, machine = detect_os()
+        if system == "darwin":
+            print(f"   {Colors.CYAN}brew install --cask llama{Colors.END}")
+        else:
+            print(f"   {Colors.CYAN}Download from: https://github.com/ggml-org/llama.cpp/releases{Colors.END}")
+        print()
+        print("3. Build from scratch (not recommended)")
+        print(f"   {Colors.YELLOW}cd ~/llama.cpp && make{Colors.END}")
+        print()
 
-        if not install_llama_cpp_python():
-            return 1
+        return 1
 
     # Step 1: Check if model already exists
     model_exists, needs_conversion = check_model_exists()
 
-    hf_path = (
-        Path.home() / ".cache" / "huggingface" / "hub" / "models--Qwen--Qwen3-1.7B"
-    )
+    hf_path = Path.home() / ".cache" / "huggingface" / "hub" / "models--Qwen--Qwen3-1.7B"
 
     if not model_exists:
         if not download_model(hf_path):
@@ -512,7 +456,7 @@ def main():
             return 1
 
     if needs_conversion:
-        if not convert_to_gguf(hf_path):
+        if not convert_to_gguf(hf_path, llama_path):
             print_error("Conversion failed, aborting")
             return 1
 
