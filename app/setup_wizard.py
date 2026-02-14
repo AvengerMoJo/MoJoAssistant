@@ -442,18 +442,6 @@ OPENCODE_BIN=auto-detected
             }
 
         return config
-        else:
-            # API mode config (placeholder)
-            return {
-                "api_models": {
-                    "openai": {
-                        "provider": "openai",
-                        "api_key": "YOUR_OPENAI_API_KEY",
-                        "model": "gpt-4o-mini",
-                    }
-                },
-                "default_interface": "openai",
-            }
 
     async def add_message(self, message: str):
         """Add message to conversation history"""
