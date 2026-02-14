@@ -463,26 +463,33 @@ async def main():
     os.chdir(project_root)
 
     # Import after greeting
-    from app.llm.llm_interface import LLMInterface
+    from app.llm.local_llm_interface import LocalLLMInterface
 
     print("\n🤖 Initializing AI assistant...")
-    print("📊 Loading documentation knowledge base...")
+    print("📊 Loading Qwen2.5-Coder model...")
 
     try:
-        # Load LLM interface with configuration
-        config_path = project_root / "config" / "llm_config.json"
-        llm = LLMInterface(config_file=str(config_path))
+        # During installation, use ONLY the locally downloaded model
+        # Don't try to load full config which might reference unavailable models
+        model_path = Path.home() / ".cache/mojoassistant/models/qwen2.5-coder-1.5b-instruct-q5_k_m.gguf"
 
-        # Force use of local qwen-coder-small model (installed by installer)
-        # This avoids trying to connect to API endpoints that don't exist yet
-        if "qwen-coder-small" in llm.interfaces:
-            print("  Using local Qwen2.5-Coder-1.7B model for setup")
-            llm.set_active_interface("qwen-coder-small")
-        else:
-            print("  ⚠️  Local model not found!")
-            print("  Please ensure Qwen2.5-Coder was downloaded correctly")
+        if not model_path.exists():
+            print(f"  ⚠️  Model not found at: {model_path}")
+            print("  Please ensure the installer downloaded the model correctly")
             print("  Run: python -m app.dreaming.setup install")
             return 1
+
+        print(f"  Model found: {model_path.name}")
+        print("  Starting local model server...")
+
+        # Create simple local interface directly
+        llm = LocalLLMInterface(
+            model_path=str(model_path),
+            model_type="llama",  # Use llama_cpp.server
+            server_port=8080,  # Use different port to avoid conflicts
+            context_length=32768,
+            verbose=True
+        )
 
         wizard = SetupWizard(llm)
 
