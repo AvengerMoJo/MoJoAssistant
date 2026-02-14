@@ -184,3 +184,8 @@ TODO.md
 
 # Ignored files for reference
 .ignored_files/
+
+# Auto-generated startup scripts (created by install.py)
+run_cli.sh
+run_mcp.sh
+.mojo_setup_history
