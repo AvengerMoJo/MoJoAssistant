@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
+# Add project root to Python path
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 
@@ -454,6 +459,9 @@ async def main():
     print("MoJoAssistant AI Setup Wizard")
     print("=" * 70)
 
+    # Change to project root directory
+    os.chdir(project_root)
+
     # Import after greeting
     from app.llm.llm_interface import LLMInterface
 
@@ -462,7 +470,8 @@ async def main():
 
     try:
         # Load LLM interface with configuration
-        llm = LLMInterface(config_file="config/llm_config.json")
+        config_path = project_root / "config" / "llm_config.json"
+        llm = LLMInterface(config_file=str(config_path))
 
         # Get available interfaces
         available = llm.get_available_interfaces()

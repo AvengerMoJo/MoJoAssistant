@@ -348,6 +348,8 @@ def offer_ai_wizard(venv_path="venv"):
 def run_ai_wizard(venv_path="venv"):
     """Run the AI setup wizard"""
     python = str(get_venv_python(venv_path))
+    script_dir = Path(__file__).parent
+    wizard_path = script_dir / "app" / "setup_wizard.py"
 
     print("")
     print(f"{Colors.CYAN}{Colors.BOLD}")
@@ -364,9 +366,10 @@ def run_ai_wizard(venv_path="venv"):
     print("")
 
     try:
-        # Run the setup wizard
+        # Run the setup wizard from the project root directory
         result = subprocess.run(
-            [python, "app/setup_wizard.py"],
+            [python, str(wizard_path)],
+            cwd=str(script_dir),  # Run from project root
             check=False  # Don't raise on non-zero exit (user might interrupt)
         )
 
