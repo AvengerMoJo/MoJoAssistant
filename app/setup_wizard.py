@@ -48,24 +48,26 @@ class SetupWizard:
         ]
 
     async def load_documentation(self) -> str:
-        """Load all documentation into context"""
-        print("\n📚 Loading documentation knowledge base...")
-        docs_context = ""
+        """Load minimal documentation - full docs exceed context window"""
+        print("\n📚 Preparing knowledge base...")
 
-        for doc_path in self.docs_to_load:
-            if os.path.exists(doc_path):
-                try:
-                    with open(doc_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        # Truncate if too long
-                        if len(content) > 10000:
-                            content = content[:10000] + "\n... [truncated]"
-                        docs_context += f"\n\n=== {doc_path} ===\n{content}"
-                        print(f"  ✅ Loaded: {doc_path}")
-                except Exception as e:
-                    print(f"  ⚠️  Failed to load {doc_path}: {e}")
+        # Don't load full docs - they're too big for 2K context
+        # Just provide essential info in system prompt
+        docs_context = """
+Key Features:
+- Memory & Dreaming: A→B→C→D pipeline for conversation consolidation
+- Scheduler: Background task automation
+- MCP Tools: 30+ tools for Claude Desktop integration
+- OpenCode Manager: Remote development environments
+- Local LLM: CPU-only inference with llama.cpp
 
-        print(f"\n✓ Loaded {len(self.docs_to_load)} documentation files")
+Configuration Options:
+- Local models: qwen-coder (code) or qwen3 (chat)
+- MCP Mode: STDIO (Claude Desktop) or HTTP (web/mobile)
+- API Keys: Optional for OpenAI, Anthropic features
+"""
+
+        print(f"✓ Knowledge base ready")
         return docs_context
 
     async def get_user_input(self) -> str:
@@ -105,46 +107,20 @@ class SetupWizard:
         # Load documentation
         docs = await self.load_documentation()
 
-        # Add documentation to conversation context
-        context = f"""
-You are the AI Setup Wizard for MoJoAssistant. Your goal is to help users configure the system through natural conversation.
+        # Add minimal system prompt to fit in 2K context
+        context = f"""You are the MoJoAssistant Setup Wizard. Help users configure the system through friendly conversation.
 
-AVAILABLE MODELS (Local, CPU-only):
-1. Qwen2.5-Coder-1.7B - Fast, code-focused, great for development tasks (~80 tok/sec)
-2. Qwen3-1.7B - General purpose, multilingual, good for chat and general tasks
+Ask what they want to use MoJoAssistant for, then recommend:
+- Qwen2.5-Coder (fast, coding) or Qwen3 (better chat)
+- MCP STDIO mode (for Claude Desktop) or HTTP (for web)
+- Optional: API keys, dreaming schedule
 
-CONFIGURATION OPTIONS:
-- LLM Choice: Local models (CPU-only) or API models (OpenAI, Anthropic)
-- MCP Mode: STDIO (for Claude Desktop) or HTTP (for web/mobile access)
-- Memory: Automatic dreaming schedule, storage location
-- OpenCode Manager: Remote development environments (optional)
-- API Keys: Optional for premium features
-
-YOUR APPROACH:
-- Ask what the user wants to use MoJoAssistant for
-- Explain trade-offs between options clearly
-- Recommend based on their needs (coding vs chat vs both)
-- Keep responses concise and friendly
-- When user seems satisfied, confirm and generate config
-
-DOCUMENTATION:
-{docs}
-
-Start by greeting the user and asking what they want to accomplish with MoJoAssistant.
-"""
+Keep responses SHORT (2-3 sentences). When done, say "ready to generate config"."""
         self.conversation_history.append({"role": "system", "content": context})
 
-        # Get AI's initial greeting
-        print(f"\n🤖 Initializing AI assistant...")
-        initial_prompt = "Greet the user and ask what they want to use MoJoAssistant for. Keep it friendly and concise."
-
-        welcome = self.llm.generate_response(
-            query=initial_prompt,
-            context=self.conversation_history
-        )
-
-        if not welcome:
-            welcome = "Welcome! I'm your AI setup assistant. Let's configure MoJoAssistant together. What would you like to use it for?"
+        # Use simple hardcoded greeting to save tokens
+        print(f"\n🤖 Ready!")
+        welcome = "Hi! I'll help you set up MoJoAssistant. What would you like to use it for - coding, chat, or both?"
 
         await self.add_message(f"Assistant: {welcome}")
         print(f"\n🤖 {welcome}")
@@ -172,27 +148,37 @@ Start by greeting the user and asking what they want to accomplish with MoJoAssi
                 # Add user message to history
                 await self.add_message(f"User: {user_input}")
 
-                # Get AI response - pass full conversation history as messages
-                # LocalLLMInterface expects chat messages format
+                # Get AI response - use sliding window to fit in 2K context
+                # Keep only system prompt + last 4 messages + current query
                 messages = []
-                for msg in self.conversation_history:
+
+                # Always include system prompt (first message)
+                if self.conversation_history and self.conversation_history[0].get("role") == "system":
+                    messages.append(self.conversation_history[0])
+
+                # Keep last 4 conversation turns (8 messages = 4 user + 4 assistant)
+                recent_history = self.conversation_history[-8:] if len(self.conversation_history) > 8 else self.conversation_history[1:]
+
+                for msg in recent_history:
                     role = msg.get("role", "user")
                     content = msg.get("content", "")
 
                     # Clean up prefixes from our internal format
                     if content.startswith("User: "):
                         role = "user"
-                        content = content[6:]  # Remove "User: " prefix
+                        content = content[6:]
                     elif content.startswith("Assistant: "):
                         role = "assistant"
-                        content = content[11:]  # Remove "Assistant: " prefix
+                        content = content[11:]
 
-                    messages.append({"role": role, "content": content})
+                    # Skip if already system message
+                    if role != "system":
+                        messages.append({"role": role, "content": content})
 
                 # Add current user query
                 messages.append({"role": "user", "content": user_input})
 
-                # Call LLM with properly formatted messages
+                # Call LLM with sliding window
                 ai_response = self.llm.generate_chat_response(messages)
 
                 if not ai_response:

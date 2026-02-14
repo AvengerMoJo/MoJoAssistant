@@ -271,7 +271,7 @@ Keep your response concise, relevant, and helpful.""",
             "model": os.path.basename(self.model_path) if self.model_path else "local-model",
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 1024,
+            "max_tokens": 512,  # Reduced to fit in 2K context window
             "stream": False,
         }
 
