@@ -473,15 +473,16 @@ async def main():
         config_path = project_root / "config" / "llm_config.json"
         llm = LLMInterface(config_file=str(config_path))
 
-        # Get available interfaces
-        available = llm.get_available_interfaces()
-        if available:
-            print(f"  Available interfaces: {', '.join(available)}")
-            print(f"  Active interface: {llm.active_interface_name}")
+        # Force use of local qwen-coder-small model (installed by installer)
+        # This avoids trying to connect to API endpoints that don't exist yet
+        if "qwen-coder-small" in llm.interfaces:
+            print("  Using local Qwen2.5-Coder-1.7B model for setup")
+            llm.set_active_interface("qwen-coder-small")
         else:
-            print("  ⚠️  No LLM interfaces configured!")
-            print("  Please ensure config/llm_config.json is configured")
-            print("  Or run: python install_mojo.py")
+            print("  ⚠️  Local model not found!")
+            print("  Please ensure Qwen2.5-Coder was downloaded correctly")
+            print("  Run: python -m app.dreaming.setup install")
+            return 1
 
         wizard = SetupWizard(llm)
 
