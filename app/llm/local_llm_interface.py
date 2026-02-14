@@ -251,6 +251,54 @@ Keep your response concise, relevant, and helpful.""",
             print(f"Error generating local LLM response: {e}")
             return self._fallback_response(query, context or [])
 
+    def generate_chat_response(self, messages: List[Dict[str, str]]) -> str:
+        """
+        Generate response directly from chat messages (no reformatting)
+
+        Args:
+            messages: List of chat messages with 'role' and 'content'
+
+        Returns:
+            str: Generated response
+        """
+        if not self._started:
+            # Fallback if server not started
+            last_user_msg = next((m['content'] for m in reversed(messages) if m['role'] == 'user'), "")
+            return f"I apologize, but I'm having trouble starting. Could you rephrase: {last_user_msg[:100]}..."
+
+        # Prepare request payload
+        payload = {
+            "model": os.path.basename(self.model_path) if self.model_path else "local-model",
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 1024,
+            "stream": False,
+        }
+
+        # Make API request to local server
+        try:
+            response = requests.post(
+                f"{self.server_url}/chat/completions",
+                json=payload,
+                timeout=self.timeout,
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+                if isinstance(content, bytes):
+                    content = content.decode("utf-8", errors="replace")
+
+                return content
+            else:
+                print(f"Local LLM API error: {response.status_code} - {response.text}")
+                return "I apologize, I'm having trouble generating a response. Please try again."
+
+        except Exception as e:
+            print(f"Error generating chat response: {e}")
+            return "I apologize, I encountered an error. Please try rephrasing your question."
+
     def generate_response_stream(
         self, query: str, context: List[Dict[str, Any]] | None = None
     ) -> str:

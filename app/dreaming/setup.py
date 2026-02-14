@@ -16,8 +16,21 @@ from typing import Dict, Any, Optional, Tuple
 from tqdm import tqdm
 
 
-DEFAULT_MODEL_URL = "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q5_k_m.gguf"
-DEFAULT_MODEL_NAME = "qwen2.5-coder-1.5b-instruct-q5_k_m.gguf"
+MODELS = {
+    "qwen-coder": {
+        "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q5_k_m.gguf",
+        "filename": "qwen2.5-coder-1.5b-instruct-q5_k_m.gguf",
+        "description": "Qwen2.5-Coder-1.7B - Code-focused, fast, good for development tasks"
+    },
+    "qwen3": {
+        "url": "https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q5_k_m.gguf",
+        "filename": "qwen2-1.5b-instruct-q5_k_m.gguf",
+        "description": "Qwen2-1.5B - General purpose, better for conversation"
+    }
+}
+
+DEFAULT_MODEL_URL = MODELS["qwen-coder"]["url"]
+DEFAULT_MODEL_NAME = MODELS["qwen-coder"]["filename"]
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "mojoassistant" / "models"
 
 
@@ -147,23 +160,36 @@ class ModelInstaller:
 
     def download_model(
         self,
-        url: str = DEFAULT_MODEL_URL,
-        filename: str = DEFAULT_MODEL_NAME
+        model_name: str = "qwen-coder",
+        url: str = None,
+        filename: str = None
     ) -> bool:
         """
         Download model from URL with progress bar
 
         Args:
-            url: Download URL
-            filename: Local filename
+            model_name: Model key from MODELS dict (qwen-coder or qwen3)
+            url: Download URL (overrides model_name)
+            filename: Local filename (overrides model_name)
 
         Returns:
             True if successful
         """
+        # Get model info from MODELS dict if not overridden
+        if url is None or filename is None:
+            if model_name not in MODELS:
+                print(f"Unknown model: {model_name}")
+                print(f"Available models: {', '.join(MODELS.keys())}")
+                return False
+
+            model_info = MODELS[model_name]
+            url = url or model_info["url"]
+            filename = filename or model_info["filename"]
+
         model_path = self.cache_dir / filename
 
         if model_path.exists():
-            print(f"Model already exists at: {model_path}")
+            print(f"✓ Model already exists at: {model_path}")
             return True
 
         print(f"Downloading {filename} (~1.2 GB)...")
@@ -274,6 +300,13 @@ def main():
         help="Command to run"
     )
     parser.add_argument(
+        "--model",
+        type=str,
+        default="qwen-coder",
+        choices=list(MODELS.keys()),
+        help="Model to download (default: qwen-coder)"
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         default=DEFAULT_CACHE_DIR,
@@ -316,12 +349,14 @@ def main():
         print()
 
     elif args.command == "install":
+        model_info = MODELS.get(args.model, MODELS["qwen-coder"])
+
         print("=" * 70)
-        print("Installing Qwen2.5-Coder-1.7B")
+        print(f"Installing {model_info['description']}")
         print("=" * 70)
         print()
 
-        success = installer.download_model()
+        success = installer.download_model(model_name=args.model)
 
         if success:
             print()
@@ -329,10 +364,12 @@ def main():
             print("Installation Complete!")
             print("=" * 70)
             print()
+            print(f"Model: {model_info['filename']}")
+            print(f"Path: {installer.cache_dir / model_info['filename']}")
+            print()
             print("Next steps:")
             print("1. Run validation: python -m app.dreaming.setup validate")
-            print("2. Update config/llm_config.json to use qwen-coder-small")
-            print("3. Test with: python app/interactive-cli.py")
+            print("2. Model is ready to use!")
         else:
             sys.exit(1)
 

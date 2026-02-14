@@ -262,23 +262,58 @@ def install_dependencies(venv_path="venv"):
 # ============================================================================
 
 def download_qwen_model(venv_path="venv"):
-    """Download Qwen2.5-Coder-1.7B model"""
-    print_step(4, 8, "Downloading Qwen2.5-Coder-1.7B model")
+    """Download AI models with user choice"""
+    print_step(4, 8, "Downloading AI Models")
 
     python = str(get_venv_python(venv_path))
 
-    print_info("Model size: ~1.2 GB")
+    print("")
+    print(f"{Colors.BOLD}Which model would you like to download?{Colors.END}")
+    print("")
+    print(f"  1. {Colors.GREEN}Qwen2.5-Coder-1.7B{Colors.END} (Recommended for coding)")
+    print(f"     • Fast, code-focused, great JSON output")
+    print(f"     • Best for development tasks, dreaming pipeline")
+    print("")
+    print(f"  2. {Colors.CYAN}Qwen2-1.5B{Colors.END} (Better for conversation)")
+    print(f"     • General purpose, natural conversation")
+    print(f"     • Better for setup wizard and chat")
+    print("")
+    print(f"  3. {Colors.YELLOW}Both{Colors.END} (~2.4 GB total)")
+    print(f"     • Download both, switch between them anytime")
+    print("")
+
+    while True:
+        choice = input(f"{Colors.BOLD}Choose [1/2/3]: {Colors.END}").strip()
+
+        if choice in ["1", "2", "3"]:
+            break
+        print(f"{Colors.RED}Please enter 1, 2, or 3{Colors.END}")
+
+    models_to_download = []
+    if choice == "1":
+        models_to_download = ["qwen-coder"]
+    elif choice == "2":
+        models_to_download = ["qwen3"]
+    else:  # choice == "3"
+        models_to_download = ["qwen-coder", "qwen3"]
+
+    print("")
+    print_info(f"Downloading {len(models_to_download)} model(s)...")
     print_info("This may take several minutes depending on your connection...")
     print_info("")
 
     try:
-        # Use the dreaming setup script to download the model
-        result = subprocess.run(
-            [python, "-m", "app.dreaming.setup", "install"],
-            check=True
-        )
+        for model in models_to_download:
+            model_name = "Qwen2.5-Coder-1.7B" if model == "qwen-coder" else "Qwen2-1.5B"
+            print(f"\n{Colors.CYAN}Downloading {model_name}...{Colors.END}")
 
-        print_success("Model downloaded successfully")
+            result = subprocess.run(
+                [python, "-m", "app.dreaming.setup", "install", "--model", model],
+                check=True
+            )
+
+        print("")
+        print_success("Model(s) downloaded successfully")
         return True
 
     except subprocess.CalledProcessError as e:

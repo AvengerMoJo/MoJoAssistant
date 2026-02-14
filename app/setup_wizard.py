@@ -172,10 +172,28 @@ Start by greeting the user and asking what they want to accomplish with MoJoAssi
                 # Add user message to history
                 await self.add_message(f"User: {user_input}")
 
-                # Get AI response (synchronous method)
-                ai_response = self.llm.generate_response(
-                    user_input, self.conversation_history
-                )
+                # Get AI response - pass full conversation history as messages
+                # LocalLLMInterface expects chat messages format
+                messages = []
+                for msg in self.conversation_history:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+
+                    # Clean up prefixes from our internal format
+                    if content.startswith("User: "):
+                        role = "user"
+                        content = content[6:]  # Remove "User: " prefix
+                    elif content.startswith("Assistant: "):
+                        role = "assistant"
+                        content = content[11:]  # Remove "Assistant: " prefix
+
+                    messages.append({"role": role, "content": content})
+
+                # Add current user query
+                messages.append({"role": "user", "content": user_input})
+
+                # Call LLM with properly formatted messages
+                ai_response = self.llm.generate_chat_response(messages)
 
                 if not ai_response:
                     print(
@@ -466,21 +484,29 @@ async def main():
     from app.llm.local_llm_interface import LocalLLMInterface
 
     print("\n🤖 Initializing AI assistant...")
-    print("📊 Loading Qwen2.5-Coder model...")
+    print("📊 Detecting available models...")
 
     try:
-        # During installation, use ONLY the locally downloaded model
-        # Don't try to load full config which might reference unavailable models
-        model_path = Path.home() / ".cache/mojoassistant/models/qwen2.5-coder-1.5b-instruct-q5_k_m.gguf"
+        # Check which models are available
+        cache_dir = Path.home() / ".cache/mojoassistant/models"
+        qwen_coder_path = cache_dir / "qwen2.5-coder-1.5b-instruct-q5_k_m.gguf"
+        qwen3_path = cache_dir / "qwen2-1.5b-instruct-q5_k_m.gguf"
 
-        if not model_path.exists():
-            print(f"  ⚠️  Model not found at: {model_path}")
-            print("  Please ensure the installer downloaded the model correctly")
+        # Prefer Qwen2 for conversation (better at chat)
+        if qwen3_path.exists():
+            model_path = qwen3_path
+            model_name = "Qwen2-1.5B (General purpose, better for conversation)"
+        elif qwen_coder_path.exists():
+            model_path = qwen_coder_path
+            model_name = "Qwen2.5-Coder-1.7B (Code-focused)"
+        else:
+            print(f"  ⚠️  No models found in {cache_dir}")
+            print("  Please ensure the installer downloaded models correctly")
             print("  Run: python -m app.dreaming.setup install")
             return 1
 
-        print(f"  Model found: {model_path.name}")
-        print("  Starting local model server...")
+        print(f"  Using: {model_name}")
+        print(f"  Starting local model server...")
 
         # Create simple local interface directly
         llm = LocalLLMInterface(
