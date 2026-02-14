@@ -305,6 +305,88 @@ def validate_model(venv_path="venv"):
 
 
 # ============================================================================
+# AI Setup Wizard
+# ============================================================================
+
+def offer_ai_wizard(venv_path="venv"):
+    """Offer user the option to use AI setup wizard"""
+    print("")
+    print("━" * 60)
+    print(f"{Colors.CYAN}{Colors.BOLD}Configuration Setup{Colors.END}")
+    print("━" * 60)
+    print("")
+    print(f"{Colors.BOLD}Let's configure MoJoAssistant for your needs.{Colors.END}")
+    print("")
+    print(f"  {Colors.GREEN}AI Setup Wizard (Recommended){Colors.END}")
+    print(f"  • Talk naturally with the AI to configure settings")
+    print(f"  • Get explanations for each option")
+    print(f"  • Choose models based on your use case")
+    print(f"  • Learn what MoJoAssistant can do")
+    print("")
+    print(f"  {Colors.YELLOW}Quick Setup{Colors.END}")
+    print(f"  • Skip to defaults (Qwen2.5-Coder, local CPU-only)")
+    print(f"  • Customize later by editing config files")
+    print("")
+
+    while True:
+        response = input(f"{Colors.BOLD}Use AI Wizard? [Y/n]: {Colors.END}").strip().lower()
+
+        if response in ["", "y", "yes"]:
+            print("")
+            print_info("Starting AI Setup Wizard...")
+            print_info("Tip: Ask questions! The AI knows all about MoJoAssistant")
+            print("")
+            return run_ai_wizard(venv_path)
+        elif response in ["n", "no"]:
+            print("")
+            print_info("Using quick setup with defaults...")
+            return False
+        else:
+            print(f"{Colors.RED}Please enter Y or n{Colors.END}")
+
+
+def run_ai_wizard(venv_path="venv"):
+    """Run the AI setup wizard"""
+    python = str(get_venv_python(venv_path))
+
+    print("")
+    print(f"{Colors.CYAN}{Colors.BOLD}")
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║                                                              ║")
+    print("║              AI Setup Wizard                                 ║")
+    print("║              Powered by Qwen2.5-Coder-1.7B                   ║")
+    print("║                                                              ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+    print(f"{Colors.END}")
+    print("")
+    print_info("The AI will ask you questions to configure MoJoAssistant")
+    print_info("Just chat naturally - it understands context!")
+    print("")
+
+    try:
+        # Run the setup wizard
+        result = subprocess.run(
+            [python, "app/setup_wizard.py"],
+            check=False  # Don't raise on non-zero exit (user might interrupt)
+        )
+
+        if result.returncode == 0:
+            print("")
+            print_success("AI Setup Wizard completed!")
+            return True
+        else:
+            print("")
+            print_warning("Setup wizard was interrupted or failed")
+            print_info("Falling back to default configuration...")
+            return False
+
+    except Exception as e:
+        print_error(f"Failed to run AI wizard: {e}")
+        print_info("Falling back to default configuration...")
+        return False
+
+
+# ============================================================================
 # Configuration
 # ============================================================================
 
@@ -675,10 +757,19 @@ def main():
 
     validate_model()
 
-    # Step 5: Create config
-    if not create_config_files():
-        return 1
+    # Step 5: Configuration - AI wizard or default
+    print("")
+    print("")
 
+    # Offer AI wizard for interactive configuration
+    wizard_completed = offer_ai_wizard()
+
+    # If wizard wasn't used or failed, create default config
+    if not wizard_completed:
+        if not create_config_files():
+            return 1
+
+    # Always create memory directories
     if not create_memory_dirs():
         return 1
 

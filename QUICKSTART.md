@@ -28,10 +28,13 @@ That's it! The installer will:
 - ✅ Create Python virtual environment
 - ✅ Install all dependencies (CPU-only)
 - ✅ Download Qwen2.5-Coder-1.7B model (~1.2 GB)
-- ✅ Generate configuration files
+- ✅ **Chat with AI Setup Wizard** to configure your system
+- ✅ Generate configuration files based on your conversation
 - ✅ Create startup scripts
 
 **Installation takes 5-15 minutes** depending on your internet speed.
+
+**Pro tip**: The AI Setup Wizard will ask about your use case and help you choose the right settings. Just answer naturally!
 
 ---
 

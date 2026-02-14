@@ -35,11 +35,14 @@ That's it! The script will:
 - ✅ Create virtual environment
 - ✅ Install all dependencies (including llama-cpp-python for CPU)
 - ✅ Download Qwen2.5-Coder-1.7B model (~1.2 GB)
-- ✅ Generate configuration files
+- ✅ **Launch AI Setup Wizard** - Chat with AI to configure your system
+- ✅ Generate configuration files based on your needs
 - ✅ Create startup scripts
 - ✅ Test the installation
 
 **Installation takes about 5-15 minutes** depending on your internet speed.
+
+**NEW**: The installer includes an **AI Setup Wizard** that talks with you to understand your needs and configure the system accordingly. Just chat naturally!
 
 ---
 
