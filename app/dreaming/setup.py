@@ -20,12 +20,12 @@ MODELS = {
     "qwen-coder": {
         "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q5_k_m.gguf",
         "filename": "qwen2.5-coder-1.5b-instruct-q5_k_m.gguf",
-        "description": "Qwen2.5-Coder-1.7B - Code-focused, fast, good for development tasks"
+        "description": "Qwen2.5-Coder-1.5B - Code-focused, fast, good for development tasks"
     },
     "qwen3": {
-        "url": "https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q5_k_m.gguf",
-        "filename": "qwen2-1.5b-instruct-q5_k_m.gguf",
-        "description": "Qwen2-1.5B - General purpose, better for conversation"
+        "url": "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf",
+        "filename": "qwen3-1.7b-q8_0.gguf",
+        "description": "Qwen3-1.7B - Latest general purpose model, best for conversation"
     }
 }
 

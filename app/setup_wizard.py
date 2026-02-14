@@ -432,11 +432,11 @@ OPENCODE_BIN=auto-detected
                 },
                 "qwen3-1.7b": {
                     "type": "llama",
-                    "description": "Qwen3-1.7B - General purpose, CPU-only, multilingual",
-                    "path": str(Path.home() / ".cache/huggingface/hub/models--Qwen--Qwen3-1.7B"),
+                    "description": "Qwen3-1.7B - Latest, best for conversation, multilingual",
+                    "path": str(Path.home() / ".cache/mojoassistant/models/qwen3-1.7b-q8_0.gguf"),
                     "context_length": 32768,
                     "temperature": 0.7,
-                    "recommended_for": ["chat", "general_tasks", "multilingual"]
+                    "recommended_for": ["chat", "general_tasks", "multilingual", "setup_wizard"]
                 }
             },
             "task_assignments": {
@@ -490,15 +490,15 @@ async def main():
         # Check which models are available
         cache_dir = Path.home() / ".cache/mojoassistant/models"
         qwen_coder_path = cache_dir / "qwen2.5-coder-1.5b-instruct-q5_k_m.gguf"
-        qwen3_path = cache_dir / "qwen2-1.5b-instruct-q5_k_m.gguf"
+        qwen3_path = cache_dir / "qwen3-1.7b-q8_0.gguf"
 
-        # Prefer Qwen2 for conversation (better at chat)
+        # Prefer Qwen3 for conversation (latest, best at chat)
         if qwen3_path.exists():
             model_path = qwen3_path
-            model_name = "Qwen2-1.5B (General purpose, better for conversation)"
+            model_name = "Qwen3-1.7B (Latest, best for conversation)"
         elif qwen_coder_path.exists():
             model_path = qwen_coder_path
-            model_name = "Qwen2.5-Coder-1.7B (Code-focused)"
+            model_name = "Qwen2.5-Coder-1.5B (Code-focused)"
         else:
             print(f"  ⚠️  No models found in {cache_dir}")
             print("  Please ensure the installer downloaded models correctly")

@@ -270,15 +270,17 @@ def download_qwen_model(venv_path="venv"):
     print("")
     print(f"{Colors.BOLD}Which model would you like to download?{Colors.END}")
     print("")
-    print(f"  1. {Colors.GREEN}Qwen2.5-Coder-1.7B{Colors.END} (Recommended for coding)")
+    print(f"  1. {Colors.GREEN}Qwen2.5-Coder-1.5B{Colors.END} (Recommended for coding)")
     print(f"     • Fast, code-focused, great JSON output")
     print(f"     • Best for development tasks, dreaming pipeline")
+    print(f"     • Size: ~1.0 GB (Q5_K_M quantization)")
     print("")
-    print(f"  2. {Colors.CYAN}Qwen2-1.5B{Colors.END} (Better for conversation)")
-    print(f"     • General purpose, natural conversation")
-    print(f"     • Better for setup wizard and chat")
+    print(f"  2. {Colors.CYAN}Qwen3-1.7B{Colors.END} (Better for conversation)")
+    print(f"     • Latest model, best for natural conversation")
+    print(f"     • Better for setup wizard and interactive chat")
+    print(f"     • Size: ~1.9 GB (Q8_0 quantization, higher quality)")
     print("")
-    print(f"  3. {Colors.YELLOW}Both{Colors.END} (~2.4 GB total)")
+    print(f"  3. {Colors.YELLOW}Both{Colors.END} (~2.9 GB total)")
     print(f"     • Download both, switch between them anytime")
     print("")
 
@@ -304,7 +306,7 @@ def download_qwen_model(venv_path="venv"):
 
     try:
         for model in models_to_download:
-            model_name = "Qwen2.5-Coder-1.7B" if model == "qwen-coder" else "Qwen2-1.5B"
+            model_name = "Qwen2.5-Coder-1.5B" if model == "qwen-coder" else "Qwen3-1.7B"
             print(f"\n{Colors.CYAN}Downloading {model_name}...{Colors.END}")
 
             result = subprocess.run(
