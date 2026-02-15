@@ -194,6 +194,29 @@ class LLMInterface:
 
         return self.active_interface.generate_response(query, context)
 
+    def generate_chat_response(self, messages: List[Dict[str, str]]) -> str:
+        """
+        Generate response from chat messages using the active interface
+
+        Args:
+            messages: List of chat messages with 'role' and 'content'
+
+        Returns:
+            str: Generated response
+        """
+        if self.active_interface is None:
+            return "No active LLM interface configured. Please set up an interface."
+
+        # Check if active interface supports generate_chat_response
+        if hasattr(self.active_interface, "generate_chat_response"):
+            return self.active_interface.generate_chat_response(messages)
+        else:
+            # Fallback: convert messages to query string
+            last_user_msg = next(
+                (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
+            )
+            return self.active_interface.generate_response(last_user_msg)
+
     def shutdown(self) -> None:
         """
         Shutdown all interfaces and clean up resources
