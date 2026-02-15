@@ -39,8 +39,8 @@
       "name": "Qwen3-1.7B-Instruct-Q5_K_M",
       "type": "gguf",
       "huggingface_repo": "bartowski/Qwen_Qwen3-1.7B-GGUF",
-      "filename": "Qwen3-1.7B-Q5_K_M.gguf",
-      "download_url": "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q5_K_M.gguf",
+      "filename": "Qwen_Qwen3-1.7B-Q5_K_M.gguf",
+      "download_url": "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q5_K_M.gguf",
       "size_mb": 1470,
       "sha256": null,
       "requirements": {
