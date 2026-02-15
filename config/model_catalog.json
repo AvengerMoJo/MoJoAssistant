@@ -31,12 +31,12 @@
         "tokens_per_second_cpu": "15-25"
       },
       "recommended_for": ["low-end hardware", "general chat", "coding", "quick responses"],
-      "default": true,
       "category": "small"
     },
     {
       "id": "qwen3-1.7b-q5",
       "name": "Qwen3-1.7B-Instruct-Q5_K_M",
+      "default": true,
       "type": "gguf",
       "huggingface_repo": "bartowski/Qwen_Qwen3-1.7B-GGUF",
       "filename": "Qwen_Qwen3-1.7B-Q5_K_M.gguf",

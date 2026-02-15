@@ -172,7 +172,7 @@ def download_model(python_path, interactive=True):
     print("""
 📦 Choose how to select your model:
 
-  1. Quick install - Use default recommended model (Qwen3 1.7B)
+  1. Quick install - Use default model
   2. Browse catalog - Choose from predefined models  
   3. Search HuggingFace - Find any GGUF model (e.g., 'gpt-oss', 'llama 3.1')
   4. Skip for now - Download later
