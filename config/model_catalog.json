@@ -1,0 +1,212 @@
+{
+  "$schema": "./schemas/model_catalog.schema.json",
+  "version": "1.0.0",
+  "description": "Curated catalog of LLM models for MoJoAssistant",
+  "last_updated": "2026-02-15",
+  "models": [
+    {
+      "id": "qwen2.5-coder-1.5b-q5",
+      "name": "Qwen2.5-Coder-1.5B-Q5_K_M",
+      "type": "gguf",
+      "huggingface_repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+      "filename": "qwen2.5-coder-1.5b-instruct-q5_k_m.gguf",
+      "download_url": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q5_k_m.gguf",
+      "size_mb": 1100,
+      "sha256": null,
+      "requirements": {
+        "ram_mb": 2048,
+        "disk_mb": 1200,
+        "gpu": false
+      },
+      "capabilities": {
+        "context_length": 32768,
+        "multilingual": true,
+        "coding": true,
+        "vision": false,
+        "function_calling": true
+      },
+      "performance": {
+        "speed": "fast",
+        "quality": "good",
+        "tokens_per_second_cpu": "15-25"
+      },
+      "recommended_for": ["low-end hardware", "general chat", "coding", "quick responses"],
+      "default": true,
+      "category": "small"
+    },
+    {
+      "id": "qwen3-1.7b-q5",
+      "name": "Qwen3-1.7B-Instruct-Q5_K_M",
+      "type": "gguf",
+      "huggingface_repo": "Qwen/Qwen2.5-1.7B-Instruct-GGUF",
+      "filename": "qwen2.5-1.7b-instruct-q5_k_m.gguf",
+      "download_url": "https://huggingface.co/Qwen/Qwen2.5-1.7B-Instruct-GGUF/resolve/main/qwen2.5-1.7b-instruct-q5_k_m.gguf",
+      "size_mb": 1200,
+      "requirements": {
+        "ram_mb": 2560,
+        "disk_mb": 1300,
+        "gpu": false
+      },
+      "capabilities": {
+        "context_length": 32768,
+        "multilingual": true,
+        "coding": false,
+        "vision": false,
+        "function_calling": true
+      },
+      "performance": {
+        "speed": "fast",
+        "quality": "good",
+        "tokens_per_second_cpu": "12-20"
+      },
+      "recommended_for": ["general chat", "memory synthesis", "low RAM systems"],
+      "category": "small"
+    },
+    {
+      "id": "nanbeige-3b-q4",
+      "name": "Nanbeige4.1-3B-Q4_K_M",
+      "type": "gguf",
+      "huggingface_repo": "unsloth/Nanbeige-Plus-unsloth-GGUF",
+      "filename": "Nanbeige-Plus-Q4_K_M.gguf",
+      "download_url": "https://huggingface.co/unsloth/Nanbeige-Plus-unsloth-GGUF/resolve/main/Nanbeige-Plus-Q4_K_M.gguf",
+      "size_mb": 1800,
+      "requirements": {
+        "ram_mb": 4096,
+        "disk_mb": 2000,
+        "gpu": false
+      },
+      "capabilities": {
+        "context_length": 8192,
+        "multilingual": true,
+        "coding": false,
+        "vision": false,
+        "function_calling": false
+      },
+      "performance": {
+        "speed": "medium",
+        "quality": "better",
+        "tokens_per_second_cpu": "8-15"
+      },
+      "recommended_for": ["thinking", "reasoning", "Chinese language"],
+      "category": "medium"
+    },
+    {
+      "id": "phi3-mini-q4",
+      "name": "Phi-3-Mini-4K-Instruct-Q4_K_M",
+      "type": "gguf",
+      "huggingface_repo": "microsoft/Phi-3-mini-4k-instruct-gguf",
+      "filename": "Phi-3-mini-4k-instruct-q4.gguf",
+      "download_url": "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf",
+      "size_mb": 2300,
+      "requirements": {
+        "ram_mb": 4096,
+        "disk_mb": 2500,
+        "gpu": false
+      },
+      "capabilities": {
+        "context_length": 4096,
+        "multilingual": false,
+        "coding": true,
+        "vision": false,
+        "function_calling": true
+      },
+      "performance": {
+        "speed": "medium",
+        "quality": "very_good",
+        "tokens_per_second_cpu": "10-18"
+      },
+      "recommended_for": ["coding", "reasoning", "English tasks"],
+      "category": "medium"
+    },
+    {
+      "id": "llama3.2-3b-q4",
+      "name": "Llama-3.2-3B-Instruct-Q4_K_M",
+      "type": "gguf",
+      "huggingface_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "download_url": "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "size_mb": 1900,
+      "requirements": {
+        "ram_mb": 4096,
+        "disk_mb": 2100,
+        "gpu": false
+      },
+      "capabilities": {
+        "context_length": 131072,
+        "multilingual": true,
+        "coding": true,
+        "vision": false,
+        "function_calling": true
+      },
+      "performance": {
+        "speed": "medium",
+        "quality": "very_good",
+        "tokens_per_second_cpu": "8-14"
+      },
+      "recommended_for": ["long context", "general tasks", "multilingual"],
+      "category": "medium"
+    },
+    {
+      "id": "gemma2-2b-q5",
+      "name": "Gemma-2-2B-Instruct-Q5_K_M",
+      "type": "gguf",
+      "huggingface_repo": "bartowski/gemma-2-2b-it-GGUF",
+      "filename": "gemma-2-2b-it-Q5_K_M.gguf",
+      "download_url": "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q5_K_M.gguf",
+      "size_mb": 1700,
+      "requirements": {
+        "ram_mb": 3072,
+        "disk_mb": 1900,
+        "gpu": false
+      },
+      "capabilities": {
+        "context_length": 8192,
+        "multilingual": true,
+        "coding": true,
+        "vision": false,
+        "function_calling": false
+      },
+      "performance": {
+        "speed": "fast",
+        "quality": "good",
+        "tokens_per_second_cpu": "10-18"
+      },
+      "recommended_for": ["balanced performance", "coding", "efficiency"],
+      "category": "small"
+    }
+  ],
+  "categories": {
+    "small": {
+      "name": "Small Models (1-2B)",
+      "description": "Fast, low resource usage, good for most tasks",
+      "ram_range": "2-4 GB",
+      "typical_speed": "fast"
+    },
+    "medium": {
+      "name": "Medium Models (3-7B)",
+      "description": "Better quality, reasonable speed, moderate resources",
+      "ram_range": "4-8 GB",
+      "typical_speed": "medium"
+    },
+    "large": {
+      "name": "Large Models (7B+)",
+      "description": "Best quality, slower, high resource usage",
+      "ram_range": "8+ GB",
+      "typical_speed": "slow"
+    }
+  },
+  "use_case_recommendations": {
+    "general_chat": ["qwen3-1.7b-q5", "gemma2-2b-q5", "llama3.2-3b-q4"],
+    "coding": ["qwen2.5-coder-1.5b-q5", "phi3-mini-q4", "llama3.2-3b-q4"],
+    "reasoning": ["nanbeige-3b-q4", "phi3-mini-q4", "llama3.2-3b-q4"],
+    "low_ram": ["qwen2.5-coder-1.5b-q5", "qwen3-1.7b-q5"],
+    "multilingual": ["qwen3-1.7b-q5", "llama3.2-3b-q4", "nanbeige-3b-q4"]
+  },
+  "download_settings": {
+    "default_cache_dir": "~/.cache/mojoassistant/models/",
+    "resume_downloads": true,
+    "verify_checksums": false,
+    "chunk_size_mb": 10,
+    "max_retries": 3
+  }
+}
