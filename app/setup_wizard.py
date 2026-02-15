@@ -198,7 +198,7 @@ Keep responses SHORT (2-3 sentences). When done, say "ready to generate config".
                     print("\n" + "=" * 60)
                     print("✓ Setup complete!")
                     print("=" * 60)
-                    await self.generate_config()
+
                     return True
 
         except KeyboardInterrupt:
