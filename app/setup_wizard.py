@@ -19,7 +19,7 @@ import os
 import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime as dt
 
 # Add project root to Python path
 project_root = Path(__file__).resolve().parent.parent
@@ -45,7 +45,7 @@ class SetupWizard:
             {
                 "role": role,
                 "content": content,
-                "timestamp": datetime.datetime.now().isoformat(),
+                "timestamp": dt.datetime.now().isoformat(),
             }
         )
 
@@ -233,10 +233,9 @@ Keep responses SHORT (2-3 sentences). When done, say "ready to generate config".
 
     async def check_setup_complete(self, user_input: str, ai_response: str) -> bool:
         """Check if setup is complete based on conversation"""
-        # Simple heuristics:
+        # Simple heuristics
         # - If user says they're done or asks to finish
         # - If AI indicates we have enough information
-
         user_lower = user_input.lower()
         response_lower = ai_response.lower()
 
@@ -260,3 +259,33 @@ Keep responses SHORT (2-3 sentences). When done, say "ready to generate config".
             return True
 
         return False
+
+    def _generate_llm_config(self) -> dict:
+        """Generate LLM configuration"""
+        # Get the active interface name
+        active_interface = None
+        if hasattr(self.llm.active_interface, "name"):
+            active_interface = self.llm.active_interface.name
+
+        # Build config based on active interface
+        config = {
+            "local_models": {
+                active_interface: {
+                    "type": "llama",
+                    "path": f"~/.cache/mojoassistant/models/{active_interface}.gguf",
+                    "context_length": 32768,
+                    "temperature": 0.7,
+                    "max_tokens": 2048,
+                    "recommended_for": ["general chat"],
+                }
+            },
+            "task_assignments": {
+                "interactive_cli": active_interface,
+                "dreaming_chunking": active_interface,
+                "dreaming_synthesis": active_interface,
+                "default": active_interface,
+            },
+            "default_interface": active_interface,
+        }
+
+        return config
