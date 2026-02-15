@@ -268,43 +268,51 @@ def generate_minimal_config(model_path=None):
     config_dir = Path("config")
     config_dir.mkdir(exist_ok=True)
 
-    # Create minimal llm_config.json pointing to downloaded model
-    llm_config = {
-        "local_models": {},
-        "task_assignments": {},
-    }
+    llm_config_path = config_dir / "llm_config.json"
 
-    # If model was downloaded, add it to config
+    # Load existing config if it exists
+    if llm_config_path.exists():
+        try:
+            with open(llm_config_path, "r") as f:
+                llm_config = json.load(f)
+            print("  Found existing configuration")
+        except:
+            llm_config = {"local_models": {}, "task_assignments": {}}
+    else:
+        llm_config = {"local_models": {}, "task_assignments": {}}
+
+    # If model was downloaded and not already in config, add it
     if model_path and Path(model_path).exists():
         # Extract model name from path
         model_name = Path(model_path).stem
         model_id = model_name.replace("-", "_").replace(".", "_")[:30]
 
-        llm_config["local_models"][model_id] = {
-            "type": "llama",
-            "path": str(model_path),
-            "context_length": 32768,
-            "temperature": 0.7,
-            "max_tokens": 2048,
-            "recommended_for": ["general chat"],
-        }
-        llm_config["task_assignments"] = {
-            "interactive_cli": model_id,
-            "dreaming_chunking": model_id,
-            "dreaming_synthesis": model_id,
-            "default": model_id,
-        }
-        print_success(f"Configured model: {model_id}")
+        # Only add if not already configured
+        if model_id not in llm_config.get("local_models", {}):
+            llm_config["local_models"][model_id] = {
+                "type": "llama",
+                "path": str(model_path),
+                "context_length": 32768,
+                "temperature": 0.7,
+                "max_tokens": 2048,
+                "recommended_for": ["general chat"],
+            }
+            llm_config["task_assignments"] = {
+                "interactive_cli": model_id,
+                "dreaming_chunking": model_id,
+                "dreaming_synthesis": model_id,
+                "default": model_id,
+            }
+            print_success(f"Added model to config: {model_id}")
+        else:
+            print(f"  Model {model_id} already configured")
 
-    llm_config_path = config_dir / "llm_config.json"
+    # Save config
     with open(llm_config_path, "w") as f:
         json.dump(llm_config, f, indent=2)
 
-    print_success("Created minimal LLM configuration")
-
-    return model_path
-
-    return len(configs_created) > 0
+    print_success("LLM configuration ready")
+    return True
 
 
 def test_installation(python_path):
