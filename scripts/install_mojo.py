@@ -165,64 +165,99 @@ def install_dependencies(pip_path, venv_python):
         return False
 
 
-def download_qwen_model(python_path):
-    """Download Qwen3 1.7B model"""
-    print_step(4, 7, "Downloading Qwen3 1.7B model")
+def download_model(python_path, interactive=True):
+    """Download a model - either from catalog or via smart search"""
+    print_step(4, 7, "Model Selection & Download")
 
-    model_name = "Qwen/Qwen3-1.7B"
-    cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    print("""
+📦 Choose how to select your model:
 
-    print(f"  Model: {model_name}")
-    print(f"  Cache directory: {cache_dir}")
-    print("  This may take several minutes depending on your connection...")
-    print()
+  1. Quick install - Use default recommended model (Qwen3 1.7B)
+  2. Browse catalog - Choose from predefined models  
+  3. Search HuggingFace - Find any GGUF model (e.g., 'gpt-oss', 'llama 3.1')
+  4. Skip for now - Download later
+""")
 
-    # Create download script
-    download_script = """
-import sys
-sys.path.insert(0, '.')
-from huggingface_hub import snapshot_download
-import os
+    if interactive:
+        while True:
+            choice = input("Your choice (1-4): ").strip()
+            if choice in ["1", "2", "3", "4"]:
+                break
+            print("  Please enter 1, 2, 3, or 4")
+    else:
+        choice = "1"  # Default to quick install in non-interactive mode
 
-model_name = "Qwen/Qwen3-1.7B"
-cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+    if choice == "4":
+        print("  Skipping model download")
+        print("  You can download models later with:")
+        print("    python demo_model_selector.py --model <model_id>")
+        print("    python demo_model_selector.py --search <query>")
+        return True
 
-print(f"Downloading {model_name}...")
-print(f"Cache: {cache_dir}")
+    # Import model selector
+    sys.path.insert(0, ".")
+    from app.installer.agents.model_selector import ModelSelectorAgent
 
-try:
-    snapshot_download(
-        repo_id=model_name,
-        cache_dir=cache_dir,
-        local_files_only=False
-    )
-    print("✓ Model downloaded successfully")
-except Exception as e:
-    print(f"✗ Download failed: {e}")
-    sys.exit(1)
-"""
+    agent = ModelSelectorAgent(llm=None, config_dir="config")
 
-    # Write and run download script
-    script_path = "download_model.py"
-    with open(script_path, "w") as f:
-        f.write(download_script)
+    result = {"success": False, "message": "Invalid choice", "details": {}}
 
-    try:
-        success = run_command(f"{python_path} {script_path}", "Download Qwen3 model")
-    finally:
-        if os.path.exists(script_path):
-            os.remove(script_path)
+    if choice == "1":
+        # Quick install - use default
+        print("\n  Installing default model (Qwen3 1.7B)...")
+        result = agent.execute(auto_default=True)
 
-    if success:
-        print_success("Qwen3 1.7B model downloaded")
+    elif choice == "2":
+        # Browse catalog
+        agent.load_context()
+        print("\n  Available models in catalog:")
+        for i, model in enumerate(agent.context.get("models", [])[:6], 1):
+            default_marker = " [DEFAULT]" if model.get("default") else ""
+            print(f"    {i}. {model['name']}{default_marker} - {model['size_mb']}MB")
+
+        print("\n  Enter model ID (e.g., 'qwen3-1.7b-q5') or number:")
+        model_input = input("> ").strip()
+
+        # Check if it's a number
+        try:
+            idx = int(model_input) - 1
+            models = agent.context.get("models", [])
+            if 0 <= idx < len(models):
+                model_id = models[idx]["id"]
+            else:
+                model_id = model_input
+        except ValueError:
+            model_id = model_input
+
+        print(f"\n  Installing {model_id}...")
+        result = agent.download_model_by_id(model_id)
+
+    elif choice == "3":
+        # Smart search
+        print("\n  Search for models on HuggingFace")
+        print("  Examples: 'gpt-oss-20b', 'llama 3.1', 'qwen3', 'mistral'")
+        query = input("Search query: ").strip()
+
+        if not query:
+            print("  No search query provided, skipping")
+            return True
+
+        result = agent.search_and_add_model(query, interactive=True)
+
+    # Handle result
+    if result.get("success"):
+        print_success(f"Model ready: {result.get('message', '')}")
+        if "model_path" in result.get("details", {}):
+            print(f"  Location: {result['details']['model_path']}")
         return True
     else:
-        print_error("Failed to download model")
-        print("  You can download it manually later with:")
-        print(
-            "  python -c \"from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-1.7B')\""
-        )
+        print_error(f"Failed: {result.get('message', 'Unknown error')}")
         return False
+
+
+def download_qwen_model(python_path):
+    """Legacy function - redirects to new download_model"""
+    return download_model(python_path, interactive=True)
 
 
 def generate_config_files():
@@ -443,7 +478,7 @@ def print_completion_message(venv_path, python_path):
 {Colors.BOLD}What's been set up:{Colors.END}
   ✓ Python virtual environment: {venv_path}
   ✓ All dependencies installed
-  ✓ Qwen3 1.7B model downloaded
+  ✓ Model downloaded (or configured to download later)
   ✓ Configuration files generated
   ✓ Memory directory structure created
 
