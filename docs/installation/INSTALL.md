@@ -27,7 +27,7 @@ cd MoJoAssistant
 ### Step 2: Run One-Command Install
 
 ```bash
-python3 install.py
+python scripts/install_mojo.py
 ```
 
 That's it! The script will:
@@ -162,7 +162,7 @@ xcode-select --install
 
 **Then retry**:
 ```bash
-python3 install.py
+python scripts/install_mojo.py
 ```
 
 ### Model Download Fails

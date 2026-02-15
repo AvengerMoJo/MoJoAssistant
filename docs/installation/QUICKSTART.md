@@ -21,7 +21,7 @@ git clone https://github.com/yourusername/MoJoAssistant.git
 cd MoJoAssistant
 
 # 2. Run the installer
-python3 install.py
+python scripts/install_mojo.py
 ```
 
 That's it! The installer will:
