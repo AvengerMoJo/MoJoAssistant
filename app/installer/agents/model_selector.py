@@ -95,15 +95,24 @@ class ModelSelectorAgent(BaseSetupAgent):
 
     def _detect_system_info(self) -> Dict:
         """Detect system RAM, disk space, etc."""
-        import psutil
+        try:
+            import psutil
 
-        # Get available RAM (in MB)
-        ram_mb = psutil.virtual_memory().available // (1024 * 1024)
+            # Get available RAM (in MB)
+            ram_mb = psutil.virtual_memory().available // (1024 * 1024)
 
-        # Get free disk space in cache directory
-        cache_dir = self.expand_path("~/.cache/mojoassistant")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        disk_mb = psutil.disk_usage(str(cache_dir)).free // (1024 * 1024)
+            # Get free disk space in cache directory
+            cache_dir = self.expand_path("~/.cache/mojoassistant")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            disk_mb = psutil.disk_usage(str(cache_dir)).free // (1024 * 1024)
+        except ImportError:
+            # psutil not installed yet (e.g., during initial installation)
+            # Provide safe defaults
+            ram_mb = 8192  # Assume 8GB RAM
+            disk_mb = 10240  # Assume 10GB free space
+            print(
+                "  Note: Using default system info (install psutil for accurate detection)"
+            )
 
         return {
             "ram_mb": ram_mb,
