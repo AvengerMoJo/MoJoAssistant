@@ -26,17 +26,19 @@ def main():
     parser.add_argument(
         "--auto-default",
         action="store_true",
-        help="Automatically install default model without prompting"
+        help="Automatically install default model without prompting",
     )
     parser.add_argument(
-        "--model",
+        "--model", type=str, help="Install specific model by ID (e.g., qwen3-1.7b-q5)"
+    )
+    parser.add_argument(
+        "--list", action="store_true", help="List available models from catalog"
+    )
+    parser.add_argument(
+        "--search",
         type=str,
-        help="Install specific model by ID (e.g., qwen3-1.7b-q5)"
-    )
-    parser.add_argument(
-        "--list",
-        action="store_true",
-        help="List available models from catalog"
+        metavar="QUERY",
+        help="Search HuggingFace for a model and add it (e.g., 'gpt-oss-20b', 'llama 3.1')",
     )
 
     args = parser.parse_args()
@@ -60,6 +62,20 @@ def main():
             print(f"   Speed: {model['performance']['speed']}")
             print(f"   Best for: {', '.join(model['recommended_for'])}")
             print()
+
+        return
+
+    # Search for model
+    if args.search:
+        result = agent.search_and_add_model(args.search, interactive=True)
+
+        if result["success"]:
+            print(f"\n✅ {result['message']}")
+            if "model_path" in result.get("details", {}):
+                print(f"   Path: {result['details']['model_path']}")
+        else:
+            print(f"\n❌ {result['message']}")
+            sys.exit(1)
 
         return
 
@@ -98,7 +114,9 @@ def main():
     print("=" * 60 + "\n")
 
     print("This demo will help you download and configure an LLM model.")
-    print("(Note: Full LLM-guided selection not implemented yet - using rule-based selection)\n")
+    print(
+        "(Note: Full LLM-guided selection not implemented yet - using rule-based selection)\n"
+    )
 
     # Execute agent
     result = agent.execute(auto_default=False)
@@ -123,5 +141,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

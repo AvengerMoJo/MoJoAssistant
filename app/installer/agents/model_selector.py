@@ -514,6 +514,261 @@ Now help the user choose and download the right model for their needs.
         if not model:
             return None
 
+    def search_and_add_model(self, query: str, interactive: bool = True) -> Dict:
+        """
+        Search HuggingFace for a model matching the query and add it to catalog.
+
+        Args:
+            query: Search query (e.g., "gpt-oss-20b", "openai small model")
+            interactive: If True, ask user to select from results
+
+        Returns:
+            Result dictionary
+        """
+        print(f"\n🔍 Searching HuggingFace for: '{query}'")
+        print("   Looking for GGUF format models...\n")
+
+        try:
+            from huggingface_hub import HfApi
+
+            api = HfApi()
+
+            # Search for models matching query, then filter for GGUF
+            models = list(
+                api.list_models(
+                    search=query,
+                    limit=20,
+                )
+            )
+
+            # Filter for GGUF models (check tags or gguf boolean field)
+            gguf_models = []
+            for m in models:
+                if getattr(m, "gguf", False):
+                    gguf_models.append(m)
+                elif m.tags and ("gguf" in m.tags or "GGUF" in m.tags):
+                    gguf_models.append(m)
+
+            if not gguf_models:
+                print(f"❌ No GGUF models found for '{query}'")
+                print("\n💡 Tips:")
+                print(
+                    "   - Try a more specific name (e.g., 'gpt-oss-20b' instead of 'openai')"
+                )
+                print("   - Check the model name on HuggingFace")
+                print("   - Make sure the model has GGUF format files")
+                self.set_failure(f"No models found for: {query}")
+                return self.result
+
+            # Filter and format results
+            print(f"✓ Found {len(gguf_models)} GGUF models:\n")
+            valid_models = []
+
+            for i, model in enumerate(gguf_models, 1):
+                model_info = self._get_model_info(model.modelId)
+                if model_info:
+                    valid_models.append(model_info)
+                    print(f"  {i}. {model_info['name']}")
+                    print(f"     Repo: {model_info['repo']}")
+                    print(f"     Size: {model_info.get('size_mb', 'Unknown')} MB")
+                    print(f"     Tags: {', '.join(model_info.get('tags', [])[:3])}")
+                    print()
+
+            if not valid_models:
+                print("❌ No valid GGUF models with downloadable files found")
+                self.set_failure("No valid models found")
+                return self.result
+
+            if interactive:
+                # Ask user to select
+                while True:
+                    try:
+                        choice = input(
+                            "Select a model (number) or 'q' to quit: "
+                        ).strip()
+                        if choice.lower() == "q":
+                            self.set_failure("Cancelled by user")
+                            return self.result
+
+                        idx = int(choice) - 1
+                        if 0 <= idx < len(valid_models):
+                            selected = valid_models[idx]
+                            break
+                        else:
+                            print(
+                                f"   Please enter a number between 1 and {len(valid_models)}"
+                            )
+                    except ValueError:
+                        print("   Please enter a valid number or 'q'")
+
+                print(f"\n✓ Selected: {selected['name']}")
+
+                # Confirm addition
+                confirm = (
+                    input("\nAdd this model to catalog and download? [Y/n]: ")
+                    .strip()
+                    .lower()
+                )
+                if confirm and confirm not in ("y", "yes"):
+                    self.set_failure("Cancelled by user")
+                    return self.result
+
+                # Add to catalog and download
+                return self._add_model_to_catalog_and_download(selected)
+            else:
+                # Auto-select first valid model
+                return self._add_model_to_catalog_and_download(valid_models[0])
+
+        except ImportError:
+            print("❌ huggingface_hub not installed")
+            print("   Install with: pip install huggingface-hub")
+            self.set_failure("huggingface_hub not installed")
+            return self.result
+        except Exception as e:
+            print(f"❌ Search failed: {e}")
+            self.set_failure(f"Search failed: {e}")
+            return self.result
+
+    def _get_model_info(self, repo_id: str) -> Optional[Dict]:
+        """Get information about a model from HuggingFace."""
+        try:
+            from huggingface_hub import model_info, list_repo_files
+            from huggingface_hub.errors import EntryNotFoundError
+
+            info = model_info(repo_id)
+
+            # Find GGUF files in repo
+            files = list_repo_files(repo_id)
+            gguf_files = [f for f in files if f.endswith(".gguf")]
+
+            if not gguf_files:
+                return None
+
+            # Prefer Q4_K_M or Q5_K_M quantizations
+            preferred_file = None
+            for pref in ["Q4_K_M", "Q5_K_M", "Q4_K_S", "Q5_K_S", "Q4_0"]:
+                for f in gguf_files:
+                    if pref in f:
+                        preferred_file = f
+                        break
+                if preferred_file:
+                    break
+
+            if not preferred_file:
+                preferred_file = gguf_files[0]  # Take first available
+
+            # Try to get file size
+            size_mb = 0
+            try:
+                from huggingface_hub import get_hf_file_metadata
+
+                file_metadata = get_hf_file_metadata(
+                    f"https://huggingface.co/{repo_id}/resolve/main/{preferred_file}"
+                )
+                if file_metadata.size:
+                    size_mb = file_metadata.size // (1024 * 1024)
+            except Exception:
+                # Estimate from filename or use default
+                if "1.5" in repo_id or "1.7" in repo_id:
+                    size_mb = 1200
+                elif "3" in repo_id:
+                    size_mb = 2000
+                elif "7" in repo_id:
+                    size_mb = 4500
+                elif "20" in repo_id:
+                    size_mb = 12000
+                else:
+                    size_mb = 2000  # default estimate
+
+            # Extract model name from repo
+            name = repo_id.split("/")[-1].replace("-GGUF", "").replace("_GGUF", "")
+            name = name.replace("-", " ").replace("_", " ")
+
+            # Generate ID
+            model_id = name.lower().replace(" ", "-").replace(".", "")[:30]
+
+            return {
+                "name": name,
+                "repo": repo_id,
+                "filename": preferred_file,
+                "size_mb": size_mb,
+                "tags": info.tags[:5] if info.tags else [],
+                "id": model_id,
+            }
+
+        except Exception as e:
+            return None
+
+    def _add_model_to_catalog_and_download(self, model_info: Dict) -> Dict:
+        """Add a model to the catalog and download it."""
+        try:
+            # Load current catalog
+            catalog = self.load_json("model_catalog.json")
+
+            # Create model entry
+            new_model = {
+                "id": model_info["id"],
+                "name": model_info["name"],
+                "type": "gguf",
+                "huggingface_repo": model_info["repo"],
+                "filename": model_info["filename"],
+                "download_url": f"https://huggingface.co/{model_info['repo']}/resolve/main/{model_info['filename']}",
+                "size_mb": model_info["size_mb"],
+                "sha256": None,
+                "requirements": {
+                    "ram_mb": model_info["size_mb"] * 2,  # Rough estimate
+                    "disk_mb": model_info["size_mb"] + 200,
+                    "gpu": False,
+                },
+                "capabilities": {
+                    "context_length": 8192,  # Default, should detect from model card
+                    "multilingual": "multilingual" in model_info.get("tags", []),
+                    "coding": any(
+                        tag in model_info.get("tags", [])
+                        for tag in ["code", "coding", "programming"]
+                    ),
+                    "vision": "vision" in model_info.get("tags", []),
+                    "function_calling": False,  # Hard to detect automatically
+                },
+                "performance": {
+                    "speed": "medium",
+                    "quality": "good",
+                    "tokens_per_second_cpu": "10-15",
+                },
+                "recommended_for": ["general chat", "custom model"],
+                "category": "custom",
+            }
+
+            # Check if model already exists
+            existing_idx = None
+            for i, m in enumerate(catalog["models"]):
+                if m["id"] == new_model["id"]:
+                    existing_idx = i
+                    break
+
+            if existing_idx is not None:
+                # Update existing
+                catalog["models"][existing_idx] = new_model
+                print(f"✓ Updated existing model entry: {new_model['id']}")
+            else:
+                # Add new
+                catalog["models"].append(new_model)
+                print(f"✓ Added new model to catalog: {new_model['id']}")
+
+            # Save catalog
+            self.save_json("model_catalog.json", catalog)
+
+            # Reload context
+            self.load_context()
+
+            # Download the model
+            print(f"\n📥 Downloading {new_model['name']}...")
+            return self._download_and_configure(new_model)
+
+        except Exception as e:
+            self.set_failure(f"Failed to add model: {e}")
+            return self.result
+
         # Check MoJo cache
         cache_dir = self.expand_path(
             self.context["catalog"]["download_settings"]["default_cache_dir"]
