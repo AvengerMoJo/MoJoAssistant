@@ -53,7 +53,7 @@ async def test_chat_interface():
 
         # Test 6: Check conversation history
         print("\n✓ Test 6: Testing conversation history...")
-        await wizard.add_message("assistant", "Test message")
+        await wizard.add_message(role="assistant", content="Test message")
         assert len(wizard.conversation_history) > 0, (
             "Conversation history should have messages"
         )
