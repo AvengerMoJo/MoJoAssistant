@@ -39,6 +39,16 @@ class SetupWizard:
         self.conversation_history = []
         self.setup_data = {}
 
+    async def add_message(self, role: str, content: str) -> None:
+        """Add a message to conversation history"""
+        self.conversation_history.append(
+            {
+                "role": role,
+                "content": content,
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+        )
+
         # Documentation files to load
         self.docs_to_load = [
             "README.md",
@@ -153,11 +163,18 @@ Keep responses SHORT (2-3 sentences). When done, say "ready to generate config".
                 messages = []
 
                 # Always include system prompt (first message)
-                if self.conversation_history and self.conversation_history[0].get("role") == "system":
+                if (
+                    self.conversation_history
+                    and self.conversation_history[0].get("role") == "system"
+                ):
                     messages.append(self.conversation_history[0])
 
                 # Keep last 4 conversation turns (8 messages = 4 user + 4 assistant)
-                recent_history = self.conversation_history[-8:] if len(self.conversation_history) > 8 else self.conversation_history[1:]
+                recent_history = (
+                    self.conversation_history[-8:]
+                    if len(self.conversation_history) > 8
+                    else self.conversation_history[1:]
+                )
 
                 for msg in recent_history:
                     role = msg.get("role", "user")
@@ -243,4 +260,3 @@ Keep responses SHORT (2-3 sentences). When done, say "ready to generate config".
             return True
 
         return False
-
