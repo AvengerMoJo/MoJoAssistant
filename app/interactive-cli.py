@@ -551,32 +551,15 @@ async def run_setup_wizard():
         print("🤖 Initializing AI assistant...")
         print("📊 Loading documentation knowledge base...")
 
-        # Load config to get the default interface
+        # Load the EXISTING config
         config_path = Path("config/llm_config.json")
-        default_interface = "default"
-        if config_path.exists():
-            try:
-                import json
 
-                with open(config_path) as f:
-                    config = json.load(f)
-                    default_interface = config.get("task_assignments", {}).get(
-                        "default", "default"
-                    )
-            except:
-                pass
+        if not config_path.exists():
+            print("   No configuration found. Please run the installer first.")
+            return 1
 
-        llm = LLMInterface()
-
-        # Try to set the default interface, fallback to first available
-        if not llm.set_active_interface(default_interface):
-            available = llm.get_available_interfaces()
-            if available:
-                llm.set_active_interface(available[0])
-                print(f"   Using interface: {available[0]}")
-            else:
-                print("   No LLM interfaces available. Please run the installer first.")
-                return 1
+        # Use LLMInterface to load the existing config
+        llm = LLMInterface(config_file=str(config_path))
 
         # Create wizard instance
         wizard = SetupWizard(llm)
