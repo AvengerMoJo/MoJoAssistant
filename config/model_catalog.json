@@ -65,16 +65,16 @@
     },
     {
       "id": "nanbeige-3b-q4",
-      "name": "Nanbeige4.1-3B-Q4_K_M",
+      "name": "Nanbeige4-3B-Thinking-Q4_K_M",
       "type": "gguf",
-      "huggingface_repo": "unsloth/Nanbeige-Plus-unsloth-GGUF",
-      "filename": "Nanbeige-Plus-Q4_K_M.gguf",
-      "download_url": "https://huggingface.co/unsloth/Nanbeige-Plus-unsloth-GGUF/resolve/main/Nanbeige-Plus-Q4_K_M.gguf",
-      "size_mb": 1800,
+      "huggingface_repo": "Edge-Quant/Nanbeige4-3B-Thinking-2511-Q4_K_M-GGUF",
+      "filename": "nanbeige4-3b-thinking-2511-q4_k_m.gguf",
+      "download_url": "https://huggingface.co/Edge-Quant/Nanbeige4-3B-Thinking-2511-Q4_K_M-GGUF/resolve/main/nanbeige4-3b-thinking-2511-q4_k_m.gguf",
+      "size_mb": 2440,
       "sha256": null,
       "requirements": {
         "ram_mb": 4096,
-        "disk_mb": 2000,
+        "disk_mb": 2600,
         "gpu": false
       },
       "capabilities": {
