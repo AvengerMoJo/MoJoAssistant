@@ -132,7 +132,8 @@ Keep responses SHORT (2-3 sentences). When done, say "ready to generate config".
         print(f"\n🤖 Ready!")
         welcome = "Hi! I'll help you set up MoJoAssistant. What would you like to use it for - coding, chat, or both?"
 
-        await self.add_message(f"Assistant: {welcome}")
+        await self.add_message(role="assistant", content=welcome)
+        await self.add_message(role="assistant", content=welcome)
         print(f"\n🤖 {welcome}")
 
         # Chat loop
@@ -156,7 +157,8 @@ Keep responses SHORT (2-3 sentences). When done, say "ready to generate config".
                     continue
 
                 # Add user message to history
-                await self.add_message(f"User: {user_input}")
+                # Add user message to history
+                await self.add_message(role="user", content=user_input)
 
                 # Get AI response - use sliding window to fit in 2K context
                 # Keep only system prompt + last 4 messages + current query
@@ -204,8 +206,9 @@ Keep responses SHORT (2-3 sentences). When done, say "ready to generate config".
                     )
                     ai_response = "I apologize, but I'm having trouble responding. Let's continue our conversation."
 
+
                 # Add AI response to history
-                await self.add_message(f"Assistant: {ai_response}")
+                await self.add_message(role="assistant", content=ai_response)
 
                 # Print AI response
                 print(f"\n🤖 {ai_response}")
