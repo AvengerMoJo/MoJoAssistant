@@ -528,156 +528,10 @@ from typing import Optional
 from pathlib import Path
 
 
-async def run_setup_wizard():
-    """Run AI-powered setup wizard using Qwen3 1.7B"""
-
-    print("""
-╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║          MoJoAssistant AI Setup Wizard                        ║
-║                                                              ║
-║  Conversational chat interface to configure MoJoAssistant   ║
-║  Chat naturally with AI, I'll guide you through setup       ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-    """)
-
-    # Import the AI-powered setup wizard
-    try:
-        from app.setup_wizard import SetupWizard
-        from app.llm.llm_interface import LLMInterface
-
-        # Initialize LLM interface
-        print("🤖 Initializing AI assistant...")
-        print("📊 Loading documentation knowledge base...")
-
-        # Load the EXISTING config
-        config_path = Path("config/llm_config.json")
-
-        if not config_path.exists():
-            print("   No configuration found. Please run the installer first.")
-            return 1
-
-        # Use LLMInterface to load the existing config
-        llm = LLMInterface(config_file=str(config_path))
-
-        # Create wizard instance
-        wizard = SetupWizard(llm)
-
-        # Run the conversational setup flow
-        success = await wizard.start_setup()
-
-        if success:
-            print("\n✓ Setup wizard complete!")
-            print("\nYou can now run the CLI with: python app/interactive-cli.py")
-            print("Or start the MCP server: python unified_mcp_server.py --mode stdio")
-
-        return 0 if success else 1
-
-    except ImportError as e:
-        print(f"⚠️  Could not import setup wizard: {e}")
-        print("\nFalling back to basic setup wizard...")
-        return await run_basic_setup_wizard()
-    except Exception as e:
-        print(f"❌ Error running AI setup wizard: {e}")
-        print("\nFalling back to basic setup wizard...")
-        return await run_basic_setup_wizard()
-
-
-async def run_basic_setup_wizard():
-    """Fallback to basic setup wizard if AI wizard fails"""
-
-    print("""
-╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║          MoJoAssistant Setup Wizard (Basic)                  ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-    """)
-
-    from app.llm.llm_interface import LLMInterface
-    from app.services.memory_service import MemoryService
-
-    # Initialize LLM interface (we'll use a simple Qwen3 model for the wizard)
-    print("Initializing AI assistant...")
-    print("Loading Qwen3 1.7B model for setup wizard...")
-
-    try:
-        llm = LLMInterface()
-        llm.set_active_interface("qwen3-1.7b")
-    except Exception as e:
-        print(f"Warning: Could not initialize LLM: {e}")
-        print("Proceeding with basic setup wizard...")
-        llm = None
-
-    # Define interview flow
-    questions = [
-        {
-            "question": "How do you plan to use MoJoAssistant?",
-            "options": [
-                "Chat with AI locally (private, no internet needed)",
-                "Connect to Claude Desktop (MCP server)",
-                "Manage AI coding agents (OpenCode Manager)",
-                "All of the above (full setup)",
-            ],
-            "default": 0,
-        },
-        {
-            "question": "Do you have API keys for external AI services?",
-            "options": [
-                "Yes, I have OpenAI/Anthropic keys",
-                "No, use only local model",
-                "Maybe later, set up now",
-            ],
-            "default": 1,
-        },
-        {"question": "Where should I store your memory data?", "default": "~/.memory/"},
-        {
-            "question": "Would you like to enable automatic memory consolidation?",
-            "options": [
-                "Yes, schedule at 3 AM daily",
-                "Yes, I'll set the time",
-                "No, manual only",
-                "Ask me later",
-            ],
-            "default": 0,
-        },
-    ]
-
-    answers = []
-
-    for i, q in enumerate(questions):
-        print(f"\n[Question {i + 1}/{len(questions)}]")
-        print(f"{q['question']}")
-
-        if "options" in q:
-            for j, option in enumerate(q["options"]):
-                prefix = "✓" if j == q["default"] else "  "
-                print(f"  {prefix} {j + 1}. {option}")
-
-            # Simple version: auto-select default
-            print(f"\n⏭️  Auto-selecting default option {q['default'] + 1}")
-            answer = q["default"]
-        else:
-            answer = input(f"\nYour answer: ")
-
-        answers.append(answer)
-
-    # Ask if they want to see configuration summary
-    print("\n" + "=" * 60)
-    print("Configuration Summary")
-    print("=" * 60)
-
-    print(f"\n1. Usage: {answers[0]}")
-    print(f"2. External AI: {answers[1]}")
-    print(f"3. Memory path: {answers[2]}")
-    print(f"4. Dreaming: {answers[3]}")
-
-    print("\n✓ Setup wizard complete!")
-    print("\nYou can now run the CLI with: python app/interactive-cli.py")
-    print("Or start the MCP server: python unified_mcp_server.py --mode stdio")
-
-    return 0
+def run_setup_wizard():
+    """Run smart installer with agents"""
+    from app.installer.orchestrator import run_smart_installer
+    return run_smart_installer(interactive=True, auto_defaults=False)
 
 
 def main() -> int:
@@ -717,8 +571,7 @@ def main() -> int:
 
     # Run setup wizard if requested
     if args.setup:
-        asyncio.run(run_setup_wizard())
-        return 0
+        return run_setup_wizard()
 
     # Initialize logging
     setup_logging(log_level=args.log_level, log_file=args.log_file)

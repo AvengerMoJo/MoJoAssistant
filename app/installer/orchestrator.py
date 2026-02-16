@@ -1,0 +1,256 @@
+"""
+Smart Installer Orchestrator
+
+Coordinates setup agents to guide users through installation.
+Runs agents in sequence:
+  1. Model Selector - Download LLM
+  2. Env Configurator - Configure .env
+  3. (Future) Config Validator - Validate setup
+  4. (Future) Test Runner - Verify everything works
+"""
+
+import os
+import sys
+from pathlib import Path
+from typing import Optional
+
+from .agents.model_selector import ModelSelectorAgent
+from .agents.env_configurator import EnvConfiguratorAgent
+
+
+class SmartInstaller:
+    """Orchestrates the installation process using agents."""
+
+    def __init__(self, quiet: bool = True):
+        """
+        Initialize the installer.
+
+        Args:
+            quiet: If True, suppress LLM debug output
+        """
+        self.quiet = quiet
+        self.agents = {}
+        self.llm = None  # Will be set up later if needed
+
+    def run(self, interactive: bool = True, auto_defaults: bool = False):
+        """
+        Run the full installation process.
+
+        Args:
+            interactive: If True, ask user questions
+            auto_defaults: If True, use all defaults without asking
+
+        Returns:
+            True if successful, False otherwise
+        """
+        print("""
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║          MoJoAssistant Smart Installer                        ║
+║                                                              ║
+║  AI-powered setup that configures everything for you        ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+        """)
+
+        try:
+            # Step 1: Pre-flight checks
+            print("🔍 Running pre-flight checks...")
+            if not self._check_prerequisites():
+                return False
+
+            print("✓ Prerequisites OK\n")
+
+            # Step 2: Model selection
+            if not self._run_model_selector(interactive, auto_defaults):
+                return False
+
+            # Step 3: Environment configuration
+            if not self._run_env_configurator(interactive, auto_defaults):
+                return False
+
+            # Step 4: Validate configuration
+            print("\n🧪 Validating configuration...")
+            if not self._validate_setup():
+                print("⚠️  Some validation checks failed, but you can continue.")
+                if interactive:
+                    response = input("Continue anyway? [Y/n]: ").strip().lower()
+                    if response and response not in ("y", "yes"):
+                        return False
+
+            # Success!
+            print("\n" + "=" * 60)
+            print("✅ Setup Complete!")
+            print("=" * 60)
+            print("\nYou can now:")
+            print("  • Run interactive CLI:  python app/interactive-cli.py")
+            print("  • Start MCP server:     python unified_mcp_server.py --mode stdio")
+            print("\nHave fun with MoJoAssistant! 🚀")
+            print()
+
+            return True
+
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Setup cancelled by user")
+            return False
+        except Exception as e:
+            print(f"\n❌ Setup failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _check_prerequisites(self) -> bool:
+        """Check basic prerequisites."""
+        # Check Python version
+        if sys.version_info < (3, 9):
+            print(f"❌ Python 3.9+ required (you have {sys.version_info.major}.{sys.version_info.minor})")
+            return False
+
+        # Check we're in the right directory
+        if not Path("app/interactive-cli.py").exists():
+            print("❌ Please run this from the MoJoAssistant root directory")
+            return False
+
+        return True
+
+    def _run_model_selector(self, interactive: bool, auto_defaults: bool) -> bool:
+        """Run the model selector agent."""
+        print("\n📦 Step 1: Model Selection")
+        print("-" * 60)
+
+        # Check if model already exists
+        llm_config_path = Path("config/llm_config.json")
+        if llm_config_path.exists():
+            print("✓ Model configuration found")
+
+            # Check if model file exists
+            import json
+            try:
+                with open(llm_config_path) as f:
+                    config = json.load(f)
+
+                model_exists = False
+                for model_id, model_config in config.get("local_models", {}).items():
+                    model_path = Path(model_config.get("path", "")).expanduser()
+                    if model_path.exists():
+                        model_exists = True
+                        print(f"✓ Found model: {model_id} at {model_path}")
+                        break
+
+                if model_exists:
+                    if interactive and not auto_defaults:
+                        response = input("\nDownload a different model? [y/N]: ").strip().lower()
+                        if response not in ("y", "yes"):
+                            return True
+                    else:
+                        return True
+
+            except Exception as e:
+                print(f"⚠️  Error reading config: {e}")
+                print("  Proceeding with model download...")
+
+        # Run model selector agent
+        agent = ModelSelectorAgent(llm=None, config_dir="config")
+
+        if auto_defaults:
+            result = agent.execute(auto_default=True)
+        else:
+            result = agent.execute(auto_default=False)
+
+        if not result["success"]:
+            print(f"❌ Model selection failed: {result['message']}")
+            return False
+
+        print(f"✓ {result['message']}")
+        return True
+
+    def _run_env_configurator(self, interactive: bool, auto_defaults: bool) -> bool:
+        """Run the environment configurator agent."""
+        print("\n⚙️  Step 2: Environment Configuration")
+        print("-" * 60)
+
+        # Check if .env already exists
+        env_path = Path(".env")
+        if env_path.exists():
+            print("✓ .env file found")
+
+            if interactive and not auto_defaults:
+                response = input("Reconfigure .env? [y/N]: ").strip().lower()
+                if response not in ("y", "yes"):
+                    return True
+            else:
+                return True
+
+        # Run env configurator agent
+        agent = EnvConfiguratorAgent(llm=None, config_dir="config")
+
+        if auto_defaults:
+            result = agent.execute(interactive=False, use_case="local_only")
+        else:
+            result = agent.execute(interactive=True)
+
+        if not result["success"]:
+            print(f"❌ Environment configuration failed: {result['message']}")
+            return False
+
+        print(f"✓ {result['message']}")
+        return True
+
+    def _validate_setup(self) -> bool:
+        """Validate the setup."""
+        checks_passed = 0
+        checks_total = 0
+
+        # Check 1: llm_config.json exists
+        checks_total += 1
+        if Path("config/llm_config.json").exists():
+            print("  ✓ LLM configuration found")
+            checks_passed += 1
+        else:
+            print("  ✗ LLM configuration missing")
+
+        # Check 2: .env exists
+        checks_total += 1
+        if Path(".env").exists():
+            print("  ✓ Environment file found")
+            checks_passed += 1
+        else:
+            print("  ✗ Environment file missing")
+
+        # Check 3: At least one model exists
+        checks_total += 1
+        try:
+            import json
+            with open("config/llm_config.json") as f:
+                config = json.load(f)
+
+            for model_id, model_config in config.get("local_models", {}).items():
+                model_path = Path(model_config.get("path", "")).expanduser()
+                if model_path.exists():
+                    print(f"  ✓ Model file found: {model_id}")
+                    checks_passed += 1
+                    break
+            else:
+                print("  ✗ No model files found")
+        except Exception as e:
+            print(f"  ✗ Could not verify model: {e}")
+
+        print(f"\n  Passed {checks_passed}/{checks_total} checks")
+
+        return checks_passed == checks_total
+
+
+def run_smart_installer(interactive: bool = True, auto_defaults: bool = False) -> int:
+    """
+    Run the smart installer.
+
+    Args:
+        interactive: If True, ask user questions
+        auto_defaults: If True, use all defaults
+
+    Returns:
+        0 if successful, 1 if failed
+    """
+    installer = SmartInstaller(quiet=True)
+    success = installer.run(interactive=interactive, auto_defaults=auto_defaults)
+    return 0 if success else 1
