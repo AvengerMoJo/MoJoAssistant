@@ -106,12 +106,13 @@ class BaseSetupAgent(ABC):
         """Expand ~ and environment variables in path."""
         return Path(os.path.expanduser(os.path.expandvars(path)))
 
-    def chat(self, message: str) -> str:
+    def chat(self, message: str, system_prompt: Optional[str] = None) -> str:
         """
         Send a message to the LLM and get response.
 
         Args:
             message: Message to send
+            system_prompt: Optional system prompt
 
         Returns:
             LLM response
@@ -119,7 +120,12 @@ class BaseSetupAgent(ABC):
         if not self.llm:
             raise RuntimeError("LLM not available for this agent")
 
-        return self.llm.chat(message)
+        # Check if LLM has chat method (BootstrapLLM does)
+        if hasattr(self.llm, "chat"):
+            return self.llm.chat(message, system_prompt=system_prompt)
+        else:
+            # Fallback for other LLM interfaces
+            return self.llm.chat(message)
 
     def set_success(self, message: str, **details):
         """Mark agent execution as successful."""

@@ -152,14 +152,78 @@ class EnvConfiguratorAgent(BaseSetupAgent):
 
     def _llm_guided_configuration(self) -> Dict:
         """Use LLM to guide user through configuration."""
-        # This will be a full conversation flow
-        # For now, placeholder - full implementation would involve
-        # multi-turn conversation with the LLM
+        print("\n💬 AI Assistant")
+        print("-" * 60 + "\n")
 
-        print("\n🤖 LLM-guided configuration not yet implemented")
-        print("   Falling back to prompt-based configuration...\n")
+        # Build system prompt for LLM
+        system_prompt = self.context["prompt"]
 
-        return self._prompt_based_configuration()
+        # Start conversation
+        try:
+            # Initial AI greeting
+            initial_message = "The user wants to configure their environment. Start by asking them what they plan to use MoJoAssistant for, then guide them through configuration based on their answer."
+
+            response = self.llm.chat(initial_message, system_prompt=system_prompt)
+            print(f"AI: {response}\n")
+
+            # Simple multi-turn conversation
+            settings = {}
+            use_case = None
+
+            # Get user's first response
+            user_input = input("You: ").strip()
+
+            # Determine use case from user's response
+            if any(word in user_input.lower() for word in ["local", "private", "offline", "1"]):
+                use_case = "local_only"
+            elif any(word in user_input.lower() for word in ["github", "code", "4"]):
+                use_case = "github_integration"
+            elif any(word in user_input.lower() for word in ["cloud", "api", "openai", "claude", "2", "3"]):
+                use_case = "cloud_ai"
+            else:
+                use_case = "local_only"  # Default
+
+            # Use template for the use case
+            settings = self.TEMPLATES[use_case].copy()
+
+            # If cloud AI, ask about API keys
+            if use_case == "cloud_ai":
+                ai_response = self.llm.chat(
+                    f"The user wants to use cloud AI. Ask them which provider they want to use (OpenAI, Anthropic, Google) and guide them to get their API key.",
+                    system_prompt=system_prompt
+                )
+                print(f"\nAI: {ai_response}\n")
+
+                # Simple API key collection
+                user_input = input("You: ").strip()
+
+                if "openai" in user_input.lower() or "gpt" in user_input.lower():
+                    print("\nAI: Great! You'll need an OpenAI API key from https://platform.openai.com/api-keys")
+                    print("    It should start with 'sk-'. Paste it here:")
+                    api_key = input("\nAPI Key: ").strip()
+                    if api_key:
+                        settings["OPENAI_API_KEY"] = api_key
+                        settings["DEFAULT_LLM_PROVIDER"] = "openai"
+
+                elif "anthropic" in user_input.lower() or "claude" in user_input.lower():
+                    print("\nAI: Perfect! You'll need an Anthropic API key from https://console.anthropic.com/settings/keys")
+                    print("    It should start with 'sk-ant-'. Paste it here:")
+                    api_key = input("\nAPI Key: ").strip()
+                    if api_key:
+                        settings["ANTHROPIC_API_KEY"] = api_key
+                        settings["DEFAULT_LLM_PROVIDER"] = "anthropic"
+
+            # Confirm and save
+            print(f"\nAI: Perfect! I'll create your .env file now with {use_case.replace('_', ' ')} configuration.")
+            self._write_env_file(settings)
+
+            self.set_success(f"Created {use_case} configuration", use_case=use_case)
+            return self.result
+
+        except Exception as e:
+            print(f"\n⚠️  AI conversation failed: {e}")
+            print("   Falling back to prompt-based configuration...\n")
+            return self._prompt_based_configuration()
 
     def _prompt_based_configuration(self) -> Dict:
         """Simple prompt-based configuration without LLM."""

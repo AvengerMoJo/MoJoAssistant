@@ -16,6 +16,7 @@ from typing import Optional
 
 from .agents.model_selector import ModelSelectorAgent
 from .agents.env_configurator import EnvConfiguratorAgent
+from .bootstrap_llm import BootstrapLLM
 
 
 class SmartInstaller:
@@ -30,7 +31,8 @@ class SmartInstaller:
         """
         self.quiet = quiet
         self.agents = {}
-        self.llm = None  # Will be set up later if needed
+        self.llm = None  # Bootstrap LLM for powering agents
+        self.llm_started = False
 
     def run(self, interactive: bool = True, auto_defaults: bool = False):
         """
@@ -61,15 +63,25 @@ class SmartInstaller:
 
             print("✓ Prerequisites OK\n")
 
-            # Step 2: Model selection
+            # Step 2: Model selection (no LLM needed yet)
             if not self._run_model_selector(interactive, auto_defaults):
                 return False
 
-            # Step 3: Environment configuration
+            # Step 3: Start Bootstrap LLM (after model is downloaded)
+            if interactive and not auto_defaults:
+                print("\n🧠 Starting AI assistant for guided setup...")
+                self.llm = BootstrapLLM()
+                self.llm_started = self.llm.start(quiet=self.quiet)
+                if self.llm_started:
+                    print("  ✓ AI assistant ready\n")
+                else:
+                    print("  ℹ️  Using rule-based setup (AI not available)\n")
+
+            # Step 4: Environment configuration (with AI if available)
             if not self._run_env_configurator(interactive, auto_defaults):
                 return False
 
-            # Step 4: Validate configuration
+            # Step 5: Validate configuration
             print("\n🧪 Validating configuration...")
             if not self._validate_setup():
                 print("⚠️  Some validation checks failed, but you can continue.")
@@ -98,6 +110,11 @@ class SmartInstaller:
             import traceback
             traceback.print_exc()
             return False
+        finally:
+            # Clean up LLM server if we started one
+            if self.llm and self.llm_started:
+                print("\n🛑 Stopping AI assistant...")
+                self.llm.stop()
 
     def _check_prerequisites(self) -> bool:
         """Check basic prerequisites."""
@@ -181,8 +198,8 @@ class SmartInstaller:
             else:
                 return True
 
-        # Run env configurator agent
-        agent = EnvConfiguratorAgent(llm=None, config_dir="config")
+        # Run env configurator agent (pass LLM if we have one)
+        agent = EnvConfiguratorAgent(llm=self.llm if self.llm_started else None, config_dir="config")
 
         if auto_defaults:
             result = agent.execute(interactive=False, use_case="local_only")
