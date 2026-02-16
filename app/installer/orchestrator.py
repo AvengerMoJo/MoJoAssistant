@@ -137,48 +137,73 @@ class SmartInstaller:
 
         # Check if model already exists
         llm_config_path = Path("config/llm_config.json")
-        if llm_config_path.exists():
-            print("✓ Model configuration found")
+        model_exists = False
+        existing_model_id = None
 
-            # Check if model file exists
+        if llm_config_path.exists():
             import json
             try:
                 with open(llm_config_path) as f:
                     config = json.load(f)
 
-                model_exists = False
                 for model_id, model_config in config.get("local_models", {}).items():
                     model_path = Path(model_config.get("path", "")).expanduser()
                     if model_path.exists():
                         model_exists = True
-                        print(f"✓ Found model: {model_id} at {model_path}")
+                        existing_model_id = model_id
+                        print(f"✓ Found existing model: {model_id}")
                         break
-
-                if model_exists:
-                    if interactive and not auto_defaults:
-                        response = input("\nDownload a different model? [y/N]: ").strip().lower()
-                        if response not in ("y", "yes"):
-                            return True
-                    else:
-                        return True
 
             except Exception as e:
                 print(f"⚠️  Error reading config: {e}")
-                print("  Proceeding with model download...")
 
-        # Run model selector agent
+        # If model exists and we're in auto mode, just use it
+        if model_exists and auto_defaults:
+            return True
+
+        # If model exists and we're interactive, skip (user can change manually later)
+        if model_exists and not auto_defaults:
+            print("  (To change models later, run: python demo_model_selector.py)\n")
+            return True
+
+        # No model exists - need to download one
+        print("\nNo model found. Let's download one!\n")
+
+        # Create agent
         agent = ModelSelectorAgent(llm=None, config_dir="config")
 
         if auto_defaults:
+            # Use default model
+            print("Using default recommended model...\n")
             result = agent.execute(auto_default=True)
         else:
-            result = agent.execute(auto_default=False)
+            # Interactive: offer default or search
+            print("Choose an option:")
+            print("  1. Use recommended model (Qwen3-1.7B - fast, general purpose)")
+            print("  2. Search HuggingFace for a specific model")
+            print()
+
+            choice = input("Your choice [1-2]: ").strip()
+
+            if choice == "2":
+                # Search option
+                print()
+                query = input("Search for (e.g., 'llama 3.1', 'qwen coder', 'phi-3'): ").strip()
+                if not query:
+                    print("No search query provided, using default model...")
+                    result = agent.execute(auto_default=True)
+                else:
+                    result = agent.search_and_add_model(query, interactive=True)
+            else:
+                # Default option (choice == "1" or anything else)
+                print("\nUsing recommended model...\n")
+                result = agent.execute(auto_default=True)
 
         if not result["success"]:
             print(f"❌ Model selection failed: {result['message']}")
             return False
 
-        print(f"✓ {result['message']}")
+        print(f"\n✓ {result['message']}")
         return True
 
     def _run_env_configurator(self, interactive: bool, auto_defaults: bool) -> bool:
