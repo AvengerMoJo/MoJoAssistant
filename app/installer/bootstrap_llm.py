@@ -220,24 +220,33 @@ class BootstrapLLM:
         """Chat with OpenAI-compatible API (LMStudio, llama-cpp-python)."""
         messages = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+            # Keep system prompt short to avoid token limits
+            messages.append({"role": "system", "content": system_prompt[:500]})
         messages.append({"role": "user", "content": message})
 
-        response = requests.post(
-            f"{self.base_url}/chat/completions",
-            json={
-                "model": self.model_name,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 500,
-            },
-            timeout=60,
-        )
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                json={
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 300,
+                },
+                timeout=60,
+            )
 
-        if response.status_code != 200:
-            raise RuntimeError(f"API error: {response.status_code}")
+            if response.status_code != 200:
+                # Print error details for debugging
+                try:
+                    error_data = response.json()
+                    raise RuntimeError(f"API error {response.status_code}: {error_data}")
+                except:
+                    raise RuntimeError(f"API error: {response.status_code} - {response.text}")
 
-        return response.json()["choices"][0]["message"]["content"]
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Request failed: {e}")
 
     def stop(self):
         """Stop the LLM server if we started one."""

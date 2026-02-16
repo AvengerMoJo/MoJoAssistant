@@ -155,13 +155,18 @@ class EnvConfiguratorAgent(BaseSetupAgent):
         print("\n💬 AI Assistant")
         print("-" * 60 + "\n")
 
-        # Build system prompt for LLM
-        system_prompt = self.context["prompt"]
+        # Short system prompt (not the full markdown)
+        system_prompt = """You are a helpful setup assistant for MoJoAssistant.
+Guide users through environment configuration by:
+1. Asking what they'll use it for (local AI, cloud AI, GitHub, or just trying out)
+2. Recommending appropriate settings
+3. Being conversational and friendly
+Keep responses under 100 words."""
 
         # Start conversation
         try:
             # Initial AI greeting
-            initial_message = "The user wants to configure their environment. Start by asking them what they plan to use MoJoAssistant for, then guide them through configuration based on their answer."
+            initial_message = "Ask the user what they plan to use MoJoAssistant for. Keep it brief and friendly."
 
             response = self.llm.chat(initial_message, system_prompt=system_prompt)
             print(f"AI: {response}\n")
@@ -188,10 +193,9 @@ class EnvConfiguratorAgent(BaseSetupAgent):
 
             # If cloud AI, ask about API keys
             if use_case == "cloud_ai":
-                ai_response = self.llm.chat(
-                    f"The user wants to use cloud AI. Ask them which provider they want to use (OpenAI, Anthropic, Google) and guide them to get their API key.",
-                    system_prompt=system_prompt
-                )
+                follow_up = f"The user said: '{user_input}'. They want cloud AI. Ask which provider (OpenAI, Anthropic, Google). Be brief."
+
+                ai_response = self.llm.chat(follow_up, system_prompt=system_prompt)
                 print(f"\nAI: {ai_response}\n")
 
                 # Simple API key collection
