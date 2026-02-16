@@ -163,7 +163,7 @@ class SmartInstaller:
 
         # If model exists and we're interactive, skip (user can change manually later)
         if model_exists and not auto_defaults:
-            print("  (To change models later, run: python demo_model_selector.py)\n")
+            print("  (To change models later, run: python scripts/manage_models.py)\n")
             return True
 
         # No model exists - need to download one
