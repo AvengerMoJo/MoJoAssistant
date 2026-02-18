@@ -150,21 +150,79 @@ class EnvConfiguratorAgent(BaseSetupAgent):
         )
         return self.result
 
+    def _analyze_env_status(self) -> str:
+        """Parse current .env to summarize what's configured vs missing."""
+        env_path = Path(".env")
+
+        current = {}
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip()
+                        # Skip placeholder values
+                        if v and not v.startswith("your-") and v not in ("your_key_here", ""):
+                            current[k] = v
+
+        configured = []
+        missing = []
+
+        if current.get("MCP_REQUIRE_AUTH", "false").lower() == "true":
+            configured.append("MCP authentication (secure)")
+        if current.get("OAUTH_ENABLED", "false").lower() == "true":
+            configured.append("OAuth 2.1")
+        if "GOOGLE_API_KEY" in current:
+            configured.append("Google Search API")
+        if "OPENAI_API_KEY" in current:
+            configured.append("OpenAI")
+        if "ANTHROPIC_API_KEY" in current:
+            configured.append("Anthropic (Claude)")
+        if "OPEN_ROUTER_KEY" in current:
+            configured.append("OpenRouter (multi-model)")
+        if "GITHUB_TOKEN" in current:
+            configured.append("GitHub integration")
+        if "HUGGINGFACE_TOKEN" in current:
+            configured.append("HuggingFace token")
+
+        if not any(k in current for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPEN_ROUTER_KEY")):
+            missing.append("cloud AI provider (OpenAI / Anthropic / OpenRouter)")
+
+        lines = []
+        if configured:
+            lines.append("Already configured: " + ", ".join(configured))
+        if missing:
+            lines.append("Not yet configured: " + ", ".join(missing))
+        if not configured and not missing:
+            lines.append("No existing configuration found - starting fresh")
+
+        return "\n".join(lines)
+
     def _llm_guided_configuration(self) -> Dict:
         """Use LLM to guide user through configuration with real conversation."""
         print("\n💬 AI Assistant")
         print("-" * 60 + "\n")
 
-        # System prompt for the AI
-        system_prompt = """You are a helpful setup assistant for MoJoAssistant.
+        # Analyze current .env state before starting
+        env_status = self._analyze_env_status()
+
+        system_prompt = """You are a setup assistant for MoJoAssistant - a personal AI assistant and MCP server.
+
+MoJoAssistant can:
+- Run local AI models (Ollama, llama.cpp) - private, no internet required
+- Connect to cloud AI (OpenAI, Anthropic, Google, OpenRouter)
+- Search the web via Google Search API
+- Remember things with a memory/knowledge system
+- Integrate with GitHub for code workflows
 
 Your job:
-1. Ask what they'll use MoJoAssistant for
-2. If they ask questions (like "what are my options?"), answer them clearly
-3. Help them decide between: local AI only, cloud AI, GitHub integration, or just trying out
-4. Once they've made a choice, end with: USE_CASE:local_only or USE_CASE:cloud_ai or USE_CASE:github_integration
+1. Show the user what's already configured and what's missing
+2. Ask what they want to use MoJoAssistant for
+3. Answer their questions clearly (e.g. "what are my options?")
+4. Once they've decided, end your response with: USE_CASE:local_only or USE_CASE:cloud_ai or USE_CASE:github_integration
 
-Be conversational and helpful. Keep responses under 100 words."""
+Be concise. Keep responses under 120 words."""
 
         try:
             # Build conversation history
@@ -172,8 +230,14 @@ Be conversational and helpful. Keep responses under 100 words."""
             use_case = None
             max_turns = 10
 
-            # Initial AI question
-            initial_prompt = "Ask the user what they plan to use MoJoAssistant for."
+            # Initial AI message: present status, then ask
+            initial_prompt = f"""Current .env status:
+{env_status}
+
+Start by briefly summarizing what's already configured and what's missing (2-3 lines max).
+Then ask the user what they want to use MoJoAssistant for.
+Keep your response under 120 words."""
+
             ai_response = self.llm.chat(initial_prompt, system_prompt=system_prompt)
             print(f"AI: {ai_response}\n")
 
