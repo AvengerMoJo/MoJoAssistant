@@ -150,10 +150,9 @@ class EnvConfiguratorAgent(BaseSetupAgent):
         )
         return self.result
 
-    def _analyze_env_status(self) -> str:
-        """Parse current .env to summarize what's configured vs missing."""
+    def _parse_env_file(self) -> Dict:
+        """Parse current .env file into a dict, skipping comments and placeholders."""
         env_path = Path(".env")
-
         current = {}
         if env_path.exists():
             with open(env_path) as f:
@@ -162,15 +161,17 @@ class EnvConfiguratorAgent(BaseSetupAgent):
                     if line and not line.startswith("#") and "=" in line:
                         k, v = line.split("=", 1)
                         k, v = k.strip(), v.strip()
-                        # Skip placeholder values
                         if v and not v.startswith("your-") and v not in ("your_key_here", ""):
                             current[k] = v
+        return current
 
+    def _print_env_status(self, current: Dict):
+        """Print a readable summary of what is and isn't configured."""
         configured = []
         missing = []
 
         if current.get("MCP_REQUIRE_AUTH", "false").lower() == "true":
-            configured.append("MCP authentication (secure)")
+            configured.append("MCP authentication")
         if current.get("OAUTH_ENABLED", "false").lower() == "true":
             configured.append("OAuth 2.1")
         if "GOOGLE_API_KEY" in current:
@@ -180,199 +181,147 @@ class EnvConfiguratorAgent(BaseSetupAgent):
         if "ANTHROPIC_API_KEY" in current:
             configured.append("Anthropic (Claude)")
         if "OPEN_ROUTER_KEY" in current:
-            configured.append("OpenRouter (multi-model)")
+            configured.append("OpenRouter")
         if "GITHUB_TOKEN" in current:
-            configured.append("GitHub integration")
+            configured.append("GitHub")
         if "HUGGINGFACE_TOKEN" in current:
-            configured.append("HuggingFace token")
+            configured.append("HuggingFace")
 
         if not any(k in current for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPEN_ROUTER_KEY")):
-            missing.append("cloud AI provider (OpenAI / Anthropic / OpenRouter)")
+            missing.append("cloud AI provider")
 
-        lines = []
+        print()
         if configured:
-            lines.append("Already configured: " + ", ".join(configured))
+            print(f"  Already set:  {', '.join(configured)}")
         if missing:
-            lines.append("Not yet configured: " + ", ".join(missing))
+            print(f"  Not set yet:  {', '.join(missing)}")
         if not configured and not missing:
-            lines.append("No existing configuration found - starting fresh")
-
-        return "\n".join(lines)
+            print("  No existing configuration - starting fresh")
+        print()
 
     def _llm_guided_configuration(self) -> Dict:
-        """Use LLM to guide user through configuration with real conversation."""
-        print("\n💬 AI Assistant")
-        print("-" * 60 + "\n")
+        """
+        Hybrid approach: code handles structure and menus, LLM interprets free text.
+        This avoids relying on a small LLM to summarize or reason about the .env.
+        """
+        print("\n  Setup Assistant")
+        print("-" * 60)
 
-        # Analyze current .env state before starting
-        env_status = self._analyze_env_status()
+        # Code prints the status - don't ask LLM to do this (it hallucinates)
+        current_env = self._parse_env_file()
+        self._print_env_status(current_env)
 
-        system_prompt = """You are a setup assistant for MoJoAssistant - a personal AI assistant and MCP server.
+        print("  What do you want to use MoJoAssistant for?\n")
+        print("  1. Local AI only  (Ollama, LMStudio, llama.cpp - fully private)")
+        print("  2. Cloud AI       (OpenAI, Anthropic, Google, OpenRouter)")
+        print("  3. Local + Cloud  (use both)")
+        print("  4. GitHub integration")
+        print("  5. Just trying it out\n")
+        print("  (Enter a number, or describe what you want)\n")
 
-MoJoAssistant can:
-- Run local AI models (Ollama, llama.cpp) - private, no internet required
-- Connect to cloud AI (OpenAI, Anthropic, Google, OpenRouter)
-- Search the web via Google Search API
-- Remember things with a memory/knowledge system
-- Integrate with GitHub for code workflows
+        # LLM system prompt - only used when user types free text
+        system_prompt = (
+            "You help users choose a MoJoAssistant configuration. "
+            "Map their intent to exactly one of: local_only, cloud_ai, github_integration. "
+            "local_only = wants privacy / local models / offline / ollama / lmstudio / llama. "
+            "cloud_ai = wants openai / anthropic / google / remote API / cloud. "
+            "github_integration = wants github / code / repo features. "
+            "Reply with one word: local_only, cloud_ai, or github_integration. "
+            "If unclear, reply with a single short clarifying question (max 20 words)."
+        )
 
-Your job:
-1. Show the user what's already configured and what's missing
-2. Ask what they want to use MoJoAssistant for
-3. Answer their questions clearly (e.g. "what are my options?")
-4. Once they've decided, end your response with: USE_CASE:local_only or USE_CASE:cloud_ai or USE_CASE:github_integration
-
-Be concise. Keep responses under 120 words."""
-
-        try:
-            # Build conversation history
-            conversation = []
-            use_case = None
-            max_turns = 10
-
-            # Initial AI message: present status, then ask
-            initial_prompt = f"""Current .env status:
-{env_status}
-
-Start by briefly summarizing what's already configured and what's missing (2-3 lines max).
-Then ask the user what they want to use MoJoAssistant for.
-Keep your response under 120 words."""
-
-            ai_response = self.llm.chat(initial_prompt, system_prompt=system_prompt)
-            print(f"AI: {ai_response}\n")
-
-            conversation.append(f"AI: {ai_response}")
-
-            # Conversation loop - continue until AI determines use_case
-            for turn in range(max_turns):
-                # Get user input
-                user_input = input("You: ").strip()
-                if not user_input:
-                    continue
-
-                conversation.append(f"User: {user_input}")
-
-                # Build context for AI (recent conversation)
-                context = "\n".join(conversation[-6:])  # Last 3 turns
-
-                # Ask AI to respond, and determine use_case if possible
-                prompt = f"""Conversation so far:
-{context}
-
-Respond to the user. If they've clearly chosen what they want (local AI, cloud AI, GitHub, or trying out),
-end your response with USE_CASE:local_only or USE_CASE:cloud_ai or USE_CASE:github_integration or USE_CASE:trying_out
-
-If they're asking questions or unclear, just answer helpfully without USE_CASE marker."""
-
-                ai_response = self.llm.chat(prompt, system_prompt=system_prompt)
-
-                # Check if AI determined use_case
-                if "USE_CASE:" in ai_response:
-                    # Extract use_case
-                    use_case_line = [line for line in ai_response.split('\n') if 'USE_CASE:' in line][0]
-                    use_case_value = use_case_line.split('USE_CASE:')[1].strip()
-
-                    # Map to our template names
-                    if "local" in use_case_value or "trying" in use_case_value:
-                        use_case = "local_only"
-                    elif "cloud" in use_case_value:
-                        use_case = "cloud_ai"
-                    elif "github" in use_case_value:
-                        use_case = "github_integration"
-
-                    # Remove USE_CASE marker from displayed response
-                    ai_response = ai_response.replace(use_case_line, "").strip()
-
-                # Display AI response
-                print(f"\nAI: {ai_response}\n")
-                conversation.append(f"AI: {ai_response}")
-
-                # If use_case determined, proceed to configuration
-                if use_case:
-                    break
-
-            # If no use_case after max turns, default to local_only
-            if not use_case:
-                print("\nAI: I'll set you up with local-only mode for now. You can always reconfigure later!\n")
-                use_case = "local_only"
-
-            # Create configuration based on use_case
-            settings = self.TEMPLATES[use_case].copy()
-
-            # If cloud AI, continue conversation for API key
-            if use_case == "cloud_ai":
-                settings = self._cloud_ai_setup(conversation, system_prompt, settings)
-
-            # Write configuration
-            print("\n✓ Creating configuration...")
-            self._write_env_file(settings)
-
-            self.set_success(f"Created {use_case.replace('_', ' ')} configuration", use_case=use_case)
-            return self.result
-
-        except Exception as e:
-            print(f"\n⚠️  AI conversation failed: {e}")
-            print("   Falling back to prompt-based configuration...\n")
-            return self._prompt_based_configuration()
-
-    def _cloud_ai_setup(self, conversation: list, system_prompt: str, settings: Dict) -> Dict:
-        """Continue conversation to set up cloud AI provider."""
-        # Ask about provider
-        prompt = f"""Conversation so far:
-{chr(10).join(conversation[-4:])}
-
-The user wants cloud AI. Ask which provider they prefer (OpenAI, Anthropic, or Google).
-If they choose one, end with PROVIDER:openai or PROVIDER:anthropic or PROVIDER:google"""
-
-        ai_response = self.llm.chat(prompt, system_prompt=system_prompt)
-        print(f"AI: {ai_response}\n")
-
-        provider = None
-        for _ in range(3):  # Max 3 turns to determine provider
+        use_case = None
+        for turn in range(8):
             user_input = input("You: ").strip()
+            if not user_input:
+                continue
 
-            # Check if AI can extract provider
-            check_prompt = f"User said: '{user_input}'. Which provider? Reply with just: openai, anthropic, google, or unclear"
-            provider_response = self.llm.chat(check_prompt, system_prompt=system_prompt).strip().lower()
-
-            if "openai" in provider_response:
-                provider = "openai"
+            # Handle menu numbers directly - no LLM needed
+            if user_input in ("1", "5"):
+                use_case = "local_only"
+                print("\n  Got it - local AI only. No API keys needed.\n")
                 break
-            elif "anthropic" in provider_response or "claude" in provider_response:
-                provider = "anthropic"
+            elif user_input == "2":
+                use_case = "cloud_ai"
+                print("\n  Got it - cloud AI setup.\n")
                 break
-            elif "google" in provider_response or "gemini" in provider_response:
-                provider = "google"
+            elif user_input == "3":
+                use_case = "cloud_ai"
+                print("\n  Got it - I'll set up cloud AI. You can also use local models at any time.\n")
+                break
+            elif user_input == "4":
+                use_case = "github_integration"
+                print("\n  Got it - GitHub integration.\n")
                 break
             else:
-                # AI couldn't determine, ask for clarification
-                clarify = self.llm.chat(f"User said '{user_input}'. Ask them to choose OpenAI, Anthropic, or Google more clearly.", system_prompt=system_prompt)
-                print(f"\nAI: {clarify}\n")
+                # LLM interprets free text
+                try:
+                    response = self.llm.chat(
+                        f'User said: "{user_input}"',
+                        system_prompt=system_prompt,
+                    ).strip().lower()
 
-        # Get API key for chosen provider
-        if provider == "openai":
-            print("\nAI: Great! You'll need an OpenAI API key from https://platform.openai.com/api-keys")
-            print("    It starts with 'sk-'. Paste it here (or press Enter to skip):")
-            api_key = input("\nAPI Key: ").strip()
-            if api_key:
-                settings["OPENAI_API_KEY"] = api_key
-                settings["DEFAULT_LLM_PROVIDER"] = "openai"
+                    if "local_only" in response or "local" == response:
+                        use_case = "local_only"
+                        print("\n  Got it - local AI only. No API keys needed.\n")
+                        break
+                    elif "cloud_ai" in response or "cloud" == response:
+                        use_case = "cloud_ai"
+                        print("\n  Got it - cloud AI setup.\n")
+                        break
+                    elif "github" in response:
+                        use_case = "github_integration"
+                        print("\n  Got it - GitHub integration.\n")
+                        break
+                    else:
+                        # LLM returned a clarifying question
+                        print(f"\n  AI: {response}\n")
+                except Exception:
+                    # LLM failed - ask user to pick a number
+                    print("\n  Please enter a number (1-5) to choose.\n")
 
-        elif provider == "anthropic":
-            print("\nAI: Perfect! You'll need an Anthropic API key from https://console.anthropic.com/settings/keys")
-            print("    It starts with 'sk-ant-'. Paste it here (or press Enter to skip):")
-            api_key = input("\nAPI Key: ").strip()
-            if api_key:
-                settings["ANTHROPIC_API_KEY"] = api_key
-                settings["DEFAULT_LLM_PROVIDER"] = "anthropic"
+        if not use_case:
+            print("\n  Defaulting to local-only mode. You can reconfigure later.\n")
+            use_case = "local_only"
 
-        elif provider == "google":
-            print("\nAI: Got it! You'll need a Google API key from https://makersuite.google.com/app/apikey")
-            print("    Paste it here (or press Enter to skip):")
-            api_key = input("\nAPI Key: ").strip()
+        settings = self.TEMPLATES[use_case].copy()
+
+        if use_case == "cloud_ai":
+            settings = self._cloud_ai_setup(settings)
+
+        print("  Creating configuration...")
+        self._write_env_file(settings)
+
+        self.set_success(f"Created {use_case.replace('_', ' ')} configuration", use_case=use_case)
+        return self.result
+
+    def _cloud_ai_setup(self, settings: Dict) -> Dict:
+        """Ask for cloud AI provider and API key."""
+        print("  Which provider do you want to use?\n")
+        print("  1. OpenAI     (GPT-4, requires key from platform.openai.com)")
+        print("  2. Anthropic  (Claude, requires key from console.anthropic.com)")
+        print("  3. Google     (Gemini, requires key from aistudio.google.com)")
+        print("  4. OpenRouter (many models, requires key from openrouter.ai)")
+        print("  5. Skip for now\n")
+
+        choice = input("You: ").strip()
+
+        provider_map = {
+            "1": ("openai", "OPENAI_API_KEY", "platform.openai.com/api-keys", "sk-"),
+            "2": ("anthropic", "ANTHROPIC_API_KEY", "console.anthropic.com/settings/keys", "sk-ant-"),
+            "3": ("google", "GOOGLE_API_KEY", "aistudio.google.com/app/apikey", "AIza"),
+            "4": ("openrouter", "OPEN_ROUTER_KEY", "openrouter.ai/keys", "sk-or-"),
+        }
+
+        if choice in provider_map:
+            name, key_var, url, prefix = provider_map[choice]
+            print(f"\n  Get your API key from: {url}")
+            print(f"  (It starts with '{prefix}')\n")
+            api_key = input("  API Key (or Enter to skip): ").strip()
             if api_key:
-                settings["GOOGLE_API_KEY"] = api_key
-                settings["DEFAULT_LLM_PROVIDER"] = "google"
+                settings[key_var] = api_key
+                settings["DEFAULT_LLM_PROVIDER"] = name
+                print(f"\n  {name.capitalize()} API key saved.\n")
 
         return settings
 
