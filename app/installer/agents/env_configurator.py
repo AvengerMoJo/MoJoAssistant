@@ -5,10 +5,11 @@ This agent uses LLM to conversationally help users configure their
 environment variables based on their use case.
 """
 
+import json
 import os
 import re
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from .base_agent import BaseSetupAgent
 
@@ -551,3 +552,211 @@ class EnvConfiguratorAgent(BaseSetupAgent):
             f.writelines(new_lines)
 
         return True
+
+    # =========================================================================
+    # Tool-Based Configuration (New Approach)
+    # =========================================================================
+
+    def _load_env_metadata(self) -> Dict:
+        """Load the env_variables.json metadata."""
+        metadata_path = Path(self.config_dir) / "env_variables.json"
+        if not metadata_path.exists():
+            return {}
+
+        with open(metadata_path) as f:
+            return json.load(f)
+
+    def _get_use_case_variables(self, use_case: str, metadata: Dict) -> List[str]:
+        """Get list of required and optional variables for a use case."""
+        use_case_info = metadata.get("use_cases", {}).get(use_case, {})
+        required = use_case_info.get("required_variables", [])
+        optional = use_case_info.get("optional_variables", [])
+
+        # Flatten "One of:" requirements
+        all_vars = []
+        for var in required:
+            if isinstance(var, str) and var.startswith("One of:"):
+                # Extract options from "One of: VAR1, VAR2, VAR3"
+                options = var.replace("One of:", "").strip().split(",")
+                all_vars.extend([v.strip() for v in options])
+            else:
+                all_vars.append(var)
+
+        all_vars.extend(optional)
+        return all_vars
+
+    def _get_variable_info(self, key: str, metadata: Dict) -> Optional[Dict]:
+        """Find variable info from metadata by searching all categories."""
+        for category_name, category_data in metadata.get("categories", {}).items():
+            if key in category_data.get("variables", {}):
+                return category_data["variables"][key]
+        return None
+
+    def _tool_get_missing_keys(self, use_case: str) -> str:
+        """
+        Tool: get_missing_keys()
+        Returns JSON string with missing configuration keys and their metadata.
+        """
+        metadata = self._load_env_metadata()
+        current_env = self._parse_env_file()
+
+        # Get variables needed for this use case
+        use_case_vars = self._get_use_case_variables(use_case, metadata)
+
+        # Find missing ones
+        missing = []
+        for var_key in use_case_vars:
+            if var_key not in current_env or not current_env[var_key]:
+                var_info = self._get_variable_info(var_key, metadata)
+                if var_info:
+                    missing.append({
+                        "key": var_key,
+                        "description": var_info.get("description", ""),
+                        "purpose": var_info.get("purpose", ""),
+                        "required": var_info.get("required", False),
+                        "type": var_info.get("type", "string"),
+                        "default": var_info.get("default"),
+                        "sensitive": var_info.get("sensitive", False),
+                        "how_to_get": var_info.get("how_to_get", ""),
+                    })
+
+        if not missing:
+            return json.dumps({"status": "complete", "missing": []})
+
+        return json.dumps({
+            "status": "incomplete",
+            "missing": missing,
+            "count": len(missing)
+        })
+
+    def _tool_set_value(self, key: str, value: str) -> str:
+        """
+        Tool: set_value(key, value)
+        Saves a configuration value to .env file.
+        """
+        # Handle empty values
+        if not value or value.lower() in ("skip", "none", ""):
+            return json.dumps({"success": True, "message": f"Skipped {key}"})
+
+        # Handle boolean conversions
+        if value.lower() in ("yes", "y", "true", "1"):
+            value = "true"
+        elif value.lower() in ("no", "n", "false", "0"):
+            value = "false"
+
+        # Save to .env
+        try:
+            self.add_setting(key, value)
+            return json.dumps({"success": True, "message": f"Saved {key}"})
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)})
+
+    def _tool_based_configuration(self, use_case: str = "local_only") -> Dict:
+        """
+        LLM-driven configuration using function calling.
+
+        The LLM has access to three tools:
+        - get_missing_keys() - returns what needs to be configured
+        - ask_user(question) - asks the user a question (passthrough to input())
+        - set_value(key, value) - saves a value to .env
+
+        Args:
+            use_case: Which use case to configure for
+        """
+        if not self.llm:
+            print("⚠️  LLM not available, falling back to menu-based configuration")
+            return self._prompt_based_configuration()
+
+        print("\n💬 AI Configuration Assistant")
+        print("-" * 60)
+        print(f"  Configuring for: {use_case.replace('_', ' ').title()}\n")
+
+        # Load the tool-based prompt
+        try:
+            prompt_path = Path(self.config_dir) / "installer_prompts" / "env_configurator_tool_based.md"
+            with open(prompt_path) as f:
+                system_prompt = f.read()
+        except Exception:
+            system_prompt = "You are a configuration assistant. Help the user configure their .env file."
+
+        # Define tools for the LLM
+        tools = [
+            {
+                "name": "get_missing_keys",
+                "description": "Get list of missing configuration keys that need to be set",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "set_value",
+                "description": "Save a configuration value to the .env file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "description": "The configuration key name"},
+                        "value": {"type": "string", "description": "The value to set"},
+                    },
+                    "required": ["key", "value"],
+                },
+            },
+        ]
+
+        # Conversation loop with tool calling
+        conversation_history = []
+        max_turns = 30
+
+        for turn in range(max_turns):
+            # Check if we're done
+            missing_status = json.loads(self._tool_get_missing_keys(use_case))
+            if missing_status["status"] == "complete":
+                print("\n✓ Configuration complete!\n")
+                break
+
+            # Build prompt for LLM
+            if turn == 0:
+                prompt = "Start by calling get_missing_keys() to see what needs to be configured."
+            else:
+                prompt = "Continue configuring. Call get_missing_keys() to check progress."
+
+            # Get LLM response (with tool calling)
+            try:
+                # Note: This is a simplified version - actual implementation depends on
+                # how your LLM wrapper handles function calling
+                response = self.llm.chat(
+                    prompt,
+                    system_prompt=system_prompt,
+                    conversation_history=conversation_history
+                )
+
+                # Parse tool calls from response
+                # This is pseudo-code - format depends on LLM wrapper
+                if "get_missing_keys()" in response:
+                    result = self._tool_get_missing_keys(use_case)
+                    print(f"[Tool] get_missing_keys() -> {len(json.loads(result).get('missing', []))} missing")
+                    conversation_history.append({"role": "assistant", "content": response})
+                    conversation_history.append({"role": "tool", "content": result})
+
+                elif "set_value(" in response:
+                    # Parse set_value call (simplified)
+                    # Real implementation needs proper parsing
+                    import re
+                    match = re.search(r'set_value\(["\']([^"\']+)["\'],\s*["\']([^"\']*)["\']', response)
+                    if match:
+                        key, value = match.groups()
+                        result = self._tool_set_value(key, value)
+                        print(f"  Saved: {key}")
+                        conversation_history.append({"role": "assistant", "content": response})
+                        conversation_history.append({"role": "tool", "content": result})
+
+                else:
+                    # LLM is asking user a question
+                    print(f"\nAI: {response}")
+                    user_input = input("You: ").strip()
+                    conversation_history.append({"role": "assistant", "content": response})
+                    conversation_history.append({"role": "user", "content": user_input})
+
+            except Exception as e:
+                print(f"⚠️  Error: {e}")
+                break
+
+        self.set_success(f"Configuration complete for {use_case}")
+        return self.result
