@@ -119,7 +119,8 @@ class EnvConfiguratorAgent(BaseSetupAgent):
 
             # Interactive mode with LLM
             if interactive and self.llm:
-                return self._llm_guided_configuration()
+                # Use tool-based configuration (optimized for small LLMs)
+                return self._tool_based_configuration(use_case)
             else:
                 # Fallback: simple prompt-based configuration
                 return self._prompt_based_configuration()
@@ -651,17 +652,16 @@ class EnvConfiguratorAgent(BaseSetupAgent):
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
 
-    def _tool_based_configuration(self, use_case: str = "local_only") -> Dict:
+    def _tool_based_configuration(self, use_case: str = None) -> Dict:
         """
-        LLM-driven configuration using function calling.
+        LLM-driven configuration using simple tool calling.
 
-        The LLM has access to three tools:
-        - get_missing_keys() - returns what needs to be configured
-        - ask_user(question) - asks the user a question (passthrough to input())
-        - set_value(key, value) - saves a value to .env
+        The LLM sees tool results and calls tools by mentioning them in text:
+        - "get_missing_keys()" - returns what needs to be configured
+        - "set_value('KEY', 'value')" - saves a value to .env
 
         Args:
-            use_case: Which use case to configure for
+            use_case: Which use case to configure for (if None, ask user first)
         """
         if not self.llm:
             print("⚠️  LLM not available, falling back to menu-based configuration")
@@ -669,6 +669,31 @@ class EnvConfiguratorAgent(BaseSetupAgent):
 
         print("\n💬 AI Configuration Assistant")
         print("-" * 60)
+
+        # If no use_case specified, ask user first
+        if not use_case:
+            print("\n  What do you want to use MoJoAssistant for?\n")
+            print("  1. Local AI only  (Ollama, LMStudio, llama.cpp - fully private)")
+            print("  2. Cloud AI       (OpenAI, Anthropic, Google, OpenRouter)")
+            print("  3. Local + Cloud  (use both)")
+            print("  4. GitHub integration")
+            print("  5. Just trying it out\n")
+
+            choice = input("You: ").strip()
+
+            if choice in ("1", "5"):
+                use_case = "local_only"
+            elif choice == "2":
+                use_case = "cloud_ai"
+            elif choice == "3":
+                use_case = "hybrid"
+            elif choice == "4":
+                use_case = "github_integration"
+            else:
+                # Default to local_only
+                print("\n  Defaulting to local-only mode.\n")
+                use_case = "local_only"
+
         print(f"  Configuring for: {use_case.replace('_', ' ').title()}\n")
 
         # Load the tool-based prompt
@@ -679,29 +704,8 @@ class EnvConfiguratorAgent(BaseSetupAgent):
         except Exception:
             system_prompt = "You are a configuration assistant. Help the user configure their .env file."
 
-        # Define tools for the LLM
-        tools = [
-            {
-                "name": "get_missing_keys",
-                "description": "Get list of missing configuration keys that need to be set",
-                "parameters": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "set_value",
-                "description": "Save a configuration value to the .env file",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "key": {"type": "string", "description": "The configuration key name"},
-                        "value": {"type": "string", "description": "The value to set"},
-                    },
-                    "required": ["key", "value"],
-                },
-            },
-        ]
-
-        # Conversation loop with tool calling
-        conversation_history = []
+        # Conversation loop
+        conversation = []
         max_turns = 30
 
         for turn in range(max_turns):
@@ -713,46 +717,49 @@ class EnvConfiguratorAgent(BaseSetupAgent):
 
             # Build prompt for LLM
             if turn == 0:
-                prompt = "Start by calling get_missing_keys() to see what needs to be configured."
+                prompt = "Call get_missing_keys() to start."
             else:
-                prompt = "Continue configuring. Call get_missing_keys() to check progress."
+                prompt = "Continue. Check get_missing_keys() for progress."
 
-            # Get LLM response (with tool calling)
+            # Get LLM response
             try:
-                # Note: This is a simplified version - actual implementation depends on
-                # how your LLM wrapper handles function calling
-                response = self.llm.chat(
-                    prompt,
-                    system_prompt=system_prompt,
-                    conversation_history=conversation_history
-                )
+                response = self.llm.chat(prompt, system_prompt=system_prompt)
 
-                # Parse tool calls from response
-                # This is pseudo-code - format depends on LLM wrapper
-                if "get_missing_keys()" in response:
+                # Parse tool calls from response text
+                # LLM can call: get_missing_keys() or set_value("KEY", "value")
+
+                if "get_missing_keys()" in response.lower():
                     result = self._tool_get_missing_keys(use_case)
-                    print(f"[Tool] get_missing_keys() -> {len(json.loads(result).get('missing', []))} missing")
-                    conversation_history.append({"role": "assistant", "content": response})
-                    conversation_history.append({"role": "tool", "content": result})
+                    parsed = json.loads(result)
+                    print(f"\n[Tool] get_missing_keys() -> {parsed['count']} missing\n")
 
-                elif "set_value(" in response:
-                    # Parse set_value call (simplified)
-                    # Real implementation needs proper parsing
-                    import re
-                    match = re.search(r'set_value\(["\']([^"\']+)["\'],\s*["\']([^"\']*)["\']', response)
-                    if match:
-                        key, value = match.groups()
-                        result = self._tool_set_value(key, value)
-                        print(f"  Saved: {key}")
-                        conversation_history.append({"role": "assistant", "content": response})
-                        conversation_history.append({"role": "tool", "content": result})
+                    # If complete, done
+                    if parsed["status"] == "complete":
+                        break
 
-                else:
-                    # LLM is asking user a question
-                    print(f"\nAI: {response}")
-                    user_input = input("You: ").strip()
-                    conversation_history.append({"role": "assistant", "content": response})
-                    conversation_history.append({"role": "user", "content": user_input})
+                    # Add to conversation
+                    conversation.append(f"Tool result: {result}")
+                    continue
+
+                # Check for set_value call
+                set_match = re.search(r'set_value\(["\']([^"\']+)["\'],\s*["\']([^"\']*)["\']', response)
+                if set_match:
+                    key, value = set_match.groups()
+                    result = self._tool_set_value(key, value)
+                    parsed = json.loads(result)
+
+                    if parsed.get("skipped"):
+                        print(f"  Skipped: {key}")
+                    elif parsed.get("success"):
+                        print(f"  Saved: {key} = {value}")
+
+                    conversation.append(f"Tool result: {result}")
+                    continue
+
+                # Otherwise, LLM is asking user a question
+                print(f"AI: {response}")
+                user_input = input("You: ").strip()
+                conversation.append(f"User: {user_input}")
 
             except Exception as e:
                 print(f"⚠️  Error: {e}")
