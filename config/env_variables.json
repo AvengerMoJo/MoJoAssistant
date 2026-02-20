@@ -1,0 +1,611 @@
+{
+  "categories": {
+    "server": {
+      "name": "Server Configuration",
+      "description": "HTTP server and network settings for MoJoAssistant",
+      "variables": {
+        "SERVER_HOST": {
+          "description": "IP address the HTTP server binds to",
+          "purpose": "Controls which network interfaces can access the server. Use 0.0.0.0 for all interfaces, 127.0.0.1 for localhost only",
+          "type": "string",
+          "required": false,
+          "default": "0.0.0.0",
+          "examples": ["0.0.0.0", "127.0.0.1", "localhost"]
+        },
+        "SERVER_PORT": {
+          "description": "Port number for the HTTP server",
+          "purpose": "The port MoJoAssistant listens on for HTTP requests",
+          "type": "integer",
+          "required": false,
+          "default": 8000,
+          "examples": [8000, 3000, 5000]
+        },
+        "CORS_ORIGINS": {
+          "description": "Allowed origins for CORS (Cross-Origin Resource Sharing)",
+          "purpose": "Controls which domains can make browser requests to your server. Use * to allow all, or specify comma-separated URLs",
+          "type": "string",
+          "required": false,
+          "default": "*",
+          "examples": ["*", "https://example.com", "http://localhost:3000,https://app.example.com"]
+        },
+        "ENVIRONMENT": {
+          "description": "Application environment mode",
+          "purpose": "Determines runtime behavior - development enables more verbose logging, production optimizes performance",
+          "type": "string",
+          "required": false,
+          "default": "development",
+          "options": ["development", "production", "staging", "testing"]
+        },
+        "DEBUG": {
+          "description": "Enable debug mode",
+          "purpose": "When true, shows detailed error messages and stack traces. Disable in production for security",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false]
+        }
+      }
+    },
+    "mcp_auth": {
+      "name": "MCP Authentication",
+      "description": "Model Context Protocol authentication settings",
+      "variables": {
+        "MCP_API_KEY": {
+          "description": "API key for MCP endpoint authentication",
+          "purpose": "Secures MCP endpoints with a bearer token. Clients must provide this key to access MCP tools",
+          "type": "string",
+          "required": false,
+          "default": "demo_key_for_development",
+          "sensitive": true,
+          "how_to_generate": "Use a secure random generator: openssl rand -hex 32"
+        },
+        "MCP_REQUIRE_AUTH": {
+          "description": "Require authentication for MCP endpoints",
+          "purpose": "When true, all MCP requests must include a valid API key or OAuth token",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false],
+          "security_note": "Set to true for production deployments"
+        },
+        "MCP_PORT": {
+          "description": "Port for MCP server",
+          "purpose": "Port number the MCP server listens on",
+          "type": "integer",
+          "required": false,
+          "default": 8765,
+          "examples": [8765, 8080, 3005]
+        },
+        "MCP_HOST": {
+          "description": "Host for MCP server",
+          "purpose": "Hostname or IP address for the MCP server",
+          "type": "string",
+          "required": false,
+          "default": "localhost",
+          "examples": ["localhost", "0.0.0.0", "127.0.0.1"]
+        }
+      }
+    },
+    "oauth": {
+      "name": "OAuth 2.1 Authentication",
+      "description": "OAuth 2.1 settings for Claude Desktop and other OAuth clients",
+      "variables": {
+        "OAUTH_ENABLED": {
+          "description": "Enable OAuth 2.1 authentication",
+          "purpose": "Turns on OAuth 2.1 support for Claude Desktop and other OAuth-compatible clients",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false]
+        },
+        "OAUTH_AUDIENCE": {
+          "description": "OAuth resource identifier (audience claim)",
+          "purpose": "The intended audience for OAuth tokens - typically your server's public URL",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "examples": ["https://ai.example.com", "https://localhost:8000"]
+        },
+        "OAUTH_ISSUER": {
+          "description": "OAuth token issuer URL",
+          "purpose": "The authorization server that issues tokens. Leave empty if running your own authorization server",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "examples": ["https://auth.example.com", "https://accounts.google.com"]
+        },
+        "OAUTH_JWKS_URI": {
+          "description": "JSON Web Key Set URI for token verification",
+          "purpose": "URL to fetch public keys for verifying JWT signatures. Only needed for external OAuth providers",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "examples": ["https://auth.example.com/.well-known/jwks.json"]
+        },
+        "OAUTH_AUTHORIZATION_SERVER_ENABLED": {
+          "description": "Run as OAuth authorization server",
+          "purpose": "When true, MoJoAssistant acts as its own OAuth server and issues tokens to clients like Claude Desktop",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false]
+        },
+        "OAUTH_AUTO_APPROVE": {
+          "description": "Auto-approve OAuth authorization requests",
+          "purpose": "Skip manual consent screen - useful for personal deployments where you trust all clients",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false]
+        },
+        "OAUTH_API_KEY_MODE": {
+          "description": "Allow MCP_API_KEY as Bearer token",
+          "purpose": "When true, clients can use the MCP_API_KEY directly as a Bearer token instead of OAuth flow",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false]
+        },
+        "OAUTH_PUBLIC_CLIENT_ENABLED": {
+          "description": "Allow public clients (no client_id required)",
+          "purpose": "Enable Dynamic Client Registration (DCR) - clients can register themselves without pre-configured credentials",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false]
+        },
+        "OAUTH_AUTHORIZATION_CODE_TTL": {
+          "description": "Authorization code time-to-live (seconds)",
+          "purpose": "How long authorization codes remain valid before expiring",
+          "type": "integer",
+          "required": false,
+          "default": 600,
+          "examples": [300, 600, 900]
+        },
+        "OAUTH_ACCESS_TOKEN_TTL": {
+          "description": "Access token time-to-live (seconds)",
+          "purpose": "How long access tokens remain valid before expiring",
+          "type": "integer",
+          "required": false,
+          "default": 3600,
+          "examples": [3600, 7200, 86400]
+        },
+        "OAUTH_REFRESH_TOKEN_TTL": {
+          "description": "Refresh token time-to-live (seconds)",
+          "purpose": "How long refresh tokens remain valid before expiring",
+          "type": "integer",
+          "required": false,
+          "default": 2592000,
+          "examples": [604800, 2592000, 7776000]
+        },
+        "OAUTH_VERIFY_SIGNATURE": {
+          "description": "Verify JWT token signatures",
+          "purpose": "When true, validates that tokens were signed by a trusted authority. Disable for opaque tokens from your own server",
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "options": [true, false]
+        },
+        "OAUTH_VERIFY_AUDIENCE": {
+          "description": "Verify token audience claim",
+          "purpose": "When true, ensures tokens are intended for this server (audience matches OAUTH_AUDIENCE)",
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "options": [true, false]
+        },
+        "OAUTH_VERIFY_ISSUER": {
+          "description": "Verify token issuer claim",
+          "purpose": "When true, ensures tokens came from the expected authorization server",
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "options": [true, false]
+        },
+        "OAUTH_VERIFY_EXP": {
+          "description": "Verify token expiration",
+          "purpose": "When true, rejects expired tokens",
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "options": [true, false]
+        },
+        "OAUTH_ALGORITHM": {
+          "description": "JWT signing algorithm",
+          "purpose": "Cryptographic algorithm used to sign/verify tokens",
+          "type": "string",
+          "required": false,
+          "default": "RS256",
+          "options": ["RS256", "HS256", "ES256"]
+        },
+        "OAUTH_TOKEN_CACHE_TTL": {
+          "description": "Token validation cache time-to-live (seconds)",
+          "purpose": "How long to cache token validation results to reduce repeated verifications",
+          "type": "integer",
+          "required": false,
+          "default": 300,
+          "examples": [60, 300, 600]
+        },
+        "OAUTH_SUPPORTED_SCOPES": {
+          "description": "OAuth scopes this server supports",
+          "purpose": "Comma-separated list of permission scopes clients can request",
+          "type": "string",
+          "required": false,
+          "default": "mcp:read,mcp:write,mcp:admin",
+          "examples": ["mcp:read", "mcp:read,mcp:write", "mcp:read,mcp:write,mcp:admin"]
+        },
+        "OAUTH_REQUIRED_SCOPE": {
+          "description": "Minimum required OAuth scope",
+          "purpose": "All requests must have at least this scope to be authorized",
+          "type": "string",
+          "required": false,
+          "default": "mcp:read",
+          "examples": ["mcp:read", "mcp:write"]
+        }
+      }
+    },
+    "llm_providers": {
+      "name": "LLM Provider Configuration",
+      "description": "API keys and settings for cloud AI providers",
+      "variables": {
+        "OPENAI_API_KEY": {
+          "description": "OpenAI API key for GPT models",
+          "purpose": "Enables access to OpenAI's GPT-3.5, GPT-4, and other models",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "sensitive": true,
+          "how_to_get": "Sign up at https://platform.openai.com and create an API key at https://platform.openai.com/api-keys",
+          "format": "Starts with 'sk-'",
+          "cost": "Pay-per-use pricing based on tokens consumed"
+        },
+        "ANTHROPIC_API_KEY": {
+          "description": "Anthropic API key for Claude models",
+          "purpose": "Enables access to Claude 3 (Opus, Sonnet, Haiku) and other Anthropic models",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "sensitive": true,
+          "how_to_get": "Sign up at https://console.anthropic.com and create an API key at https://console.anthropic.com/settings/keys",
+          "format": "Starts with 'sk-ant-'",
+          "cost": "Pay-per-use pricing based on tokens consumed"
+        },
+        "GOOGLE_API_KEY": {
+          "description": "Google API key for Gemini models and Search",
+          "purpose": "Enables access to Google Gemini models and Google Custom Search API",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "sensitive": true,
+          "how_to_get": "Create at https://aistudio.google.com/app/apikey or https://console.cloud.google.com",
+          "format": "Starts with 'AIza'",
+          "cost": "Gemini has a free tier; Search API is pay-per-query"
+        },
+        "OPEN_ROUTER_KEY": {
+          "description": "OpenRouter API key for multi-model access",
+          "purpose": "Access multiple LLM providers (OpenAI, Anthropic, Meta, Google, etc.) through a single unified API",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "sensitive": true,
+          "how_to_get": "Sign up at https://openrouter.ai and create an API key at https://openrouter.ai/keys",
+          "format": "Starts with 'sk-or-'",
+          "cost": "Pay-per-use with competitive pricing across models"
+        },
+        "HUGGINGFACE_TOKEN": {
+          "description": "HuggingFace access token",
+          "purpose": "Download models from HuggingFace, access gated models, and use HuggingFace API",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "sensitive": true,
+          "how_to_get": "Sign up at https://huggingface.co and create a token at https://huggingface.co/settings/tokens",
+          "format": "Starts with 'hf_'",
+          "cost": "Free for most features"
+        },
+        "DEFAULT_LLM_PROVIDER": {
+          "description": "Default LLM provider to use",
+          "purpose": "Which provider MoJoAssistant uses when multiple API keys are configured",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "options": ["openai", "anthropic", "google", "openrouter", "local"]
+        },
+        "LOCAL_MODEL_PATH": {
+          "description": "Path to local LLM model files",
+          "purpose": "Directory where local model files (.gguf, safetensors, etc.) are stored",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "examples": ["~/.cache/lm-studio/models", "/path/to/models", "~/models"]
+        }
+      }
+    },
+    "search": {
+      "name": "Search Configuration",
+      "description": "Web search and knowledge retrieval settings",
+      "variables": {
+        "SEARCH_ENABLED": {
+          "description": "Enable web search functionality",
+          "purpose": "When true, MoJoAssistant can search the web for information",
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "options": [true, false]
+        },
+        "GOOGLE_SEARCH_ENGINE_ID": {
+          "description": "Google Custom Search Engine ID",
+          "purpose": "Identifies your custom search engine for Google Search API queries",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "how_to_get": "Create a custom search engine at https://programmablesearchengine.google.com/",
+          "requires": "GOOGLE_API_KEY"
+        }
+      }
+    },
+    "memory": {
+      "name": "Memory and Knowledge System",
+      "description": "Vector storage, embeddings, and knowledge management",
+      "variables": {
+        "EMBEDDING_MODEL": {
+          "description": "Embedding model for semantic search",
+          "purpose": "The model used to convert text into vector embeddings for similarity search",
+          "type": "string",
+          "required": false,
+          "default": "all-MiniLM-L6-v2",
+          "examples": ["all-MiniLM-L6-v2", "all-mpnet-base-v2", "text-embedding-ada-002"]
+        },
+        "MULTI_MODEL_ENABLED": {
+          "description": "Enable multi-model embedding support",
+          "purpose": "When true, allows using different embedding models for different purposes",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false]
+        },
+        "VECTOR_STORE": {
+          "description": "Vector database backend",
+          "purpose": "Which vector database to use for storing embeddings",
+          "type": "string",
+          "required": false,
+          "default": "qdrant",
+          "options": ["qdrant", "chroma", "faiss", "pinecone"]
+        },
+        "MEMORY_PATH": {
+          "description": "Path to memory storage directory",
+          "purpose": "Where MoJoAssistant stores conversation memories, context, and episodic information",
+          "type": "string",
+          "required": false,
+          "default": ".memory",
+          "examples": [".memory", "data/memory", "/var/lib/mojoassistant/memory"]
+        },
+        "KNOWLEDGE_PATH": {
+          "description": "Path to knowledge base directory",
+          "purpose": "Where MoJoAssistant stores long-term knowledge, facts, and indexed documents",
+          "type": "string",
+          "required": false,
+          "default": ".knowledge",
+          "examples": [".knowledge", "data/knowledge", "/var/lib/mojoassistant/knowledge"]
+        },
+        "MAX_CONTEXT_ITEMS": {
+          "description": "Maximum context items to retrieve",
+          "purpose": "How many relevant memory items to include when answering questions",
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "examples": [5, 10, 20]
+        },
+        "EMBEDDING_CACHE_TTL": {
+          "description": "Embedding cache time-to-live (seconds)",
+          "purpose": "How long to cache computed embeddings before recomputing",
+          "type": "integer",
+          "required": false,
+          "default": 3600,
+          "examples": [1800, 3600, 7200]
+        }
+      }
+    },
+    "logging": {
+      "name": "Logging and Debugging",
+      "description": "Log output, verbosity, and debugging options",
+      "variables": {
+        "LOG_LEVEL": {
+          "description": "Logging verbosity level",
+          "purpose": "Controls how much information is logged",
+          "type": "string",
+          "required": false,
+          "default": "INFO",
+          "options": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        },
+        "LOG_FORMAT": {
+          "description": "Log message format string",
+          "purpose": "Python logging format template for log messages",
+          "type": "string",
+          "required": false,
+          "default": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+          "examples": [
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            "%(levelname)s: %(message)s",
+            "[%(asctime)s] %(levelname)s in %(module)s: %(message)s"
+          ]
+        },
+        "LOG_FILE": {
+          "description": "Path to log file",
+          "purpose": "Where to write log messages to disk. Leave empty to disable file logging",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "examples": ["mojoassistant.log", "/var/log/mojoassistant.log", "logs/app.log"]
+        },
+        "LOG_CONSOLE": {
+          "description": "Enable console logging",
+          "purpose": "When true, logs are printed to stdout/stderr in addition to any log file",
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "options": [true, false]
+        }
+      }
+    },
+    "features": {
+      "name": "Feature Flags",
+      "description": "Enable/disable specific MoJoAssistant features",
+      "variables": {
+        "ENABLE_DREAMING": {
+          "description": "Enable background dreaming/reflection",
+          "purpose": "When true, MoJoAssistant runs background processes to consolidate memories and generate insights",
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "options": [true, false]
+        },
+        "ENABLE_SCHEDULER": {
+          "description": "Enable task scheduler",
+          "purpose": "When true, enables scheduled tasks and background job processing",
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "options": [true, false]
+        },
+        "ENABLE_OPENCODE": {
+          "description": "Enable OpenCode integration",
+          "purpose": "When true, enables GitHub code workflow features and repository management",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false]
+        }
+      }
+    },
+    "github": {
+      "name": "GitHub Integration",
+      "description": "GitHub API access and repository management",
+      "variables": {
+        "GITHUB_TOKEN": {
+          "description": "GitHub Personal Access Token",
+          "purpose": "Enables MoJoAssistant to access GitHub repositories, create issues, manage pull requests, etc.",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "sensitive": true,
+          "how_to_get": "Create at https://github.com/settings/tokens - select 'repo' scope for full access or 'public_repo' for public repos only",
+          "format": "Starts with 'ghp_', 'gho_', 'ghu_', 'ghs_', or 'ghr_'",
+          "cost": "Free"
+        }
+      }
+    },
+    "opencode": {
+      "name": "OpenCode Manager Configuration",
+      "description": "Configuration for OpenCode MCP tool server",
+      "variables": {
+        "GLOBAL_MCP_TOOL_PORT": {
+          "description": "Fixed port for OpenCode MCP tool server",
+          "purpose": "Port number for the global MCP tool server (required for cloudflared tunnels)",
+          "type": "integer",
+          "required": false,
+          "default": 3005,
+          "examples": [3005, 3006, 4000]
+        },
+        "GLOBAL_MCP_BEARER_TOKEN": {
+          "description": "Bearer token for OpenCode MCP tool authentication",
+          "purpose": "Secures the global MCP tool server with a bearer token",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "sensitive": true,
+          "how_to_generate": "Use a secure random generator: openssl rand -hex 32"
+        },
+        "OPENCODE_MCP_TOOL_PATH": {
+          "description": "Path to opencode-mcp-tool repository",
+          "purpose": "Local filesystem path where the opencode-mcp-tool repository is located",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "examples": ["/home/user/opencode-mcp-tool", "~/Development/opencode-mcp-tool"]
+        }
+      }
+    }
+  },
+  "use_cases": {
+    "local_only": {
+      "name": "Local AI Only",
+      "description": "Run MoJoAssistant with local models only - completely private, no internet required",
+      "recommended_for": ["Privacy-conscious users", "Offline usage", "Learning and experimentation"],
+      "required_variables": [],
+      "optional_variables": [
+        "LOCAL_MODEL_PATH",
+        "ENABLE_DREAMING",
+        "ENABLE_SCHEDULER",
+        "MEMORY_PATH",
+        "KNOWLEDGE_PATH"
+      ],
+      "requires_external_services": false
+    },
+    "cloud_ai": {
+      "name": "Cloud AI",
+      "description": "Use cloud LLM providers (OpenAI, Anthropic, Google, OpenRouter) for powerful AI capabilities",
+      "recommended_for": ["Production use", "Maximum capabilities", "Multiple model access"],
+      "required_variables": ["One of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, OPEN_ROUTER_KEY"],
+      "optional_variables": [
+        "DEFAULT_LLM_PROVIDER",
+        "GOOGLE_SEARCH_ENGINE_ID",
+        "ENABLE_DREAMING",
+        "ENABLE_SCHEDULER"
+      ],
+      "requires_external_services": true,
+      "has_recurring_costs": true
+    },
+    "hybrid": {
+      "name": "Local + Cloud",
+      "description": "Use both local and cloud models - local for privacy-sensitive tasks, cloud for complex reasoning",
+      "recommended_for": ["Balanced approach", "Cost optimization", "Fallback availability"],
+      "required_variables": ["One of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, OPEN_ROUTER_KEY"],
+      "optional_variables": [
+        "LOCAL_MODEL_PATH",
+        "DEFAULT_LLM_PROVIDER",
+        "ENABLE_DREAMING",
+        "ENABLE_SCHEDULER"
+      ],
+      "requires_external_services": true,
+      "has_recurring_costs": true
+    },
+    "github_integration": {
+      "name": "GitHub Integration",
+      "description": "Enable GitHub repository management, code workflows, and OpenCode features",
+      "recommended_for": ["Software developers", "Code review automation", "Repository management"],
+      "required_variables": ["GITHUB_TOKEN"],
+      "optional_variables": [
+        "ENABLE_OPENCODE",
+        "OPENCODE_MCP_TOOL_PATH",
+        "GLOBAL_MCP_TOOL_PORT",
+        "GLOBAL_MCP_BEARER_TOKEN"
+      ],
+      "requires_external_services": true,
+      "has_recurring_costs": false
+    },
+    "claude_desktop": {
+      "name": "Claude Desktop Integration",
+      "description": "Configure OAuth 2.1 for Claude Desktop app connectivity",
+      "recommended_for": ["Claude Desktop users", "MCP protocol integration"],
+      "required_variables": [
+        "OAUTH_ENABLED=true",
+        "OAUTH_AUDIENCE",
+        "OAUTH_AUTHORIZATION_SERVER_ENABLED=true"
+      ],
+      "optional_variables": [
+        "MCP_API_KEY",
+        "OAUTH_AUTO_APPROVE",
+        "OAUTH_API_KEY_MODE",
+        "OAUTH_PUBLIC_CLIENT_ENABLED"
+      ],
+      "requires_external_services": false
+    }
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "last_updated": "2025-01-XX",
+    "total_variables": 60,
+    "categories": 10
+  }
+}
