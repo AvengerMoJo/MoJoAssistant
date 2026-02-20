@@ -26,6 +26,7 @@ class BootstrapLLM:
         self.server_process = None
         self.base_url = None
         self.model_name = None
+        self.api_token = None
 
     def start(self, quiet: bool = True) -> bool:
         """
@@ -79,18 +80,36 @@ class BootstrapLLM:
 
     def _try_lmstudio(self) -> bool:
         """Try to connect to LM Studio."""
-        try:
-            response = requests.get("http://localhost:1234/v1/models", timeout=2)
-            if response.status_code == 200:
-                data = response.json()
-                models = data.get("data", [])
-                if models:
-                    self.llm_type = "lmstudio"
-                    self.base_url = "http://localhost:1234/v1"
-                    self.model_name = models[0].get("id", "local-model")
-                    return True
-        except Exception:
-            pass
+        # Try common ports: 8080, 1234
+        ports = [8080, 1234]
+
+        # Check if API token is configured
+        api_token = os.environ.get("LMSTUDIO_API_KEY") or os.environ.get("LM_STUDIO_API_KEY")
+
+        for port in ports:
+            try:
+                headers = {}
+                if api_token:
+                    headers["Authorization"] = f"Bearer {api_token}"
+
+                response = requests.get(
+                    f"http://localhost:{port}/v1/models",
+                    headers=headers,
+                    timeout=2
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    models = data.get("data", [])
+                    if models:
+                        self.llm_type = "lmstudio"
+                        self.base_url = f"http://localhost:{port}/v1"
+                        self.model_name = models[0].get("id", "local-model")
+                        self.api_token = api_token  # Store for later use
+                        return True
+            except Exception:
+                continue
+
         return False
 
     def _try_local_model(self, quiet: bool = True) -> bool:
@@ -224,9 +243,15 @@ class BootstrapLLM:
             messages.append({"role": "system", "content": system_prompt[:500]})
         messages.append({"role": "user", "content": message})
 
+        # Build headers (include auth token if present)
+        headers = {}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+
         try:
             response = requests.post(
                 f"{self.base_url}/chat/completions",
+                headers=headers,
                 json={
                     "messages": messages,
                     "temperature": 0.7,
