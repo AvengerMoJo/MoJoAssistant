@@ -19,6 +19,12 @@ Perfect for students, researchers, developers, professionals, or anyone who want
 
 MoJoAssistant acts as your personal AI intermediary - it learns your preferences, context, and conversation history in a private memory system, then uses this understanding to interact with public AI agents more effectively and personally. Your data stays private while you benefit from enhanced, personalized AI interactions.
 
+## Coding Agent Policy
+
+- Repository-wide agent rules: `AGENTS.md`
+- Canonical coding rules document: `Coding Agents Rules.md`
+- MCP integration guide for clients: `docs/configuration/MCP_CLIENT_SETUP.md`
+
 ## Core Architecture
 
 MoJoAssistant consists of several integrated components:
@@ -497,6 +503,10 @@ LOG_LEVEL=INFO
 OPENAI_API_KEY=your-openai-key
 ANTHROPIC_API_KEY=your-anthropic-key
 GOOGLE_API_KEY=your-google-key
+LMSTUDIO_BASE_URL=http://localhost:8080/v1
+LMSTUDIO_API_KEY=your_lmstudio_api_token
+# Optional alternative: keep token in local file (not in git)
+LMSTUDIO_API_KEY_FILE=~/.keys/local_lmstudio.key
 
 # Search Configuration  
 GOOGLE_SEARCH_ENGINE_ID=your-search-engine-id
@@ -508,6 +518,10 @@ MCP_API_KEY=your_secure_api_key
 # Optional: Local model paths
 LOCAL_MODEL_PATH=/path/to/local/models
 ```
+
+LM Studio note:
+- If LM Studio server requires authentication, MoJoAssistant must send `Authorization: Bearer <token>`.
+- Keep the token outside git (for example `~/.keys/local_lmstudio.key`) and load it into environment variables before starting services.
 
 ### Configuration Files
 

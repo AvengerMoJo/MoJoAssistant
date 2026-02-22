@@ -123,9 +123,11 @@ class ConversationChunker:
             return b_chunks
 
         except Exception as e:
+            llm_info = self._get_llm_info()
             self._log(f"Error in LLM chunking: {e}", "error")
-            self._log("Falling back to rule-based chunking", "warning")
-            return self._fallback_chunking(conversation_id, conversation_text)
+            raise RuntimeError(
+                f"Dreaming A->B failed (no fallback). provider={llm_info.get('provider')} model={llm_info.get('model')} error={e}"
+            ) from e
 
     def _parse_llm_response(self, response: str) -> Dict[str, Any]:
         """
@@ -137,7 +139,7 @@ class ConversationChunker:
         Returns:
             Parsed JSON dict
         """
-        # Clean up response (remove markdown code blocks)
+        # First pass: clean obvious markdown wrappers.
         response_clean = response.strip()
         if response_clean.startswith("```json"):
             response_clean = response_clean[7:]
@@ -147,8 +149,141 @@ class ConversationChunker:
             response_clean = response_clean[:-3]
         response_clean = response_clean.strip()
 
-        # Parse JSON
-        return json.loads(response_clean)
+        # Attempt strict parse first.
+        try:
+            parsed = json.loads(response_clean)
+            normalized = self._normalize_chunk_payload(parsed)
+            if normalized is not None:
+                return normalized
+        except Exception:
+            pass
+
+        # Second pass: extract the first JSON object from mixed prose output.
+        extracted = self._extract_first_json_object(response_clean)
+        if extracted is not None:
+            return extracted
+
+        # Third pass: use JSONDecoder raw_decode over all candidate positions.
+        decoded = self._extract_json_with_raw_decode(response_clean)
+        if decoded is not None:
+            return decoded
+
+        # Fourth pass: ask LLM to repair output into strict JSON.
+        repaired = self._repair_json_with_llm(response_clean)
+        if repaired is not None:
+            return repaired
+
+        raise ValueError("Failed to parse chunking response as JSON object after repair")
+
+    def _extract_first_json_object(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract first valid JSON object from free-form model output.
+
+        This handles cases where the model prepends reasoning before the JSON block.
+        """
+        start = text.find("{")
+        while start != -1:
+            depth = 0
+            in_string = False
+            escape = False
+
+            for i in range(start, len(text)):
+                ch = text[i]
+
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start : i + 1]
+                        try:
+                            parsed = json.loads(candidate)
+                            normalized = self._normalize_chunk_payload(parsed)
+                            if normalized is not None:
+                                return normalized
+                        except Exception:
+                            break
+
+            start = text.find("{", start + 1)
+
+        return None
+
+    def _extract_json_with_raw_decode(self, text: str) -> Optional[Dict[str, Any]]:
+        """Try json raw_decode at each JSON-like start char and normalize payload."""
+        decoder = json.JSONDecoder()
+        for i, ch in enumerate(text):
+            if ch not in "{[":
+                continue
+            try:
+                parsed, _end = decoder.raw_decode(text[i:])
+                normalized = self._normalize_chunk_payload(parsed)
+                if normalized is not None:
+                    return normalized
+            except Exception:
+                continue
+        return None
+
+    def _normalize_chunk_payload(self, payload: Any) -> Optional[Dict[str, Any]]:
+        """
+        Normalize common model payload shapes into {"chunks":[...]}.
+        Returns None if required structure cannot be recovered.
+        """
+        if isinstance(payload, dict):
+            if isinstance(payload.get("chunks"), list):
+                return payload
+            data = payload.get("data")
+            if isinstance(data, dict) and isinstance(data.get("chunks"), list):
+                return {"chunks": data.get("chunks", [])}
+            results = payload.get("results")
+            if isinstance(results, dict) and isinstance(results.get("chunks"), list):
+                return {"chunks": results.get("chunks", [])}
+            if isinstance(payload.get("items"), list):
+                return {"chunks": payload.get("items", [])}
+            return None
+
+        if isinstance(payload, list):
+            # Model may return chunk array directly.
+            return {"chunks": payload}
+
+        return None
+
+    def _repair_json_with_llm(self, raw_text: str) -> Optional[Dict[str, Any]]:
+        """Ask LLM to transform malformed output into strict JSON only."""
+        repair_prompt = (
+            "Convert the following content into STRICT valid JSON with this schema only:\n"
+            '{"chunks":[{"content":"<string>","language":"<string>","labels":["<string>"],"speaker":"<user|assistant|system>","entities":["<string>"],"summary":"<string>"}]}\n'
+            "Return JSON only. No prose, no markdown.\n\n"
+            f"CONTENT:\n{raw_text}"
+        )
+        try:
+            repaired_response = self.llm.generate_response(query=repair_prompt, context=None)
+            repaired_clean = repaired_response.strip()
+            if repaired_clean.startswith("```json"):
+                repaired_clean = repaired_clean[7:]
+            if repaired_clean.startswith("```"):
+                repaired_clean = repaired_clean[3:]
+            if repaired_clean.endswith("```"):
+                repaired_clean = repaired_clean[:-3]
+            repaired_clean = repaired_clean.strip()
+
+            parsed = json.loads(repaired_clean)
+            normalized = self._normalize_chunk_payload(parsed)
+            if normalized is not None:
+                return normalized
+        except Exception as e:
+            self._log(f"LLM repair failed: {e}", "error")
+        return None
 
     def _create_b_chunks(
         self,
@@ -211,12 +346,11 @@ class ConversationChunker:
     def _get_llm_info(self) -> Dict[str, Any]:
         """Get current LLM provider info"""
         try:
-            if hasattr(self.llm, 'active_interface_name'):
-                return {
-                    "provider": self.llm.active_interface_name,
-                    "model": "unknown"
-                }
-        except:
+            provider = getattr(self.llm, "active_interface_name", "unknown")
+            active = getattr(self.llm, "active_interface", None)
+            model = getattr(active, "model", "unknown") if active else "unknown"
+            return {"provider": provider, "model": model}
+        except Exception:
             pass
 
         return {"provider": "unknown", "model": "unknown"}
@@ -237,6 +371,7 @@ class ConversationChunker:
             List of basic BChunks
         """
         self._log("Using rule-based fallback chunking", "warning")
+        llm_info = self._get_llm_info()
 
         # Split on double newlines (paragraphs)
         paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
@@ -276,6 +411,10 @@ class ConversationChunker:
                 b_chunk.__dict__['quality_level'] = "basic"
                 b_chunk.__dict__['needs_upgrade'] = True
                 b_chunk.__dict__['llm_used'] = "fallback"
+                b_chunk.__dict__['used_fallback'] = True
+                b_chunk.__dict__['fallback_reason'] = "llm_chunking_parse_or_generation_failed"
+                b_chunk.__dict__['llm_provider'] = llm_info.get("provider", "unknown")
+                b_chunk.__dict__['model'] = llm_info.get("model", "unknown")
 
             b_chunks.append(b_chunk)
 

@@ -49,12 +49,11 @@ class TaskResources:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
-        result = {}
-        if self.when:
-            result["when"] = self.when.isoformat()
-        if self.cron_expression:
-            result["cron_expression"] = self.cron_expression
-        return result
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskResources":
+        return cls(**data)
 
 
 @dataclass
@@ -72,11 +71,6 @@ class Schedule:
             cron_expression=data.get("cron_expression"),
         )
 
-    """Task schedule - can be datetime or cron expression"""
-
-    when: Optional[datetime] = None  # When to run (None = immediate)
-    cron_expression: Optional[str] = None  # Recurring schedule (e.g., "0 3 * * *")
-
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         result = {}
@@ -86,9 +80,6 @@ class Schedule:
             result["cron_expression"] = self.cron_expression
         return result
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TaskResources":
-        return cls(**data)
 
 
 @dataclass

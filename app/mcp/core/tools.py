@@ -2073,6 +2073,7 @@ class ToolRegistry:
             priority_str = args.get("priority", "medium")
             config = args.get("config", {})
             description = args.get("description")
+            resources_dict = args.get("resources", {})
 
             # Convert strings to enums
             task_type = TaskType(task_type_str)
@@ -2084,6 +2085,11 @@ class ToolRegistry:
                 schedule = datetime.fromisoformat(schedule_str)
 
             # Create task
+            resources = (
+                TaskResources.from_dict(resources_dict)
+                if isinstance(resources_dict, dict)
+                else TaskResources()
+            )
             task = Task(
                 id=task_id,
                 type=task_type,
@@ -2091,6 +2097,7 @@ class ToolRegistry:
                 cron_expression=cron_expression,
                 priority=priority,
                 config=config,
+                resources=resources,
                 description=description
             )
 
@@ -2333,10 +2340,6 @@ class ToolRegistry:
 
             llm = LLMInterface(config_file=self.config.get("llm_config_path", "config/llm_config.json"))
 
-            # Set active interface for dreaming
-            if 'qwen-coder-small' in llm.interfaces:
-                llm.set_active_interface('qwen-coder-small')
-
             pipeline = DreamingPipeline(
                 llm_interface=llm,
                 quality_level=quality_level,
@@ -2351,11 +2354,18 @@ class ToolRegistry:
             )
 
             if results.get('status') == 'success':
+                d_stage = results.get('stages', {}).get('D_archive', {})
+                lifecycle = pipeline.get_archive_lifecycle(
+                    conversation_id=conversation_id,
+                    version=d_stage.get("version"),
+                )
                 return {
                     "status": "success",
                     "conversation_id": conversation_id,
                     "quality_level": quality_level,
                     "stages": results.get('stages', {}),
+                    "version": d_stage.get("version"),
+                    "lifecycle": lifecycle,
                     "message": f"Successfully processed conversation {conversation_id}"
                 }
             else:
@@ -2419,9 +2429,16 @@ class ToolRegistry:
             archive = pipeline.get_archive(conversation_id=conversation_id, version=version)
 
             if archive:
+                lifecycle = pipeline.get_archive_lifecycle(
+                    conversation_id=conversation_id,
+                    version=archive.get("version"),
+                )
+                manifest = pipeline.get_manifest(conversation_id=conversation_id)
                 return {
                     "status": "success",
                     "archive": archive,
+                    "lifecycle": lifecycle,
+                    "latest_version": manifest.get("latest_version") if manifest else None,
                     "message": f"Retrieved archive for {conversation_id}"
                 }
             else:
@@ -2459,12 +2476,19 @@ class ToolRegistry:
             )
 
             if results.get('status') == 'success':
+                d_stage = results.get('stages', {}).get('D_archive', {})
+                lifecycle = pipeline.get_archive_lifecycle(
+                    conversation_id=conversation_id,
+                    version=d_stage.get("version"),
+                )
                 return {
                     "status": "success",
                     "conversation_id": conversation_id,
                     "upgraded_from": results.get('upgraded_from'),
                     "upgraded_to": results.get('upgraded_to'),
                     "stages": results.get('stages', {}),
+                    "version": d_stage.get("version"),
+                    "lifecycle": lifecycle,
                     "message": f"Successfully upgraded {conversation_id} to {target_quality}"
                 }
             else:

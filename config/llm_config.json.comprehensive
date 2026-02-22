@@ -27,7 +27,7 @@
       "provider": "openai",
       "description": "LMStudio local server (user-managed models)",
       "base_url": "http://localhost:1234/v1",
-      "api_key": "lm-studio",
+      "api_key": "${LMSTUDIO_API_KEY}",
       "model": "any-model-loaded-in-lmstudio",
       "recommended_for": ["chat", "general"]
     },

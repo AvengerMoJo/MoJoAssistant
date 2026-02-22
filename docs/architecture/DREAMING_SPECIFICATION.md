@@ -21,6 +21,21 @@ Dreaming is a memory consolidation pipeline that reconstructs long-term memory t
 
 ## Data Model
 
+### Physical Storage Architecture (Recommended)
+
+Use a file-first architecture with DuckDB as the query layer:
+
+1. Append-only JSON archives by conversation/version:
+   - `~/.memory/dreams/<conversation_id>/archive_v<version>.json`
+2. No separate indexing server or index service.
+3. DuckDB reads JSON files directly for OLAP and retrieval views.
+4. Existing embedding stores remain in place for semantic recall.
+5. Retrieval policy:
+   - semantic retrieval via embeddings first
+   - structural filtering/ranking via DuckDB metadata (`status`, `storage_location`, `version`)
+
+This keeps operations simple while preserving full history and enabling precise latest/historical queries.
+
 ### Hierarchy
 
 ```
@@ -179,6 +194,8 @@ Dreaming is a memory consolidation pipeline that reconstructs long-term memory t
 - Archive metadata
 - Reason for archival (outdated, duplicate, merged)
 - Removal from hot search
+- Version lineage (`previous_version`, `supersedes_version`)
+- Lifecycle state (`status`, `storage_location`)
 
 **D Examples:**
 
@@ -192,7 +209,10 @@ Dreaming is a memory consolidation pipeline that reconstructs long-term memory t
     "archived_at": "2025-02-09T10:00:00Z",
     "new_version_id": "cluster_c_billing_architecture_v2",
     "storage_location": "cold",
-    "embedding_removed": true
+    "embedding_removed": true,
+    "is_latest": false,
+    "previous_version": 1,
+    "supersedes_version": 1
   },
   "content": {
     "original_c_id": "cluster_c_billing_architecture",
@@ -207,6 +227,10 @@ Dreaming is a memory consolidation pipeline that reconstructs long-term memory t
 - `duplicate` - Exact or near-duplicate content
 - `obsolete` - Outdated information
 - `historical` - Kept for reference only
+
+**Default Retrieval Rule:**
+- Latest `active/hot` versions are returned by default.
+- `cold/superseded` versions remain queryable for historical reference.
 
 ## Dreaming Process Pipeline
 
@@ -241,7 +265,7 @@ Dreaming is a memory consolidation pipeline that reconstructs long-term memory t
 
 4. **B Storage**
    - Write B chunks to JSON
-   - Update indexes for fast retrieval
+   - Keep append-only records where possible
 
 **Processing:**
 ```python
@@ -308,7 +332,7 @@ for new_b_chunk in b_chunks:
 
 4. **C Storage**
    - Write C clusters
-   - Update global indexes
+   - Preserve lineage metadata
    - Create version pointers
 
 **Processing:**
@@ -356,6 +380,7 @@ for cluster in clusters:
    - Remove embeddings from hot search
    - Move to cold storage (D structure)
    - Keep original content for reference
+   - Preserve immutable version snapshots
 
 **Archival Logic:**
 ```python
@@ -386,6 +411,35 @@ for old_c in existing_c_data:
 - Fast OLAP queries on JSON files
 - No separate database server
 - Python-only dependencies
+- No dedicated indexing service required
+
+### Storage Layout
+
+```text
+~/.memory/
+  dreams/
+    <conversation_id>/
+      archive_v1.json
+      archive_v2.json
+      archive_v3.json
+```
+
+### Retrieval Views (Conceptual)
+
+```sql
+-- Latest active version per conversation
+SELECT *
+FROM dream_archives
+WHERE is_latest = true
+  AND status = 'active'
+  AND storage_location = 'hot';
+
+-- Full history for audit/debug
+SELECT *
+FROM dream_archives
+WHERE conversation_id = ?
+ORDER BY version DESC;
+```
 
 ### Query Templates
 

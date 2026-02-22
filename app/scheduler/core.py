@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 
 from app.scheduler.queue import TaskQueue
-from app.scheduler.models import Task, TaskStatus, TaskType, Schedule
+from app.scheduler.models import Task, TaskStatus, TaskType, Schedule, TaskPriority, TaskResources
 from app.scheduler.executor import TaskExecutor
 
 
@@ -79,6 +79,7 @@ class Scheduler:
         self.running = True
         self.stats["started_at"] = datetime.now()
         self._log("Scheduler started")
+        self._ensure_default_dreaming_task()
 
         # Set up signal handlers for graceful shutdown (only in main thread)
         try:
@@ -173,43 +174,15 @@ class Scheduler:
                 self._log(f"Task {task.id} completed successfully")
 
                 # Check if recurring task needs rescheduling
-                if task.schedule and task.schedule.cron_expression:
+                if task.cron_expression:
                     from app.scheduler.triggers import CronTrigger
-                    from app.scheduler.models import Schedule
-
-                    # Parse the schedule
-                    if isinstance(task.schedule, Schedule):
-                        # Already a Schedule object, use directly
-                        trigger = CronTrigger(task.schedule.cron_expression)
-                        schedule_obj = task.schedule
-                    else:
-                        # Legacy datetime-based schedule, convert to Schedule
-                        if isinstance(task.schedule, datetime):
-                            trigger = CronTrigger(f"* * * *")  # Daily at schedule time
-                            schedule_obj = Schedule(when=task.schedule)
-                        else:
-                            # Assume it's a cron expression string
-                            trigger = CronTrigger(task.schedule)
-                            schedule_obj = Schedule(cron_expression=task.schedule)
-
-                    # Calculate next run time
+                    trigger = CronTrigger(task.cron_expression)
                     next_run = trigger.get_next_run_time(after=datetime.now())
-
-                    # Create new task instance for next execution
-                    new_task = Task(
-                        id=task.id,  # Reuse ID for tracking
-                        type=task.type,
-                        description=task.description,
-                        config=task.config,
-                        priority=task.priority,
-                        schedule=schedule_obj,
-                        status=TaskStatus.PENDING,
-                    )
-
-                    self.queue.add(new_task)
-                    self._log(
-                        f"Task {task.id} rescheduled for next run at {next_run.isoformat()}"
-                    )
+                    task.status = TaskStatus.PENDING
+                    task.schedule = next_run
+                    task.started_at = None
+                    task.completed_at = None
+                    self._log(f"Task {task.id} rescheduled for {next_run.isoformat()}")
                 else:
                     self._log(f"Task {task.id} completed (non-recurring)")
             else:
@@ -236,6 +209,44 @@ class Scheduler:
 
         finally:
             self.current_task = None
+
+    def _ensure_default_dreaming_task(self):
+        """
+        Ensure there is a default recurring off-peak Dreaming task.
+        This keeps Dreaming automation background-first without manual setup.
+        """
+        task_id = "dreaming_nightly_offpeak_default"
+        if self.queue.get(task_id):
+            return
+
+        now = datetime.now()
+        first_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if first_run <= now:
+            from datetime import timedelta
+            first_run = first_run + timedelta(days=1)
+
+        task = Task(
+            id=task_id,
+            type=TaskType.DREAMING,
+            schedule=first_run,
+            cron_expression="0 3 * * *",
+            priority=TaskPriority.LOW,
+            config={
+                "automatic": True,
+                "quality_level": "basic",
+                "off_peak_start": "01:00",
+                "off_peak_end": "05:00",
+                "enforce_off_peak": True,
+                "lookback_messages": 200,
+            },
+            resources=TaskResources(requires_gpu=True),
+            description="Automatic nightly Dreaming consolidation (off-peak)",
+            created_by="system",
+        )
+        if self.queue.add(task):
+            self._log(
+                f"Created default Dreaming task {task_id} scheduled at {first_run.isoformat()}"
+            )
 
     def stop(self):
         """Stop the scheduler gracefully"""

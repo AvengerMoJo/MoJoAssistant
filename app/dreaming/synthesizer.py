@@ -40,9 +40,9 @@ INSTRUCTIONS:
 3. Cross-reference clusters when concepts relate
 
 OUTPUT FORMAT (JSON):
-{
+{{
   "clusters": [
-    {
+    {{
       "type": "TOPIC",
       "title": "<cluster name>",
       "summary": "<synthesis of cluster content>",
@@ -50,9 +50,9 @@ OUTPUT FORMAT (JSON):
       "entities": ["<entity1>", "<entity2>"],
       "insights": ["<insight1>", "<insight2>"],
       "related_clusters": []
-    }
+    }}
   ]
-}
+}}
 
 Return ONLY valid JSON, no additional text."""
 
@@ -143,13 +143,15 @@ class DreamingSynthesizer:
             return c_clusters
 
         except Exception as e:
+            llm_info = self._get_llm_info()
             self._log(f"Error in LLM synthesis: {e}", "error")
-            self._log("Falling back to rule-based clustering", "warning")
-            return self._fallback_clustering(chunks, session_id)
+            raise RuntimeError(
+                f"Dreaming B->C failed (no fallback). provider={llm_info.get('provider')} model={llm_info.get('model')} error={e}"
+            ) from e
 
     def _parse_llm_response(self, response: str) -> Dict[str, Any]:
         """Parse LLM JSON response"""
-        # Clean up response (remove markdown code blocks)
+        # First pass: clean obvious markdown wrappers.
         response_clean = response.strip()
         if response_clean.startswith("```json"):
             response_clean = response_clean[7:]
@@ -159,7 +161,136 @@ class DreamingSynthesizer:
             response_clean = response_clean[:-3]
         response_clean = response_clean.strip()
 
-        return json.loads(response_clean)
+        # Attempt strict parse first.
+        try:
+            parsed = json.loads(response_clean)
+            normalized = self._normalize_cluster_payload(parsed)
+            if normalized is not None:
+                return normalized
+        except Exception:
+            pass
+
+        # Second pass: extract first JSON object from mixed prose output.
+        extracted = self._extract_first_json_object(response_clean)
+        if extracted is not None:
+            return extracted
+
+        # Third pass: use JSONDecoder raw_decode over all candidate positions.
+        decoded = self._extract_json_with_raw_decode(response_clean)
+        if decoded is not None:
+            return decoded
+
+        # Fourth pass: ask LLM to repair output into strict JSON.
+        repaired = self._repair_json_with_llm(response_clean)
+        if repaired is not None:
+            return repaired
+
+        raise ValueError("Failed to parse synthesis response as JSON object after repair")
+
+    def _extract_first_json_object(self, text: str) -> Optional[Dict[str, Any]]:
+        """Extract first valid JSON object from text that may contain non-JSON content."""
+        start = text.find("{")
+        while start != -1:
+            depth = 0
+            in_string = False
+            escape = False
+
+            for i in range(start, len(text)):
+                ch = text[i]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start : i + 1]
+                        try:
+                            parsed = json.loads(candidate)
+                            normalized = self._normalize_cluster_payload(parsed)
+                            if normalized is not None:
+                                return normalized
+                        except Exception:
+                            break
+
+            start = text.find("{", start + 1)
+
+        return None
+
+    def _extract_json_with_raw_decode(self, text: str) -> Optional[Dict[str, Any]]:
+        """Try json raw_decode at each JSON-like start char and normalize payload."""
+        decoder = json.JSONDecoder()
+        for i, ch in enumerate(text):
+            if ch not in "{[":
+                continue
+            try:
+                parsed, _end = decoder.raw_decode(text[i:])
+                normalized = self._normalize_cluster_payload(parsed)
+                if normalized is not None:
+                    return normalized
+            except Exception:
+                continue
+        return None
+
+    def _normalize_cluster_payload(self, payload: Any) -> Optional[Dict[str, Any]]:
+        """
+        Normalize common model payload shapes into {"clusters":[...]}.
+        Returns None if required structure cannot be recovered.
+        """
+        if isinstance(payload, dict):
+            if isinstance(payload.get("clusters"), list):
+                return payload
+            data = payload.get("data")
+            if isinstance(data, dict) and isinstance(data.get("clusters"), list):
+                return {"clusters": data.get("clusters", [])}
+            results = payload.get("results")
+            if isinstance(results, dict) and isinstance(results.get("clusters"), list):
+                return {"clusters": results.get("clusters", [])}
+            if isinstance(payload.get("items"), list):
+                return {"clusters": payload.get("items", [])}
+            return None
+
+        if isinstance(payload, list):
+            # Model may return cluster array directly.
+            return {"clusters": payload}
+
+        return None
+
+    def _repair_json_with_llm(self, raw_text: str) -> Optional[Dict[str, Any]]:
+        """Ask LLM to transform malformed synthesis output into strict JSON."""
+        repair_prompt = (
+            "Convert the following content into STRICT valid JSON with this schema only:\n"
+            '{"clusters":[{"type":"TOPIC","title":"<string>","summary":"<string>","chunk_ids":["<string>"],"entities":["<string>"],"insights":["<string>"],"related_clusters":["<string>"]}]}\n'
+            "Return JSON only. No prose, no markdown.\n\n"
+            f"CONTENT:\n{raw_text}"
+        )
+        try:
+            repaired_response = self.llm.generate_response(query=repair_prompt, context=None)
+            repaired_clean = repaired_response.strip()
+            if repaired_clean.startswith("```json"):
+                repaired_clean = repaired_clean[7:]
+            if repaired_clean.startswith("```"):
+                repaired_clean = repaired_clean[3:]
+            if repaired_clean.endswith("```"):
+                repaired_clean = repaired_clean[:-3]
+            repaired_clean = repaired_clean.strip()
+
+            parsed = json.loads(repaired_clean)
+            normalized = self._normalize_cluster_payload(parsed)
+            if normalized is not None:
+                return normalized
+        except Exception as e:
+            self._log(f"LLM repair failed: {e}", "error")
+        return None
 
     def _create_c_clusters(
         self,
@@ -210,12 +341,11 @@ class DreamingSynthesizer:
     def _get_llm_info(self) -> Dict[str, Any]:
         """Get current LLM provider info"""
         try:
-            if hasattr(self.llm, 'active_interface_name'):
-                return {
-                    "provider": self.llm.active_interface_name,
-                    "model": "unknown"
-                }
-        except:
+            provider = getattr(self.llm, "active_interface_name", "unknown")
+            active = getattr(self.llm, "active_interface", None)
+            model = getattr(active, "model", "unknown") if active else "unknown"
+            return {"provider": provider, "model": model}
+        except Exception:
             pass
 
         return {"provider": "unknown", "model": "unknown"}
@@ -227,6 +357,7 @@ class DreamingSynthesizer:
     ) -> List[CCluster]:
         """Simple rule-based clustering fallback if LLM fails"""
         self._log("Using rule-based fallback clustering", "warning")
+        llm_info = self._get_llm_info()
 
         # Group by labels
         label_groups = defaultdict(list)
@@ -263,6 +394,10 @@ class DreamingSynthesizer:
                 c_cluster.__dict__['quality_level'] = "basic"
                 c_cluster.__dict__['needs_upgrade'] = True
                 c_cluster.__dict__['llm_used'] = "fallback"
+                c_cluster.__dict__['used_fallback'] = True
+                c_cluster.__dict__['fallback_reason'] = "llm_synthesis_parse_or_generation_failed"
+                c_cluster.__dict__['llm_provider'] = llm_info.get("provider", "unknown")
+                c_cluster.__dict__['model'] = llm_info.get("model", "unknown")
 
             c_clusters.append(c_cluster)
 

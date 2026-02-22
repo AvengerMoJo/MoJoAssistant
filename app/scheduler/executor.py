@@ -5,6 +5,7 @@ Routes tasks to appropriate execution handlers based on task type.
 """
 
 import asyncio
+import json
 from typing import Optional
 from datetime import datetime
 from pathlib import Path
@@ -82,10 +83,6 @@ class TaskExecutor:
             # Initialize LLM interface
             llm = LLMInterface(config_file=self.llm_config_path)
 
-            # Set active interface for dreaming tasks
-            if "qwen-coder-small" in llm.interfaces:
-                llm.set_active_interface("qwen-coder-small")
-
             # Create pipeline
             self._dreaming_pipeline = DreamingPipeline(
                 llm_interface=llm, quality_level=quality_level, logger=self.logger
@@ -109,6 +106,41 @@ class TaskExecutor:
             conversation_id = task.config.get("conversation_id")
             conversation_text = task.config.get("conversation_text")
             quality_level = task.config.get("quality_level", "basic")
+            automatic = bool(task.config.get("automatic", False))
+            enforce_off_peak = bool(task.config.get("enforce_off_peak", automatic))
+            off_peak_start = task.config.get("off_peak_start", "01:00")
+            off_peak_end = task.config.get("off_peak_end", "05:00")
+
+            if enforce_off_peak and not self._is_within_off_peak(
+                off_peak_start, off_peak_end
+            ):
+                return TaskResult(
+                    success=True,
+                    metrics={
+                        "skipped": True,
+                        "reason": "outside_off_peak_window",
+                        "off_peak_start": off_peak_start,
+                        "off_peak_end": off_peak_end,
+                        "executed_at": datetime.now().isoformat(),
+                    },
+                )
+
+            if automatic and (not conversation_id or not conversation_text):
+                auto_input = self._build_automatic_dreaming_input(task.config)
+                if auto_input is None:
+                    return TaskResult(
+                        success=True,
+                        metrics={
+                            "skipped": True,
+                            "reason": "no_recent_conversation_data",
+                            "executed_at": datetime.now().isoformat(),
+                        },
+                    )
+                conversation_id = auto_input["conversation_id"]
+                conversation_text = auto_input["conversation_text"]
+                auto_metadata = auto_input.get("metadata", {})
+            else:
+                auto_metadata = {}
 
             if not conversation_id or not conversation_text:
                 return TaskResult(
@@ -123,7 +155,7 @@ class TaskExecutor:
             results = await pipeline.process_conversation(
                 conversation_id=conversation_id,
                 conversation_text=conversation_text,
-                metadata=task.config.get("metadata", {}),
+                metadata={**task.config.get("metadata", {}), **auto_metadata},
             )
 
             if results.get("status") == "success":
@@ -135,6 +167,7 @@ class TaskExecutor:
                         "c_clusters_count": results["stages"]["C_clusters"]["count"],
                         "quality_level": quality_level,
                         "archive_path": results["stages"]["D_archive"]["path"],
+                        "automatic": automatic,
                     },
                 )
             else:
@@ -148,6 +181,85 @@ class TaskExecutor:
             return TaskResult(
                 success=False, error_message=f"Dreaming execution error: {e}"
             )
+
+    def _is_within_off_peak(self, start_hhmm: str, end_hhmm: str) -> bool:
+        """Check if current local time is inside off-peak window."""
+        now = datetime.now()
+        try:
+            start_hour, start_min = [int(x) for x in start_hhmm.split(":")]
+            end_hour, end_min = [int(x) for x in end_hhmm.split(":")]
+        except Exception:
+            # Invalid config: treat as always allowed
+            return True
+
+        now_minutes = now.hour * 60 + now.minute
+        start_minutes = start_hour * 60 + start_min
+        end_minutes = end_hour * 60 + end_min
+
+        # Handle windows that cross midnight.
+        if start_minutes <= end_minutes:
+            return start_minutes <= now_minutes <= end_minutes
+        return now_minutes >= start_minutes or now_minutes <= end_minutes
+
+    def _build_automatic_dreaming_input(
+        self, config: dict
+    ) -> Optional[dict]:
+        """
+        Build dreaming input from recent conversation memory for automatic tasks.
+        Uses existing multi-model conversation store if available.
+        """
+        lookback = int(config.get("lookback_messages", 200))
+        store_path = config.get(
+            "conversation_store_path",
+            ".memory/conversations_multi_model.json",
+        )
+        store_candidates = [
+            Path(store_path),
+            Path.home() / ".memory" / "conversations_multi_model.json",
+        ]
+
+        data = None
+        used_path = None
+        for candidate in store_candidates:
+            if not candidate.exists():
+                continue
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, list):
+                    data = loaded
+                    used_path = candidate
+                    break
+            except Exception:
+                continue
+
+        if not data:
+            return None
+
+        recent = data[-lookback:] if len(data) > lookback else data
+        lines = []
+        for msg in recent:
+            role = msg.get("message_type", "unknown")
+            content = str(msg.get("text_content", "")).strip()
+            if content:
+                lines.append(f"[{role}] {content}")
+
+        if not lines:
+            return None
+
+        now = datetime.now()
+        conversation_id = f"auto_dream_{now.strftime('%Y%m%d_%H%M%S')}"
+        return {
+            "conversation_id": conversation_id,
+            "conversation_text": "\n".join(lines),
+            "metadata": {
+                "trigger": "scheduler_automatic",
+                "source": str(used_path) if used_path else "unknown",
+                "message_count": len(lines),
+                "generated_at": now.isoformat(),
+                "original_text": "\n".join(lines),
+            },
+        }
 
     async def _execute_scheduled(self, task: Task) -> TaskResult:
         """

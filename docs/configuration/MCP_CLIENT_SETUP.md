@@ -120,6 +120,17 @@ MoJoAssistant provides a comprehensive memory system with specialized tools for 
 5. **Add documents** for permanent reference materials
 6. **Use `end_conversation`** when switching topics
 
+## Global Coding Agent Rules (Cross-Agent Policy)
+
+These rules are intended to apply across all coding agents integrated with MoJoAssistant MCP.
+
+1. **Memory-first operation**: Call `get_memory_context` before major code decisions, and use retrieved context to self-correct.
+2. **Conversation persistence**: Preserve key exchanges and decisions via `add_conversation`.
+3. **Shared policy document**: Use `Coding Agents Rules.md` in the repository root as the canonical coding policy.
+4. **Branch discipline**: Create `wip_<feature>` branches for active work; keep work there until fully tested.
+5. **Controlled merges**: Merge `wip_<feature>` into `main` only on explicit user request.
+6. **Commit authorship**: All commits must be authored as the user, not the agent; user retains responsibility for submitted code.
+
 ## Tool Availability
 - **Active Tools:** 11 fully functional tools
 - **Placeholders:** 3 tools (web_search, get_memory_stats, get_current_time) - disabled for simplicity
