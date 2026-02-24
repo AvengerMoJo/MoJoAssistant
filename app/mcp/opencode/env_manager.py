@@ -9,6 +9,7 @@ File: app/mcp/opencode/env_manager.py
 
 import os
 import secrets
+import shutil
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from app.mcp.opencode.models import ProjectConfig
@@ -170,11 +171,11 @@ SSH_KEY_PATH={ssh_key_path}
 # Optional: Custom ports (will be auto-assigned if commented out)
 # OPENCODE_PORT=4101
 
-# Optional: OpenCode binary path
-OPENCODE_BIN={os.path.expanduser('~/.bun/bin/opencode')}
+# Optional: OpenCode binary path (auto-detected from PATH if not set)
+# OPENCODE_BIN={shutil.which("opencode") or "opencode"}
 
 # Optional: opencode-mcp-tool path
-MCP_TOOL_DIR=/home/alex/Development/Sandbox/opencode-mcp-tool
+# MCP_TOOL_DIR={os.getenv("OPENCODE_MCP_TOOL_PATH") or "/path/to/opencode-mcp-tool"}
 """
 
         # Ensure directory exists
@@ -262,10 +263,8 @@ Passwords are stored in global config: {self.global_config_path}
             ssh_key_path=os.path.expanduser(env_vars["SSH_KEY_PATH"]),
             opencode_password=global_config["OPENCODE_PASSWORD"],
             mcp_bearer_token=global_config["MCP_BEARER_TOKEN"],
-            opencode_bin=env_vars.get("OPENCODE_BIN", "opencode"),
-            mcp_tool_dir=env_vars.get(
-                "MCP_TOOL_DIR", "/home/alex/Development/Sandbox/opencode-mcp-tool"
-            ),
+            opencode_bin=env_vars.get("OPENCODE_BIN") or os.getenv("OPENCODE_BIN") or shutil.which("opencode") or "opencode",
+            mcp_tool_dir=env_vars.get("MCP_TOOL_DIR") or os.getenv("OPENCODE_MCP_TOOL_PATH") or "",
             opencode_port=int(env_vars["OPENCODE_PORT"])
             if "OPENCODE_PORT" in env_vars
             else None,

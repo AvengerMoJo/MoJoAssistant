@@ -516,6 +516,14 @@
           "sensitive": true,
           "how_to_generate": "Use a secure random generator: openssl rand -hex 32"
         },
+        "OPENCODE_BIN": {
+          "description": "Path to OpenCode binary",
+          "purpose": "Specifies where to find the opencode executable. Auto-detected from PATH via shutil.which() if not set",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "examples": ["opencode", "/usr/local/bin/opencode", "~/.bun/bin/opencode"]
+        },
         "OPENCODE_MCP_TOOL_PATH": {
           "description": "Path to opencode-mcp-tool repository",
           "purpose": "Local filesystem path where the opencode-mcp-tool repository is located",

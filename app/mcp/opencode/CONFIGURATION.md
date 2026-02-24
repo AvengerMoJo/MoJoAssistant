@@ -1,5 +1,16 @@
 # OpenCode Manager Configuration Guide
 
+## Prerequisite
+
+OpenCode Manager is disabled by default. Enable it first:
+
+```bash
+# Add to your .env file
+ENABLE_OPENCODE=true
+```
+
+Then restart the MCP server. Without this flag, OpenCode tools will not be registered.
+
 ## Global MCP Tool Port Configuration
 
 The global opencode-mcp-tool instance uses a **fixed port** that should be configured once and reused consistently.
@@ -238,7 +249,8 @@ opencode_mcp_restart
 |----------|---------|---------|
 | `GLOBAL_MCP_TOOL_PORT` | `3005` | Port for global MCP tool HTTP server |
 | `GLOBAL_MCP_BEARER_TOKEN` | (auto-generated) | Bearer token for MCP authentication |
-| `OPENCODE_MCP_TOOL_PATH` | `/home/alex/Development/Sandbox/opencode-mcp-tool` | Path to opencode-mcp-tool repository |
+| `OPENCODE_BIN` | (auto-detected) | Path to `opencode` binary. Auto-detected from PATH if not set |
+| `OPENCODE_MCP_TOOL_PATH` | (none) | Path to opencode-mcp-tool repository |
 | `ENVIRONMENT` | `production` | Mode: `development` or `production` |
 
 ### Related Files

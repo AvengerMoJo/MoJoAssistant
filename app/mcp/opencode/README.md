@@ -1,5 +1,7 @@
 # OpenCode Manager
 
+> **Disabled by Default.** OpenCode Manager is an optional component. To enable it, set `ENABLE_OPENCODE=true` in your `.env` file before starting the MCP server. When disabled, OpenCode MCP tools are not registered and the manager is not initialized.
+
 Infrastructure manager for OpenCode coding agent instances.
 
 ## Overview
@@ -161,7 +163,7 @@ Example `.env` file (created in sandbox):
 GIT_URL=git@github.com:user/repo.git
 
 # SSH key (read/write access required)
-SSH_KEY_PATH=/home/alex/.ssh/myproject-deploy
+SSH_KEY_PATH=~/.ssh/myproject-deploy
 
 # OpenCode password
 OPENCODE_SERVER_PASSWORD=your-secure-password
@@ -173,9 +175,9 @@ MCP_TOOL_BEARER_TOKEN=your-bearer-token
 # OPENCODE_PORT=4101
 # MCP_TOOL_PORT=5101
 
-# Optional: Binary paths
-# OPENCODE_BIN=/home/alex/.bun/bin/opencode
-# MCP_TOOL_DIR=/home/alex/Development/Sandbox/opencode-mcp-tool
+# Optional: Binary paths (auto-detected if not set)
+# OPENCODE_BIN=opencode
+# MCP_TOOL_DIR=/path/to/opencode-mcp-tool
 ```
 
 ## Usage Examples
@@ -304,6 +306,16 @@ MCP Tool: Running (PID 12346, Port 5101)
 Sandbox: ~/.memory/opencode-sandboxes/blog-api
 Last health check: 2026-01-28T10:30:00Z
 ```
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ENABLE_OPENCODE` | `false` | Enable/disable OpenCode Manager |
+| `OPENCODE_BIN` | (auto-detected) | Path to `opencode` binary. Resolved via: project `.env` → root `.env` → `shutil.which("opencode")` → `"opencode"` |
+| `OPENCODE_MCP_TOOL_PATH` | (none) | Path to `opencode-mcp-tool` repo. Resolved via: project `.env` (`MCP_TOOL_DIR`) → root `.env` → error if not found |
+| `GLOBAL_MCP_TOOL_PORT` | `3005` | Port for global MCP tool HTTP server |
+| `GLOBAL_MCP_BEARER_TOKEN` | (auto-generated) | Bearer token for MCP authentication |
 
 ## Development
 

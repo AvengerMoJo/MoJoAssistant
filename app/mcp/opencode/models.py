@@ -86,7 +86,7 @@ class ProjectConfig:
     opencode_password: Optional[str] = None
     mcp_bearer_token: Optional[str] = None
     opencode_bin: str = "opencode"
-    mcp_tool_dir: str = "/home/alex/Development/Sandbox/opencode-mcp-tool"
+    mcp_tool_dir: str = ""
     opencode_port: Optional[int] = None
 
     def __post_init__(self):

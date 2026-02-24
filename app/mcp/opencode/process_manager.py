@@ -428,11 +428,10 @@ pgrep -f "node.*index-http.*--port {port}" | tail -1 > {pid_file}"""
         if port is None:
             port = int(os.getenv("GLOBAL_MCP_TOOL_PORT", "3005"))
 
-        # Determine MCP tool directory from environment or default
-        mcp_tool_dir = os.getenv(
-            "OPENCODE_MCP_TOOL_PATH",
-            "/home/alex/Development/Sandbox/opencode-mcp-tool",
-        )
+        # Determine MCP tool directory from environment
+        mcp_tool_dir = os.getenv("OPENCODE_MCP_TOOL_PATH", "")
+        if not mcp_tool_dir or not os.path.isdir(mcp_tool_dir):
+            return 0, port, "OPENCODE_MCP_TOOL_PATH not set or directory not found. Set it in .env or as environment variable."
 
         log_file = self.logs_dir / "global-mcp-tool.log"
         pid_file = Path(self.memory_root) / "global-mcp-tool.pid"
