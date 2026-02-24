@@ -4,6 +4,7 @@ File: app/mcp/core/tools.py
 """
 
 from typing import Dict, Any, List
+import os
 import time
 import threading
 import asyncio
@@ -36,10 +37,21 @@ class ToolRegistry:
         # Initialize git service
         self.git_service = GitService()
 
-        # Initialize OpenCode manager
-        from app.mcp.opencode.manager import OpenCodeManager
+        # Initialize OpenCode manager (disabled by default)
+        self.opencode_manager = None
+        if os.getenv("ENABLE_OPENCODE", "false").lower() in ("true", "1", "yes"):
+            try:
+                from app.mcp.opencode.manager import OpenCodeManager
 
-        self.opencode_manager = OpenCodeManager(logger=logger)
+                self.opencode_manager = OpenCodeManager(logger=logger)
+            except Exception as e:
+                if logger:
+                    logger.warning(f"OpenCode Manager failed to initialize: {e}")
+                else:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"OpenCode Manager failed to initialize: {e}"
+                    )
 
         # Initialize Scheduler
         from app.scheduler.core import Scheduler
@@ -1019,7 +1031,7 @@ class ToolRegistry:
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
-        """Get list of available tools (excludes placeholders)"""
+        """Get list of available tools (excludes placeholders and disabled features)"""
         # Special case: web_search is implemented and should be available
         available_tools = [
             tool for tool in self.tools if tool["name"] not in self.placeholder_tools
@@ -1031,6 +1043,14 @@ class ToolRegistry:
         )
         if web_search_tool and web_search_tool not in available_tools:
             available_tools.append(web_search_tool)
+
+        # Filter out OpenCode tools when OpenCode Manager is not available
+        if self.opencode_manager is None:
+            available_tools = [
+                tool
+                for tool in available_tools
+                if not tool["name"].startswith("opencode_")
+            ]
 
         return available_tools
 
@@ -1373,6 +1393,12 @@ class ToolRegistry:
             return await self._execute_get_git_file_content(args)
         elif name == "list_git_repositories":
             return await self._execute_list_git_repositories(args)
+        # OpenCode tools — guard when manager is disabled
+        elif name.startswith("opencode_") and self.opencode_manager is None:
+            return {
+                "status": "error",
+                "message": "OpenCode Manager is not enabled. Set ENABLE_OPENCODE=true in your .env file.",
+            }
         # OpenCode Project Lifecycle (Phase 3: git_url-based)
         elif name == "opencode_project_start":
             return await self._execute_opencode_project_start(args)
