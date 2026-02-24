@@ -17,6 +17,7 @@ These rules apply to all coding agents working in this repository.
 3. Merge into `main` only when the user explicitly requests the merge.
 4. All commits must be authored as the user, not as the agent.
 5. The user is accountable for committed code shared with community/company.
+6. Do NOT include `Co-Authored-By` lines in commit messages. The user is the sole author.
 
 ## Scope
 - This `AGENTS.md` governs all folders under this repository unless a deeper `AGENTS.md` overrides specific subtrees.

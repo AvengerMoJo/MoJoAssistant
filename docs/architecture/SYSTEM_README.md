@@ -15,6 +15,30 @@ MoJoAssistant is an advanced AI memory and code understanding system that bridge
 ### Git-Aware Code Understanding
 The system can access private repositories with SSH authentication and stores code metadata with semantic embeddings, enabling Chat AI to understand codebases without direct file access.
 
+### Scheduler Subsystem
+- **Cron-like Scheduling**: Background task execution with configurable schedules
+- **Dreaming Automation**: Nightly memory consolidation at 3:00 AM (off-peak)
+- **Task Management**: Add, list, pause, and cancel scheduled tasks via MCP tools
+- **Thread-safe**: Daemon-based execution with proper locking
+
+### Dreaming Pipeline (A→B→C→D)
+- **Stage A (Raw Data)**: Retrieves today's full conversations from memory
+- **Stage B (Semantic Chunks)**: LLM-powered breakdown into semantic pieces with topic labels, speaker attribution, entity extraction, and language detection
+- **Stage C (Synthesized Clusters)**: Cross-conversation topic clusters, relationship maps, timelines, and pattern discovery
+- **Stage D (Versioned Archives)**: Immutable, versioned archive files (`archive_v<N>.json`) with hot/cold lifecycle management and lineage tracking
+- **File-first Architecture**: Append-only JSON archives under `~/.memory/dreams/<conversation_id>/`
+
+### OpenCode Manager (Optional)
+- **Disabled by default**: Requires `ENABLE_OPENCODE=true` environment variable
+- **N:1 Architecture**: Multiple OpenCode instances route through single global MCP tool (port 3005)
+- **Process Lifecycle**: Start, stop, restart, health monitoring of OpenCode instances
+- **SSH Key Management**: Per-project deploy keys with auto-generation
+
+### OAuth 2.1 Authentication
+- **PKCE Flow**: Proof Key for Code Exchange prevents authorization code interception
+- **JWT Validation**: Signature verification ensures only valid tokens are accepted
+- **Optional Enforcement**: Controlled via `MCP_REQUIRE_AUTH` and `OAUTH_ENABLED` environment variables
+
 ## Key Capabilities
 
 ### 1. Semantic Memory Storage
@@ -33,7 +57,13 @@ The system can access private repositories with SSH authentication and stores co
 - RESTful API with OAuth 2.1 authentication support
 - Real-time memory search and retrieval
 - Git repository management endpoints
+- Scheduler and Dreaming pipeline MCP tools
 - Cross-platform compatibility (Windows, macOS, Linux)
+
+### LLM Backend Options
+- **Local**: Ollama, llama-cpp-python, LMStudio (with API token support)
+- **Cloud**: OpenAI, Anthropic Claude, Google Gemini
+- **Hybrid**: Combine local and cloud backends with runtime switching
 
 ## API Endpoints
 
@@ -168,10 +198,10 @@ Auto-detection for: Python, JavaScript, TypeScript, Java, C++, Go, Rust, PHP, Ru
 ### Local Development
 ```bash
 # Start MCP service with development settings
-python start_mcp_service.py --host localhost --port 8000 --reload --log-level DEBUG
+python unified_mcp_server.py --mode http --host localhost --port 8000
 
 # Production deployment
-python start_mcp_service.py --host 0.0.0.0 --port 8000 --api-key "your-secure-key"
+python unified_mcp_server.py --mode http --host 0.0.0.0 --port 8000
 ```
 
 ### Server Deployment
@@ -189,7 +219,7 @@ The system is designed for cloud deployment with:
   "mcpServers": {
     "mojoassistant": {
       "command": "python",
-      "args": ["/path/to/start_mcp_service.py", "--port", "8000"],
+      "args": ["/path/to/unified_mcp_server.py", "--mode", "stdio"],
       "env": {
         "MCP_API_KEY": "your-api-key"
       }

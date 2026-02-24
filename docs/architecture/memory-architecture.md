@@ -1,5 +1,7 @@
 # Memory Modules Architecture
 
+> **Note:** This document describes the v1 memory architecture. For the current design, see `memory-architecture-v2.md`.
+
 This document provides a detailed overview of the memory system architecture in MoJoAssistant.
 
 ## Memory System Overview

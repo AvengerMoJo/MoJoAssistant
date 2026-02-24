@@ -13,28 +13,28 @@ Get MoJoAssistant running in **5 minutes** with this quick start guide.
 
 ---
 
-## Installation (One Command)
+## Installation
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/MoJoAssistant.git
+git clone https://github.com/AvengerMoJo/MoJoAssistant.git
 cd MoJoAssistant
 
-# 2. Run the installer
-python scripts/install_mojo.py
+# 2. Run the setup wizard
+python app/interactive-cli.py --setup
 ```
 
-That's it! The installer will:
+That's it! The setup wizard will:
 - ✅ Create Python virtual environment
 - ✅ Install all dependencies (CPU-only)
-- ✅ Download Qwen2.5-Coder-1.7B model (~1.2 GB)
-- ✅ **Chat with AI Setup Wizard** to configure your system
+- ✅ **AI Model Selector** — choose and download your LLM (default: Qwen3-1.7B, ~1.2 GB)
+- ✅ **AI Environment Configurator** — tool-based `.env` setup
 - ✅ Generate configuration files based on your conversation
 - ✅ Create startup scripts
 
 **Installation takes 5-15 minutes** depending on your internet speed.
 
-**Pro tip**: The AI Setup Wizard will ask about your use case and help you choose the right settings. Just answer naturally!
+**Pro tip**: The AI Setup Wizard uses specialized agents to guide configuration. Just answer naturally!
 
 ---
 
@@ -110,7 +110,7 @@ Once installed, you can use:
 - **Automatic dreaming** - Consolidate memories overnight
 - **Task management** - View and manage scheduled tasks
 
-### 💻 OpenCode Manager (Remote Development)
+### 💻 OpenCode Manager (Optional, requires `ENABLE_OPENCODE=true`)
 - **Start coding projects** - Spin up development environments
 - **Remote access** - Work from anywhere
 - **Project management** - Manage multiple coding sessions
@@ -129,7 +129,7 @@ python -m app.dreaming.setup check
 
 Expected output:
 ```
-✓ Qwen2.5-Coder-1.7B model found locally
+✓ Qwen3-1.7B model found locally
 ✓ llama-cpp-python installed
 ✓ Configuration valid
 ```
@@ -225,7 +225,7 @@ DREAMING_SCHEDULE=0 3 * * *  # Daily at 3 AM
 
 ## Performance
 
-**Qwen2.5-Coder-1.7B on CPU**:
+**Qwen3-1.7B on CPU**:
 - **Speed**: ~80 tokens/sec on modern CPUs
 - **Memory**: ~2 GB RAM
 - **Context**: 32K tokens

@@ -1,6 +1,6 @@
 # Dreaming Implementation TODO
 
-Branch: `wip_dreaming_full_implementation`
+Branch: merged to `main` as of v1.1.4-beta
 
 ## Phase 1: Reliability (A->B, B->C)
 - [x] Enforce strict JSON-only response instructions in chunker prompt.
@@ -10,7 +10,7 @@ Branch: `wip_dreaming_full_implementation`
 - [x] Replace rule-based fallback output with fail-fast behavior.
 - [x] Add one LLM JSON-repair retry before failing the run.
 - [x] Ensure failures are explicit with provider/model/error details for debugging.
-- [ ] Add/adjust tests for parser and fallback behavior.
+- [x] Add/adjust tests for parser and fallback behavior (9 test cases in v1.1.4-beta).
 
 ## Phase 2: Real Versioning in D
 - [x] Implement `latest_version + 1` logic per `conversation_id`.

@@ -360,7 +360,7 @@ python app/interactive-cli.py --setup
 
 ### If LLM model not found:
 ```bash
-python install_mojo.py --skip-model
+python app/interactive-cli.py --setup
 # Then configure API keys in .env
 ```
 

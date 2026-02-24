@@ -2,7 +2,7 @@
 
 MoJoAssistant is your intelligent memory companion that learns from your conversations and helps you remember, search, and build upon your knowledge over time. It maintains a private, persistent memory system while serving as a bridge to enhance your interactions with AI assistants.
 
-**🎉 v1.1.0-beta Released!** - Featuring OpenCode Manager for managing AI coding agent instances with N:1 architecture.
+**v1.1.4-beta** — Dreaming Pipeline, Scheduler Automation, Smart Installer, and LMStudio Integration.
 
 ## What is MoJoAssistant?
 
@@ -47,21 +47,22 @@ MoJoAssistant consists of several integrated components:
 - **Hybrid Mode**: Combine local and cloud-based intelligence
 - **Model Switching**: Runtime model selection based on needs
 
-### 4. OpenCode Manager (NEW v1.1.0-beta)
+### 4. OpenCode Manager **(Optional)**
 - **Multi-Project Management**: Run multiple OpenCode AI coding agent instances
 - **N:1 Architecture**: Single global MCP tool for all projects (port 3005)
 - **Process Lifecycle**: Start, stop, restart OpenCode instances
 - **SSH Key Management**: Per-project deploy keys for git operations
-- **Global Configuration**: Unified password and credential management
-- **State Persistence**: Projects survive system restarts
-- **Health Monitoring**: Automatic health checks and recovery
 
-**Architecture:**
-```
-N OpenCode Projects → 1 Global MCP Tool (port 3005) → AI Clients
-```
+> Disabled by default. Enable with `ENABLE_OPENCODE=true` in your `.env` file.
 
-### 4. Web Integration
+### 5. Scheduler & Dreaming Pipeline
+- **Scheduler Daemon**: Background task execution with cron-like scheduling
+- **Dreaming Pipeline (A→B→C→D)**: Autonomous memory consolidation
+  - **A** (Raw) → **B** (Semantic Chunks) → **C** (Synthesized Clusters) → **D** (Versioned Archives)
+- **Nightly Automation**: Automatic dreaming at 3:00 AM (off-peak)
+- **Versioned Archives**: Immutable `archive_v<N>.json` files with lineage tracking
+
+### 6. Web Integration
 - **Web Search**: Google Custom Search API with DuckDuckGo fallback
 - **Document Processing**: Add documents to your knowledge base
 - **Conversation Logging**: Persistent conversation history
@@ -92,13 +93,13 @@ N OpenCode Projects → 1 Global MCP Tool (port 3005) → AI Clients
 - **Model Switching**: Runtime model changes without restart
 - **Customizable Architecture**: Modular design for easy extension
 
-### 🚀 OpenCode Manager (v1.1.0-beta)
+### 🚀 OpenCode Manager (Optional)
 - **Isolated Sandboxes**: Each project runs in isolated environment
-- **Network Accessibility**: OpenCode servers bind to all interfaces (0.0.0.0)
 - **Port Management**: Automatic port allocation and reuse on restart
 - **Auto-Scale MCP Tool**: Global MCP tool starts/stops based on active projects
 - **Secure Configuration**: Password-protected OpenCode instances
-- **Development Hot Reload**: Automatic server restarts during development
+
+> Requires `ENABLE_OPENCODE=true` in `.env` to activate OpenCode tools.
 
 ## Try MoJoAssistant in 5 Minutes
 
@@ -133,9 +134,9 @@ python app/interactive-cli.py
 |----------|------------------|---------------|
 | **Quick Demo** | Interactive CLI | 2 minutes |
 | **Claude Desktop** | MCP Server | 10 minutes |
-| **OpenCode Manager** | Project Management | 15 minutes |
 | **Web Integration** | HTTP API | 15 minutes |
 | **Custom Development** | Web API | 20 minutes |
+| **OpenCode Manager** | Project Management (optional) | 15 minutes |
 
 ### Full Installation
 
@@ -158,84 +159,49 @@ cp .env.example .env
 # Edit .env with your API keys if using cloud services
 ```
 
-## OpenCode Manager (v1.1.0-beta)
+## OpenCode Manager (Optional)
 
-Manage multiple OpenCode AI coding agent instances with the new OpenCode Manager:
+> **Disabled by default.** Set `ENABLE_OPENCODE=true` in your `.env` file to activate OpenCode tools.
 
-### 🚀 Quick Start
+Manage multiple OpenCode AI coding agent instances:
 
 ```bash
-# 1. Create global configuration
+# 1. Enable OpenCode in .env
+echo "ENABLE_OPENCODE=true" >> .env
+
+# 2. Create global configuration
 cp app/mcp/opencode/templates/opencode-manager.env.template ~/.memory/opencode-manager.env
 chmod 600 ~/.memory/opencode-manager.env
 
-# 2. Start a new OpenCode project
+# 3. Start a new OpenCode project
 opencode_start my-project git@github.com:user/repo.git
-
-# 3. Check project status
-opencode_status my-project
-
-# 4. Restart a project
-opencode_restart my-project
-
-# 5. Stop a project
-opencode_stop my-project
 ```
 
-### Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `opencode_start` | Bootstrap a new OpenCode project (clone repo, start server) |
-| `opencode_stop` | Stop an OpenCode project |
-| `opencode_restart` | Restart an OpenCode project |
-| `opencode_status` | Get project status (OpenCode and MCP tool) |
-| `opencode_mcp_restart` | Restart the global MCP tool |
-| `opencode_mcp_status` | Get global MCP tool status |
-| `opencode_llm_config` | Get/set LLM configuration |
-
-### Configuration
-
-**Global Configuration** (`~/.memory/opencode-manager.env`):
-```env
-# OpenCode Manager Configuration
-OPENCODE_MCP_TOOL_PATH=/path/to/opencode-mcp-tool
-OPENCODE_BIN=/path/to/opencode
-
-# Passwords
-OPENCODE_SERVER_PASSWORD=your-opencode-password
-GLOBAL_MCP_BEARER_TOKEN=your-mcp-bearer-token
-
-# Port Configuration (optional)
-GLOBAL_MCP_TOOL_PORT=3005
-```
-
-For complete setup instructions, see `RELEASE_NOTES_v1.1.0-beta.md` and `app/mcp/opencode/README.md`.
+For complete setup instructions, see `app/mcp/opencode/README.md`.
 
 ---
 
-## What's New in v1.1.0-beta
+## What's New (v1.1.0 → v1.1.4-beta)
 
-### 🎉 OpenCode Manager
-- **Multi-Project Support**: Manage multiple OpenCode instances simultaneously
-- **N:1 Architecture**: Single global MCP tool (port 3005) routes to all projects
-- **Process Lifecycle**: Start, stop, restart OpenCode servers
+### v1.1.4-beta — Dreaming Pipeline & Scheduler
+- **Dreaming Pipeline (A→B→C→D)**: Autonomous memory consolidation — raw conversations → semantic chunks → synthesized clusters → versioned archives
+- **Scheduler Automation**: Nightly dreaming at 3:00 AM with cron-like scheduling
+- **Versioned Archives**: Immutable `archive_v<N>.json` files with lineage tracking
+- **Resilient JSON Parsing**: Four-pass strategy for local LLM output
+
+### v1.1.3-beta — Smart Installer & LMStudio
+- **Smart Installer**: AI-powered setup with Model Selector and Environment Configurator agents
+- **Tool-Based Configuration**: Structured tool calls for `.env` setup (optimized for small LLMs)
+- **LMStudio Integration**: Multi-port detection and API token support
+- **Model Catalog**: Curated model metadata with Qwen3-1.7B as default
+
+### v1.1.0 — OpenCode Manager
+- **OpenCode Manager**: Production-ready AI agent orchestration (N:1 architecture)
 - **SSH Key Management**: Per-project deploy keys with auto-generation
-- **Global Configuration**: Unified `~/.memory/opencode-manager.env` for all projects
 - **State Persistence**: Projects survive system restarts
 - **Health Monitoring**: Automatic health checks and recovery
-- **Network Accessibility**: OpenCode servers bind to all interfaces (0.0.0.0)
 
-### 🔧 Bug Fixes
-- Fixed `active_project_count` when restarting stopped projects
-- Fixed `opencode_llm_config` to include built-in provider models
-- Added proper LLM configuration management
-- Fixed hot reload with watchfiles alternative
-
-### 📚 Documentation
-- Comprehensive OpenCode Manager documentation in `app/mcp/opencode/`
-- Setup guides and architecture diagrams
-- Security audit results and configuration examples
+> OpenCode Manager is now optional (disabled by default). See `ENABLE_OPENCODE` env var.
 
 ---
 
@@ -257,8 +223,8 @@ Maintain context across work sessions:
 > Remind me of the decisions we made last week
 ```
 
-### 📦 **OpenCode Manager (v1.1.0-beta NEW)**
-Manage multiple AI coding agent projects with isolated environments:
+### 📦 **OpenCode Manager (Optional)**
+Manage multiple AI coding agent projects (requires `ENABLE_OPENCODE=true`):
 ```
 > opencode_start blog-api git@github.com:user/blog-api.git
 > opencode_status blog-api
@@ -312,14 +278,11 @@ python app/interactive-cli.py
 ### 🔧 **Option 2: MCP Server (For Claude Desktop Integration)**
 For integration with Claude Desktop:
 ```bash
-# Method 1: Start with unified server
-python start_mcp_service.py
-
-# Method 2: Run directly
+# Start unified MCP server (STDIO mode for Claude Desktop)
 python unified_mcp_server.py --mode stdio
 
-# Method 3: Run with specific configuration  
-python unified_mcp_server.py --mode stdio --port 8000
+# Or with specific port for HTTP mode
+python unified_mcp_server.py --mode http --port 8000
 ```
 
 ### 🌐 **Option 3: Web API (For Developers)**
@@ -376,10 +339,11 @@ MoJoAssistant serves as your personal proxy to interact with public AI agents:
 
 ### Supported AI Services
 
-- **OpenAI GPT models**: ChatGPT, GPT-4, GPT-3.5
-- **Anthropic Claude**: Claude 3, Claude 2.1
+- **OpenAI GPT models**: GPT-4o, GPT-4, GPT-3.5
+- **Anthropic Claude**: Claude 4 (Opus, Sonnet, Haiku)
 - **Google Gemini**: Gemini Pro, Gemini Ultra
-- **Local LLMs**: Ollama, local HuggingFace models
+- **LMStudio**: Local model serving with API token support
+- **Local LLMs**: Ollama, llama-cpp-python, local HuggingFace models
 - **API Services**: Cohere, other compatible AI services
 
 ### Proxy Functionality
@@ -416,14 +380,11 @@ The Memory-Compute Protocol (MCP) server enables seamless integration with AI cl
 ### Starting the Server
 
 ```bash
-# Method 1: Start with unified server
-python start_mcp_service.py
-
-# Method 2: Run directly
-python unified_mcp_server.py
-
-# Method 3: Run with specific configuration  
+# STDIO mode (for Claude Desktop)
 python unified_mcp_server.py --mode stdio
+
+# HTTP mode (for API access)
+python unified_mcp_server.py --mode http --port 8000
 ```
 
 ### Available Endpoints
@@ -505,23 +466,26 @@ ANTHROPIC_API_KEY=your-anthropic-key
 GOOGLE_API_KEY=your-google-key
 LMSTUDIO_BASE_URL=http://localhost:8080/v1
 LMSTUDIO_API_KEY=your_lmstudio_api_token
-# Optional alternative: keep token in local file (not in git)
-LMSTUDIO_API_KEY_FILE=~/.keys/local_lmstudio.key
 
-# Search Configuration  
+# Search Configuration
 GOOGLE_SEARCH_ENGINE_ID=your-search-engine-id
 
 # MCP Configuration
 MCP_REQUIRE_AUTH=true
 MCP_API_KEY=your_secure_api_key
 
+# Dreaming & Scheduler
+DREAMING_ENABLED=true
+DREAMING_SCHEDULE=0 3 * * *  # Daily at 3 AM
+
+# OpenCode Manager (disabled by default)
+# ENABLE_OPENCODE=true
+
 # Optional: Local model paths
 LOCAL_MODEL_PATH=/path/to/local/models
 ```
 
-LM Studio note:
-- If LM Studio server requires authentication, MoJoAssistant must send `Authorization: Bearer <token>`.
-- Keep the token outside git (for example `~/.keys/local_lmstudio.key`) and load it into environment variables before starting services.
+**LM Studio note**: If LM Studio requires authentication, set `LMSTUDIO_API_KEY` or keep the token in a file outside git (e.g., `~/.keys/local_lmstudio.key`) and load it into environment variables before starting services.
 
 ### Configuration Files
 
@@ -552,11 +516,16 @@ LM Studio note:
     "openai": {
       "api_key": "${OPENAI_API_KEY}",
       "base_url": "https://api.openai.com/v1",
-      "models": ["gpt-4", "gpt-3.5-turbo"]
+      "models": ["gpt-4o", "gpt-4", "gpt-3.5-turbo"]
     },
     "anthropic": {
       "api_key": "${ANTHROPIC_API_KEY}",
-      "models": ["claude-3-opus", "claude-3-sonnet"]
+      "models": ["claude-opus-4-6", "claude-sonnet-4-5-20250929"]
+    },
+    "lmstudio": {
+      "api_key": "${LMSTUDIO_API_KEY}",
+      "base_url": "${LMSTUDIO_BASE_URL}",
+      "models": ["local"]
     }
   }
 }

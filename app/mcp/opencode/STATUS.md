@@ -1,8 +1,8 @@
 # OpenCode Manager - Current Status
 
-**Date**: 2026-02-06
-**Version**: v1.1 Beta
-**Branch**: `wip_opencode_manager`
+**Date**: 2026-02-24
+**Version**: v1.1.4-beta
+**Status**: Optional component (disabled by default, enable with `ENABLE_OPENCODE=true`)
 
 ## ✅ What's Complete and Working
 

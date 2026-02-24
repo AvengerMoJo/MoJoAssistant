@@ -38,6 +38,7 @@ Leverage the internal memory context system (MoJoAssistant MCP) to continuously 
 6. Make atomic commits with descriptive messages.
 7. Keep commit history clean and scoped.
 8. Do not amend or force-push unless requested.
+9. Do NOT include `Co-Authored-By` lines in commit messages. The user is the sole author.
 
 ## Definition of Done
 1. Code changes implemented.

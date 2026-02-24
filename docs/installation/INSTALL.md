@@ -24,25 +24,24 @@ git clone https://github.com/yourusername/MoJoAssistant.git
 cd MoJoAssistant
 ```
 
-### Step 2: Run One-Command Install
+### Step 2: Run the Setup Wizard
 
 ```bash
-python scripts/install_mojo.py
+python app/interactive-cli.py --setup
 ```
 
-That's it! The script will:
+That's it! The setup wizard will:
 - ✅ Check Python version
-- ✅ Create virtual environment
 - ✅ Install all dependencies (including llama-cpp-python for CPU)
-- ✅ Download Qwen2.5-Coder-1.7B model (~1.2 GB)
-- ✅ **Launch AI Setup Wizard** - Chat with AI to configure your system
+- ✅ **AI Model Selector** - Choose and download your preferred LLM (default: Qwen3-1.7B)
+- ✅ **AI Environment Configurator** - Tool-based `.env` configuration
 - ✅ Generate configuration files based on your needs
 - ✅ Create startup scripts
 - ✅ Test the installation
 
 **Installation takes about 5-15 minutes** depending on your internet speed.
 
-**NEW**: The installer includes an **AI Setup Wizard** that talks with you to understand your needs and configure the system accordingly. Just chat naturally!
+The installer includes an **AI Setup Wizard** powered by specialized agents (Model Selector, Environment Configurator) that guide you through configuration using structured tool calls. Just answer naturally!
 
 ---
 
@@ -56,11 +55,12 @@ That's it! The script will:
 - **And more...** (see requirements.txt)
 
 ### Model
-- **Qwen2.5-Coder-1.7B** (Q5_K_M quantization)
+- **Qwen3-1.7B** (default, selected via Model Selector agent)
   - Size: ~1.2 GB
   - Performance: ~80 tokens/sec on CPU
   - Multi-language support (English, Chinese, etc.)
   - Saved to: `~/.cache/mojoassistant/models/`
+  - Alternative models available via HuggingFace search in the Model Selector
 
 ### Configuration Files
 - **config/llm_config.json** - LLM configuration
@@ -81,7 +81,7 @@ That's it! The script will:
 ./run_cli.sh
 ```
 
-This starts a chat interface where you can talk to Qwen2.5-Coder-1.7B.
+This starts a chat interface where you can talk to your configured LLM (default: Qwen3-1.7B).
 
 Example conversation:
 ```
@@ -162,7 +162,7 @@ xcode-select --install
 
 **Then retry**:
 ```bash
-python scripts/install_mojo.py
+python app/interactive-cli.py --setup
 ```
 
 ### Model Download Fails
@@ -231,7 +231,7 @@ The MCP server provides 30+ tools for Claude Desktop:
   - `scheduler_list_tasks` - View scheduled tasks
   - `scheduler_get_status` - Check scheduler status
 
-- **OpenCode Tools** - Remote development
+- **OpenCode Tools** - Remote development (optional, requires `ENABLE_OPENCODE=true`)
   - `opencode_project_start` - Start coding project
   - `opencode_project_status` - Check project status
   - `opencode_project_stop` - Stop project
@@ -291,7 +291,7 @@ Expected output:
 ```
 ✓ LMStudio detected (if running)
 ✓ Ollama detected (if running)
-✓ Qwen2.5-Coder-1.7B model found locally
+✓ Qwen3-1.7B model found locally
 ✓ llama-cpp-python installed
 ```
 

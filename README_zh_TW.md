@@ -2,6 +2,8 @@
 
 MoJoAssistant 是您的智能記憶夥伴，它從您的對話中學習，幫助您記住、搜尋並隨時間建立您的知識。它維護一個私人、持久的記憶系統，同時作為橋樑來增強您與 AI 助手的互動。
 
+**v1.1.4-beta** — 夢境管線、排程自動化、智慧安裝器與 LMStudio 整合。
+
 ## 什麼是 MoJoAssistant？
 
 MoJoAssistant 幫助您：
@@ -39,7 +41,21 @@ MoJoAssistant 由幾個整合組件組成：
 - **混合模式**：結合本地和雲端智能
 - **模型切換**：基於需求的運行時模型選擇
 
-### 4. 網路整合
+### 4. OpenCode Manager **（可選）**
+- **多專案管理**：運行多個 OpenCode AI 編程代理實例
+- **N:1 架構**：所有專案共用單一全域 MCP 工具（端口 3005）
+- **程序生命週期**：啟動、停止、重啟 OpenCode 實例
+
+> 預設停用。在 `.env` 中設置 `ENABLE_OPENCODE=true` 以啟用。
+
+### 5. 排程器與夢境管線
+- **排程守護程序**：支援 cron 排程的背景任務執行
+- **夢境管線 (A→B→C→D)**：自主記憶整合
+  - **A**（原始）→ **B**（語義分塊）→ **C**（綜合叢集）→ **D**（版本化歸檔）
+- **夜間自動化**：凌晨 3:00 自動進行夢境處理（離峰時段）
+- **版本化歸檔**：不可變的 `archive_v<N>.json` 文件，支援譜系追蹤
+
+### 6. 網路整合
 - **網路搜尋**：Google 自定義搜尋 API 與 DuckDuckGo 備用
 - **文件處理**：將文件添加到您的知識庫
 - **對話記錄**：持久對話歷史
@@ -105,6 +121,7 @@ python app/interactive-cli.py
 | **Claude Desktop** | MCP 伺服器 | 10 分鐘 |
 | **網路整合** | HTTP API | 15 分鐘 |
 | **自定義開發** | Web API | 20 分鐘 |
+| **OpenCode Manager** | 專案管理（可選）| 15 分鐘 |
 
 ### 完整安裝
 
@@ -126,6 +143,29 @@ pip install -r requirements.txt
 cp .env.example .env
 # 如果使用雲服務，請編輯 .env 並添加您的 API 金鑰
 ```
+
+## 最新更新 (v1.1.0 → v1.1.4-beta)
+
+### v1.1.4-beta — 夢境管線與排程器
+- **夢境管線 (A→B→C→D)**：自主記憶整合 — 原始對話 → 語義分塊 → 綜合叢集 → 版本化歸檔
+- **排程自動化**：凌晨 3:00 夜間夢境處理，支援 cron 排程
+- **版本化歸檔**：不可變的 `archive_v<N>.json` 文件，支援譜系追蹤
+- **彈性 JSON 解析**：四階段策略處理本地 LLM 輸出
+
+### v1.1.3-beta — 智慧安裝器與 LMStudio
+- **智慧安裝器**：AI 驅動的設置，包含模型選擇器與環境配置器代理
+- **工具式配置**：結構化工具呼叫進行 `.env` 設置（針對小型 LLM 優化）
+- **LMStudio 整合**：多端口偵測與 API 令牌支援
+- **模型目錄**：精選模型元數據，預設 Qwen3-1.7B
+
+### v1.1.0 — OpenCode Manager
+- **OpenCode Manager**：生產就緒的 AI 代理編排（N:1 架構）
+- **SSH 金鑰管理**：每專案部署金鑰，支援自動生成
+- **狀態持久化**：專案在系統重啟後保留
+
+> OpenCode Manager 現為可選組件（預設停用）。請參見 `ENABLE_OPENCODE` 環境變數。
+
+---
 
 ## 您可以用 MoJoAssistant 做什麼
 
@@ -192,14 +232,11 @@ python app/interactive-cli.py
 ### 🔧 **選項 2：MCP 伺服器（用於 Claude Desktop 整合）**
 用於與 Claude Desktop 整合：
 ```bash
-# 方法 1：使用統一伺服器啟動
-python start_mcp_service.py
-
-# 方法 2：直接運行
+# 啟動統一 MCP 伺服器（STDIO 模式用於 Claude Desktop）
 python unified_mcp_server.py --mode stdio
 
-# 方法 3：使用特定配置運行  
-python unified_mcp_server.py --mode stdio --port 8000
+# 或使用特定端口的 HTTP 模式
+python unified_mcp_server.py --mode http --port 8000
 ```
 
 ### 🌐 **選項 3：Web API（用於開發者）**
@@ -256,10 +293,11 @@ MoJoAssistant 作為您與公共 AI 代理互動的個人代理：
 
 ### 支援的 AI 服務
 
-- **OpenAI GPT 模型**：ChatGPT、GPT-4、GPT-3.5
-- **Anthropic Claude**：Claude 3、Claude 2.1
+- **OpenAI GPT 模型**：GPT-4o、GPT-4、GPT-3.5
+- **Anthropic Claude**：Claude 4（Opus、Sonnet、Haiku）
 - **Google Gemini**：Gemini Pro、Gemini Ultra
-- **本地 LLM**：Ollama、本地 HuggingFace 模型
+- **LMStudio**：支援 API 令牌的本地模型服務
+- **本地 LLM**：Ollama、llama-cpp-python、本地 HuggingFace 模型
 - **API 服務**：Cohere、其他相容的 AI 服務
 
 ### 代理功能
@@ -295,14 +333,11 @@ response = llm.generate_response(
 ### 啟動伺服器
 
 ```bash
-# 方法 1：使用統一伺服器啟動
-python start_mcp_service.py
-
-# 方法 2：直接運行
-python unified_mcp_server.py
-
-# 方法 3：使用特定配置運行  
+# STDIO 模式（用於 Claude Desktop）
 python unified_mcp_server.py --mode stdio
+
+# HTTP 模式（用於 API 訪問）
+python unified_mcp_server.py --mode http --port 8000
 ```
 
 ### 可用端點

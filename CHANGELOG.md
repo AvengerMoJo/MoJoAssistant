@@ -5,6 +5,81 @@ All notable changes to the MoJoAssistant project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4-beta] - 2026-02-23
+
+### Added
+- **Dreaming Pipeline (A→B→C→D)**: Four-stage autonomous memory consolidation — raw conversations → semantic chunks → synthesized clusters → versioned archives
+- Resilient LLM JSON parsing with four-pass strategy for handling malformed output from local LLMs
+- Versioned archives with incremental `archive_v<N>.json` files and manifest tracking under `~/.memory/dreams/`
+- Scheduler-driven automation: nightly dreaming tasks at 3:00 AM (off-peak)
+- MCP tool enhancements returning versioning and lifecycle metadata
+- Coding agent policies: `AGENTS.md` and `Coding Agents Rules.md`
+- LM Studio integration documentation and authentication configuration
+
+### Fixed
+- Removed hardcoded version numbers in dreaming module
+- Fixed failure handling in dreaming pipeline stages
+- Fixed scheduler task rescheduling after completion
+- Fixed thread safety in scheduler daemon
+- Fixed archive version detection for existing conversations
+
+## [1.1.3-beta] - 2026-02-21
+
+### Added
+- **Smart Installer with AI Agents**: Conversational setup using Model Selector and Environment Configurator agents
+- **Tool-Based Configuration**: LLM uses structured tool calls instead of free-text to configure `.env` values
+- Comprehensive environment variable documentation (60+ variables in `config/env_variables.json`)
+- Model catalog system with curated model metadata in `config/model_catalog.json`
+- **LMStudio Integration**: Multi-port detection and API token support (`LMSTUDIO_API_KEY`)
+- 5 predefined use case profiles for configuration
+
+### Changed
+- Directory reorganization: 42 files moved to proper structure
+- Default recommended model changed from Qwen2.5-Coder to Qwen3-1.7B
+
+### Fixed
+- Context length handling in model configuration
+- Model selection when multiple providers are available
+- LLM API error handling during configuration
+- Installer crash on missing dependencies
+- Mirror configuration for China-region users
+- Resume support for interrupted model downloads
+
+## [1.1.0] - 2026-02-09
+
+### Added
+- **OpenCode Manager**: Production-ready AI agent orchestration layer
+- N:1 architecture — multiple OpenCode instances route through single global MCP tool (port 3005)
+- SSH deploy key management with per-project auto-generation
+- Global configuration via `~/.memory/opencode-manager.env`
+- State persistence across system restarts
+- Health monitoring with auto-recovery
+- 10 comprehensive automated tests
+
+### Changed
+- OpenCode Manager promoted from beta to production-ready status
+- Enhanced process lifecycle management with cleaner shutdown handling
+
+## [1.1.0-beta] - 2026-02-07
+
+### Added
+- **OpenCode Manager (N:1 Architecture)**: Lifecycle management for OpenCode AI coding agent instances
+- Multi-project support with simultaneous instance management
+- Global MCP tool on single port (3005) routing to all projects
+- Per-project SSH deploy keys (auto-generated ED25519)
+- Global password configuration via `~/.memory/opencode-manager.env`
+- Development mode with auto-reload support
+- 8/8 automated tests passing
+- Comprehensive documentation (10+ markdown files)
+
+### Fixed
+- PID tracking to capture actual process instead of wrapper
+- `active_project_count` when restarting stopped projects
+- `opencode_llm_config` to include built-in provider models
+- Hot reload with watchfiles alternative
+- Port reuse on project restart
+- MCP tool startup race condition
+
 ## [1.0.1] - 2026-01-21
 
 ### Added
