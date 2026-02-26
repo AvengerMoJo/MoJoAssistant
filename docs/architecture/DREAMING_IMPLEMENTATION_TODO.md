@@ -26,14 +26,15 @@ Branch: merged to `main` as of v1.1.4-beta
 - [x] Keep all historical versions immutable and queryable.
 
 ## Phase 4: MCP Tool Alignment
-- [ ] `dreaming_process`: include created version and superseded info in response.
-- [ ] `dreaming_list_archives`: expose latest status and version fields.
-- [ ] `dreaming_upgrade_quality`: create new version (do not overwrite old).
-- [ ] Maintain backwards compatibility of tool signatures.
+- [x] `dreaming_process`: include created version and superseded info in response.
+- [x] `dreaming_list_archives`: expose latest status and version fields.
+- [x] `dreaming_upgrade_quality`: create new version (do not overwrite old).
+- [x] Maintain backwards compatibility of tool signatures.
+- [x] Fix: store `original_text` in metadata during `dreaming_process` so `upgrade_quality` can re-process.
 
 ## Phase 5: Validation
-- [ ] Unit tests for version increment and lineage transitions.
-- [ ] Integration test for repeated process on same `conversation_id` (v1, v2, v3).
-- [ ] Integration test for upgrade-quality producing next version.
+- [x] Unit tests for version increment and lineage transitions.
+- [x] Integration test for repeated process on same `conversation_id` (v1, v2, v3).
+- [x] Integration test for upgrade-quality producing next version.
 - [ ] Real-memory off-schedule validation with LM Studio configured.
-- [ ] Confirm default retrieval favors hot/latest while history remains available.
+- [x] Confirm default retrieval favors hot/latest while history remains available.

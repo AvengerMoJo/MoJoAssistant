@@ -2360,6 +2360,9 @@ class ToolRegistry:
             quality_level = args.get("quality_level", "basic")
             metadata = args.get("metadata", {})
 
+            # Store original text in metadata so upgrade_quality can re-process
+            metadata["original_text"] = conversation_text
+
             # Initialize dreaming pipeline
             from app.dreaming.pipeline import DreamingPipeline
             from app.llm.llm_interface import LLMInterface
