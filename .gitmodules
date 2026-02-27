@@ -1,0 +1,3 @@
+[submodule "coding-agent-mcp-tool"]
+	path = coding-agent-mcp-tool
+	url = https://github.com/AvengerMoJo/coding-agent-mcp-tool.git
