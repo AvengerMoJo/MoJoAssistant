@@ -37,21 +37,9 @@ class ToolRegistry:
         # Initialize git service
         self.git_service = GitService()
 
-        # Initialize OpenCode manager (disabled by default)
-        self.opencode_manager = None
-        if os.getenv("ENABLE_OPENCODE", "false").lower() in ("true", "1", "yes"):
-            try:
-                from app.mcp.opencode.manager import OpenCodeManager
-
-                self.opencode_manager = OpenCodeManager(logger=logger)
-            except Exception as e:
-                if logger:
-                    logger.warning(f"OpenCode Manager failed to initialize: {e}")
-                else:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        f"OpenCode Manager failed to initialize: {e}"
-                    )
+        # Initialize unified Agent Registry (replaces separate manager init)
+        from app.mcp.agents.registry import AgentRegistry
+        self.agent_registry = AgentRegistry(logger=logger)
 
         # Initialize Scheduler
         from app.scheduler.core import Scheduler
@@ -184,13 +172,13 @@ class ToolRegistry:
                 ],
                 "usage_tip": "Use for questions about today's date, current day, time, or year information.",
             },
-            "opencode_stop_mcp_tool": {
-                "template": "Stop the global opencode-mcp-tool instance",
+            "agent_list_types": {
+                "template": "List available coding agent types",
                 "examples": [
-                    "Stop the global opencode-mcp-tool",
-                    "Terminate the MCP tool that serves all OpenCode projects",
+                    "What agent types are available?",
+                    "List coding agents",
                 ],
-                "usage_tip": "Use when you need to manually stop the global MCP tool, even when there are active projects running.",
+                "usage_tip": "Use to discover available agent types and their supported actions.",
             },
         }
 
@@ -569,244 +557,153 @@ class ToolRegistry:
                 "description": "List all registered git repositories. When to use: Use to see which repositories are available for code analysis and their current status. How it works: Shows all registered repositories with their URLs, branches, and status. Why useful: Helps you understand what codebases are available for analysis.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
-            # OpenCode Manager Tools (Phase 3: git_url-based)
+            # Unified Agent Manager Tools (replaces opencode_* and claude_code_* tools)
             {
-                "name": "opencode_project_start",
-                "description": "Start an OpenCode project by git URL. The project name is auto-generated from the repository (e.g., git@github.com:user/repo.git becomes 'user-repo'). Creates base directory at ~/.opencode-projects/{owner}-{repo} by default. SECRETS ARE NEVER PASSED - they're read from .env files. Use this when you need to start working on a codebase with AI assistance.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "git_url": {
-                            "type": "string",
-                            "description": "Git repository URL (SSH or HTTPS format, will be normalized to SSH). Example: git@github.com:user/repo.git or https://github.com/user/repo",
-                            "minLength": 1,
-                        },
-                        "user_ssh_key": {
-                            "type": "string",
-                            "description": "Optional: Path to user's SSH key (will auto-generate if not provided)",
-                        },
-                    },
-                    "required": ["git_url"],
-                },
-            },
-            {
-                "name": "opencode_project_status",
-                "description": "Check the status of an OpenCode project by git URL. Shows if processes are running, ports, PIDs, and health status. Use this to verify a project is running correctly.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "git_url": {
-                            "type": "string",
-                            "description": "Git repository URL",
-                            "minLength": 1,
-                        }
-                    },
-                    "required": ["git_url"],
-                },
-            },
-            {
-                "name": "opencode_project_stop",
-                "description": "Stop an OpenCode project by git URL. Terminates the OpenCode server process. The base directory and files remain intact. Use this to free up resources when not actively working on a project.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "git_url": {
-                            "type": "string",
-                            "description": "Git repository URL",
-                            "minLength": 1,
-                        }
-                    },
-                    "required": ["git_url"],
-                },
-            },
-            {
-                "name": "opencode_project_restart",
-                "description": "Restart an OpenCode project by git URL. Stops and starts the process. Useful when processes have crashed or need to reload configuration.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "git_url": {
-                            "type": "string",
-                            "description": "Git repository URL",
-                            "minLength": 1,
-                        }
-                    },
-                    "required": ["git_url"],
-                },
-            },
-            {
-                "name": "opencode_project_destroy",
-                "description": "⚠️ DESTRUCTIVE: Stop project and DELETE base directory by git URL. This permanently removes all local code, worktrees, and configuration. The remote Git repository is NOT affected. Use only when you're completely done with a project and want to free up disk space.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "git_url": {
-                            "type": "string",
-                            "description": "Git repository URL",
-                            "minLength": 1,
-                        }
-                    },
-                    "required": ["git_url"],
-                },
-            },
-            {
-                "name": "opencode_project_list",
-                "description": "List all OpenCode projects. Shows git URLs, project names, running status, ports, and base directory locations. Use this to see what projects are available.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
-            },
-            # Sandbox/Worktree Management Tools (Phase 2)
-            {
-                "name": "opencode_sandbox_create",
-                "description": "Create a git worktree (sandbox) for isolated development. Worktrees share the same .git database but have separate working directories and can be on different branches. Perfect for testing changes without affecting your main workspace.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "git_url": {
-                            "type": "string",
-                            "description": "Git repository URL",
-                            "minLength": 1,
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "Worktree name (unique within project, alphanumeric with hyphens/underscores)",
-                            "minLength": 1,
-                            "pattern": "^[a-zA-Z0-9_-]+$",
-                        },
-                        "branch": {
-                            "type": "string",
-                            "description": "Optional: Branch to checkout (default: current branch)",
-                        },
-                        "start_command": {
-                            "type": "string",
-                            "description": "Optional: Command to run after worktree creation",
-                        },
-                    },
-                    "required": ["git_url", "name"],
-                },
-            },
-            {
-                "name": "opencode_sandbox_list",
-                "description": "List all worktrees (sandboxes) for a project. Shows worktree paths and their status.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "git_url": {
-                            "type": "string",
-                            "description": "Git repository URL",
-                            "minLength": 1,
-                        }
-                    },
-                    "required": ["git_url"],
-                },
-            },
-            {
-                "name": "opencode_sandbox_delete",
-                "description": "Delete a git worktree (sandbox). This removes the worktree directory but does not affect the main repository or other worktrees.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "git_url": {
-                            "type": "string",
-                            "description": "Git repository URL",
-                            "minLength": 1,
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "Worktree name to delete",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["git_url", "name"],
-                },
-            },
-            {
-                "name": "opencode_sandbox_reset",
-                "description": "Reset a worktree to clean state (default branch). Discards all uncommitted changes and resets to the default branch. Use this to start fresh in a sandbox.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "git_url": {
-                            "type": "string",
-                            "description": "Git repository URL",
-                            "minLength": 1,
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "Worktree name to reset",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["git_url", "name"],
-                },
-            },
-            {
-                "name": "opencode_mcp_status",
-                "description": "Get status of the global opencode-mcp-tool instance that serves all projects. Shows PID, port, number of active projects, and health status. Use this to check if the MCP tool is running.",
+                "name": "agent_list_types",
+                "description": "List all installed and enabled coding agent types. Shows what agent types are available (e.g. 'opencode', 'claude_code'), their supported actions, and how to identify instances.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
             {
-                "name": "opencode_mcp_restart",
-                "description": "Manually restart the global opencode-mcp-tool instance. Useful after updating the opencode-mcp-tool repository or when the MCP tool needs to reload configuration. Will only restart if there are active projects.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "name": "opencode_stop_mcp_tool",
-                "description": "Manually stop the global opencode-mcp-tool instance. Can be used even when there are active projects. Useful for maintenance or when the MCP tool needs to be completely stopped.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "name": "opencode_llm_config",
-                "description": "Get the global OpenCode LLM configuration: current default model, available providers, and their configured models. This shows what AI models OpenCode can use.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "name": "opencode_llm_set_model",
-                "description": "Set the default LLM model for all OpenCode instances. The model format is 'provider-id/model-id' (e.g., 'MoJoLLM/zai-org/glm-4.7-flash'). Use opencode_llm_config to see available providers and models first.",
+                "name": "agent_start",
+                "description": "Start a coding agent instance. For opencode: pass git_url as identifier. For claude_code: pass session_id as identifier with working_dir in params.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "model": {
+                        "agent_type": {
                             "type": "string",
-                            "description": "Model identifier in format 'provider-id/model-id'",
+                            "description": "Agent type (e.g. 'opencode', 'claude_code'). Use agent_list_types to see available types.",
                             "minLength": 1,
-                        }
+                        },
+                        "identifier": {
+                            "type": "string",
+                            "description": "Instance identifier (git_url for opencode, session_id for claude_code)",
+                            "minLength": 1,
+                        },
+                        "params": {
+                            "type": "object",
+                            "description": "Additional parameters (e.g. user_ssh_key for opencode, working_dir/model for claude_code)",
+                        },
                     },
-                    "required": ["model"],
+                    "required": ["agent_type", "identifier"],
                 },
             },
-            # SSH Deploy Key Management (Phase 4)
             {
-                "name": "opencode_get_deploy_key",
-                "description": "Get the SSH public key for a git repository. Use this to retrieve the deploy key that OpenCode generated, which you need to add to your repository's deploy keys on GitHub/GitLab. The key is auto-generated when you first start a project.",
+                "name": "agent_stop",
+                "description": "Stop a coding agent instance. Terminates the process but preserves state for restart.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "git_url": {
+                        "agent_type": {
                             "type": "string",
-                            "description": "Git repository URL",
+                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
                             "minLength": 1,
-                        }
+                        },
+                        "identifier": {
+                            "type": "string",
+                            "description": "Instance identifier",
+                            "minLength": 1,
+                        },
                     },
-                    "required": ["git_url"],
-                },
-            },
-            # Diagnostic & Cleanup Tools (Phase 5)
-            {
-                "name": "opencode_detect_duplicates",
-                "description": "Detect duplicate projects (same git repository running in multiple OpenCode instances). Provides recommendations on which instance to keep and suggests converting others to worktrees. Useful for cleaning up resource usage and avoiding session confusion.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
+                    "required": ["agent_type", "identifier"],
                 },
             },
             {
-                "name": "opencode_cleanup_orphaned",
-                "description": "Detect and clean up orphaned OpenCode processes. An orphaned process is one where the PID in state doesn't exist (process crashed or was killed), but the project is still marked as running. This tool will automatically update the state to reflect reality.",
+                "name": "agent_status",
+                "description": "Get the status of a coding agent instance. Shows PID, ports, health, and running state.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": {},
-                    "required": [],
+                    "properties": {
+                        "agent_type": {
+                            "type": "string",
+                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "minLength": 1,
+                        },
+                        "identifier": {
+                            "type": "string",
+                            "description": "Instance identifier",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["agent_type", "identifier"],
+                },
+            },
+            {
+                "name": "agent_list",
+                "description": "List all instances of a coding agent type. Shows identifiers, running status, and details.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "agent_type": {
+                            "type": "string",
+                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["agent_type"],
+                },
+            },
+            {
+                "name": "agent_restart",
+                "description": "Restart a coding agent instance. Stops and starts the process with the same configuration.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "agent_type": {
+                            "type": "string",
+                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "minLength": 1,
+                        },
+                        "identifier": {
+                            "type": "string",
+                            "description": "Instance identifier",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["agent_type", "identifier"],
+                },
+            },
+            {
+                "name": "agent_destroy",
+                "description": "Destroy a coding agent instance and clean up all resources. DESTRUCTIVE: permanently removes local data. The remote Git repository is NOT affected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "agent_type": {
+                            "type": "string",
+                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "minLength": 1,
+                        },
+                        "identifier": {
+                            "type": "string",
+                            "description": "Instance identifier",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["agent_type", "identifier"],
+                },
+            },
+            {
+                "name": "agent_action",
+                "description": "Execute a backend-specific action on a coding agent. Use agent_list_types to see supported actions per agent type. Examples: sandbox_create, llm_config, get_deploy_key.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "agent_type": {
+                            "type": "string",
+                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "minLength": 1,
+                        },
+                        "action": {
+                            "type": "string",
+                            "description": "Action name (e.g. 'sandbox_create', 'llm_config', 'get_deploy_key')",
+                            "minLength": 1,
+                        },
+                        "params": {
+                            "type": "object",
+                            "description": "Action-specific parameters",
+                        },
+                    },
+                    "required": ["agent_type", "action"],
                 },
             },
             # Scheduler Tools
@@ -1044,13 +941,7 @@ class ToolRegistry:
         if web_search_tool and web_search_tool not in available_tools:
             available_tools.append(web_search_tool)
 
-        # Filter out OpenCode tools when OpenCode Manager is not available
-        if self.opencode_manager is None:
-            available_tools = [
-                tool
-                for tool in available_tools
-                if not tool["name"].startswith("opencode_")
-            ]
+        # Agent tools are always present — agent_type validation happens at execution time
 
         return available_tools
 
@@ -1184,7 +1075,7 @@ class ToolRegistry:
             "conversation": "Conversation management tools for preserving and organizing dialogue history",
             "knowledge": "Knowledge base tools for managing reference materials and documents",
             "utilities": "Utility tools for web search, time information, and system configuration",
-            "opencode": "OpenCode project management tools for managing coding agent projects and the global MCP tool",
+            "agents": "Unified coding agent management tools for starting, stopping, and managing agent instances",
         }
         return descriptions.get(category, "General tools")
 
@@ -1393,54 +1284,23 @@ class ToolRegistry:
             return await self._execute_get_git_file_content(args)
         elif name == "list_git_repositories":
             return await self._execute_list_git_repositories(args)
-        # OpenCode tools — guard when manager is disabled
-        elif name.startswith("opencode_") and self.opencode_manager is None:
-            return {
-                "status": "error",
-                "message": "OpenCode Manager is not enabled. Set ENABLE_OPENCODE=true in your .env file.",
-            }
-        # OpenCode Project Lifecycle (Phase 3: git_url-based)
-        elif name == "opencode_project_start":
-            return await self._execute_opencode_project_start(args)
-        elif name == "opencode_project_status":
-            return await self._execute_opencode_project_status(args)
-        elif name == "opencode_project_stop":
-            return await self._execute_opencode_project_stop(args)
-        elif name == "opencode_project_restart":
-            return await self._execute_opencode_project_restart(args)
-        elif name == "opencode_project_destroy":
-            return await self._execute_opencode_project_destroy(args)
-        elif name == "opencode_project_list":
-            return await self._execute_opencode_project_list(args)
-        # OpenCode Sandbox Management (Phase 2)
-        elif name == "opencode_sandbox_create":
-            return await self._execute_opencode_sandbox_create(args)
-        elif name == "opencode_sandbox_list":
-            return await self._execute_opencode_sandbox_list(args)
-        elif name == "opencode_sandbox_delete":
-            return await self._execute_opencode_sandbox_delete(args)
-        elif name == "opencode_sandbox_reset":
-            return await self._execute_opencode_sandbox_reset(args)
-        # OpenCode Global MCP Tool
-        elif name == "opencode_mcp_status":
-            return await self._execute_opencode_mcp_status(args)
-        elif name == "opencode_mcp_restart":
-            return await self._execute_opencode_mcp_restart(args)
-        elif name == "opencode_stop_mcp_tool":
-            return await self._execute_opencode_stop_mcp_tool(args)
-        # OpenCode LLM Configuration
-        elif name == "opencode_llm_config":
-            return await self._execute_opencode_llm_config(args)
-        elif name == "opencode_llm_set_model":
-            return await self._execute_opencode_llm_set_model(args)
-        # OpenCode SSH Deploy Key
-        elif name == "opencode_get_deploy_key":
-            return await self._execute_opencode_get_deploy_key(args)
-        # OpenCode Diagnostic & Cleanup Tools
-        elif name == "opencode_detect_duplicates":
-            return await self._execute_opencode_detect_duplicates(args)
-        elif name == "opencode_cleanup_orphaned":
-            return await self._execute_opencode_cleanup_orphaned(args)
+        # Unified Agent Manager Tools
+        elif name == "agent_list_types":
+            return await self._execute_agent_list_types(args)
+        elif name == "agent_start":
+            return await self._execute_agent_start(args)
+        elif name == "agent_stop":
+            return await self._execute_agent_stop(args)
+        elif name == "agent_status":
+            return await self._execute_agent_status(args)
+        elif name == "agent_list":
+            return await self._execute_agent_list(args)
+        elif name == "agent_restart":
+            return await self._execute_agent_restart(args)
+        elif name == "agent_destroy":
+            return await self._execute_agent_destroy(args)
+        elif name == "agent_action":
+            return await self._execute_agent_action(args)
         # Scheduler Tools
         elif name == "scheduler_add_task":
             return await self._execute_scheduler_add_task(args)
@@ -1824,263 +1684,107 @@ class ToolRegistry:
             }
 
     # ========================================================================
-    # OpenCode Manager execution methods (Phase 3: git_url-based)
+    # Unified Agent Manager execution methods
     # ========================================================================
 
-    # Project Lifecycle Methods
-    async def _execute_opencode_project_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_project_start tool (Phase 3)"""
-        git_url = args.get("git_url")
-        user_ssh_key = args.get("user_ssh_key")
+    async def _execute_agent_list_types(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute agent_list_types tool"""
+        return {
+            "status": "success",
+            "agent_types": self.agent_registry.list_types(),
+        }
+
+    async def _execute_agent_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute agent_start tool"""
+        agent_type = args.get("agent_type")
+        identifier = args.get("identifier")
+        params = args.get("params") or {}
 
         try:
-            result = await self.opencode_manager.start_project(
-                git_url, user_ssh_key
-            )
-            return result
+            manager = self.agent_registry.get_manager(agent_type)
+            return await manager.start_project(identifier, **params)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to start project: {str(e)}",
-            }
+            return {"status": "error", "message": f"Failed to start {agent_type} agent: {str(e)}"}
 
-    async def _execute_opencode_project_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_project_status tool (Phase 3)"""
-        git_url = args.get("git_url")
+    async def _execute_agent_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute agent_stop tool"""
+        agent_type = args.get("agent_type")
+        identifier = args.get("identifier")
 
         try:
-            result = await self.opencode_manager.get_status(git_url)
-            return result
+            manager = self.agent_registry.get_manager(agent_type)
+            return await manager.stop_project(identifier)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to get status: {str(e)}",
-            }
+            return {"status": "error", "message": f"Failed to stop {agent_type} agent: {str(e)}"}
 
-    async def _execute_opencode_project_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_project_stop tool (Phase 3)"""
-        git_url = args.get("git_url")
+    async def _execute_agent_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute agent_status tool"""
+        agent_type = args.get("agent_type")
+        identifier = args.get("identifier")
 
         try:
-            result = await self.opencode_manager.stop_project(git_url)
-            return result
+            manager = self.agent_registry.get_manager(agent_type)
+            return await manager.get_status(identifier)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         except Exception as e:
-            # Check if it's an OpenCodeError with formatted response
-            from app.mcp.opencode.errors import OpenCodeError
-            if isinstance(e, OpenCodeError):
-                return e.to_dict()
+            return {"status": "error", "message": f"Failed to get {agent_type} agent status: {str(e)}"}
 
-            # Generic error
-            return {
-                "status": "error",
-                "message": f"Failed to stop project: {str(e)}",
-            }
-
-    async def _execute_opencode_project_restart(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_project_restart tool (Phase 3)"""
-        git_url = args.get("git_url")
+    async def _execute_agent_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute agent_list tool"""
+        agent_type = args.get("agent_type")
 
         try:
-            result = await self.opencode_manager.restart_project(git_url)
-            return result
+            manager = self.agent_registry.get_manager(agent_type)
+            return await manager.list_projects()
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to restart project: {str(e)}",
-            }
+            return {"status": "error", "message": f"Failed to list {agent_type} agents: {str(e)}"}
 
-    async def _execute_opencode_project_destroy(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_project_destroy tool (Phase 3)"""
-        git_url = args.get("git_url")
+    async def _execute_agent_restart(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute agent_restart tool"""
+        agent_type = args.get("agent_type")
+        identifier = args.get("identifier")
 
         try:
-            result = await self.opencode_manager.destroy_project(git_url)
-            return result
+            manager = self.agent_registry.get_manager(agent_type)
+            return await manager.restart_project(identifier)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to destroy project: {str(e)}",
-            }
+            return {"status": "error", "message": f"Failed to restart {agent_type} agent: {str(e)}"}
 
-    async def _execute_opencode_project_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_project_list tool (Phase 3)"""
-        try:
-            result = await self.opencode_manager.list_projects()
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to list projects: {str(e)}",
-            }
-
-    # Sandbox/Worktree Management Methods (Phase 2)
-    async def _execute_opencode_sandbox_create(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_sandbox_create tool (Phase 2)"""
-        git_url = args.get("git_url")
-        name = args.get("name")
-        branch = args.get("branch")
-        start_command = args.get("start_command")
+    async def _execute_agent_destroy(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute agent_destroy tool"""
+        agent_type = args.get("agent_type")
+        identifier = args.get("identifier")
 
         try:
-            result = await self.opencode_manager.create_sandbox(
-                git_url, name, branch, start_command
-            )
-            return result
+            manager = self.agent_registry.get_manager(agent_type)
+            return await manager.destroy_project(identifier)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to create sandbox: {str(e)}",
-            }
+            return {"status": "error", "message": f"Failed to destroy {agent_type} agent: {str(e)}"}
 
-    async def _execute_opencode_sandbox_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_sandbox_list tool (Phase 2)"""
-        git_url = args.get("git_url")
+    async def _execute_agent_action(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute agent_action tool"""
+        agent_type = args.get("agent_type")
+        action = args.get("action")
+        params = args.get("params") or {}
 
         try:
-            result = await self.opencode_manager.list_sandboxes(git_url)
-            return result
+            manager = self.agent_registry.get_manager(agent_type)
+            return await manager.execute_action(action, params)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to list sandboxes: {str(e)}",
-            }
-
-    async def _execute_opencode_sandbox_delete(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_sandbox_delete tool (Phase 2)"""
-        git_url = args.get("git_url")
-        name = args.get("name")
-
-        try:
-            result = await self.opencode_manager.delete_sandbox(git_url, name)
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to delete sandbox: {str(e)}",
-            }
-
-    async def _execute_opencode_sandbox_reset(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute opencode_sandbox_reset tool (Phase 2)"""
-        git_url = args.get("git_url")
-        name = args.get("name")
-
-        try:
-            result = await self.opencode_manager.reset_sandbox(git_url, name)
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to reset sandbox: {str(e)}",
-            }
-
-    async def _execute_opencode_mcp_status(
-        self, args: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute opencode_mcp_status tool"""
-        try:
-            result = await self.opencode_manager.get_mcp_status()
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to get MCP status: {str(e)}",
-            }
-
-    async def _execute_opencode_mcp_restart(
-        self, args: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute opencode_mcp_restart tool"""
-        try:
-            result = await self.opencode_manager.restart_mcp_tool()
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to restart MCP tool: {str(e)}",
-            }
-
-    async def _execute_opencode_stop_mcp_tool(
-        self, args: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute opencode_stop_mcp_tool tool"""
-        try:
-            result = await self.opencode_manager.stop_mcp_tool()
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to stop MCP tool: {str(e)}",
-            }
-
-    async def _execute_opencode_llm_config(
-        self, args: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute opencode_llm_config tool"""
-        try:
-            result = await self.opencode_manager.get_llm_config()
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to get LLM config: {str(e)}",
-            }
-
-    async def _execute_opencode_llm_set_model(
-        self, args: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute opencode_llm_set_model tool"""
-        model = args.get("model")
-        try:
-            result = await self.opencode_manager.set_llm_model(model)
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to set LLM model: {str(e)}",
-            }
-
-    # SSH Deploy Key Management (Phase 4)
-    async def _execute_opencode_get_deploy_key(
-        self, args: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute opencode_get_deploy_key tool (Phase 4)"""
-        git_url = args.get("git_url")
-
-        try:
-            result = await self.opencode_manager.get_deploy_key(git_url)
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to get deploy key: {str(e)}",
-            }
-
-    # Diagnostic & Cleanup Tools (Phase 5)
-    async def _execute_opencode_detect_duplicates(
-        self, args: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute opencode_detect_duplicates tool (Phase 5)"""
-        try:
-            result = await self.opencode_manager.detect_duplicates()
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to detect duplicates: {str(e)}",
-            }
-
-    async def _execute_opencode_cleanup_orphaned(
-        self, args: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute opencode_cleanup_orphaned tool (Phase 5)"""
-        try:
-            result = await self.opencode_manager.cleanup_orphaned_processes()
-            return result
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to cleanup orphaned processes: {str(e)}",
-            }
+            return {"status": "error", "message": f"Failed to execute {agent_type} action '{action}': {str(e)}"}
 
     # ========================================================================
     # Scheduler execution methods

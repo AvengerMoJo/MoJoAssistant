@@ -1,5 +1,7 @@
 # OpenCode Manager Implementation History
 
+> **Note (2026-02):** The `opencode_*` and `claude_code_*` tool names referenced in this document have been replaced by unified `agent_*` tools (`agent_start`, `agent_stop`, `agent_status`, `agent_list`, `agent_restart`, `agent_destroy`, `agent_action`, `agent_list_types`). This document is preserved for historical reference.
+
 This document consolidates the implementation phases of the OpenCode Manager redesign (git_url-based architecture). For the current API specification, see `opencode-api-spec.md`. For the overall redesign plan, see `opencode-manager-redesign-plan.md`.
 
 ---

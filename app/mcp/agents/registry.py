@@ -1,0 +1,90 @@
+"""
+Agent Registry
+
+Central registry of all agent managers. Provides unified access to
+any agent type via a single interface.
+
+File: app/mcp/agents/registry.py
+"""
+
+import os
+from typing import Dict, Any, List, Optional
+
+from app.mcp.agents.base import BaseAgentManager
+
+
+class AgentRegistry:
+    """Central registry of all agent managers.
+
+    Auto-registers enabled managers based on environment variables.
+    Provides a single entry point for all agent lifecycle operations.
+    """
+
+    def __init__(self, logger=None):
+        self._managers: Dict[str, BaseAgentManager] = {}
+        self._init_errors: Dict[str, str] = {}
+        self.logger = logger
+
+        # Auto-register enabled managers
+        if os.getenv("ENABLE_OPENCODE", "false").lower() in ("true", "1", "yes"):
+            try:
+                from app.mcp.opencode.manager import OpenCodeManager
+                self._managers["opencode"] = OpenCodeManager(logger=logger)
+            except Exception as e:
+                self._init_errors["opencode"] = str(e)
+                self._log(f"OpenCode Manager failed to initialize: {e}", "warning")
+
+        if os.getenv("ENABLE_CLAUDE_CODE", "false").lower() in ("true", "1", "yes"):
+            try:
+                from app.mcp.claude_code.manager import ClaudeCodeManager
+                self._managers["claude_code"] = ClaudeCodeManager(logger=logger)
+            except Exception as e:
+                self._init_errors["claude_code"] = str(e)
+                self._log(f"Claude Code Manager failed to initialize: {e}", "warning")
+
+    def _log(self, message: str, level: str = "info"):
+        if self.logger:
+            getattr(self.logger, level, self.logger.info)(
+                f"[AgentRegistry] {message}"
+            )
+
+    def list_types(self) -> List[Dict[str, Any]]:
+        """Return enabled agent types with their supported actions."""
+        result = []
+        for name, mgr in self._managers.items():
+            result.append({
+                "agent_type": name,
+                "identifier_description": mgr.identifier_description,
+                "supported_actions": mgr.get_supported_actions(),
+            })
+        return result
+
+    def get_manager(self, agent_type: str) -> BaseAgentManager:
+        """Get manager by type.
+
+        Raises:
+            ValueError: If agent_type is not registered or not enabled.
+        """
+        if agent_type in self._managers:
+            return self._managers[agent_type]
+
+        if agent_type in self._init_errors:
+            raise ValueError(
+                f"Agent type '{agent_type}' failed to initialize: "
+                f"{self._init_errors[agent_type]}"
+            )
+
+        available = list(self._managers.keys())
+        raise ValueError(
+            f"Unknown agent type '{agent_type}'. "
+            f"Available types: {available or 'none (no agents enabled)'}"
+        )
+
+    def has_manager(self, agent_type: str) -> bool:
+        """Check if an agent type is registered and available."""
+        return agent_type in self._managers
+
+    @property
+    def enabled_types(self) -> List[str]:
+        """List of enabled agent type names."""
+        return list(self._managers.keys())

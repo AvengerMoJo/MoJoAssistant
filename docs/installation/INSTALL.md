@@ -232,9 +232,9 @@ The MCP server provides 30+ tools for Claude Desktop:
   - `scheduler_get_status` - Check scheduler status
 
 - **OpenCode Tools** - Remote development (optional, requires `ENABLE_OPENCODE=true`)
-  - `opencode_project_start` - Start coding project
-  - `opencode_project_status` - Check project status
-  - `opencode_project_stop` - Stop project
+  - `agent_start` (with `agent_type="opencode"`) - Start coding project
+  - `agent_status` (with `agent_type="opencode"`) - Check project status
+  - `agent_stop` (with `agent_type="opencode"`) - Stop project
 
 ### Configure Advanced Features
 

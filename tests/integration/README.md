@@ -1,6 +1,6 @@
-# OpenCode Manager Integration Tests
+# Agent Manager Integration Tests
 
-This directory contains end-to-end integration tests for the OpenCode Manager.
+This directory contains end-to-end integration tests for the Agent Manager (OpenCode and other agent types).
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ python tests/integration/test_complete_workflow.py --git-url git@github.com:user
 
 ### What the Test Does
 
-The complete workflow test validates all major OpenCode Manager operations:
+The complete workflow test validates all major Agent Manager operations (using OpenCode agent type):
 
 1. **Start Project** - Initialize OpenCode instance for a git repository
 2. **Get Deploy Key** - Retrieve SSH public key for GitHub
@@ -163,7 +163,7 @@ from app.services.memory_service import MemoryService
 
 async def main():
     tools = ToolRegistry(MemoryService())
-    result = await tools.execute('opencode_project_list', {})
+    result = await tools.execute('agent_list', {'agent_type': 'opencode'})
     print(result)
 
 asyncio.run(main())
@@ -177,7 +177,8 @@ from app.services.memory_service import MemoryService
 
 async def main():
     tools = ToolRegistry(MemoryService())
-    result = await tools.execute('opencode_project_stop', {
+    result = await tools.execute('agent_stop', {
+        'agent_type': 'opencode',
         'git_url': 'git@github.com:user/repo.git'
     })
     print(result)
@@ -206,14 +207,16 @@ async def test_my_feature():
     tools = ToolRegistry(MemoryService())
 
     # Your test here
-    result = await tools.execute("opencode_project_start", {
+    result = await tools.execute("agent_start", {
+        "agent_type": "opencode",
         "git_url": "git@github.com:user/repo.git"
     })
 
     assert result["status"] == "success"
 
     # Cleanup
-    await tools.execute("opencode_project_stop", {
+    await tools.execute("agent_stop", {
+        "agent_type": "opencode",
         "git_url": "git@github.com:user/repo.git"
     })
 

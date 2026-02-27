@@ -475,6 +475,28 @@
           "required": false,
           "default": false,
           "options": [true, false]
+        },
+        "ENABLE_CLAUDE_CODE": {
+          "description": "Enable Claude Code Manager",
+          "purpose": "When true, enables Claude Code CLI subprocess lifecycle management (start/stop/restart/status)",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "options": [true, false]
+        }
+      }
+    },
+    "claude_code": {
+      "name": "Claude Code Manager Configuration",
+      "description": "Configuration for Claude Code CLI subprocess management",
+      "variables": {
+        "CLAUDE_BIN": {
+          "description": "Path to Claude Code CLI binary",
+          "purpose": "Specifies where to find the claude executable. Auto-detected from PATH via shutil.which() if not set",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "examples": ["claude", "/usr/local/bin/claude", "~/.npm/bin/claude"]
         }
       }
     },
@@ -524,13 +546,13 @@
           "default": null,
           "examples": ["opencode", "/usr/local/bin/opencode", "~/.bun/bin/opencode"]
         },
-        "OPENCODE_MCP_TOOL_PATH": {
-          "description": "Path to opencode-mcp-tool repository",
-          "purpose": "Local filesystem path where the opencode-mcp-tool repository is located",
+        "CODING_AGENT_MCP_BIN": {
+          "description": "Path to coding-agent-mcp binary",
+          "purpose": "Specifies where to find the coding-agent-mcp executable. Auto-detected from PATH via shutil.which() if not set",
           "type": "string",
           "required": false,
           "default": null,
-          "examples": ["/home/user/opencode-mcp-tool", "~/Development/opencode-mcp-tool"]
+          "examples": ["coding-agent-mcp", "/usr/local/bin/coding-agent-mcp", "~/.local/bin/coding-agent-mcp"]
         }
       }
     }

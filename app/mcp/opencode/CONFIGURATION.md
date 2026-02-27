@@ -88,12 +88,12 @@ To change the port after it's been set:
 
 1. **Stop all projects:**
    ```
-   opencode_stop <project_name>
+   agent_stop(agent_type="opencode", ...)
    ```
 
 2. **Stop global MCP tool:**
    ```
-   opencode_mcp_restart
+   agent_action(agent_type="opencode", action="mcp_restart")
    ```
 
 3. **Edit state file** (or delete it to reset):
@@ -113,7 +113,7 @@ To change the port after it's been set:
 
 5. **Restart projects:**
    ```
-   opencode_start <project_name> ...
+   agent_start(agent_type="opencode", ...)
    ```
 
 ### Verifying the Port
@@ -121,7 +121,7 @@ To change the port after it's been set:
 Check the current port with:
 
 ```
-opencode_mcp_status
+agent_action(agent_type="opencode", action="mcp_status")
 ```
 
 Output:
@@ -150,7 +150,7 @@ You have cloudflared configured for port 3005:
 python3 unified_mcp_server.py --mode http --port 8000
 
 # Start your project
-opencode_start my-project git@github.com:user/repo.git
+agent_start(agent_type="opencode", git_url="git@github.com:user/repo.git")
 # Global MCP tool will start on port 3005 automatically
 ```
 
@@ -166,7 +166,7 @@ export GLOBAL_MCP_TOOL_PORT=5000
 python3 unified_mcp_server.py --mode http --port 8000
 
 # Start project
-opencode_start my-project git@github.com:user/repo.git
+agent_start(agent_type="opencode", git_url="git@github.com:user/repo.git")
 # Global MCP tool will use port 5000
 ```
 
@@ -215,14 +215,14 @@ export GLOBAL_MCP_TOOL_PORT=3006
 **Solution:**
 ```bash
 # Verify MCP tool is running on expected port
-opencode_mcp_status
+agent_action(agent_type="opencode", action="mcp_status")
 
 # Check if port matches cloudflared config
 cat ~/.cloudflared/config.yml | grep service
 
 # If ports don't match, restart with correct port
 export GLOBAL_MCP_TOOL_PORT=3005
-opencode_mcp_restart
+agent_action(agent_type="opencode", action="mcp_restart")
 ```
 
 ### Best Practices

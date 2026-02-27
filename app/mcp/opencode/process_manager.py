@@ -216,7 +216,7 @@ pgrep -f "node.*index-http.*--port {port}" | tail -1 > {pid_file}"""
                 return 0, port, f"Failed to start MCP tool: {result.stderr}"
 
             # Read PID from file
-            time.sleep(2)  # Give npm time to start
+            time.sleep(2)  # Give process time to start
             if pid_file.exists():
                 with open(pid_file, "r") as f:
                     pid = int(f.read().strip())
@@ -428,24 +428,26 @@ pgrep -f "node.*index-http.*--port {port}" | tail -1 > {pid_file}"""
         if port is None:
             port = int(os.getenv("GLOBAL_MCP_TOOL_PORT", "3005"))
 
-        # Determine MCP tool directory from environment
-        mcp_tool_dir = os.getenv("OPENCODE_MCP_TOOL_PATH", "")
-        if not mcp_tool_dir or not os.path.isdir(mcp_tool_dir):
-            return 0, port, "OPENCODE_MCP_TOOL_PATH not set or directory not found. Set it in .env or as environment variable."
+        # Determine coding-agent-mcp binary
+        import shutil
+
+        coding_agent_bin = os.getenv("CODING_AGENT_MCP_BIN", "")
+        if not coding_agent_bin:
+            coding_agent_bin = shutil.which("coding-agent-mcp") or ""
+        if not coding_agent_bin:
+            return 0, port, "CODING_AGENT_MCP_BIN not set and coding-agent-mcp not found in PATH."
 
         log_file = self.logs_dir / "global-mcp-tool.log"
         pid_file = Path(self.memory_root) / "global-mcp-tool.pid"
 
-        # Build command for multi-server mode (provide dummy model for setServerConfig validation)
+        # Build command for the Python MCP tool
         # NOTE: Bearer token is passed via environment variable (not CLI arg) for security
-        # The dummy model is used for validation only; actual server configs come from the JSON file
-        # Use pgrep to find actual node process PID (not bash wrapper)
-        cmd = f"""cd {mcp_tool_dir} && \\
-nohup node dist/index-http.js --model "" --port {port} \\
+        cmd = f"""nohup {coding_agent_bin} \\
+  --port {port} \\
   --servers-config {servers_config_path} \\
   >> {log_file} 2>&1 & \\
 sleep 1 && \\
-pgrep -f "node dist/index-http.js.*--port {port}" | tail -1 > {pid_file}"""
+pgrep -f "coding.agent.mcp.*--port {port}" | tail -1 > {pid_file}"""
 
         # Prepare environment with bearer token (secure: not visible in ps aux)
         env = os.environ.copy()
@@ -466,7 +468,7 @@ pgrep -f "node dist/index-http.js.*--port {port}" | tail -1 > {pid_file}"""
                 return 0, port, f"Failed to start global MCP tool: {result.stderr}"
 
             # Read PID from file
-            time.sleep(2)  # Give npm time to start
+            time.sleep(2)  # Give process time to start
             if pid_file.exists():
                 with open(pid_file, "r") as f:
                     pid = int(f.read().strip())

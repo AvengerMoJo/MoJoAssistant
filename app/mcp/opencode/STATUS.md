@@ -121,35 +121,33 @@
 
 ## 🎯 What This Achieves
 
-### Agent Manager Pattern (First Implementation)
+### Agent Manager Pattern (Generalized)
+
+OpenCode Manager now extends `BaseAgentManager` ABC (defined in `app/mcp/agents/base.py`).
+This base class defines the lifecycle interface shared by all agent managers.
+
+**Implementations**:
+- ✅ OpenCode (`app/mcp/opencode/manager.py`) — first implementation
+- ✅ Claude Code (`app/mcp/claude_code/manager.py`) — second implementation
 
 **Pattern**:
 ```python
-class AgentManager:
+class BaseAgentManager(ABC):
     """
     Generic agent lifecycle manager
 
     Does:
     - Start agent process
     - Stop agent process
-    - Health monitoring
-    - Register with global MCP tool
+    - Health monitoring (get_status)
+    - List/restart/destroy
 
     Does NOT do:
     - Define agent's functionality
     - Handle agent's requests
-    - Manage agent's internal state
+    - Expose coding tools
     """
 ```
-
-**Reusable for**:
-- ✅ OpenCode (implemented)
-- Browser automation agent
-- Database agent
-- API testing agent
-- File watcher
-- Code analysis agent
-- etc.
 
 **MoJoAssistant Vision - 4 Pillars**:
 1. Memory (foundation)

@@ -140,7 +140,7 @@ In Claude Desktop, you can now use tools like:
 - `get_memory_context` - Search your knowledge base
 - `dreaming_process` - Process conversations through A→B→C→D pipeline
 - `scheduler_add_task` - Schedule background tasks
-- `opencode_project_start` - Start a coding project
+- `agent_start` (with `agent_type="opencode"`) - Start a coding project
 
 ### 3. Read the Full Documentation
 

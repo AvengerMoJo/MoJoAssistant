@@ -28,9 +28,10 @@ from app.mcp.opencode.errors import (
     WorktreeError,
     format_error_response,
 )
+from app.mcp.agents.base import BaseAgentManager
 
 
-class OpenCodeManager:
+class OpenCodeManager(BaseAgentManager):
     """
     Manages OpenCode server instances and their associated MCP tools.
 
@@ -40,6 +41,9 @@ class OpenCodeManager:
     - Stop/restart projects
     - Track state persistently
     """
+
+    agent_type = "opencode"
+    identifier_description = "git_url (SSH format, e.g. git@github.com:user/repo.git)"
 
     def __init__(self, memory_root: str = None, logger=None):
         self.memory_root = memory_root or os.path.expanduser("~/.memory")
@@ -1646,3 +1650,66 @@ class OpenCodeManager:
                 "status": "error",
                 "message": f"Failed to cleanup orphaned processes: {str(e)}",
             }
+
+    # ========================================================================
+    # Agent Registry Interface (Unified Agent Manager)
+    # ========================================================================
+
+    def get_supported_actions(self) -> list:
+        """Return list of backend-specific actions this manager supports."""
+        return [
+            {"action": "sandbox_create", "params": ["git_url", "name", "branch?", "start_command?"],
+             "description": "Create a git worktree (sandbox) for isolated development"},
+            {"action": "sandbox_list", "params": ["git_url"],
+             "description": "List all worktrees (sandboxes) for a project"},
+            {"action": "sandbox_delete", "params": ["git_url", "name"],
+             "description": "Delete a git worktree (sandbox)"},
+            {"action": "sandbox_reset", "params": ["git_url", "name"],
+             "description": "Reset a worktree to clean state"},
+            {"action": "mcp_status", "params": [],
+             "description": "Get global MCP tool status"},
+            {"action": "mcp_restart", "params": [],
+             "description": "Restart global MCP tool"},
+            {"action": "mcp_stop", "params": [],
+             "description": "Stop global MCP tool"},
+            {"action": "llm_config", "params": [],
+             "description": "Get LLM configuration (providers, models, default)"},
+            {"action": "llm_set_model", "params": ["model"],
+             "description": "Set the default LLM model"},
+            {"action": "get_deploy_key", "params": ["git_url"],
+             "description": "Get SSH deploy key for a repository"},
+            {"action": "detect_duplicates", "params": [],
+             "description": "Detect duplicate projects"},
+            {"action": "cleanup_orphaned", "params": [],
+             "description": "Clean up orphaned processes"},
+        ]
+
+    async def execute_action(self, action: str, params: dict) -> dict:
+        """Execute a backend-specific action."""
+        match action:
+            case "sandbox_create":
+                return await self.create_sandbox(**params)
+            case "sandbox_list":
+                return await self.list_sandboxes(**params)
+            case "sandbox_delete":
+                return await self.delete_sandbox(**params)
+            case "sandbox_reset":
+                return await self.reset_sandbox(**params)
+            case "mcp_status":
+                return await self.get_mcp_status()
+            case "mcp_restart":
+                return await self.restart_mcp_tool()
+            case "mcp_stop":
+                return await self.stop_mcp_tool()
+            case "llm_config":
+                return await self.get_llm_config()
+            case "llm_set_model":
+                return await self.set_llm_model(**params)
+            case "get_deploy_key":
+                return await self.get_deploy_key(**params)
+            case "detect_duplicates":
+                return await self.detect_duplicates()
+            case "cleanup_orphaned":
+                return await self.cleanup_orphaned_processes()
+            case _:
+                return await super().execute_action(action, params)
