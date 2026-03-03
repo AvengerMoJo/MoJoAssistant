@@ -39,7 +39,7 @@ class ProjectNotFoundError(OpenCodeError):
             message=f"Project not found for repository: {git_url}",
             suggestion=(
                 "The project may not have been started yet. "
-                "Use 'opencode_project_start' to initialize this repository."
+                "Use 'agent_start(agent_type='opencode', ...)' to initialize this repository."
             ),
             details={"git_url": git_url}
         )
@@ -53,8 +53,8 @@ class ProjectAlreadyRunningError(OpenCodeError):
             message=f"Project already running on port {port} (PID: {pid})",
             suggestion=(
                 f"The project is already active. "
-                f"Use 'opencode_project_status' to check status, "
-                f"or 'opencode_project_restart' to restart it."
+                f"Use 'agent_status' to check status, "
+                f"or 'agent_restart' to restart it."
             ),
             details={
                 "git_url": git_url,
@@ -72,7 +72,7 @@ class ProjectNotRunningError(OpenCodeError):
             message=f"Project is not running: {git_url}",
             suggestion=(
                 "The OpenCode server is not active for this project. "
-                "Use 'opencode_project_start' to start it."
+                "Use 'agent_start(agent_type='opencode', ...)' to start it."
             ),
             details={"git_url": git_url}
         )

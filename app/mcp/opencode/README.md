@@ -17,14 +17,14 @@ The OpenCode Manager provides MCP tools to bootstrap, manage, and monitor OpenCo
 ```
 Memory MCP (This Project)
 ├─ Manager Tools (via MCP)
-│  ├─ opencode_start
-│  ├─ opencode_status
-│  ├─ opencode_stop
-│  ├─ opencode_restart
-│  ├─ opencode_destroy
-│  ├─ opencode_list
-│  ├─ opencode_mcp_status
-│  └─ opencode_mcp_restart
+│  ├─ agent_start(agent_type="opencode")
+│  ├─ agent_status(agent_type="opencode")
+│  ├─ agent_stop(agent_type="opencode")
+│  ├─ agent_restart(agent_type="opencode")
+│  ├─ agent_destroy(agent_type="opencode")
+│  ├─ agent_list(agent_type="opencode")
+│  ├─ agent_action(action="mcp_status")
+│  └─ agent_action(action="mcp_restart")
 │
 └─ Spawns & Monitors
     ├─ Project A: OpenCode Web (port 4100) ──┐
@@ -103,11 +103,11 @@ All sensitive configuration (SSH keys, passwords, tokens) is stored in `.env` fi
 
 ## MCP Tools
 
-### `opencode_start`
+### `agent_start` (with `agent_type="opencode"`)
 Start or bootstrap a project.
 
 **Parameters:**
-- `project_name` (required): Alphanumeric project name
+- `agent_type` (required): `"opencode"`
 - `git_url` (required): SSH Git URL (e.g., `git@github.com:user/repo.git`)
 - `user_ssh_key` (optional): Path to existing SSH key
 
@@ -131,27 +131,27 @@ Start or bootstrap a project.
 - `opencode_port`, `mcp_tool_port`: Connection details
 - `warning`: Dev mode warnings (if any)
 
-### `opencode_status`
+### `agent_status` (with `agent_type="opencode"`)
 Check project status.
 
 **Parameters:**
-- `project_name` (required): Project name
+- `agent_type` (required): `"opencode"`
 
 **Returns:**
 - Process PIDs, ports, running status
 - Sandbox directory, Git URL
 - Last health check timestamp
 
-### `opencode_stop`
+### `agent_stop` (with `agent_type="opencode"`)
 Stop project processes (keeps sandbox intact).
 
-### `opencode_restart`
+### `agent_restart` (with `agent_type="opencode"`)
 Restart both processes.
 
-### `opencode_destroy`
+### `agent_destroy` (with `agent_type="opencode"`)
 ⚠️ **DESTRUCTIVE**: Stop and delete sandbox.
 
-### `opencode_list`
+### `agent_list` (with `agent_type="opencode"`)
 List all projects with status.
 
 ## Configuration (.env)
@@ -192,7 +192,7 @@ python3 unified_mcp_server.py --mode http --port 8000
 
 **User:** "Start my blog-api project"
 
-**AI:** Calls `opencode_start(project_name="blog-api", git_url="git@github.com:user/blog-api.git")`
+**AI:** Calls `agent_start(agent_type="opencode", git_url="git@github.com:user/blog-api.git")`
 
 **Response (waiting for SSH key):**
 ```
@@ -209,7 +209,7 @@ Review: ~/.memory/opencode-sandboxes/blog-api/.env
 
 **User:** "Done, added the key to GitHub"
 
-**AI:** Calls `opencode_start(...)` again
+**AI:** Calls `agent_start(...)` again
 
 **Success:**
 ```
@@ -236,7 +236,7 @@ python3 unified_mcp_server.py --mode http --port 8000
 
 **User:** "Start my blog-api project"
 
-**AI:** Calls `opencode_start(project_name="blog-api", git_url="git@github.com:user/blog-api.git")`
+**AI:** Calls `agent_start(agent_type="opencode", git_url="git@github.com:user/blog-api.git")`
 
 **Response (need passwords):**
 ```
@@ -251,7 +251,7 @@ Status: waiting_for_passwords
 
 SSH key will be auto-generated automatically.
 
-After setting passwords, call opencode_start again to continue.
+After setting passwords, call agent_start again to continue.
 ```
 
 **User edits .env:**
@@ -266,7 +266,7 @@ nano ~/.memory/opencode-sandboxes/blog-api/.env
 
 **User:** "Done, set the passwords"
 
-**AI:** Calls `opencode_start(...)` again
+**AI:** Calls `agent_start(...)` again
 
 **Response (waiting for SSH key):**
 ```
@@ -283,7 +283,7 @@ Public key: ~/.memory/opencode-keys/blog-api-deploy.pub
 
 **User:** "Added key to GitHub"
 
-**AI:** Calls `opencode_start(...)` again
+**AI:** Calls `agent_start(...)` again
 
 **Success:**
 ```
@@ -297,7 +297,7 @@ MCP Tool: http://127.0.0.1:5101 (PID: 12346)
 
 ### Checking Status
 
-**AI:** Calls `opencode_status(project_name="blog-api")`
+**AI:** Calls `agent_status(agent_type="opencode", git_url="git@github.com:user/blog-api.git")`
 
 ```
 Project: blog-api
@@ -337,7 +337,7 @@ Set `ENVIRONMENT=development` for auto-generated configs:
 ```bash
 export ENVIRONMENT=development
 # Start Memory MCP server
-# Call opencode_start tool
+# Call agent_start(agent_type="opencode") tool
 ```
 
 ## Troubleshooting
@@ -396,7 +396,7 @@ ps aux | grep "opencode-mcp-tool" | awk '{print $2}' | xargs kill
 rm ~/.memory/opencode-sandboxes/*/mcp-tool.pid
 
 # 3. Restart projects (global MCP tool will auto-start)
-# Use opencode_restart tool or:
+# Use agent_restart(agent_type="opencode") tool or:
 python3 -c "
 import asyncio
 from app.mcp.opencode.manager import OpenCodeManager

@@ -1,17 +1,14 @@
 """
 Complete Workflow Integration Test
 
-Tests the entire OpenCode Manager workflow:
-1. Start a project (git_url)
-2. Get deploy key
-3. List projects
-4. Get project status
-5. Create a sandbox/worktree
-6. List sandboxes
+Tests the entire Agent Manager workflow using unified agent_* tools:
+1. Start a project (agent_start)
+2. Get deploy key (agent_action)
+3. List projects (agent_list)
+4. Get project status (agent_status)
+5. Create a sandbox/worktree (agent_action)
+6. List sandboxes (agent_action)
 7. Cleanup (delete sandbox, stop project)
-
-Note: Session management tests (create session, send message) will be added
-when those MCP tools are implemented.
 
 Run this test with a real git repository to validate end-to-end functionality.
 
@@ -32,7 +29,7 @@ from app.mcp.core.tools import ToolRegistry
 
 
 class MockMemoryService:
-    """Minimal mock memory service for testing OpenCode tools"""
+    """Minimal mock memory service for testing"""
 
     def __init__(self):
         pass
@@ -48,7 +45,7 @@ class MockMemoryService:
 
 
 class WorkflowTester:
-    """Integration test for complete OpenCode workflow"""
+    """Integration test for complete agent workflow"""
 
     def __init__(self, git_url: str):
         self.git_url = git_url
@@ -56,7 +53,7 @@ class WorkflowTester:
         self.tools = ToolRegistry(self.memory_service)
         self.project_started = False
         self.sandbox_created = False
-        self.session_id = None
+        self.sandbox_name = None
 
     def print_section(self, title: str):
         """Print section header"""
@@ -67,24 +64,24 @@ class WorkflowTester:
     def print_result(self, step: str, result: dict):
         """Print step result"""
         status = result.get("status", "unknown")
-        symbol = "✅" if status == "success" else "❌"
-        print(f"{symbol} {step}")
+        symbol = "+" if status == "success" else "FAIL"
+        print(f"[{symbol}] {step}")
 
         if status == "error":
             print(f"   Error: {result.get('message', 'Unknown error')}")
         else:
-            # Print key fields from result
             for key in ["project", "git_url", "opencode_port", "base_dir", "message"]:
                 if key in result:
                     print(f"   {key}: {result[key]}")
 
     async def test_01_start_project(self):
-        """Test: Start OpenCode project"""
+        """Test: Start project via agent_start"""
         self.print_section("Step 1: Start Project")
 
         print(f"Starting project for: {self.git_url}")
-        result = await self.tools.execute("opencode_project_start", {
-            "git_url": self.git_url
+        result = await self.tools.execute("agent_start", {
+            "agent_type": "opencode",
+            "identifier": self.git_url,
         })
 
         self.print_result("Start Project", result)
@@ -97,38 +94,42 @@ class WorkflowTester:
         return False
 
     async def test_02_get_deploy_key(self):
-        """Test: Get SSH deploy key"""
+        """Test: Get SSH deploy key via agent_action"""
         self.print_section("Step 2: Get Deploy Key")
 
         print("Retrieving SSH deploy key...")
-        result = await self.tools.execute("opencode_get_deploy_key", {
-            "git_url": self.git_url
+        result = await self.tools.execute("agent_action", {
+            "agent_type": "opencode",
+            "action": "get_deploy_key",
+            "params": {"git_url": self.git_url},
         })
 
         self.print_result("Get Deploy Key", result)
 
         if result.get("status") == "success":
-            print("\n📋 Public Key:")
+            print(f"\n  Public Key:")
             print("-" * 70)
             print(result.get("public_key", "N/A"))
             print("-" * 70)
 
             if result.get("github_deploy_keys_url"):
-                print(f"\n🔗 Add key at: {result['github_deploy_keys_url']}")
+                print(f"\n  Add key at: {result['github_deploy_keys_url']}")
 
             return True
         return False
 
     async def test_03_list_projects(self):
-        """Test: List all projects"""
+        """Test: List all projects via agent_list"""
         self.print_section("Step 3: List Projects")
 
         print("Listing all projects...")
-        result = await self.tools.execute("opencode_project_list", {})
+        result = await self.tools.execute("agent_list", {
+            "agent_type": "opencode",
+        })
 
         if result.get("status") == "success":
             projects = result.get("projects", [])
-            print(f"✅ Found {len(projects)} project(s)")
+            print(f"[+] Found {len(projects)} project(s)")
 
             for proj in projects:
                 print(f"\n   Project: {proj.get('name')}")
@@ -139,16 +140,17 @@ class WorkflowTester:
 
             return True
         else:
-            print(f"❌ Failed to list projects: {result.get('message')}")
+            print(f"[FAIL] Failed to list projects: {result.get('message')}")
             return False
 
     async def test_04_project_status(self):
-        """Test: Get project status"""
+        """Test: Get project status via agent_status"""
         self.print_section("Step 4: Get Project Status")
 
         print(f"Getting status for: {self.git_url}")
-        result = await self.tools.execute("opencode_project_status", {
-            "git_url": self.git_url
+        result = await self.tools.execute("agent_status", {
+            "agent_type": "opencode",
+            "identifier": self.git_url,
         })
 
         self.print_result("Project Status", result)
@@ -164,17 +166,19 @@ class WorkflowTester:
         return False
 
     async def test_05_create_sandbox(self):
-        """Test: Create sandbox/worktree"""
+        """Test: Create sandbox/worktree via agent_action"""
         self.print_section("Step 5: Create Sandbox")
 
         sandbox_name = "test-sandbox"
         print(f"Creating sandbox: {sandbox_name}")
 
-        result = await self.tools.execute("opencode_sandbox_create", {
-            "git_url": self.git_url,
-            "name": sandbox_name,
-            "branch": None,  # Use current branch
-            "start_command": None
+        result = await self.tools.execute("agent_action", {
+            "agent_type": "opencode",
+            "action": "sandbox_create",
+            "params": {
+                "git_url": self.git_url,
+                "name": sandbox_name,
+            },
         })
 
         self.print_result("Create Sandbox", result)
@@ -193,19 +197,21 @@ class WorkflowTester:
         return False
 
     async def test_06_list_sandboxes(self):
-        """Test: List all sandboxes"""
+        """Test: List all sandboxes via agent_action"""
         self.print_section("Step 6: List Sandboxes")
 
         print(f"Listing sandboxes for: {self.git_url}")
-        result = await self.tools.execute("opencode_sandbox_list", {
-            "git_url": self.git_url
+        result = await self.tools.execute("agent_action", {
+            "agent_type": "opencode",
+            "action": "sandbox_list",
+            "params": {"git_url": self.git_url},
         })
 
         if result.get("status") == "success":
             worktrees = result.get("worktrees", [])
             count = result.get("count", 0)
 
-            print(f"✅ Found {count} worktree(s)")
+            print(f"[+] Found {count} worktree(s)")
 
             for wt in worktrees:
                 print(f"\n   Worktree:")
@@ -215,86 +221,7 @@ class WorkflowTester:
 
             return True
         else:
-            print(f"❌ Failed to list sandboxes: {result.get('message')}")
-            return False
-
-    async def test_07_create_session(self):
-        """Test: Create a session"""
-        self.print_section("Step 7: Create Session")
-
-        print("Creating a new session...")
-        result = await self.tools.execute("opencode_session_create", {
-            "git_url": self.git_url,
-            "parent_id": None
-        })
-
-        if result.get("status") == "success":
-            self.session_id = result.get("session_id")
-            print(f"✅ Session Created")
-            print(f"   Session ID: {self.session_id}")
-            return True
-        else:
-            print(f"❌ Failed to create session: {result.get('message')}")
-            return False
-
-    async def test_08_send_message(self):
-        """Test: Send a message to session"""
-        self.print_section("Step 8: Send Message")
-
-        if not self.session_id:
-            print("❌ No session ID available")
-            return False
-
-        test_message = "Hello! This is a test message from the integration test."
-        print(f"Sending message to session {self.session_id}...")
-        print(f"Message: {test_message}")
-
-        result = await self.tools.execute("opencode_session_message", {
-            "git_url": self.git_url,
-            "session_id": self.session_id,
-            "message": test_message
-        })
-
-        if result.get("status") == "success":
-            print(f"✅ Message Sent")
-
-            # Print response if available
-            response = result.get("response")
-            if response:
-                print(f"\n📨 Response:")
-                print("-" * 70)
-                print(response)
-                print("-" * 70)
-
-            return True
-        else:
-            print(f"❌ Failed to send message: {result.get('message')}")
-            return False
-
-    async def test_09_list_sessions(self):
-        """Test: List all sessions"""
-        self.print_section("Step 9: List Sessions")
-
-        print("Listing all sessions...")
-        result = await self.tools.execute("opencode_session_list", {
-            "git_url": self.git_url
-        })
-
-        if result.get("status") == "success":
-            sessions = result.get("sessions", [])
-            print(f"✅ Found {len(sessions)} session(s)")
-
-            for session in sessions[:5]:  # Show first 5
-                print(f"\n   Session: {session.get('id', 'N/A')}")
-                print(f"   Created: {session.get('created_at', 'N/A')}")
-                print(f"   Messages: {session.get('message_count', 0)}")
-
-            if len(sessions) > 5:
-                print(f"\n   ... and {len(sessions) - 5} more")
-
-            return True
-        else:
-            print(f"❌ Failed to list sessions: {result.get('message')}")
+            print(f"[FAIL] Failed to list sandboxes: {result.get('message')}")
             return False
 
     async def cleanup_10_delete_sandbox(self):
@@ -302,13 +229,17 @@ class WorkflowTester:
         self.print_section("Cleanup: Delete Sandbox")
 
         if not self.sandbox_created:
-            print("⏭️  No sandbox to delete")
+            print("  No sandbox to delete")
             return True
 
         print(f"Deleting sandbox: {self.sandbox_name}")
-        result = await self.tools.execute("opencode_sandbox_delete", {
-            "git_url": self.git_url,
-            "name": self.sandbox_name
+        result = await self.tools.execute("agent_action", {
+            "agent_type": "opencode",
+            "action": "sandbox_delete",
+            "params": {
+                "git_url": self.git_url,
+                "name": self.sandbox_name,
+            },
         })
 
         self.print_result("Delete Sandbox", result)
@@ -319,12 +250,13 @@ class WorkflowTester:
         self.print_section("Cleanup: Stop Project")
 
         if not self.project_started:
-            print("⏭️  No project to stop")
+            print("  No project to stop")
             return True
 
         print(f"Stopping project: {self.git_url}")
-        result = await self.tools.execute("opencode_project_stop", {
-            "git_url": self.git_url
+        result = await self.tools.execute("agent_stop", {
+            "agent_type": "opencode",
+            "identifier": self.git_url,
         })
 
         self.print_result("Stop Project", result)
@@ -333,7 +265,7 @@ class WorkflowTester:
     async def run_all_tests(self):
         """Run complete workflow test"""
         print("\n" + "="*70)
-        print("  OpenCode Manager - Complete Workflow Integration Test")
+        print("  Agent Manager - Complete Workflow Integration Test")
         print("="*70)
         print(f"\nGit URL: {self.git_url}")
 
@@ -344,10 +276,6 @@ class WorkflowTester:
             ("Project Status", self.test_04_project_status),
             ("Create Sandbox", self.test_05_create_sandbox),
             ("List Sandboxes", self.test_06_list_sandboxes),
-            # TODO: Add session tests when session management tools are implemented
-            # ("Create Session", self.test_07_create_session),
-            # ("Send Message", self.test_08_send_message),
-            # ("List Sessions", self.test_09_list_sessions),
         ]
 
         cleanup_tests = [
@@ -365,12 +293,12 @@ class WorkflowTester:
 
                 # Stop if critical step fails
                 if not success and name in ["Start Project", "Create Sandbox"]:
-                    print(f"\n⚠️  Critical test failed: {name}")
+                    print(f"\n  Critical test failed: {name}")
                     print("Skipping remaining tests and proceeding to cleanup...")
                     break
 
             except Exception as e:
-                print(f"\n❌ Exception in {name}: {str(e)}")
+                print(f"\n[FAIL] Exception in {name}: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 results.append((name, False))
@@ -385,7 +313,7 @@ class WorkflowTester:
             try:
                 await cleanup_func()
             except Exception as e:
-                print(f"\n⚠️  Cleanup error in {name}: {str(e)}")
+                print(f"\n  Cleanup error in {name}: {str(e)}")
 
         # Print summary
         self.print_section("Test Summary")
@@ -396,15 +324,15 @@ class WorkflowTester:
         print(f"Results: {passed}/{total} tests passed\n")
 
         for name, success in results:
-            symbol = "✅" if success else "❌"
+            symbol = "[+]" if success else "[FAIL]"
             print(f"{symbol} {name}")
 
         print("\n" + "="*70)
 
         if passed == total:
-            print("🎉 ALL TESTS PASSED!")
+            print("ALL TESTS PASSED!")
         else:
-            print(f"⚠️  {total - passed} test(s) failed")
+            print(f"{total - passed} test(s) failed")
 
         print("="*70 + "\n")
 
@@ -413,7 +341,7 @@ class WorkflowTester:
 
 async def main():
     """Main entry point"""
-    parser = argparse.ArgumentParser(description="OpenCode Manager Complete Workflow Test")
+    parser = argparse.ArgumentParser(description="Agent Manager Complete Workflow Test")
     parser.add_argument(
         "--git-url",
         type=str,
@@ -434,7 +362,7 @@ async def main():
         success = await tester.run_all_tests()
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:
-        print("\n\n⚠️  Test interrupted by user")
+        print("\n\n  Test interrupted by user")
         print("Running cleanup...")
 
         try:

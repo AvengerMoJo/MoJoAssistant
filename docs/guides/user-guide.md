@@ -1,6 +1,6 @@
-# OpenCode Manager User Guide
+# Agent Manager User Guide
 
-Welcome to the OpenCode Manager! This guide will help you get started with managing OpenCode projects through the MCP (Model Context Protocol) interface.
+Welcome to the Agent Manager! This guide will help you get started with managing coding agent projects through the MCP (Model Context Protocol) interface.
 
 ---
 
@@ -54,16 +54,19 @@ Welcome to the OpenCode Manager! This guide will help you get started with manag
 
 1. **Start a project**
    ```
-   Use tool: opencode_project_start
+   Use tool: agent_start
    Parameters:
-     git_url: git@github.com:user/repo.git
+     agent_type: "opencode"
+     identifier: "git@github.com:user/repo.git"
    ```
 
 2. **Get the SSH deploy key**
    ```
-   Use tool: opencode_get_deploy_key
+   Use tool: agent_action
    Parameters:
-     git_url: git@github.com:user/repo.git
+     agent_type: "opencode"
+     action: "get_deploy_key"
+     params: { git_url: "git@github.com:user/repo.git" }
    ```
 
 3. **Add the key to GitHub**
@@ -74,9 +77,10 @@ Welcome to the OpenCode Manager! This guide will help you get started with manag
 
 4. **Verify the project is running**
    ```
-   Use tool: opencode_project_status
+   Use tool: agent_status
    Parameters:
-     git_url: git@github.com:user/repo.git
+     agent_type: "opencode"
+     identifier: "git@github.com:user/repo.git"
    ```
 
 ---
@@ -155,14 +159,14 @@ git@github.com:user/my-app.git
 
 1. **Start the project**
    ```
-   Tool: opencode_project_start
-   Input: git_url = "git@github.com:user/repo.git"
+   Tool: agent_start
+   Input: agent_type = "opencode", identifier = "git@github.com:user/repo.git"
    ```
 
 2. **Get the deploy key**
    ```
-   Tool: opencode_get_deploy_key
-   Input: git_url = "git@github.com:user/repo.git"
+   Tool: agent_action
+   Input: agent_type = "opencode", action = "get_deploy_key", params = { git_url: "git@github.com:user/repo.git" }
    ```
 
 3. **Add key to GitHub**
@@ -172,8 +176,8 @@ git@github.com:user/my-app.git
 
 4. **Verify running**
    ```
-   Tool: opencode_project_status
-   Input: git_url = "git@github.com:user/repo.git"
+   Tool: agent_status
+   Input: agent_type = "opencode", identifier = "git@github.com:user/repo.git"
    ```
 
 **Result:** OpenCode server running on auto-assigned port, ready to use!
@@ -186,17 +190,20 @@ git@github.com:user/my-app.git
 
 1. **Create a sandbox**
    ```
-   Tool: opencode_sandbox_create
+   Tool: agent_action
    Input:
-     git_url: "git@github.com:user/repo.git"
-     name: "feature-auth"
-     branch: "feature/authentication"
+     agent_type: "opencode"
+     action: "sandbox_create"
+     params: { git_url: "git@github.com:user/repo.git", name: "feature-auth", branch: "feature/authentication" }
    ```
 
 2. **List all sandboxes**
    ```
-   Tool: opencode_sandbox_list
-   Input: git_url = "git@github.com:user/repo.git"
+   Tool: agent_action
+   Input:
+     agent_type: "opencode"
+     action: "sandbox_list"
+     params: { git_url: "git@github.com:user/repo.git" }
    ```
 
 3. **Work in the sandbox**
@@ -206,10 +213,11 @@ git@github.com:user/my-app.git
 
 4. **Clean up when done**
    ```
-   Tool: opencode_sandbox_delete
+   Tool: agent_action
    Input:
-     git_url: "git@github.com:user/repo.git"
-     name: "feature-auth"
+     agent_type: "opencode"
+     action: "sandbox_delete"
+     params: { git_url: "git@github.com:user/repo.git", name: "feature-auth" }
    ```
 
 **Tips:**
@@ -225,14 +233,15 @@ git@github.com:user/my-app.git
 
 1. **Start multiple projects**
    ```
-   opencode_project_start(git_url: "git@github.com:user/frontend.git")
-   opencode_project_start(git_url: "git@github.com:user/backend.git")
-   opencode_project_start(git_url: "git@github.com:user/mobile.git")
+   agent_start(agent_type: "opencode", identifier: "git@github.com:user/frontend.git")
+   agent_start(agent_type: "opencode", identifier: "git@github.com:user/backend.git")
+   agent_start(agent_type: "opencode", identifier: "git@github.com:user/mobile.git")
    ```
 
 2. **List all projects**
    ```
-   Tool: opencode_project_list
+   Tool: agent_list
+   Input: agent_type = "opencode"
    Returns: All projects with status, ports, directories
    ```
 
@@ -243,14 +252,14 @@ git@github.com:user/my-app.git
 
 4. **Stop unused projects**
    ```
-   Tool: opencode_project_stop
-   Input: git_url = "git@github.com:user/frontend.git"
+   Tool: agent_stop
+   Input: agent_type = "opencode", identifier = "git@github.com:user/frontend.git"
    ```
 
 **Resource Management:**
 - Each project uses ~200-500 MB RAM
 - Stop projects you're not actively using
-- Use `opencode_project_list` to see what's running
+- Use `agent_list` with `agent_type: "opencode"` to see what's running
 
 ---
 
@@ -260,7 +269,8 @@ git@github.com:user/my-app.git
 
 1. **Detect duplicates**
    ```
-   Tool: opencode_detect_duplicates
+   Tool: agent_action
+   Input: agent_type = "opencode", action = "detect_duplicates"
 
    Shows if same repository is running multiple times
    Recommends which instance to keep
@@ -268,7 +278,8 @@ git@github.com:user/my-app.git
 
 2. **Clean up orphaned processes**
    ```
-   Tool: opencode_cleanup_orphaned
+   Tool: agent_action
+   Input: agent_type = "opencode", action = "cleanup_orphaned"
 
    Finds processes marked as running but actually crashed
    Automatically updates state
@@ -276,8 +287,8 @@ git@github.com:user/my-app.git
 
 3. **Stop all projects**
    ```
-   Get list: opencode_project_list
-   For each: opencode_project_stop(git_url)
+   Get list: agent_list(agent_type: "opencode")
+   For each: agent_stop(agent_type: "opencode", identifier: git_url)
    ```
 
 ---
@@ -286,11 +297,12 @@ git@github.com:user/my-app.git
 
 ### Project Lifecycle (6 tools)
 
-#### `opencode_project_start`
+#### `agent_start`
 Start an OpenCode instance for a git repository.
 
 **Parameters:**
-- `git_url` (required): Git repository URL
+- `agent_type` (required): `"opencode"`
+- `identifier` (required): Git repository URL
 
 **Returns:**
 - `status`: "success" or "error"
@@ -303,17 +315,19 @@ Start an OpenCode instance for a git repository.
 **Example:**
 ```json
 {
-  "git_url": "https://github.com/anthropics/anthropic-quickstarts"
+  "agent_type": "opencode",
+  "identifier": "https://github.com/anthropics/anthropic-quickstarts"
 }
 ```
 
 ---
 
-#### `opencode_project_status`
+#### `agent_status`
 Get status of a project.
 
 **Parameters:**
-- `git_url` (required): Git repository URL
+- `agent_type` (required): `"opencode"`
+- `identifier` (required): Git repository URL
 
 **Returns:**
 - Project status (running/stopped)
@@ -323,11 +337,12 @@ Get status of a project.
 
 ---
 
-#### `opencode_project_stop`
+#### `agent_stop`
 Stop a running project.
 
 **Parameters:**
-- `git_url` (required): Git repository URL
+- `agent_type` (required): `"opencode"`
+- `identifier` (required): Git repository URL
 
 **Returns:**
 - Success/failure status
@@ -337,11 +352,12 @@ Stop a running project.
 
 ---
 
-#### `opencode_project_restart`
+#### `agent_restart`
 Restart a project.
 
 **Parameters:**
-- `git_url` (required): Git repository URL
+- `agent_type` (required): `"opencode"`
+- `identifier` (required): Git repository URL
 
 **Returns:**
 - New port (may change on restart)
@@ -349,23 +365,25 @@ Restart a project.
 
 ---
 
-#### `opencode_project_destroy`
+#### `agent_destroy`
 Completely remove a project (stops and deletes files).
 
 **Parameters:**
-- `git_url` (required): Git repository URL
+- `agent_type` (required): `"opencode"`
+- `identifier` (required): Git repository URL
 
 **Returns:**
 - Success/failure status
 
-**⚠️ Warning:** This deletes all project files! Use with caution.
+**Warning:** This deletes all project files! Use with caution.
 
 ---
 
-#### `opencode_project_list`
+#### `agent_list`
 List all projects.
 
-**Parameters:** None
+**Parameters:**
+- `agent_type` (required): `"opencode"`
 
 **Returns:**
 - Array of projects with:
@@ -377,16 +395,19 @@ List all projects.
 
 ---
 
-### Sandbox Management (4 tools)
+### Sandbox Management (via `agent_action`)
 
-#### `opencode_sandbox_create`
+#### `agent_action` — sandbox_create
 Create a git worktree (sandbox).
 
 **Parameters:**
-- `git_url` (required): Git repository URL
-- `name` (required): Worktree name (unique per project)
-- `branch` (optional): Branch to checkout
-- `start_command` (optional): Command to run after creation
+- `agent_type` (required): `"opencode"`
+- `action` (required): `"sandbox_create"`
+- `params` (required):
+  - `git_url` (required): Git repository URL
+  - `name` (required): Worktree name (unique per project)
+  - `branch` (optional): Branch to checkout
+  - `start_command` (optional): Command to run after creation
 
 **Returns:**
 - Worktree details (name, path, branch)
@@ -394,56 +415,72 @@ Create a git worktree (sandbox).
 **Example:**
 ```json
 {
-  "git_url": "git@github.com:user/repo.git",
-  "name": "feature-auth",
-  "branch": "feature/authentication"
+  "agent_type": "opencode",
+  "action": "sandbox_create",
+  "params": {
+    "git_url": "git@github.com:user/repo.git",
+    "name": "feature-auth",
+    "branch": "feature/authentication"
+  }
 }
 ```
 
 ---
 
-#### `opencode_sandbox_list`
+#### `agent_action` — sandbox_list
 List all sandboxes for a project.
 
 **Parameters:**
-- `git_url` (required): Git repository URL
+- `agent_type` (required): `"opencode"`
+- `action` (required): `"sandbox_list"`
+- `params` (required):
+  - `git_url` (required): Git repository URL
 
 **Returns:**
 - Array of worktrees with paths and branches
 
 ---
 
-#### `opencode_sandbox_delete`
+#### `agent_action` — sandbox_delete
 Delete a sandbox.
 
 **Parameters:**
-- `git_url` (required): Git repository URL
-- `name` (required): Worktree name
+- `agent_type` (required): `"opencode"`
+- `action` (required): `"sandbox_delete"`
+- `params` (required):
+  - `git_url` (required): Git repository URL
+  - `name` (required): Worktree name
 
 **Returns:**
 - Success/failure status
 
 ---
 
-#### `opencode_sandbox_reset`
+#### `agent_action` — sandbox_reset
 Reset a sandbox to clean state.
 
 **Parameters:**
-- `git_url` (required): Git repository URL
-- `name` (required): Worktree name
+- `agent_type` (required): `"opencode"`
+- `action` (required): `"sandbox_reset"`
+- `params` (required):
+  - `git_url` (required): Git repository URL
+  - `name` (required): Worktree name
 
 **Returns:**
 - Success/failure status
 
 ---
 
-### SSH & Configuration (3 tools)
+### SSH & Configuration (via `agent_action`)
 
-#### `opencode_get_deploy_key`
+#### `agent_action` — get_deploy_key
 Get SSH public key for a repository.
 
 **Parameters:**
-- `git_url` (required): Git repository URL
+- `agent_type` (required): `"opencode"`
+- `action` (required): `"get_deploy_key"`
+- `params` (required):
+  - `git_url` (required): Git repository URL
 
 **Returns:**
 - `public_key`: SSH public key content
@@ -458,10 +495,12 @@ Get SSH public key for a repository.
 
 ---
 
-#### `opencode_llm_config`
+#### `agent_action` — llm_config
 Get current LLM configuration.
 
-**Parameters:** None
+**Parameters:**
+- `agent_type` (required): `"opencode"`
+- `action` (required): `"llm_config"`
 
 **Returns:**
 - Current model settings
@@ -469,23 +508,28 @@ Get current LLM configuration.
 
 ---
 
-#### `opencode_llm_set_model`
+#### `agent_action` — llm_set_model
 Set the default LLM model.
 
 **Parameters:**
-- `model` (required): Model name (e.g., "claude-opus-4")
+- `agent_type` (required): `"opencode"`
+- `action` (required): `"llm_set_model"`
+- `params` (required):
+  - `model` (required): Model name (e.g., "claude-opus-4")
 
 **Returns:**
 - Success/failure status
 
 ---
 
-### Diagnostic Tools (2 tools)
+### Diagnostic Tools (via `agent_action`)
 
-#### `opencode_detect_duplicates`
+#### `agent_action` — detect_duplicates
 Find duplicate projects (same repository running multiple times).
 
-**Parameters:** None
+**Parameters:**
+- `agent_type` (required): `"opencode"`
+- `action` (required): `"detect_duplicates"`
 
 **Returns:**
 - List of duplicates
@@ -498,10 +542,12 @@ Find duplicate projects (same repository running multiple times).
 
 ---
 
-#### `opencode_cleanup_orphaned`
+#### `agent_action` — cleanup_orphaned
 Clean up orphaned processes.
 
-**Parameters:** None
+**Parameters:**
+- `agent_type` (required): `"opencode"`
+- `action` (required): `"cleanup_orphaned"`
 
 **Returns:**
 - List of orphaned processes
@@ -524,8 +570,8 @@ Clean up orphaned processes.
 
 **Solutions:**
 1. Check the git_url is correct (case-sensitive)
-2. List all projects: `opencode_project_list`
-3. Start the project if needed: `opencode_project_start`
+2. List all projects: `agent_list` with `agent_type: "opencode"`
+3. Start the project if needed: `agent_start` with `agent_type: "opencode"`
 
 ---
 
@@ -534,7 +580,7 @@ Clean up orphaned processes.
 **Problem:** OpenCode can't clone the repository.
 
 **Solutions:**
-1. Get the deploy key: `opencode_get_deploy_key`
+1. Get the deploy key: `agent_action` with `action: "get_deploy_key"`
 2. Add it to GitHub: Settings → Deploy keys
 3. Enable write access if you need to push
 4. Test SSH: `ssh -T git@github.com`
@@ -585,9 +631,9 @@ Clean up orphaned processes.
 **Problem:** Trying to create a worktree with existing name.
 
 **Solutions:**
-1. List existing: `opencode_sandbox_list`
+1. List existing: `agent_action` with `action: "sandbox_list"`
 2. Use a different name
-3. Delete old worktree if not needed: `opencode_sandbox_delete`
+3. Delete old worktree if not needed: `agent_action` with `action: "sandbox_delete"`
 
 ---
 
@@ -595,14 +641,14 @@ Clean up orphaned processes.
 
 1. **Check status first**
    ```
-   opencode_project_status(git_url)
-   opencode_project_list()
+   agent_status(agent_type: "opencode", identifier: git_url)
+   agent_list(agent_type: "opencode")
    ```
 
 2. **Run diagnostics**
    ```
-   opencode_detect_duplicates()
-   opencode_cleanup_orphaned()
+   agent_action(agent_type: "opencode", action: "detect_duplicates")
+   agent_action(agent_type: "opencode", action: "cleanup_orphaned")
    ```
 
 3. **Check logs**
@@ -634,23 +680,23 @@ Clean up orphaned processes.
 **Stop unused projects:**
 ```
 # Before starting work:
-opencode_project_list()
+agent_list(agent_type: "opencode")
 
 # Stop what you're not using:
-opencode_project_stop(git_url: "...")
+agent_stop(agent_type: "opencode", identifier: "...")
 ```
 
 **Clean up sandboxes:**
 ```
 # After merging a feature:
-opencode_sandbox_delete(git_url, name: "feature-xyz")
+agent_action(agent_type: "opencode", action: "sandbox_delete", params: { git_url: "...", name: "feature-xyz" })
 ```
 
 **Regular maintenance:**
 ```
 # Weekly/monthly:
-opencode_detect_duplicates()
-opencode_cleanup_orphaned()
+agent_action(agent_type: "opencode", action: "detect_duplicates")
+agent_action(agent_type: "opencode", action: "cleanup_orphaned")
 ```
 
 ### Security
@@ -686,22 +732,30 @@ opencode_cleanup_orphaned()
 
 ```
 # 1. Start the project
-opencode_project_start(git_url: "git@github.com:company/app.git")
+agent_start(agent_type: "opencode", identifier: "git@github.com:company/app.git")
 
 # 2. Create sandbox for feature
-opencode_sandbox_create(
-  git_url: "git@github.com:company/app.git",
-  name: "feature-payment",
-  branch: "feature/payment-integration"
+agent_action(
+  agent_type: "opencode",
+  action: "sandbox_create",
+  params: {
+    git_url: "git@github.com:company/app.git",
+    name: "feature-payment",
+    branch: "feature/payment-integration"
+  }
 )
 
 # 3. Work on the feature in OpenCode
 # (OpenCode automatically uses the sandbox)
 
 # 4. After merging, clean up
-opencode_sandbox_delete(
-  git_url: "git@github.com:company/app.git",
-  name: "feature-payment"
+agent_action(
+  agent_type: "opencode",
+  action: "sandbox_delete",
+  params: {
+    git_url: "git@github.com:company/app.git",
+    name: "feature-payment"
+  }
 )
 ```
 
@@ -709,18 +763,22 @@ opencode_sandbox_delete(
 
 ```
 # 1. List projects to find the right one
-opencode_project_list()
+agent_list(agent_type: "opencode")
 
 # 2. Create sandbox for investigation
-opencode_sandbox_create(
-  git_url: "git@github.com:company/app.git",
-  name: "debug-issue-123",
-  branch: "main"  # Start from main
+agent_action(
+  agent_type: "opencode",
+  action: "sandbox_create",
+  params: {
+    git_url: "git@github.com:company/app.git",
+    name: "debug-issue-123",
+    branch: "main"
+  }
 )
 
 # 3. Investigate and fix in sandbox
 # 4. When done, either keep or delete
-opencode_sandbox_delete(...)
+agent_action(agent_type: "opencode", action: "sandbox_delete", params: { git_url: "...", name: "debug-issue-123" })
 ```
 
 ### Example 3: Multi-Project Setup
@@ -728,19 +786,23 @@ opencode_sandbox_delete(...)
 ```
 # Morning routine:
 # 1. Start all your projects
-opencode_project_start(git_url: "git@github.com:company/frontend.git")
-opencode_project_start(git_url: "git@github.com:company/backend.git")
-opencode_project_start(git_url: "git@github.com:company/docs.git")
+agent_start(agent_type: "opencode", identifier: "git@github.com:company/frontend.git")
+agent_start(agent_type: "opencode", identifier: "git@github.com:company/backend.git")
+agent_start(agent_type: "opencode", identifier: "git@github.com:company/docs.git")
 
 # 2. Create sandboxes for today's work
-opencode_sandbox_create(
-  git_url: "git@github.com:company/frontend.git",
-  name: "sprint-tasks"
+agent_action(
+  agent_type: "opencode",
+  action: "sandbox_create",
+  params: {
+    git_url: "git@github.com:company/frontend.git",
+    name: "sprint-tasks"
+  }
 )
 
 # Evening routine:
 # 3. Stop what you're not using overnight
-opencode_project_stop(git_url: "git@github.com:company/docs.git")
+agent_stop(agent_type: "opencode", identifier: "git@github.com:company/docs.git")
 ```
 
 ---
@@ -779,7 +841,7 @@ These are automatically managed - you shouldn't need to edit them manually.
 
 ### Phase 4
 - SSH deploy key management
-- `opencode_get_deploy_key` tool
+- `agent_action` with `action: "get_deploy_key"`
 
 ### Phase 3
 - MCP tools renamed (git_url-based)
@@ -796,4 +858,4 @@ These are automatically managed - you shouldn't need to edit them manually.
 
 ---
 
-**Happy coding with OpenCode Manager!** 🚀
+**Happy coding with Agent Manager!**
