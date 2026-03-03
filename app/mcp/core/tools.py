@@ -498,8 +498,8 @@ class ToolRegistry:
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
             {
-                "name": "add_git_repository",
-                "description": "Register a private git repository for code analysis and retrieval. When to use: Use when you want to give the memory system access to a private codebase for future reference and understanding. How it works: Clones repository using SSH key authentication and stores it locally for file access. Why useful: Enables code-aware conversations and allows storing code insights in memory. IMPORTANT: SSH key must NOT have a passphrase. If your key has a passphrase, remove it first with: ssh-keygen -p -f <key_path>",
+                "name": "knowledge_add_repo",
+                "description": "Register a git repository in the knowledge base for code analysis and retrieval. When to use: Use when you want to give the memory system access to a codebase for future reference and understanding. How it works: Clones repository using SSH key authentication and stores it locally for file access. Why useful: Enables code-aware conversations and allows storing code insights in memory. IMPORTANT: SSH key must NOT have a passphrase. If your key has a passphrase, remove it first with: ssh-keygen -p -f <key_path>",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -528,8 +528,8 @@ class ToolRegistry:
                 },
             },
             {
-                "name": "get_git_file_content",
-                "description": "Retrieve file content from a registered git repository. When to use: Use when you need to read the actual code content of specific files for analysis or reference. How it works: Retrieves current or historical file content directly from the git repository. Why useful: Provides access to actual code for detailed analysis and understanding.",
+                "name": "knowledge_get_file",
+                "description": "Retrieve file content from a repository registered in the knowledge base. When to use: Use when you need to read the actual code content of specific files for analysis or reference. How it works: Retrieves current or historical file content directly from the repository. Why useful: Provides access to actual code for detailed analysis and understanding.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -553,8 +553,8 @@ class ToolRegistry:
                 },
             },
             {
-                "name": "list_git_repositories",
-                "description": "List all registered git repositories. When to use: Use to see which repositories are available for code analysis and their current status. How it works: Shows all registered repositories with their URLs, branches, and status. Why useful: Helps you understand what codebases are available for analysis.",
+                "name": "knowledge_list_repos",
+                "description": "List all repositories registered in the knowledge base. When to use: Use to see which repositories are available for code analysis and their current status. How it works: Shows all registered repositories with their URLs, branches, and status. Why useful: Helps you understand what codebases are available for analysis.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
             # Unified Agent Manager Tools (replaces opencode_* and claude_code_* tools)
@@ -1005,11 +1005,11 @@ class ToolRegistry:
             ]:
                 categories["knowledge"].append(tool)
             elif tool_name in [
-                "add_git_repository",
-                "get_git_file_content",
-                "list_git_repositories",
+                "knowledge_add_repo",
+                "knowledge_get_file",
+                "knowledge_list_repos",
             ]:
-                categories["git"].append(tool)
+                categories["knowledge"].append(tool)
             elif tool_name in [
                 "toggle_multi_model",
                 "web_search",
@@ -1038,9 +1038,9 @@ class ToolRegistry:
             "list_recent_conversations": "medium",
             "web_search": "medium",
             "get_current_day": "medium",
-            "add_git_repository": "medium",
-            "get_git_file_content": "medium",
-            "list_git_repositories": "medium",
+            "knowledge_add_repo": "medium",
+            "knowledge_get_file": "medium",
+            "knowledge_list_repos": "medium",
             "remove_conversation_message": "low",
             "remove_recent_conversations": "low",
             "list_recent_documents": "low",
@@ -1278,12 +1278,12 @@ class ToolRegistry:
             return await self._execute_get_current_day(args)
         elif name == "get_current_time":
             return await self._execute_get_current_time(args)
-        elif name == "add_git_repository":
-            return await self._execute_add_git_repository(args)
-        elif name == "get_git_file_content":
-            return await self._execute_get_git_file_content(args)
-        elif name == "list_git_repositories":
-            return await self._execute_list_git_repositories(args)
+        elif name == "knowledge_add_repo":
+            return await self._execute_knowledge_add_repo(args)
+        elif name == "knowledge_get_file":
+            return await self._execute_knowledge_get_file(args)
+        elif name == "knowledge_list_repos":
+            return await self._execute_knowledge_list_repos(args)
         # Unified Agent Manager Tools
         elif name == "agent_list_types":
             return await self._execute_agent_list_types(args)
@@ -1423,7 +1423,7 @@ class ToolRegistry:
             if not repo_exists:
                 return {
                     "status": "warning",
-                    "message": f"Repository '{repo_name}' not registered. Register it first with add_git_repository.",
+                    "message": f"Repository '{repo_name}' not registered. Register it first with knowledge_add_repo.",
                 }
 
             # Validate file hashes if provided
@@ -1638,8 +1638,8 @@ class ToolRegistry:
         now = datetime.now()
         return {"time": now.strftime("%H:%M:%S"), "timezone": now.astimezone().tzname()}
 
-    async def _execute_add_git_repository(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute add git repository"""
+    async def _execute_knowledge_add_repo(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute knowledge_add_repo"""
         repo_name = args.get("repo_name")
         repo_url = args.get("repo_url")
         ssh_key_path = args.get("ssh_key_path")
@@ -1653,10 +1653,10 @@ class ToolRegistry:
         except Exception as e:
             return {"status": "error", "message": f"Failed to add repository: {str(e)}"}
 
-    async def _execute_get_git_file_content(
+    async def _execute_knowledge_get_file(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Execute get git file content"""
+        """Execute knowledge_get_file"""
         repo_name = args.get("repo_name")
         file_path = args.get("file_path")
         git_hash = args.get("git_hash")
@@ -1670,10 +1670,10 @@ class ToolRegistry:
                 "message": f"Failed to get file content: {str(e)}",
             }
 
-    async def _execute_list_git_repositories(
+    async def _execute_knowledge_list_repos(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Execute list git repositories"""
+        """Execute knowledge_list_repos"""
         try:
             result = self.git_service.list_repositories()
             return result
