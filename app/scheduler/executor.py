@@ -37,6 +37,7 @@ class TaskExecutor:
         self.logger = logger
         self.llm_config_path = llm_config_path or "config/llm_config.json"
         self._dreaming_pipeline = None
+        self._cached_quality_level = None
 
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
@@ -77,9 +78,14 @@ class TaskExecutor:
             self._log(f"Error executing task {task.id}: {e}", "error")
             return TaskResult(success=False, error_message=str(e))
 
+    def reset_pipeline(self) -> None:
+        """Reset cached dreaming pipeline so next call rebuilds it with fresh config"""
+        self._dreaming_pipeline = None
+        self._cached_quality_level = None
+
     def _get_dreaming_pipeline(self, quality_level: str = "basic") -> DreamingPipeline:
-        """Get or initialize dreaming pipeline"""
-        if self._dreaming_pipeline is None:
+        """Get or initialize dreaming pipeline, rebuilding if quality_level changed"""
+        if self._dreaming_pipeline is None or self._cached_quality_level != quality_level:
             # Initialize LLM interface
             llm = LLMInterface(config_file=self.llm_config_path)
 
@@ -87,6 +93,7 @@ class TaskExecutor:
             self._dreaming_pipeline = DreamingPipeline(
                 llm_interface=llm, quality_level=quality_level, logger=self.logger
             )
+            self._cached_quality_level = quality_level
 
         return self._dreaming_pipeline
 
@@ -401,8 +408,22 @@ class TaskExecutor:
             self._log(f"Error executing agent task {task.id}: {e}", "error")
             return TaskResult(success=False, error_message=str(e))
 
+    async def _execute_custom(self, task: Task) -> TaskResult:
+        """
+        Execute custom task (user-defined shell command)
+
+        Task config should contain:
+        - command: Shell command to execute
+        """
+        command = task.config.get("command")
+        if not command:
+            return TaskResult(
+                success=False, error_message="Missing 'command' in task config"
+            )
+
+        self._log(f"Executing custom command: {command}")
+
         try:
-            # Execute shell command
             process = await asyncio.create_subprocess_shell(
                 command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
@@ -415,6 +436,7 @@ class TaskExecutor:
                     metrics={
                         "return_code": process.returncode,
                         "stdout_length": len(stdout),
+                        "stdout": stdout.decode()[:1000],
                     },
                 )
             else:
