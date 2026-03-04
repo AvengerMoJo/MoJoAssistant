@@ -27,7 +27,9 @@ class TaskExecutor:
     - Agentic tasks (autonomous LLM loop)
     """
 
-    def __init__(self, logger=None, llm_config_path: Optional[str] = None, memory_service=None):
+    def __init__(
+        self, logger=None, llm_config_path: Optional[str] = None, memory_service=None
+    ):
         """
         Initialize executor
 
@@ -92,7 +94,10 @@ class TaskExecutor:
 
     def _get_dreaming_pipeline(self, quality_level: str = "basic") -> DreamingPipeline:
         """Get or initialize dreaming pipeline, rebuilding if quality_level changed"""
-        if self._dreaming_pipeline is None or self._cached_quality_level != quality_level:
+        if (
+            self._dreaming_pipeline is None
+            or self._cached_quality_level != quality_level
+        ):
             # Initialize LLM interface
             llm = LLMInterface(config_file=self.llm_config_path)
 
@@ -215,9 +220,7 @@ class TaskExecutor:
             return start_minutes <= now_minutes <= end_minutes
         return now_minutes >= start_minutes or now_minutes <= end_minutes
 
-    def _build_automatic_dreaming_input(
-        self, config: dict
-    ) -> Optional[dict]:
+    def _build_automatic_dreaming_input(self, config: dict) -> Optional[dict]:
         """
         Build dreaming input from recent conversation memory for automatic tasks.
         Uses existing multi-model conversation store if available.
@@ -421,36 +424,86 @@ class TaskExecutor:
 
         Task config should contain:
         - command: Shell command to execute
+        - use_atd: Boolean, if True uses atd for service restarts (default: False)
+        - at_delay: Delay in minutes for atd job (default: 1)
+
+        When use_atd=True, command is scheduled via 'at' daemon,
+        which is more reliable for service restarts that would kill the scheduler.
         """
         command = task.config.get("command")
+        use_atd = task.config.get("use_atd", False)
+        at_delay = task.config.get("at_delay", 1)
+
         if not command:
             return TaskResult(
                 success=False, error_message="Missing 'command' in task config"
             )
 
-        self._log(f"Executing custom command: {command}")
+        self._log(f"Executing custom command: {command} (use_atd={use_atd})")
 
         try:
-            process = await asyncio.create_subprocess_shell(
-                command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout, stderr = await process.communicate()
-
-            if process.returncode == 0:
-                return TaskResult(
-                    success=True,
-                    metrics={
-                        "return_code": process.returncode,
-                        "stdout_length": len(stdout),
-                        "stdout": stdout.decode()[:1000],
-                    },
+            if use_atd:
+                # Schedule via atd for service restarts
+                # This ensures command runs even if MCP server is killed
+                self._log(f"Scheduling command via atd with {at_delay} minute delay")
+                process = await asyncio.create_subprocess_shell(
+                    f'echo "{command}" | at now + {at_delay}min',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
+                stdout, stderr = await process.communicate()
+
+                if process.returncode == 0:
+                    at_job_id = None
+                    output = stdout.decode()
+                    # Extract at job ID from output like "job 42 at ..."
+                    if "job" in output:
+                        try:
+                            at_job_id = output.split("job ")[1].split()[0]
+                        except:
+                            pass
+
+                    return TaskResult(
+                        success=True,
+                        metrics={
+                            "return_code": process.returncode,
+                            "scheduled_via": "atd",
+                            "at_job_id": at_job_id,
+                            "at_delay_minutes": at_delay,
+                            "at_output": output,
+                        },
+                    )
+                else:
+                    return TaskResult(
+                        success=False,
+                        error_message=stderr.decode()
+                        if stderr
+                        else "Failed to schedule atd job",
+                    )
             else:
-                return TaskResult(
-                    success=False,
-                    error_message=stderr.decode() if stderr else "Command failed",
+                # Execute synchronously (normal behavior)
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
+
+                stdout, stderr = await process.communicate()
+
+                if process.returncode == 0:
+                    return TaskResult(
+                        success=True,
+                        metrics={
+                            "return_code": process.returncode,
+                            "stdout_length": len(stdout),
+                            "stdout": stdout.decode()[:1000],
+                        },
+                    )
+                else:
+                    return TaskResult(
+                        success=False,
+                        error_message=stderr.decode() if stderr else "Command failed",
+                    )
 
         except Exception as e:
             return TaskResult(

@@ -15,6 +15,7 @@ from app.git.git_service import GitService
 def _is_llm_model_path(path: str) -> bool:
     """Check if a dot-path targets a model field under api_models (e.g. 'api_models.lmstudio.model')."""
     import fnmatch
+
     return fnmatch.fnmatch(path, "api_models.*.model")
 
 
@@ -45,6 +46,7 @@ class ToolRegistry:
 
         # Initialize unified Agent Registry (replaces separate manager init)
         from app.mcp.agents.registry import AgentRegistry
+
         self.agent_registry = AgentRegistry(logger=logger)
 
         # Initialize SSE notifier for real-time task events
@@ -56,7 +58,8 @@ class ToolRegistry:
         from app.scheduler.core import Scheduler
 
         self.scheduler = Scheduler(
-            logger=logger, memory_service=memory_service,
+            logger=logger,
+            memory_service=memory_service,
             sse_notifier=self._sse_notifier,
         )
         self.scheduler_thread = None
@@ -87,6 +90,27 @@ class ToolRegistry:
                 "description": "LLM resource pool for agentic tasks - endpoints, rate limits, budgets",
                 "sensitive_keys": ["resources.*.api_key_env"],
                 "on_change": self._on_resource_pool_config_change,
+            },
+            "agentic_tools": {
+                "file": "config/agentic_tools.json",
+                "description": "Dynamic tool registry for agentic LLM tasks - tools available to AI agents during execution. AI can add/remove tools with policy enforcement and automatic rollback.",
+                "sensitive_keys": [],
+                "ai_writable": True,
+                "on_change": self._on_agentic_tools_change,
+            },
+            "agentic_prompts": {
+                "file": "config/agentic_prompts.json",
+                "description": "Planning prompts for agentic LLM tasks - workflow prompts that guide AI agent behavior. AI can add/update prompts with versioning and rollback support.",
+                "sensitive_keys": [],
+                "ai_writable": True,
+                "on_change": self._on_agentic_prompts_change,
+            },
+            "policy": {
+                "file": "config/safety_policy.json",
+                "description": "Immutable safety rules for agentic tasks - limits what AI can do. AI can READ this module but CANNOT modify it (read-only for safety).",
+                "sensitive_keys": [],
+                "ai_writable": False,
+                "on_change": None,
             },
         }
 
@@ -234,7 +258,11 @@ class ToolRegistry:
         needs to run continuously in the background.
         """
         # Check if scheduler is actually running (not just thread alive)
-        if self.scheduler_thread and self.scheduler_thread.is_alive() and self.scheduler.running:
+        if (
+            self.scheduler_thread
+            and self.scheduler_thread.is_alive()
+            and self.scheduler.running
+        ):
             self._log("Scheduler daemon already running")
             return True
 
@@ -259,14 +287,18 @@ class ToolRegistry:
                 loop.run_until_complete(self.scheduler.start())
 
                 if self.logger:
-                    self.logger.info("[ToolRegistry] Scheduler daemon thread exiting normally")
+                    self.logger.info(
+                        "[ToolRegistry] Scheduler daemon thread exiting normally"
+                    )
             except Exception as e:
                 if self.logger:
                     self.logger.error(f"[ToolRegistry] Scheduler daemon error: {e}")
                     import traceback
+
                     self.logger.error(traceback.format_exc())
                 else:
                     import traceback
+
                     print(f"[ToolRegistry] Scheduler daemon error: {e}")
                     traceback.print_exc()
             finally:
@@ -276,7 +308,7 @@ class ToolRegistry:
         self.scheduler_thread = threading.Thread(
             target=run_scheduler,
             name="SchedulerDaemon",
-            daemon=True  # Dies when main thread exits
+            daemon=True,  # Dies when main thread exits
         )
         self.scheduler_thread.start()
 
@@ -285,6 +317,7 @@ class ToolRegistry:
 
         # Give thread a moment to actually start and set running flag
         import time
+
         time.sleep(1.0)
 
         return True
@@ -292,7 +325,9 @@ class ToolRegistry:
     def _stop_scheduler_daemon(self):
         """Stop scheduler gracefully"""
         # Check if scheduler is marked as running (even if thread has already died)
-        was_running = self.scheduler.running or (self.scheduler_thread and self.scheduler_thread.is_alive())
+        was_running = self.scheduler.running or (
+            self.scheduler_thread and self.scheduler_thread.is_alive()
+        )
 
         if not was_running:
             self._log("Scheduler daemon not running")
@@ -760,7 +795,13 @@ class ToolRegistry:
                         },
                         "task_type": {
                             "type": "string",
-                            "enum": ["dreaming", "scheduled", "agent", "custom", "agentic"],
+                            "enum": [
+                                "dreaming",
+                                "scheduled",
+                                "agent",
+                                "custom",
+                                "agentic",
+                            ],
                             "description": "Type of task (dreaming=memory consolidation, scheduled=calendar event, agent=OpenCode/OpenClaw, custom=shell command, agentic=autonomous LLM agent loop)",
                         },
                         "schedule": {
@@ -796,7 +837,13 @@ class ToolRegistry:
                     "properties": {
                         "status": {
                             "type": "string",
-                            "enum": ["pending", "running", "completed", "failed", "cancelled"],
+                            "enum": [
+                                "pending",
+                                "running",
+                                "completed",
+                                "failed",
+                                "cancelled",
+                            ],
                             "description": "Filter by task status",
                         },
                         "priority": {
@@ -1837,9 +1884,7 @@ class ToolRegistry:
         except Exception as e:
             return {"status": "error", "message": f"Failed to add repository: {str(e)}"}
 
-    async def _execute_knowledge_get_file(
-        self, args: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    async def _execute_knowledge_get_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute knowledge_get_file"""
         repo_name = args.get("repo_name")
         file_path = args.get("file_path")
@@ -1890,7 +1935,10 @@ class ToolRegistry:
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to start {agent_type} agent: {str(e)}"}
+            return {
+                "status": "error",
+                "message": f"Failed to start {agent_type} agent: {str(e)}",
+            }
 
     async def _execute_agent_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute agent_stop tool"""
@@ -1903,7 +1951,10 @@ class ToolRegistry:
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to stop {agent_type} agent: {str(e)}"}
+            return {
+                "status": "error",
+                "message": f"Failed to stop {agent_type} agent: {str(e)}",
+            }
 
     async def _execute_agent_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute agent_status tool"""
@@ -1916,7 +1967,10 @@ class ToolRegistry:
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to get {agent_type} agent status: {str(e)}"}
+            return {
+                "status": "error",
+                "message": f"Failed to get {agent_type} agent status: {str(e)}",
+            }
 
     async def _execute_agent_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute agent_list tool"""
@@ -1928,7 +1982,10 @@ class ToolRegistry:
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to list {agent_type} agents: {str(e)}"}
+            return {
+                "status": "error",
+                "message": f"Failed to list {agent_type} agents: {str(e)}",
+            }
 
     async def _execute_agent_restart(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute agent_restart tool"""
@@ -1941,7 +1998,10 @@ class ToolRegistry:
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to restart {agent_type} agent: {str(e)}"}
+            return {
+                "status": "error",
+                "message": f"Failed to restart {agent_type} agent: {str(e)}",
+            }
 
     async def _execute_agent_destroy(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute agent_destroy tool"""
@@ -1954,7 +2014,10 @@ class ToolRegistry:
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to destroy {agent_type} agent: {str(e)}"}
+            return {
+                "status": "error",
+                "message": f"Failed to destroy {agent_type} agent: {str(e)}",
+            }
 
     async def _execute_agent_action(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute agent_action tool"""
@@ -1968,7 +2031,10 @@ class ToolRegistry:
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
-            return {"status": "error", "message": f"Failed to execute {agent_type} action '{action}': {str(e)}"}
+            return {
+                "status": "error",
+                "message": f"Failed to execute {agent_type} action '{action}': {str(e)}",
+            }
 
     # ========================================================================
     # Scheduler execution methods
@@ -2012,7 +2078,7 @@ class ToolRegistry:
                 priority=priority,
                 config=config,
                 resources=resources,
-                description=description
+                description=description,
             )
 
             # Add to scheduler
@@ -2022,21 +2088,17 @@ class ToolRegistry:
                 return {
                     "status": "success",
                     "message": f"Task {task_id} added to scheduler",
-                    "task": task.to_dict()
+                    "task": task.to_dict(),
                 }
             else:
-                return {
-                    "status": "error",
-                    "message": f"Task {task_id} already exists"
-                }
+                return {"status": "error", "message": f"Task {task_id} already exists"}
 
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to add task: {str(e)}"
-            }
+            return {"status": "error", "message": f"Failed to add task: {str(e)}"}
 
-    async def _execute_scheduler_list_tasks(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_scheduler_list_tasks(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute scheduler_list_tasks tool"""
         from app.scheduler.models import TaskStatus, TaskPriority
 
@@ -2054,38 +2116,28 @@ class ToolRegistry:
 
             # Get tasks
             tasks = self.scheduler.list_tasks(
-                status=status_filter,
-                priority=priority_filter,
-                limit=limit
+                status=status_filter, priority=priority_filter, limit=limit
             )
 
             # Convert to dict
             tasks_data = [task.to_dict() for task in tasks]
 
-            return {
-                "status": "success",
-                "tasks": tasks_data,
-                "total": len(tasks_data)
-            }
+            return {"status": "success", "tasks": tasks_data, "total": len(tasks_data)}
 
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to list tasks: {str(e)}"
-            }
+            return {"status": "error", "message": f"Failed to list tasks: {str(e)}"}
 
-    async def _execute_scheduler_get_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_scheduler_get_status(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute scheduler_get_status tool"""
         try:
             status = self.scheduler.get_status()
-            return {
-                "status": "success",
-                "scheduler": status
-            }
+            return {"status": "success", "scheduler": status}
         except Exception as e:
             return {
                 "status": "error",
-                "message": f"Failed to get scheduler status: {str(e)}"
+                "message": f"Failed to get scheduler status: {str(e)}",
             }
 
     async def _execute_scheduler_get_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -2095,23 +2147,16 @@ class ToolRegistry:
             task = self.scheduler.get_task(task_id)
 
             if task:
-                return {
-                    "status": "success",
-                    "task": task.to_dict()
-                }
+                return {"status": "success", "task": task.to_dict()}
             else:
-                return {
-                    "status": "error",
-                    "message": f"Task {task_id} not found"
-                }
+                return {"status": "error", "message": f"Task {task_id} not found"}
 
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to get task: {str(e)}"
-            }
+            return {"status": "error", "message": f"Failed to get task: {str(e)}"}
 
-    async def _execute_scheduler_remove_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_scheduler_remove_task(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute scheduler_remove_task tool"""
         try:
             task_id = args.get("task_id")
@@ -2120,25 +2165,21 @@ class ToolRegistry:
             if success:
                 return {
                     "status": "success",
-                    "message": f"Task {task_id} removed from scheduler"
+                    "message": f"Task {task_id} removed from scheduler",
                 }
             else:
-                return {
-                    "status": "error",
-                    "message": f"Task {task_id} not found"
-                }
+                return {"status": "error", "message": f"Task {task_id} not found"}
 
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to remove task: {str(e)}"
-            }
+            return {"status": "error", "message": f"Failed to remove task: {str(e)}"}
 
     # ========================================================================
     # Scheduler Daemon Control execution methods
     # ========================================================================
 
-    async def _execute_scheduler_start_daemon(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_scheduler_start_daemon(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute scheduler_start_daemon tool"""
         try:
             success = self._start_scheduler_daemon()
@@ -2149,21 +2190,25 @@ class ToolRegistry:
                     "message": "Scheduler daemon started",
                     "running": self.scheduler.running,
                     "tick_count": self.scheduler.tick_count,
-                    "thread_alive": self.scheduler_thread.is_alive() if self.scheduler_thread else False
+                    "thread_alive": self.scheduler_thread.is_alive()
+                    if self.scheduler_thread
+                    else False,
                 }
             else:
                 return {
                     "status": "error",
-                    "message": "Scheduler daemon is already running"
+                    "message": "Scheduler daemon is already running",
                 }
 
         except Exception as e:
             return {
                 "status": "error",
-                "message": f"Failed to start scheduler daemon: {str(e)}"
+                "message": f"Failed to start scheduler daemon: {str(e)}",
             }
 
-    async def _execute_scheduler_stop_daemon(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_scheduler_stop_daemon(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute scheduler_stop_daemon tool"""
         try:
             success = self._stop_scheduler_daemon()
@@ -2172,21 +2217,23 @@ class ToolRegistry:
                 return {
                     "status": "success",
                     "message": "Scheduler daemon stopped gracefully",
-                    "running": self.scheduler.running
+                    "running": self.scheduler.running,
                 }
             else:
                 return {
                     "status": "error",
-                    "message": "Scheduler daemon was not running"
+                    "message": "Scheduler daemon was not running",
                 }
 
         except Exception as e:
             return {
                 "status": "error",
-                "message": f"Failed to stop scheduler daemon: {str(e)}"
+                "message": f"Failed to stop scheduler daemon: {str(e)}",
             }
 
-    async def _execute_scheduler_restart_daemon(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_scheduler_restart_daemon(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute scheduler_restart_daemon tool"""
         try:
             success = self._restart_scheduler_daemon()
@@ -2197,24 +2244,30 @@ class ToolRegistry:
                     "message": "Scheduler daemon restarted",
                     "running": self.scheduler.running,
                     "tick_count": self.scheduler.tick_count,
-                    "thread_alive": self.scheduler_thread.is_alive() if self.scheduler_thread else False
+                    "thread_alive": self.scheduler_thread.is_alive()
+                    if self.scheduler_thread
+                    else False,
                 }
             else:
                 return {
                     "status": "error",
-                    "message": "Failed to restart scheduler daemon"
+                    "message": "Failed to restart scheduler daemon",
                 }
 
         except Exception as e:
             return {
                 "status": "error",
-                "message": f"Failed to restart scheduler daemon: {str(e)}"
+                "message": f"Failed to restart scheduler daemon: {str(e)}",
             }
 
-    async def _execute_scheduler_daemon_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_scheduler_daemon_status(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute scheduler_daemon_status tool"""
         try:
-            thread_alive = self.scheduler_thread.is_alive() if self.scheduler_thread else False
+            thread_alive = (
+                self.scheduler_thread.is_alive() if self.scheduler_thread else False
+            )
 
             # Get scheduler statistics
             status = self.scheduler.get_status()
@@ -2224,16 +2277,18 @@ class ToolRegistry:
                 "daemon": {
                     "running": self.scheduler.running,
                     "thread_alive": thread_alive,
-                    "thread_name": self.scheduler_thread.name if self.scheduler_thread else None,
+                    "thread_name": self.scheduler_thread.name
+                    if self.scheduler_thread
+                    else None,
                 },
                 "scheduler": status,
-                "message": f"Scheduler daemon is {'running' if thread_alive and self.scheduler.running else 'stopped'}"
+                "message": f"Scheduler daemon is {'running' if thread_alive and self.scheduler.running else 'stopped'}",
             }
 
         except Exception as e:
             return {
                 "status": "error",
-                "message": f"Failed to get scheduler daemon status: {str(e)}"
+                "message": f"Failed to get scheduler daemon status: {str(e)}",
             }
 
     # ========================================================================
@@ -2255,23 +2310,23 @@ class ToolRegistry:
             from app.dreaming.pipeline import DreamingPipeline
             from app.llm.llm_interface import LLMInterface
 
-            llm = LLMInterface(config_file=self.config.get("llm_config_path", "config/llm_config.json"))
+            llm = LLMInterface(
+                config_file=self.config.get("llm_config_path", "config/llm_config.json")
+            )
 
             pipeline = DreamingPipeline(
-                llm_interface=llm,
-                quality_level=quality_level,
-                logger=self.logger
+                llm_interface=llm, quality_level=quality_level, logger=self.logger
             )
 
             # Process conversation
             results = await pipeline.process_conversation(
                 conversation_id=conversation_id,
                 conversation_text=conversation_text,
-                metadata=metadata
+                metadata=metadata,
             )
 
-            if results.get('status') == 'success':
-                d_stage = results.get('stages', {}).get('D_archive', {})
+            if results.get("status") == "success":
+                d_stage = results.get("stages", {}).get("D_archive", {})
                 lifecycle = pipeline.get_archive_lifecycle(
                     conversation_id=conversation_id,
                     version=d_stage.get("version"),
@@ -2280,35 +2335,37 @@ class ToolRegistry:
                     "status": "success",
                     "conversation_id": conversation_id,
                     "quality_level": quality_level,
-                    "stages": results.get('stages', {}),
+                    "stages": results.get("stages", {}),
                     "version": d_stage.get("version"),
                     "lifecycle": lifecycle,
-                    "message": f"Successfully processed conversation {conversation_id}"
+                    "message": f"Successfully processed conversation {conversation_id}",
                 }
             else:
                 return {
                     "status": "error",
-                    "message": results.get('error', 'Unknown error during processing')
+                    "message": results.get("error", "Unknown error during processing"),
                 }
 
         except Exception as e:
             return {
                 "status": "error",
-                "message": f"Dreaming processing failed: {str(e)}"
+                "message": f"Dreaming processing failed: {str(e)}",
             }
 
-    async def _execute_dreaming_list_archives(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_dreaming_list_archives(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute dreaming_list_archives tool"""
         try:
             from app.dreaming.pipeline import DreamingPipeline
             from app.llm.llm_interface import LLMInterface
 
-            llm = LLMInterface(config_file=self.config.get("llm_config_path", "config/llm_config.json"))
+            llm = LLMInterface(
+                config_file=self.config.get("llm_config_path", "config/llm_config.json")
+            )
 
             pipeline = DreamingPipeline(
-                llm_interface=llm,
-                quality_level="basic",
-                logger=self.logger
+                llm_interface=llm, quality_level="basic", logger=self.logger
             )
 
             archives = pipeline.list_archives()
@@ -2317,16 +2374,15 @@ class ToolRegistry:
                 "status": "success",
                 "archives": archives,
                 "count": len(archives),
-                "message": f"Found {len(archives)} archived conversations"
+                "message": f"Found {len(archives)} archived conversations",
             }
 
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to list archives: {str(e)}"
-            }
+            return {"status": "error", "message": f"Failed to list archives: {str(e)}"}
 
-    async def _execute_dreaming_get_archive(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_dreaming_get_archive(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute dreaming_get_archive tool"""
         try:
             conversation_id = args.get("conversation_id")
@@ -2335,15 +2391,17 @@ class ToolRegistry:
             from app.dreaming.pipeline import DreamingPipeline
             from app.llm.llm_interface import LLMInterface
 
-            llm = LLMInterface(config_file=self.config.get("llm_config_path", "config/llm_config.json"))
-
-            pipeline = DreamingPipeline(
-                llm_interface=llm,
-                quality_level="basic",
-                logger=self.logger
+            llm = LLMInterface(
+                config_file=self.config.get("llm_config_path", "config/llm_config.json")
             )
 
-            archive = pipeline.get_archive(conversation_id=conversation_id, version=version)
+            pipeline = DreamingPipeline(
+                llm_interface=llm, quality_level="basic", logger=self.logger
+            )
+
+            archive = pipeline.get_archive(
+                conversation_id=conversation_id, version=version
+            )
 
             if archive:
                 lifecycle = pipeline.get_archive_lifecycle(
@@ -2355,22 +2413,23 @@ class ToolRegistry:
                     "status": "success",
                     "archive": archive,
                     "lifecycle": lifecycle,
-                    "latest_version": manifest.get("latest_version") if manifest else None,
-                    "message": f"Retrieved archive for {conversation_id}"
+                    "latest_version": manifest.get("latest_version")
+                    if manifest
+                    else None,
+                    "message": f"Retrieved archive for {conversation_id}",
                 }
             else:
                 return {
                     "status": "error",
-                    "message": f"Archive not found for conversation {conversation_id}"
+                    "message": f"Archive not found for conversation {conversation_id}",
                 }
 
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to get archive: {str(e)}"
-            }
+            return {"status": "error", "message": f"Failed to get archive: {str(e)}"}
 
-    async def _execute_dreaming_upgrade_quality(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_dreaming_upgrade_quality(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute dreaming_upgrade_quality tool"""
         try:
             conversation_id = args.get("conversation_id")
@@ -2379,21 +2438,22 @@ class ToolRegistry:
             from app.dreaming.pipeline import DreamingPipeline
             from app.llm.llm_interface import LLMInterface
 
-            llm = LLMInterface(config_file=self.config.get("llm_config_path", "config/llm_config.json"))
+            llm = LLMInterface(
+                config_file=self.config.get("llm_config_path", "config/llm_config.json")
+            )
 
             pipeline = DreamingPipeline(
                 llm_interface=llm,
                 quality_level="basic",  # Will be upgraded
-                logger=self.logger
+                logger=self.logger,
             )
 
             results = await pipeline.upgrade_quality(
-                conversation_id=conversation_id,
-                target_quality=target_quality
+                conversation_id=conversation_id, target_quality=target_quality
             )
 
-            if results.get('status') == 'success':
-                d_stage = results.get('stages', {}).get('D_archive', {})
+            if results.get("status") == "success":
+                d_stage = results.get("stages", {}).get("D_archive", {})
                 lifecycle = pipeline.get_archive_lifecycle(
                     conversation_id=conversation_id,
                     version=d_stage.get("version"),
@@ -2401,24 +2461,21 @@ class ToolRegistry:
                 return {
                     "status": "success",
                     "conversation_id": conversation_id,
-                    "upgraded_from": results.get('upgraded_from'),
-                    "upgraded_to": results.get('upgraded_to'),
-                    "stages": results.get('stages', {}),
+                    "upgraded_from": results.get("upgraded_from"),
+                    "upgraded_to": results.get("upgraded_to"),
+                    "stages": results.get("stages", {}),
                     "version": d_stage.get("version"),
                     "lifecycle": lifecycle,
-                    "message": f"Successfully upgraded {conversation_id} to {target_quality}"
+                    "message": f"Successfully upgraded {conversation_id} to {target_quality}",
                 }
             else:
                 return {
                     "status": "error",
-                    "message": results.get('error', 'Unknown error during upgrade')
+                    "message": results.get("error", "Unknown error during upgrade"),
                 }
 
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Quality upgrade failed: {str(e)}"
-            }
+            return {"status": "error", "message": f"Quality upgrade failed: {str(e)}"}
 
     # ========================================================================
     # Task Session Tools
@@ -2477,7 +2534,9 @@ class ToolRegistry:
                 "message": f"Failed to read task session: {str(e)}",
             }
 
-    async def _execute_scheduler_resume_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_scheduler_resume_task(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute scheduler_resume_task tool"""
         try:
             from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
@@ -2492,7 +2551,10 @@ class ToolRegistry:
                 return {"status": "error", "message": f"Task '{task_id}' not found"}
 
             if original_task.type != TaskType.AGENTIC:
-                return {"status": "error", "message": f"Task '{task_id}' is not an agentic task (type: {original_task.type.value})"}
+                return {
+                    "status": "error",
+                    "message": f"Task '{task_id}' is not an agentic task (type: {original_task.type.value})",
+                }
 
             if original_task.status.value not in ("failed", "completed"):
                 # Also check session status for timed_out
@@ -2508,7 +2570,10 @@ class ToolRegistry:
             storage = SessionStorage()
             session = storage.load_session(task_id)
             if session is None:
-                return {"status": "error", "message": f"No session found for task '{task_id}'"}
+                return {
+                    "status": "error",
+                    "message": f"No session found for task '{task_id}'",
+                }
 
             # Create resume task
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2554,7 +2619,9 @@ class ToolRegistry:
         """Get the ResourceManager from the scheduler's executor, lazy-initializing if needed."""
         return self.scheduler.executor._get_resource_manager()
 
-    async def _execute_resource_pool_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_resource_pool_status(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute resource_pool_status tool"""
         try:
             rm = self._get_resource_manager()
@@ -2570,7 +2637,9 @@ class ToolRegistry:
                 "message": f"Failed to get resource pool status: {str(e)}",
             }
 
-    async def _execute_resource_pool_approve(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_resource_pool_approve(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute resource_pool_approve tool"""
         try:
             resource_id = args.get("resource_id")
@@ -2598,7 +2667,9 @@ class ToolRegistry:
                 "message": f"Failed to approve resource: {str(e)}",
             }
 
-    async def _execute_resource_pool_revoke(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_resource_pool_revoke(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute resource_pool_revoke tool"""
         try:
             resource_id = args.get("resource_id")
@@ -2627,12 +2698,14 @@ class ToolRegistry:
     def _load_config_file(self, path: str) -> Dict[str, Any]:
         """Load a JSON config file from disk"""
         import json
+
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
     def _save_config_file(self, path: str, data: Dict[str, Any]) -> None:
         """Save a JSON config file to disk"""
         import json
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             f.write("\n")
@@ -2660,6 +2733,7 @@ class ToolRegistry:
     def _matches_sensitive(self, path: str, patterns: List[str]) -> bool:
         """Check if a dot-path matches any sensitive key pattern (supports * wildcards)."""
         import fnmatch
+
         for pattern in patterns:
             if fnmatch.fnmatch(path, pattern):
                 return True
@@ -2680,8 +2754,7 @@ class ToolRegistry:
             return result
         elif isinstance(config, list):
             return [
-                self._redact_sensitive(item, sensitive_keys, prefix)
-                for item in config
+                self._redact_sensitive(item, sensitive_keys, prefix) for item in config
             ]
         return config
 
@@ -2698,8 +2771,43 @@ class ToolRegistry:
         try:
             if hasattr(self, "scheduler") and hasattr(self.scheduler, "executor"):
                 executor = self.scheduler.executor
-                if hasattr(executor, "_resource_manager") and executor._resource_manager:
+                if (
+                    hasattr(executor, "_resource_manager")
+                    and executor._resource_manager
+                ):
                     executor._resource_manager.reload_config()
+        except Exception:
+            pass  # non-critical
+
+    def _on_agentic_tools_change(self) -> None:
+        """Hook called after agentic_tools config is modified — reloads tool registry."""
+        try:
+            if hasattr(self, "scheduler") and hasattr(self.scheduler, "executor"):
+                executor = self.scheduler.executor
+                if hasattr(executor, "_tool_registry") and executor._tool_registry:
+                    from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+
+                    executor._tool_registry = DynamicToolRegistry()
+                    executor._tool_registry.set_memory_service(self.memory_service)
+                    self.logger.info("Agentic tools config reloaded")
+        except Exception:
+            pass  # non-critical
+
+    def _on_agentic_prompts_change(self) -> None:
+        """Hook called after agentic_prompts config is modified — reloads prompt manager."""
+        try:
+            if hasattr(self, "scheduler") and hasattr(self.scheduler, "executor"):
+                executor = self.scheduler.executor
+                if (
+                    hasattr(executor, "_planning_manager")
+                    and executor._planning_manager
+                ):
+                    from app.scheduler.planning_prompt_manager import (
+                        PlanningPromptManager,
+                    )
+
+                    executor._planning_manager = PlanningPromptManager()
+                    self.logger.info("Agentic prompts config reloaded")
         except Exception:
             pass  # non-critical
 
@@ -2741,7 +2849,10 @@ class ToolRegistry:
 
         # --- get / set require a module ---
         if not module_name:
-            return {"status": "error", "message": "Parameter 'module' is required for get/set actions."}
+            return {
+                "status": "error",
+                "message": "Parameter 'module' is required for get/set actions.",
+            }
         if module_name not in self._config_modules:
             return {
                 "status": "error",
@@ -2758,14 +2869,30 @@ class ToolRegistry:
                     try:
                         value = self._resolve_path(data, path)
                         # Redact if the path itself is sensitive
-                        if self._matches_sensitive(path, meta.get("sensitive_keys", [])):
+                        if self._matches_sensitive(
+                            path, meta.get("sensitive_keys", [])
+                        ):
                             value = "***REDACTED***"
-                        return {"status": "success", "module": module_name, "path": path, "value": value}
+                        return {
+                            "status": "success",
+                            "module": module_name,
+                            "path": path,
+                            "value": value,
+                        }
                     except KeyError:
-                        return {"status": "error", "message": f"Path '{path}' not found in {module_name} config."}
+                        return {
+                            "status": "error",
+                            "message": f"Path '{path}' not found in {module_name} config.",
+                        }
                 else:
-                    redacted = self._redact_sensitive(data, meta.get("sensitive_keys", []))
-                    return {"status": "success", "module": module_name, "config": redacted}
+                    redacted = self._redact_sensitive(
+                        data, meta.get("sensitive_keys", [])
+                    )
+                    return {
+                        "status": "success",
+                        "module": module_name,
+                        "config": redacted,
+                    }
             except Exception as e:
                 return {"status": "error", "message": f"Failed to load config: {e}"}
 
@@ -2773,9 +2900,15 @@ class ToolRegistry:
         if action == "set":
             path = args.get("path")
             if not path:
-                return {"status": "error", "message": "Parameter 'path' is required for action=set."}
+                return {
+                    "status": "error",
+                    "message": "Parameter 'path' is required for action=set.",
+                }
             if "value" not in args:
-                return {"status": "error", "message": "Parameter 'value' is required for action=set."}
+                return {
+                    "status": "error",
+                    "message": "Parameter 'value' is required for action=set.",
+                }
             value = args["value"]
             validate = args.get("validate", True)
 
@@ -2789,11 +2922,7 @@ class ToolRegistry:
                     old_value = None
 
                 # Smart validation: LLM model changes on openai-compatible providers
-                if (
-                    module_name == "llm"
-                    and validate
-                    and _is_llm_model_path(path)
-                ):
+                if module_name == "llm" and validate and _is_llm_model_path(path):
                     # Extract interface name from path like "api_models.lmstudio.model"
                     parts = path.split(".")
                     if len(parts) >= 2:
@@ -2806,7 +2935,10 @@ class ToolRegistry:
                                 api_key=iface.get("api_key"),
                             )
                             if result["error"]:
-                                return {"status": "error", "message": f"Validation failed: {result['error']}"}
+                                return {
+                                    "status": "error",
+                                    "message": f"Validation failed: {result['error']}",
+                                }
                             if not result["available"]:
                                 return {
                                     "status": "error",
@@ -2833,7 +2965,10 @@ class ToolRegistry:
             except Exception as e:
                 return {"status": "error", "message": f"Failed to set config: {e}"}
 
-        return {"status": "error", "message": f"Unknown action '{action}'. Use: help, get, set."}
+        return {
+            "status": "error",
+            "message": f"Unknown action '{action}'. Use: help, get, set.",
+        }
 
     # ========================================================================
     # LLM Server Discovery (kept separate — queries external service)
@@ -2881,11 +3016,15 @@ class ToolRegistry:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _fetch)
 
-    async def _execute_llm_list_available_models(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_llm_list_available_models(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """List models available in an OpenAI-compatible server"""
         try:
             llm_config = self._load_config_file(self._config_modules["llm"]["file"])
-            interface_name = args.get("interface_name") or llm_config.get("default_interface")
+            interface_name = args.get("interface_name") or llm_config.get(
+                "default_interface"
+            )
             api_models = llm_config.get("api_models", {})
 
             if interface_name not in api_models:

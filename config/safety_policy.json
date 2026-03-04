@@ -1,0 +1,35 @@
+{
+  "_version": "1.0.0",
+  "_description": "Immutable safety rules for agentic tasks - limits what AI can do",
+
+  "sandbox_policy": {
+    "allowed_paths": ["~/.memory/"],
+    "max_file_size_mb": 10,
+    "enforce_path_sandbox": true
+  },
+
+  "ai_modification_rules": {
+    "allow_non_sandbox_writes": false,
+    "require_backup_before_change": true,
+    "require_test_after_change": true,
+    "auto_rollback_on_failure": true,
+    "sandbox_operation_tracking": true,
+    "max_danger_level_for_new_tools": "high"
+  },
+
+  "immutable_rules": {
+    "blocked_tool_names": ["rm", "delete", "format", "shutdown", "kill", "dd", "mkfs"],
+    "blocked_paths": ["/", "/home", "/etc", "/usr", "/var", "/root", "/boot", "/sys", "/proc"],
+    "min_danger_level_for_bash": "high",
+    "cannot_lower_danger_level": true,
+    "cannot_disable_auth_for_critical_tools": true
+  },
+
+  "rollback_policy": {
+    "auto_backup_enabled": true,
+    "backup_location": "config/rollback_snapshots/",
+    "max_versions_per_file": 10,
+    "rollback_on_error": true,
+    "versioned_naming": true
+  }
+}

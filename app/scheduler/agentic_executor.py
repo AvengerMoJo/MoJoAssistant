@@ -15,6 +15,13 @@ import httpx
 from app.scheduler.models import Task, TaskResult
 from app.scheduler.resource_pool import LLMResource, ResourceManager, ResourceTier
 from app.scheduler.session_storage import SessionMessage, SessionStorage, TaskSession
+from app.scheduler.planning_prompt_manager import PlanningPromptManager
+from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+from app.scheduler.safety_policy import SafetyPolicy
+
+# Use prompt-based system instead of hardcoded prompts
+_planning_prompt_manager = PlanningPromptManager()
+_dynamic_tool_registry = DynamicToolRegistry()
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an autonomous assistant working on a specific goal.
@@ -30,7 +37,7 @@ Do not use FINAL_ANSWER until you are confident the goal is fully addressed.
 
 You may have tools available. Use them when needed to gather information."""
 
-# Tool definitions for the agentic loop
+# Tool definitions for the agentic loop - dynamically loaded from registry
 BUILTIN_TOOLS = {
     "memory_search": {
         "type": "function",
@@ -60,11 +67,17 @@ CONTINUE_PROMPT = (
 class AgenticExecutor:
     """Executes agentic tasks via an autonomous LLM think-act loop."""
 
-    def __init__(self, resource_manager: ResourceManager, logger=None, memory_service=None):
+    def __init__(
+        self, resource_manager: ResourceManager, logger=None, memory_service=None
+    ):
         self._rm = resource_manager
         self._logger = logger
         self._memory_service = memory_service
         self._session_storage = SessionStorage()
+        self._planning_manager = _planning_prompt_manager
+        self._tool_registry = _dynamic_tool_registry
+        self._tool_registry.set_memory_service(memory_service)
+        self._policy = SafetyPolicy()
 
     def _log(self, message: str, level: str = "info"):
         if self._logger:
@@ -99,9 +112,27 @@ class AgenticExecutor:
         config = task.config or {}
         goal = config.get("goal", "")
         if not goal:
-            return TaskResult(success=False, error_message="Missing 'goal' in task config")
+            return TaskResult(
+                success=False, error_message="Missing 'goal' in task config"
+            )
 
-        system_prompt = config.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
+        # Load planning prompt based on task type or use default
+        planning_prompt_name = config.get("planning_prompt", "agentic_planning")
+        planning_prompt = self._planning_manager.get_prompt(
+            planning_prompt_name, version="latest"
+        )
+
+        if planning_prompt:
+            system_prompt = planning_prompt.content
+            self._log(
+                f"Using planning prompt: {planning_prompt_name} v{planning_prompt.version}"
+            )
+        else:
+            system_prompt = config.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
+            self._log(
+                f"Using default system prompt (no planning prompt found: {planning_prompt_name})"
+            )
+
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get(
             "max_duration_seconds",
@@ -114,28 +145,49 @@ class AgenticExecutor:
         else:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
 
-        # Determine which tools are enabled for this task
-        enabled_tool_names = config.get("available_tools", [])
-        tool_defs = [BUILTIN_TOOLS[t] for t in enabled_tool_names if t in BUILTIN_TOOLS]
+        # Load tools from dynamic registry (fallback to builtins)
+        enabled_tool_names = config.get("available_tools", ["memory_search"])
+        tool_defs = []
+
+        for tool_name in enabled_tool_names:
+            # Check dynamic registry first
+            tool = self._tool_registry.get_tool(tool_name)
+            if tool:
+                tool_defs.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                        },
+                    }
+                )
+            # Fallback to builtins
+            elif tool_name in BUILTIN_TOOLS:
+                tool_defs.append(BUILTIN_TOOLS[tool_name])
 
         # --- Resume support ---
         resume_from = config.get("resume_from_task_id")
         if resume_from:
-            messages, start_iteration = self._load_resume_messages(resume_from, system_prompt)
+            messages, start_iteration = self._load_resume_messages(
+                resume_from, system_prompt
+            )
             if messages is None:
                 return TaskResult(
                     success=False,
                     error_message=f"Cannot resume: session '{resume_from}' not found",
                 )
             # Add a continuation prompt so the LLM knows we're resuming
-            messages.append({
-                "role": "user",
-                "content": (
-                    "The previous attempt ran out of time or failed. "
-                    "Continue working toward the original goal. "
-                    "If you are done, provide your answer inside <FINAL_ANSWER> tags."
-                ),
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "The previous attempt ran out of time or failed. "
+                        "Continue working toward the original goal. "
+                        "If you are done, provide your answer inside <FINAL_ANSWER> tags."
+                    ),
+                }
+            )
         else:
             start_iteration = 0
             # Build initial messages
@@ -146,7 +198,9 @@ class AgenticExecutor:
             user_content = f"Goal: {goal}"
             context = config.get("context")
             if context:
-                user_content += f"\n\nContext:\n{json.dumps(context, indent=2, default=str)}"
+                user_content += (
+                    f"\n\nContext:\n{json.dumps(context, indent=2, default=str)}"
+                )
             messages.append({"role": "user", "content": user_content})
 
         # --- Create session ---
@@ -175,15 +229,20 @@ class AgenticExecutor:
         start_time = time.time()
         final_answer: Optional[str] = None
 
-        self._log(f"Starting agentic loop for task {task.id} (max {max_iterations} iterations)")
+        self._log(
+            f"Starting agentic loop for task {task.id} (max {max_iterations} iterations)"
+        )
 
         for iteration in range(1, max_iterations + 1):
             abs_iteration = start_iteration + iteration
             elapsed = time.time() - start_time
             if elapsed >= max_duration:
-                self._log(f"Task {task.id}: time budget exhausted at iteration {iteration}")
+                self._log(
+                    f"Task {task.id}: time budget exhausted at iteration {iteration}"
+                )
                 self._session_storage.update_status(
-                    task.id, "timed_out",
+                    task.id,
+                    "timed_out",
                     error_message="Time budget exhausted",
                 )
                 break
@@ -194,33 +253,42 @@ class AgenticExecutor:
                 self._log(f"No resource available, waiting 30s (iteration {iteration})")
                 # Wait and retry once
                 import asyncio
+
                 await asyncio.sleep(30)
                 resource = self._rm.acquire(tier_preference=tier_preference)
                 if resource is None:
                     self._log("Still no resource available, aborting")
-                    iteration_log.append({
-                        "iteration": iteration,
-                        "status": "no_resource",
-                        "elapsed_s": round(time.time() - start_time, 1),
-                    })
+                    iteration_log.append(
+                        {
+                            "iteration": iteration,
+                            "status": "no_resource",
+                            "elapsed_s": round(time.time() - start_time, 1),
+                        }
+                    )
                     break
 
             # Call LLM
-            self._log(f"Iteration {iteration}: calling {resource.model} via {resource.id}")
+            self._log(
+                f"Iteration {iteration}: calling {resource.model} via {resource.id}"
+            )
             iter_start = time.time()
             try:
-                response = await self._call_llm(resource, messages, tools=tool_defs or None)
+                response = await self._call_llm(
+                    resource, messages, tools=tool_defs or None
+                )
                 self._rm.record_usage(resource.id, success=True)
             except Exception as e:
                 self._rm.record_usage(resource.id, success=False)
                 self._log(f"LLM call failed: {e}", "error")
-                iteration_log.append({
-                    "iteration": iteration,
-                    "resource": resource.id,
-                    "status": "error",
-                    "error": str(e),
-                    "elapsed_s": round(time.time() - iter_start, 1),
-                })
+                iteration_log.append(
+                    {
+                        "iteration": iteration,
+                        "resource": resource.id,
+                        "status": "error",
+                        "error": str(e),
+                        "elapsed_s": round(time.time() - iter_start, 1),
+                    }
+                )
                 continue  # Try next iteration with potentially different resource
 
             message = response["choices"][0]["message"]
@@ -232,33 +300,43 @@ class AgenticExecutor:
                 # Append assistant message with tool calls
                 messages.append(message)
                 self._record(
-                    task.id, "assistant", response_text,
+                    task.id,
+                    "assistant",
+                    response_text,
                     iteration=abs_iteration,
-                    metadata={"tool_calls": [tc["function"]["name"] for tc in tool_calls]},
+                    metadata={
+                        "tool_calls": [tc["function"]["name"] for tc in tool_calls]
+                    },
                 )
 
                 tool_results = await self._execute_tool_calls(tool_calls)
                 for tc, result_content in zip(tool_calls, tool_results):
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": result_content,
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result_content,
+                        }
+                    )
                     self._record(
-                        task.id, "tool", result_content,
+                        task.id,
+                        "tool",
+                        result_content,
                         iteration=abs_iteration,
                         tool_call_id=tc["id"],
                         tool_name=tc["function"]["name"],
                     )
 
-                iteration_log.append({
-                    "iteration": iteration,
-                    "resource": resource.id,
-                    "model": resource.model,
-                    "status": "tool_use",
-                    "tool_calls": [tc["function"]["name"] for tc in tool_calls],
-                    "elapsed_s": round(time.time() - iter_start, 1),
-                })
+                iteration_log.append(
+                    {
+                        "iteration": iteration,
+                        "resource": resource.id,
+                        "model": resource.model,
+                        "status": "tool_use",
+                        "tool_calls": [tc["function"]["name"] for tc in tool_calls],
+                        "elapsed_s": round(time.time() - iter_start, 1),
+                    }
+                )
                 continue  # Next iteration will get the LLM's response to tool results
 
             # Append assistant response
@@ -267,19 +345,23 @@ class AgenticExecutor:
 
             # Check for final answer
             final_answer = self._parse_final_answer(response_text)
-            iteration_log.append({
-                "iteration": iteration,
-                "resource": resource.id,
-                "model": resource.model,
-                "status": "final" if final_answer else "continue",
-                "response_length": len(response_text),
-                "elapsed_s": round(time.time() - iter_start, 1),
-            })
+            iteration_log.append(
+                {
+                    "iteration": iteration,
+                    "resource": resource.id,
+                    "model": resource.model,
+                    "status": "final" if final_answer else "continue",
+                    "response_length": len(response_text),
+                    "elapsed_s": round(time.time() - iter_start, 1),
+                }
+            )
 
             if final_answer:
                 self._log(f"Task {task.id}: got final answer at iteration {iteration}")
                 self._session_storage.update_status(
-                    task.id, "completed", final_answer=final_answer,
+                    task.id,
+                    "completed",
+                    final_answer=final_answer,
                 )
                 break
 
@@ -295,11 +377,14 @@ class AgenticExecutor:
         if current_session and current_session.status == "running":
             if success:
                 self._session_storage.update_status(
-                    task.id, "completed", final_answer=final_answer,
+                    task.id,
+                    "completed",
+                    final_answer=final_answer,
                 )
             else:
                 self._session_storage.update_status(
-                    task.id, "failed",
+                    task.id,
+                    "failed",
                     error_message="Agent did not produce a final answer within limits",
                 )
 
@@ -315,7 +400,9 @@ class AgenticExecutor:
                 "final_answer": final_answer,
                 "session_file": session_file,
             },
-            error_message=None if success else "Agent did not produce a final answer within limits",
+            error_message=None
+            if success
+            else "Agent did not produce a final answer within limits",
         )
 
     def _load_resume_messages(
@@ -390,7 +477,38 @@ class AgenticExecutor:
         return results
 
     async def _execute_single_tool(self, name: str, args: Dict) -> Any:
-        """Execute a single built-in tool."""
+        """Execute a single tool from dynamic registry or built-in tools."""
+        # Get tool from registry for policy check
+        tool = self._tool_registry.get_tool(name)
+
+        # Check safety policy before execution
+        if tool:
+            policy_check = self._policy.check_tool_execution(name, tool, args)
+            if not policy_check["allowed"]:
+                self._log(
+                    f"Tool {name} blocked by policy: {policy_check['reason']}",
+                    "warning",
+                )
+                self._policy.track_operation(
+                    operation="execute",
+                    tool_name=name,
+                    success=False,
+                    reason=policy_check["reason"],
+                )
+                return {"error": f"Policy violation: {policy_check['reason']}"}
+
+        # Try dynamic registry first
+        try:
+            result = await self._tool_registry.execute_tool(name, args)
+            if result.get("success"):
+                self._policy.track_operation(
+                    operation="execute", tool_name=name, success=True
+                )
+                return result
+        except Exception as e:
+            self._log(f"Dynamic tool {name} failed: {e}", "error")
+
+        # Fallback to built-in tools
         if name == "memory_search" and self._memory_service:
             query = args.get("query", "")
             results = await self._memory_service.get_context_for_query_async(

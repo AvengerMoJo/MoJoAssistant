@@ -1,0 +1,59 @@
+{
+  "last_updated": "2026-03-05T00:47:42.931940",
+  "tools": [
+    {
+      "name": "read_file",
+      "description": "Read file contents. Returns full text with line numbers.",
+      "danger_level": "low",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-03-05T00:34:01.036297",
+      "created_by": "system"
+    },
+    {
+      "name": "write_file",
+      "description": "Write content to file. Overwrites existing file. Only allowed in sandbox paths.",
+      "danger_level": "medium",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-03-05T00:34:01.036310",
+      "created_by": "system"
+    },
+    {
+      "name": "list_files",
+      "description": "List files and directories in a path.",
+      "danger_level": "low",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-03-05T00:34:01.036312",
+      "created_by": "system"
+    },
+    {
+      "name": "search_in_files",
+      "description": "Search for text across files using grep/ripgrep.",
+      "danger_level": "low",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-03-05T00:34:01.036313",
+      "created_by": "system"
+    },
+    {
+      "name": "bash_exec",
+      "description": "Execute bash command. Only safe commands in whitelist allowed.",
+      "danger_level": "high",
+      "version": "1.0.0",
+      "requires_auth": true,
+      "created_at": "2026-03-05T00:34:01.036314",
+      "created_by": "system"
+    },
+    {
+      "name": "memory_search",
+      "description": "Search user's memory (conversations, documents, knowledge base).",
+      "danger_level": "low",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-03-05T00:34:01.036315",
+      "created_by": "system"
+    }
+  ]
+}

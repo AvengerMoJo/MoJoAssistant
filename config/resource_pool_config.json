@@ -22,15 +22,21 @@
       "tier": "free",
       "priority": 2,
       "enabled": true,
-      "context_limit": 32768,
-      "output_limit": 8192,
+      "context_limit": "262144",
+      "output_limit": "32768",
       "description": "Local Qwen 3.5-35B via LMStudio"
     }
   },
   "tier_policy": {
-    "free": { "auto_approve": true },
-    "free_api": { "auto_approve": true },
-    "paid": { "auto_approve": false }
+    "free": {
+      "auto_approve": true
+    },
+    "free_api": {
+      "auto_approve": true
+    },
+    "paid": {
+      "auto_approve": false
+    }
   },
   "selection_strategy": "priority_then_availability"
 }
