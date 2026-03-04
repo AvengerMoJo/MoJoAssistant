@@ -12,6 +12,12 @@ from datetime import datetime
 from app.git.git_service import GitService
 
 
+def _is_llm_model_path(path: str) -> bool:
+    """Check if a dot-path targets a model field under api_models (e.g. 'api_models.lmstudio.model')."""
+    import fnmatch
+    return fnmatch.fnmatch(path, "api_models.*.model")
+
+
 class ToolRegistry:
     """Registry of available tools and their execution"""
 
@@ -49,6 +55,26 @@ class ToolRegistry:
 
         # Auto-start scheduler in background thread
         self._start_scheduler_daemon()
+
+        # Config module registry — each entry maps a module name to its
+        # config file, description, sensitive key patterns, and change hook.
+        self._config_modules = {
+            "llm": {
+                "file": "config/llm_config.json",
+                "description": "LLM providers, models, and task routing",
+                "sensitive_keys": ["api_models.*.api_key"],
+                "on_change": self._on_llm_config_change,
+            },
+            "embedding": {
+                "file": "config/embedding_config.json",
+                "description": "Embedding models and memory settings",
+                "sensitive_keys": [
+                    "embedding_models.openai.api_key",
+                    "embedding_models.cohere.api_key",
+                ],
+                "on_change": None,
+            },
+        }
 
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
@@ -925,6 +951,52 @@ class ToolRegistry:
                     "required": ["conversation_id", "target_quality"],
                 },
             },
+            # Generic Configuration Tool
+            {
+                "name": "config",
+                "description": "Read and write MoJoAssistant configuration. Actions: 'help' lists configurable modules (or shows structure of a specific module), 'get' reads config (optionally at a dot-path), 'set' writes a value at a dot-path and persists to disk. Modules: llm, embedding.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["help", "get", "set"],
+                            "description": "Action to perform: help (list modules or show structure), get (read config), set (write value)",
+                        },
+                        "module": {
+                            "type": "string",
+                            "description": "Config module name (e.g. 'llm', 'embedding'). Required for get/set.",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Dot-notation path into config (e.g. 'api_models.lmstudio.model'). Optional for get, required for set.",
+                        },
+                        "value": {
+                            "description": "Value to set at the given path. Required for action=set. Can be any JSON type.",
+                        },
+                        "validate": {
+                            "type": "boolean",
+                            "description": "For LLM model changes: validate the model is loaded in the server before applying (default: true)",
+                        },
+                    },
+                    "required": ["action"],
+                },
+            },
+            # LLM Server Discovery (not a config operation — queries external service)
+            {
+                "name": "llm_list_available_models",
+                "description": "List models currently loaded in an OpenAI-compatible server (e.g. LMStudio). Queries the server's /models endpoint to show what's actually available for use.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "interface_name": {
+                            "type": "string",
+                            "description": "Name of the interface to query (defaults to active interface if omitted)",
+                        },
+                    },
+                    "required": [],
+                },
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -1330,6 +1402,11 @@ class ToolRegistry:
             return await self._execute_dreaming_get_archive(args)
         elif name == "dreaming_upgrade_quality":
             return await self._execute_dreaming_upgrade_quality(args)
+        # Configuration Tool
+        elif name == "config":
+            return await self._execute_config(args)
+        elif name == "llm_list_available_models":
+            return await self._execute_llm_list_available_models(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -2235,3 +2312,294 @@ class ToolRegistry:
                 "status": "error",
                 "message": f"Quality upgrade failed: {str(e)}"
             }
+
+    # ── LLM Configuration Tools ──────────────────────────────────────
+
+    # ========================================================================
+    # Generic Config Tool
+    # ========================================================================
+
+    def _load_config_file(self, path: str) -> Dict[str, Any]:
+        """Load a JSON config file from disk"""
+        import json
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _save_config_file(self, path: str, data: Dict[str, Any]) -> None:
+        """Save a JSON config file to disk"""
+        import json
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+
+    def _resolve_path(self, config: Dict[str, Any], path: str) -> Any:
+        """Navigate dot-notation path into a nested dict. Raises KeyError on miss."""
+        current = config
+        for key in path.split("."):
+            if isinstance(current, dict):
+                current = current[key]
+            else:
+                raise KeyError(key)
+        return current
+
+    def _set_path(self, config: Dict[str, Any], path: str, value: Any) -> None:
+        """Set a value at a dot-notation path, creating intermediate dicts as needed."""
+        keys = path.split(".")
+        current = config
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current[key], dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
+
+    def _matches_sensitive(self, path: str, patterns: List[str]) -> bool:
+        """Check if a dot-path matches any sensitive key pattern (supports * wildcards)."""
+        import fnmatch
+        for pattern in patterns:
+            if fnmatch.fnmatch(path, pattern):
+                return True
+        return False
+
+    def _redact_sensitive(
+        self, config: Any, sensitive_keys: List[str], prefix: str = ""
+    ) -> Any:
+        """Deep-copy config with sensitive values redacted."""
+        if isinstance(config, dict):
+            result = {}
+            for k, v in config.items():
+                full_path = f"{prefix}.{k}" if prefix else k
+                if self._matches_sensitive(full_path, sensitive_keys):
+                    result[k] = "***REDACTED***" if isinstance(v, str) else v
+                else:
+                    result[k] = self._redact_sensitive(v, sensitive_keys, full_path)
+            return result
+        elif isinstance(config, list):
+            return [
+                self._redact_sensitive(item, sensitive_keys, prefix)
+                for item in config
+            ]
+        return config
+
+    def _on_llm_config_change(self) -> None:
+        """Hook called after LLM config is modified — resets cached executor pipeline."""
+        try:
+            if hasattr(self, "scheduler") and hasattr(self.scheduler, "executor"):
+                self.scheduler.executor.reset_pipeline()
+        except Exception:
+            pass  # non-critical
+
+    async def _execute_config(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatch config actions: help, get, set."""
+        action = args.get("action")
+        module_name = args.get("module")
+
+        # --- help ---
+        if action == "help":
+            if not module_name:
+                # List all modules
+                modules = {}
+                for name, meta in self._config_modules.items():
+                    modules[name] = {
+                        "description": meta["description"],
+                        "file": meta["file"],
+                    }
+                return {"status": "success", "modules": modules}
+            # Show specific module structure
+            if module_name not in self._config_modules:
+                return {
+                    "status": "error",
+                    "message": f"Unknown module '{module_name}'. Available: {list(self._config_modules.keys())}",
+                }
+            meta = self._config_modules[module_name]
+            try:
+                data = self._load_config_file(meta["file"])
+                redacted = self._redact_sensitive(data, meta.get("sensitive_keys", []))
+                return {
+                    "status": "success",
+                    "module": module_name,
+                    "description": meta["description"],
+                    "file": meta["file"],
+                    "current_config": redacted,
+                }
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to load config: {e}"}
+
+        # --- get / set require a module ---
+        if not module_name:
+            return {"status": "error", "message": "Parameter 'module' is required for get/set actions."}
+        if module_name not in self._config_modules:
+            return {
+                "status": "error",
+                "message": f"Unknown module '{module_name}'. Available: {list(self._config_modules.keys())}",
+            }
+        meta = self._config_modules[module_name]
+
+        # --- get ---
+        if action == "get":
+            try:
+                data = self._load_config_file(meta["file"])
+                path = args.get("path")
+                if path:
+                    try:
+                        value = self._resolve_path(data, path)
+                        # Redact if the path itself is sensitive
+                        if self._matches_sensitive(path, meta.get("sensitive_keys", [])):
+                            value = "***REDACTED***"
+                        return {"status": "success", "module": module_name, "path": path, "value": value}
+                    except KeyError:
+                        return {"status": "error", "message": f"Path '{path}' not found in {module_name} config."}
+                else:
+                    redacted = self._redact_sensitive(data, meta.get("sensitive_keys", []))
+                    return {"status": "success", "module": module_name, "config": redacted}
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to load config: {e}"}
+
+        # --- set ---
+        if action == "set":
+            path = args.get("path")
+            if not path:
+                return {"status": "error", "message": "Parameter 'path' is required for action=set."}
+            if "value" not in args:
+                return {"status": "error", "message": "Parameter 'value' is required for action=set."}
+            value = args["value"]
+            validate = args.get("validate", True)
+
+            try:
+                data = self._load_config_file(meta["file"])
+
+                # Get old value for reporting
+                try:
+                    old_value = self._resolve_path(data, path)
+                except KeyError:
+                    old_value = None
+
+                # Smart validation: LLM model changes on openai-compatible providers
+                if (
+                    module_name == "llm"
+                    and validate
+                    and _is_llm_model_path(path)
+                ):
+                    # Extract interface name from path like "api_models.lmstudio.model"
+                    parts = path.split(".")
+                    if len(parts) >= 2:
+                        interface_name = parts[1]
+                        iface = data.get("api_models", {}).get(interface_name, {})
+                        if iface.get("provider") == "openai":
+                            result = await self._validate_model_available(
+                                base_url=iface["base_url"],
+                                model=value,
+                                api_key=iface.get("api_key"),
+                            )
+                            if result["error"]:
+                                return {"status": "error", "message": f"Validation failed: {result['error']}"}
+                            if not result["available"]:
+                                return {
+                                    "status": "error",
+                                    "message": f"Model '{value}' is not loaded in the server.",
+                                    "available_models": result["models"],
+                                }
+
+                # Apply the change
+                self._set_path(data, path, value)
+                self._save_config_file(meta["file"], data)
+
+                # Fire change hook
+                if meta.get("on_change"):
+                    meta["on_change"]()
+
+                return {
+                    "status": "success",
+                    "module": module_name,
+                    "path": path,
+                    "old_value": old_value,
+                    "new_value": value,
+                    "message": f"Updated {module_name}.{path}: {old_value!r} -> {value!r}",
+                }
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to set config: {e}"}
+
+        return {"status": "error", "message": f"Unknown action '{action}'. Use: help, get, set."}
+
+    # ========================================================================
+    # LLM Server Discovery (kept separate — queries external service)
+    # ========================================================================
+
+    async def _validate_model_available(
+        self, base_url: str, model: str, api_key: str | None = None
+    ) -> Dict[str, Any]:
+        """Query an OpenAI-compatible /models endpoint to check if a model is loaded.
+
+        Returns dict with keys: available (bool), models (list of model IDs), error (str|None)
+        """
+        import json as _json
+        import urllib.request
+        import urllib.error
+
+        url = f"{base_url.rstrip('/')}/models"
+        req = urllib.request.Request(url, method="GET")
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+
+        def _fetch():
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status != 200:
+                        return {
+                            "available": False,
+                            "models": [],
+                            "error": f"Server returned HTTP {resp.status}",
+                        }
+                    data = _json.loads(resp.read().decode())
+                    model_ids = [m.get("id", "") for m in data.get("data", [])]
+                    return {
+                        "available": model in model_ids,
+                        "models": model_ids,
+                        "error": None,
+                    }
+            except Exception as e:
+                return {
+                    "available": False,
+                    "models": [],
+                    "error": f"Failed to query models endpoint: {e}",
+                }
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _fetch)
+
+    async def _execute_llm_list_available_models(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List models available in an OpenAI-compatible server"""
+        try:
+            llm_config = self._load_config_file(self._config_modules["llm"]["file"])
+            interface_name = args.get("interface_name") or llm_config.get("default_interface")
+            api_models = llm_config.get("api_models", {})
+
+            if interface_name not in api_models:
+                return {
+                    "status": "error",
+                    "message": f"Interface '{interface_name}' not found. Available: {list(api_models.keys())}",
+                }
+
+            iface = api_models[interface_name]
+            if iface.get("provider") != "openai":
+                return {
+                    "status": "error",
+                    "message": f"Interface '{interface_name}' uses provider '{iface.get('provider')}', not openai. Model listing is only supported for OpenAI-compatible servers.",
+                }
+
+            result = await self._validate_model_available(
+                base_url=iface["base_url"],
+                model="",  # not checking a specific model
+                api_key=iface.get("api_key"),
+            )
+            if result["error"]:
+                return {"status": "error", "message": result["error"]}
+
+            return {
+                "status": "success",
+                "interface": interface_name,
+                "base_url": iface["base_url"],
+                "models": result["models"],
+                "count": len(result["models"]),
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to list models: {e}"}
