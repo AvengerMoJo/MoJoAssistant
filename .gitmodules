@@ -1,6 +1,6 @@
 [submodule "coding-agent-mcp-tool"]
-	path = coding-agent-mcp-tool
+	path = submodules/coding-agent-mcp-tool
 	url = https://github.com/AvengerMoJo/coding-agent-mcp-tool.git
 [submodule "dreaming-memory-pipeline"]
-	path = dreaming-memory-pipeline
+	path = submodules/dreaming-memory-pipeline
 	url = https://github.com/AvengerMoJo/dreaming-memory-pipeline.git
