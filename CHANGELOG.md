@@ -7,6 +7,22 @@ All notable changes to the MoJoAssistant project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5-beta] - 2026-03-04
+
+### Added
+- **Agentic Scheduler**: Autonomous LLM agent loop with three-phase architecture
+  - **Phase 1 — Resource Pool & Executor**: `ResourceManager` with tier-based selection (free/free_api/paid), rate limiting, budget tracking, round-robin within account groups, usage persistence; `AgenticExecutor` think-act loop driving LLM conversations to `<FINAL_ANSWER>` completion
+  - **Phase 2 — Concurrent Execution & Tool Use**: Semaphore-based concurrent task execution (`max_concurrent=3`), `resource_pool_status` / `resource_pool_approve` / `resource_pool_revoke` MCP tools, built-in `memory_search` tool for agentic tasks
+  - **Phase 3 — Session Memory & Notifications**: Persistent per-task conversation trails (`~/.memory/task_sessions/`), task resume support (`scheduler_resume_task`), automatic dreaming consolidation after agentic task completion, `task_session_read` MCP tool for live session inspection
+- **SSE Notification Sidecar**: Real-time task lifecycle events via `GET /events/tasks` (task_started, task_completed, task_failed) with 30s keepalive
+- **Resource Pool Configuration**: `config/resource_pool_config.json` for LLM endpoint management with sandbox key isolation via `~/.memory/resource_pool.env`
+- **Generic Config Tool**: Single `config` MCP tool replacing 3 rigid LLM tools — supports help/get/set with dot-notation paths, sensitive value redaction, and hot-reload hooks
+
+### Changed
+- Unified `agent_*` MCP tools now use `AgentRegistry` for cleaner backend dispatch
+- Scheduler `__init__` accepts optional `sse_notifier` for event broadcasting
+- `TaskResult.output_file` populated with session file path for agentic tasks
+
 ## [1.1.4-beta] - 2026-02-23
 
 ### Added
