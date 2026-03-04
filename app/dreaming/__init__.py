@@ -2,7 +2,7 @@
 Dreaming - Memory Consolidation System
 
 Thin re-export layer. Actual implementation lives in the
-dreaming-memory-pipeline submodule (dreaming-memory-pipeline/src/dreaming/).
+dreaming-memory-pipeline submodule (submodules/dreaming-memory-pipeline/src/dreaming/).
 
 File: app/dreaming/__init__.py
 """
@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 # Add submodule src/ to path so `dreaming.*` imports resolve
-_submodule_src = str(Path(__file__).resolve().parent.parent.parent / "dreaming-memory-pipeline" / "src")
+_submodule_src = str(Path(__file__).resolve().parent.parent.parent / "submodules" / "dreaming-memory-pipeline" / "src")
 if _submodule_src not in sys.path:
     sys.path.insert(0, _submodule_src)
 
