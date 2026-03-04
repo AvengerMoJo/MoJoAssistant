@@ -27,16 +27,18 @@ class TaskExecutor:
     - Agentic tasks (autonomous LLM loop)
     """
 
-    def __init__(self, logger=None, llm_config_path: Optional[str] = None):
+    def __init__(self, logger=None, llm_config_path: Optional[str] = None, memory_service=None):
         """
         Initialize executor
 
         Args:
             logger: Optional logger instance
             llm_config_path: Path to LLM configuration file for dreaming
+            memory_service: Optional memory service for agentic tool use
         """
         self.logger = logger
         self.llm_config_path = llm_config_path or "config/llm_config.json"
+        self._memory_service = memory_service
         self._dreaming_pipeline = None
         self._cached_quality_level = None
         self._resource_manager = None
@@ -471,6 +473,7 @@ class TaskExecutor:
             self._agentic_executor = AgenticExecutor(
                 resource_manager=self._get_resource_manager(),
                 logger=self.logger,
+                memory_service=self._memory_service,
             )
         return self._agentic_executor
 

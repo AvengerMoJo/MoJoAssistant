@@ -47,10 +47,10 @@ class ToolRegistry:
         from app.mcp.agents.registry import AgentRegistry
         self.agent_registry = AgentRegistry(logger=logger)
 
-        # Initialize Scheduler
+        # Initialize Scheduler (pass memory_service for agentic tool use)
         from app.scheduler.core import Scheduler
 
-        self.scheduler = Scheduler(logger=logger)
+        self.scheduler = Scheduler(logger=logger, memory_service=memory_service)
         self.scheduler_thread = None
 
         # Auto-start scheduler in background thread
@@ -752,8 +752,8 @@ class ToolRegistry:
                         },
                         "task_type": {
                             "type": "string",
-                            "enum": ["dreaming", "scheduled", "agent", "custom"],
-                            "description": "Type of task (dreaming=memory consolidation, scheduled=calendar event, agent=OpenCode/OpenClaw, custom=shell command)",
+                            "enum": ["dreaming", "scheduled", "agent", "custom", "agentic"],
+                            "description": "Type of task (dreaming=memory consolidation, scheduled=calendar event, agent=OpenCode/OpenClaw, custom=shell command, agentic=autonomous LLM agent loop)",
                         },
                         "schedule": {
                             "type": "string",
@@ -1001,6 +1001,46 @@ class ToolRegistry:
                         },
                     },
                     "required": [],
+                },
+            },
+            # Resource Pool Tools
+            {
+                "name": "resource_pool_status",
+                "description": "Get the status of all LLM resources in the resource pool. Shows model, tier, priority, availability status, and usage statistics for each resource. Use this to monitor resource health and utilization for agentic tasks.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+            {
+                "name": "resource_pool_approve",
+                "description": "Approve a paid LLM resource for use by agentic tasks. Paid resources are not used by default — they must be explicitly approved. Use resource_pool_status to see available resource IDs.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "resource_id": {
+                            "type": "string",
+                            "description": "ID of the paid resource to approve (e.g., 'openai_gpt4')",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["resource_id"],
+                },
+            },
+            {
+                "name": "resource_pool_revoke",
+                "description": "Revoke approval for a paid LLM resource, preventing agentic tasks from using it. The resource remains configured but will not be selected for agent use.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "resource_id": {
+                            "type": "string",
+                            "description": "ID of the paid resource to revoke approval for",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["resource_id"],
                 },
             },
         ]
@@ -1413,6 +1453,13 @@ class ToolRegistry:
             return await self._execute_config(args)
         elif name == "llm_list_available_models":
             return await self._execute_llm_list_available_models(args)
+        # Resource Pool Tools
+        elif name == "resource_pool_status":
+            return await self._execute_resource_pool_status(args)
+        elif name == "resource_pool_approve":
+            return await self._execute_resource_pool_approve(args)
+        elif name == "resource_pool_revoke":
+            return await self._execute_resource_pool_revoke(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -2317,6 +2364,78 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Quality upgrade failed: {str(e)}"
+            }
+
+    # ========================================================================
+    # Resource Pool Tools
+    # ========================================================================
+
+    def _get_resource_manager(self):
+        """Get the ResourceManager from the scheduler's executor, lazy-initializing if needed."""
+        return self.scheduler.executor._get_resource_manager()
+
+    async def _execute_resource_pool_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute resource_pool_status tool"""
+        try:
+            rm = self._get_resource_manager()
+            status = rm.get_status()
+            return {
+                "status": "success",
+                "resources": status,
+                "count": len(status),
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to get resource pool status: {str(e)}",
+            }
+
+    async def _execute_resource_pool_approve(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute resource_pool_approve tool"""
+        try:
+            resource_id = args.get("resource_id")
+            if not resource_id:
+                return {"status": "error", "message": "Missing resource_id"}
+
+            rm = self._get_resource_manager()
+
+            # Verify resource exists
+            if resource_id not in rm._resources:
+                return {
+                    "status": "error",
+                    "message": f"Resource '{resource_id}' not found. Use resource_pool_status to see available resources.",
+                }
+
+            rm.approve_paid_resource(resource_id)
+            return {
+                "status": "success",
+                "message": f"Paid resource '{resource_id}' approved for agentic use",
+                "resource_id": resource_id,
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to approve resource: {str(e)}",
+            }
+
+    async def _execute_resource_pool_revoke(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute resource_pool_revoke tool"""
+        try:
+            resource_id = args.get("resource_id")
+            if not resource_id:
+                return {"status": "error", "message": "Missing resource_id"}
+
+            rm = self._get_resource_manager()
+            rm.revoke_paid_resource(resource_id)
+            return {
+                "status": "success",
+                "message": f"Paid resource '{resource_id}' approval revoked",
+                "resource_id": resource_id,
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to revoke resource: {str(e)}",
             }
 
     # ── LLM Configuration Tools ──────────────────────────────────────

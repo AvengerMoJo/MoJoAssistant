@@ -76,6 +76,7 @@ class ResourceManager:
     """Manages LLM resource selection, rate limiting, and budget tracking."""
 
     SANDBOX_ENV_FILE = Path.home() / ".memory" / "resource_pool.env"
+    USAGE_FILE = Path.home() / ".memory" / "resource_pool_usage.json"
 
     def __init__(self, config_path: str = "config/resource_pool_config.json", logger=None):
         self._config_path = config_path
@@ -88,6 +89,7 @@ class ResourceManager:
         self._group_counters: Dict[str, int] = {}
         self._sandbox_env: Dict[str, str] = {}
         self._load_sandbox_env()
+        self._load_usage()
         self._load_config()
 
     def _load_sandbox_env(self):
@@ -101,6 +103,39 @@ class ResourceManager:
             if "=" in line:
                 key, _, value = line.partition("=")
                 self._sandbox_env[key.strip()] = value.strip()
+
+    def _load_usage(self):
+        """Restore persisted usage stats from disk."""
+        if not self.USAGE_FILE.exists():
+            return
+        try:
+            data = json.loads(self.USAGE_FILE.read_text(encoding="utf-8"))
+            for rid, rec in data.items():
+                self._usage[rid] = UsageRecord(
+                    total_calls=rec.get("total_calls", 0),
+                    last_call_at=rec.get("last_call_at"),
+                    consecutive_errors=rec.get("consecutive_errors", 0),
+                )
+            self._log(f"Loaded usage stats for {len(data)} resource(s)")
+        except Exception as e:
+            self._log(f"Failed to load usage stats: {e}", "warning")
+
+    def _persist_usage(self):
+        """Persist lightweight usage stats to disk."""
+        try:
+            data = {}
+            for rid, usage in self._usage.items():
+                data[rid] = {
+                    "total_calls": usage.total_calls,
+                    "last_call_at": usage.last_call_at,
+                    "consecutive_errors": usage.consecutive_errors,
+                }
+            self.USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self.USAGE_FILE.write_text(
+                json.dumps(data, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            self._log(f"Failed to persist usage stats: {e}", "warning")
 
     def _log(self, message: str, level: str = "info"):
         if self._logger:
@@ -241,6 +276,8 @@ class ResourceManager:
                 usage.consecutive_errors = 0
             else:
                 usage.consecutive_errors += 1
+
+            self._persist_usage()
 
     def get_status(self) -> Dict[str, Any]:
         """Return status of all resources with usage stats."""

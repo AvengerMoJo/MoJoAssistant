@@ -27,18 +27,22 @@ class Scheduler:
     - Performance monitoring
     """
 
-    def __init__(self, storage_path: str = None, tick_interval: int = 60, logger=None):
+    def __init__(self, storage_path: str = None, tick_interval: int = 60,
+                 max_concurrent: int = 3, logger=None, memory_service=None):
         """
         Initialize scheduler
 
         Args:
             storage_path: Path to task queue JSON file
             tick_interval: Seconds between each tick (default: 60)
+            max_concurrent: Maximum number of tasks running concurrently (default: 3)
             logger: Optional logger instance
+            memory_service: Optional memory service for agentic tool use
         """
         self.queue = TaskQueue(storage_path)
-        self.executor = TaskExecutor(logger=logger)
+        self.executor = TaskExecutor(logger=logger, memory_service=memory_service)
         self.tick_interval = tick_interval
+        self.max_concurrent = max_concurrent
         self.logger = logger
 
         # State
@@ -46,6 +50,10 @@ class Scheduler:
         self.current_task: Optional[Task] = None
         self._state_lock = asyncio.Lock()  # Thread-safe state access
         self.tick_count = 0
+
+        # Concurrent execution
+        self._semaphore: Optional[asyncio.Semaphore] = None  # Created in start()
+        self._running_tasks: set = set()
 
         # Statistics
         self.stats = {
@@ -77,8 +85,9 @@ class Scheduler:
             return
 
         self.running = True
+        self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self.stats["started_at"] = datetime.now()
-        self._log("Scheduler started")
+        self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
         self._ensure_default_dreaming_task()
 
         # Set up signal handlers for graceful shutdown (only in main thread)
@@ -103,6 +112,7 @@ class Scheduler:
             self._log(f"Fatal error in scheduler: {e}", "error")
             raise
         finally:
+            await self._drain_running_tasks()
             self._log("Scheduler stopped")
 
     def _signal_handler(self, signum, frame):
@@ -115,8 +125,8 @@ class Scheduler:
         Main ticker loop - "game loop" for scheduler
 
         Each tick:
-        1. Check for next task
-        2. Execute if found
+        1. Check for ready tasks (up to concurrency limit)
+        2. Launch each as a concurrent asyncio.Task
         3. Update statistics
         4. Sleep until next tick
         """
@@ -125,19 +135,30 @@ class Scheduler:
                 self.tick_count += 1
                 self.stats["last_tick"] = datetime.now()
 
-                self._log(f"Tick #{self.tick_count}", "debug")
+                self._log(f"Tick #{self.tick_count} (running: {len(self._running_tasks)})", "debug")
 
-                # Get next task to execute
-                task = self.queue.get_next()
+                # Dispatch as many ready tasks as concurrency allows
+                dispatched = 0
+                while len(self._running_tasks) < self.max_concurrent:
+                    task = self.queue.get_next()
+                    if task is None:
+                        break
+                    # Mark as running immediately to prevent re-dispatch
+                    task.mark_started()
+                    self.queue.update(task)
+                    self._log(f"Dispatching task: {task.id} ({task.type.value})")
+                    t = asyncio.create_task(
+                        self._execute_task_concurrent(task),
+                        name=f"task-{task.id}",
+                    )
+                    self._running_tasks.add(t)
+                    t.add_done_callback(self._running_tasks.discard)
+                    dispatched += 1
 
-                if task:
-                    self._log(f"Executing task: {task.id} ({task.type.value})")
-                    await self._execute_task(task)
-                else:
+                if dispatched == 0 and not self._running_tasks:
                     self._log("No tasks ready", "debug")
 
                 # Sleep until next tick (in 1-second increments for responsiveness)
-                # This allows for quicker shutdown when stop() is called
                 remaining = self.tick_interval
                 while remaining > 0 and self.running:
                     sleep_time = min(1, remaining)
@@ -149,6 +170,11 @@ class Scheduler:
                 # Continue running despite errors
                 await asyncio.sleep(self.tick_interval)
 
+    async def _execute_task_concurrent(self, task: Task):
+        """Wrapper that acquires the semaphore before executing a task."""
+        async with self._semaphore:
+            await self._execute_task(task)
+
     async def _execute_task(self, task: Task):
         """
         Execute a single task
@@ -156,14 +182,12 @@ class Scheduler:
         Args:
             task: Task to execute
         """
+        # current_task tracks the most recently started task (informational only)
         self.current_task = task
         self.stats["tasks_executed"] += 1
 
         try:
-            # Mark task as running
-            task.mark_started()
-            self.queue.update(task)
-
+            # Task is already marked as RUNNING by the ticker loop
             self._log(f"Task {task.id} started")
 
             # Execute via executor
@@ -248,6 +272,20 @@ class Scheduler:
                 f"Created default Dreaming task {task_id} scheduled at {first_run.isoformat()}"
             )
 
+    async def _drain_running_tasks(self, timeout: float = 30.0):
+        """Wait for all running tasks to finish, with timeout."""
+        if not self._running_tasks:
+            return
+        self._log(f"Draining {len(self._running_tasks)} running task(s) (timeout={timeout}s)")
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*self._running_tasks, return_exceptions=True),
+                timeout=timeout,
+            )
+            self._log("All running tasks drained")
+        except asyncio.TimeoutError:
+            self._log(f"{len(self._running_tasks)} task(s) still running after timeout", "warning")
+
     def stop(self):
         """Stop the scheduler gracefully"""
         self._log("Stop requested")
@@ -298,6 +336,8 @@ class Scheduler:
             "running": self.running,
             "tick_count": self.tick_count,
             "tick_interval": self.tick_interval,
+            "max_concurrent": self.max_concurrent,
+            "running_tasks": len(self._running_tasks),
             "current_task": {
                 "id": self.current_task.id,
                 "type": self.current_task.type.value,

@@ -25,7 +25,30 @@ Your complete answer here.
 </FINAL_ANSWER>
 
 If you need more steps to reach the answer, continue reasoning. \
-Do not use FINAL_ANSWER until you are confident the goal is fully addressed."""
+Do not use FINAL_ANSWER until you are confident the goal is fully addressed.
+
+You may have tools available. Use them when needed to gather information."""
+
+# Tool definitions for the agentic loop
+BUILTIN_TOOLS = {
+    "memory_search": {
+        "type": "function",
+        "function": {
+            "name": "memory_search",
+            "description": "Search the user's memory (conversations, documents, knowledge base) for relevant context.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query to find relevant context",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+}
 
 CONTINUE_PROMPT = (
     "Continue working toward the goal. "
@@ -36,9 +59,10 @@ CONTINUE_PROMPT = (
 class AgenticExecutor:
     """Executes agentic tasks via an autonomous LLM think-act loop."""
 
-    def __init__(self, resource_manager: ResourceManager, logger=None):
+    def __init__(self, resource_manager: ResourceManager, logger=None, memory_service=None):
         self._rm = resource_manager
         self._logger = logger
+        self._memory_service = memory_service
 
     def _log(self, message: str, level: str = "info"):
         if self._logger:
@@ -73,6 +97,10 @@ class AgenticExecutor:
             tier_preference = [ResourceTier(t) for t in tier_pref_raw]
         else:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
+
+        # Determine which tools are enabled for this task
+        enabled_tool_names = config.get("available_tools", [])
+        tool_defs = [BUILTIN_TOOLS[t] for t in enabled_tool_names if t in BUILTIN_TOOLS]
 
         # Build initial messages
         messages: List[Dict[str, str]] = [
@@ -119,7 +147,7 @@ class AgenticExecutor:
             self._log(f"Iteration {iteration}: calling {resource.model} via {resource.id}")
             iter_start = time.time()
             try:
-                response_text = await self._call_llm(resource, messages)
+                response = await self._call_llm(resource, messages, tools=tool_defs or None)
                 self._rm.record_usage(resource.id, success=True)
             except Exception as e:
                 self._rm.record_usage(resource.id, success=False)
@@ -132,6 +160,31 @@ class AgenticExecutor:
                     "elapsed_s": round(time.time() - iter_start, 1),
                 })
                 continue  # Try next iteration with potentially different resource
+
+            message = response["choices"][0]["message"]
+            response_text = message.get("content", "") or ""
+            tool_calls = message.get("tool_calls")
+
+            # Handle tool calls if present
+            if tool_calls:
+                # Append assistant message with tool calls
+                messages.append(message)
+                tool_results = await self._execute_tool_calls(tool_calls)
+                for tc, result_content in zip(tool_calls, tool_results):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result_content,
+                    })
+                iteration_log.append({
+                    "iteration": iteration,
+                    "resource": resource.id,
+                    "model": resource.model,
+                    "status": "tool_use",
+                    "tool_calls": [tc["function"]["name"] for tc in tool_calls],
+                    "elapsed_s": round(time.time() - iter_start, 1),
+                })
+                continue  # Next iteration will get the LLM's response to tool results
 
             # Append assistant response
             messages.append({"role": "assistant", "content": response_text})
@@ -168,19 +221,26 @@ class AgenticExecutor:
             error_message=None if success else "Agent did not produce a final answer within limits",
         )
 
-    async def _call_llm(self, resource: LLMResource, messages: List[Dict[str, str]]) -> str:
-        """Make an OpenAI-compatible chat completion request."""
+    async def _call_llm(
+        self,
+        resource: LLMResource,
+        messages: List[Dict],
+        tools: Optional[List[Dict]] = None,
+    ) -> Dict:
+        """Make an OpenAI-compatible chat completion request. Returns the full response dict."""
         url = f"{resource.base_url}/chat/completions"
         headers = {"Content-Type": "application/json"}
         if resource.api_key:
             headers["Authorization"] = f"Bearer {resource.api_key}"
 
-        payload = {
+        payload: Dict[str, Any] = {
             "model": resource.model,
             "messages": messages,
             "max_tokens": resource.output_limit,
             "temperature": 0.7,
         }
+        if tools:
+            payload["tools"] = tools
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(url, json=payload, headers=headers)
@@ -190,7 +250,36 @@ class AgenticExecutor:
         choices = data.get("choices", [])
         if not choices:
             raise ValueError("LLM returned no choices")
-        return choices[0]["message"]["content"]
+        return data
+
+    async def _execute_tool_calls(self, tool_calls: List[Dict]) -> List[str]:
+        """Execute tool calls and return results as strings."""
+        results = []
+        for tc in tool_calls:
+            fn_name = tc["function"]["name"]
+            try:
+                fn_args = json.loads(tc["function"]["arguments"])
+            except (json.JSONDecodeError, KeyError):
+                fn_args = {}
+
+            try:
+                result = await self._execute_single_tool(fn_name, fn_args)
+                results.append(json.dumps(result, default=str))
+            except Exception as e:
+                self._log(f"Tool {fn_name} failed: {e}", "error")
+                results.append(json.dumps({"error": str(e)}))
+        return results
+
+    async def _execute_single_tool(self, name: str, args: Dict) -> Any:
+        """Execute a single built-in tool."""
+        if name == "memory_search" and self._memory_service:
+            query = args.get("query", "")
+            results = await self._memory_service.get_context_for_query_async(
+                query, max_items=5
+            )
+            return {"query": query, "results": results, "count": len(results)}
+
+        return {"error": f"Unknown or unavailable tool: {name}"}
 
     def _parse_final_answer(self, text: str) -> Optional[str]:
         """Extract content between <FINAL_ANSWER> tags, if present."""
