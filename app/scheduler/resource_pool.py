@@ -1,0 +1,339 @@
+"""
+LLM Resource Pool
+
+Manages available LLM endpoints with rate limiting, budget tracking,
+and tier-based selection for agentic tasks.
+"""
+
+import json
+import os
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Deque, Dict, List, Optional
+
+
+class ResourceTier(Enum):
+    FREE = "free"
+    FREE_API = "free_api"
+    PAID = "paid"
+
+
+class ResourceStatus(Enum):
+    AVAILABLE = "available"
+    RATE_LIMITED = "rate_limited"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    DISABLED = "disabled"
+    UNREACHABLE = "unreachable"
+
+
+@dataclass
+class RateLimit:
+    max_calls_per_window: int = 0
+    window_seconds: int = 3600
+    min_interval_seconds: float = 0.0
+
+
+@dataclass
+class Budget:
+    max_calls_per_window: int = 0
+    window_seconds: int = 18000  # 5 hours
+    reserved_for_user_pct: float = 20.0
+
+
+@dataclass
+class LLMResource:
+    id: str
+    type: str  # "local", "api"
+    provider: str  # "openai", etc.
+    base_url: str
+    model: str
+    tier: ResourceTier
+    priority: int = 1
+    enabled: bool = True
+    api_key: Optional[str] = None
+    api_key_env: Optional[str] = None
+    context_limit: int = 32768
+    output_limit: int = 8192
+    description: str = ""
+    account_group: Optional[str] = None
+    rate_limit: Optional[RateLimit] = None
+    budget: Optional[Budget] = None
+
+
+@dataclass
+class UsageRecord:
+    call_timestamps: Deque[float] = field(default_factory=deque)
+    total_calls: int = 0
+    last_call_at: Optional[float] = None
+    consecutive_errors: int = 0
+
+
+class ResourceManager:
+    """Manages LLM resource selection, rate limiting, and budget tracking."""
+
+    SANDBOX_ENV_FILE = Path.home() / ".memory" / "resource_pool.env"
+
+    def __init__(self, config_path: str = "config/resource_pool_config.json", logger=None):
+        self._config_path = config_path
+        self._logger = logger
+        self._lock = threading.RLock()
+        self._resources: Dict[str, LLMResource] = {}
+        self._usage: Dict[str, UsageRecord] = {}
+        self._approved_paid: set = set()
+        # Round-robin counters per account_group
+        self._group_counters: Dict[str, int] = {}
+        self._sandbox_env: Dict[str, str] = {}
+        self._load_sandbox_env()
+        self._load_config()
+
+    def _load_sandbox_env(self):
+        """Load API keys from the sandbox env file (~/.memory/resource_pool.env)."""
+        if not self.SANDBOX_ENV_FILE.exists():
+            return
+        for line in self.SANDBOX_ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                self._sandbox_env[key.strip()] = value.strip()
+
+    def _log(self, message: str, level: str = "info"):
+        if self._logger:
+            getattr(self._logger, level)(f"[ResourcePool] {message}")
+
+    def _load_config(self):
+        path = Path(self._config_path)
+        if not path.exists():
+            self._log(f"Config not found: {path}", "warning")
+            return
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        with self._lock:
+            self._resources.clear()
+            for rid, rconf in data.get("resources", {}).items():
+                resource = self._parse_resource(rid, rconf)
+                self._resources[rid] = resource
+                if rid not in self._usage:
+                    self._usage[rid] = UsageRecord()
+
+            self._tier_policy = data.get("tier_policy", {})
+            self._selection_strategy = data.get("selection_strategy", "priority_then_availability")
+            self._log(f"Loaded {len(self._resources)} resources")
+
+    def _parse_resource(self, rid: str, conf: Dict[str, Any]) -> LLMResource:
+        # Resolve API key: sandbox env > process env
+        # Keys are copied into ~/.memory/resource_pool.env at setup time,
+        # isolating the runtime sandbox from the user's key files.
+        api_key_env = conf.get("api_key_env")
+        api_key = None
+        if api_key_env:
+            api_key = self._sandbox_env.get(api_key_env) or os.getenv(api_key_env, "")
+
+        rate_limit = None
+        if "rate_limit" in conf:
+            rl = conf["rate_limit"]
+            rate_limit = RateLimit(
+                max_calls_per_window=rl.get("max_calls_per_window", 0),
+                window_seconds=rl.get("window_seconds", 3600),
+                min_interval_seconds=rl.get("min_interval_seconds", 0.0),
+            )
+
+        budget = None
+        if "budget" in conf:
+            b = conf["budget"]
+            budget = Budget(
+                max_calls_per_window=b.get("max_calls_per_window", 0),
+                window_seconds=b.get("window_seconds", 18000),
+                reserved_for_user_pct=b.get("reserved_for_user_pct", 20.0),
+            )
+
+        return LLMResource(
+            id=rid,
+            type=conf.get("type", "local"),
+            provider=conf.get("provider", "openai"),
+            base_url=conf.get("base_url", ""),
+            model=conf.get("model", ""),
+            tier=ResourceTier(conf.get("tier", "free")),
+            priority=conf.get("priority", 1),
+            enabled=conf.get("enabled", True),
+            api_key=api_key,
+            api_key_env=api_key_env,
+            context_limit=conf.get("context_limit", 32768),
+            output_limit=conf.get("output_limit", 8192),
+            description=conf.get("description", ""),
+            account_group=conf.get("account_group"),
+            rate_limit=rate_limit,
+            budget=budget,
+        )
+
+    def acquire(
+        self,
+        tier_preference: Optional[List[ResourceTier]] = None,
+        min_context: int = 0,
+        min_output: int = 0,
+    ) -> Optional[LLMResource]:
+        """
+        Acquire the best available resource matching constraints.
+
+        Returns None if no resource is available.
+        """
+        if tier_preference is None:
+            tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
+
+        with self._lock:
+            candidates = []
+            for resource in self._resources.values():
+                if not resource.enabled:
+                    continue
+                if resource.tier not in tier_preference:
+                    continue
+                if resource.tier == ResourceTier.PAID and resource.id not in self._approved_paid:
+                    continue
+                if resource.context_limit < min_context:
+                    continue
+                if resource.output_limit < min_output:
+                    continue
+                if self._is_rate_limited(resource):
+                    continue
+                if not self._is_budget_available(resource):
+                    continue
+                candidates.append(resource)
+
+            if not candidates:
+                return None
+
+            # Sort by priority (lower = preferred)
+            candidates.sort(key=lambda r: r.priority)
+
+            # For resources in the same account_group, apply round-robin
+            best = candidates[0]
+            group = best.account_group
+            if group:
+                group_candidates = [c for c in candidates if c.account_group == group]
+                if len(group_candidates) > 1:
+                    idx = self._group_counters.get(group, 0) % len(group_candidates)
+                    best = group_candidates[idx]
+                    self._group_counters[group] = idx + 1
+
+            return best
+
+    def record_usage(self, resource_id: str, tokens_used: int = 0, success: bool = True):
+        """Record a completed LLM call."""
+        with self._lock:
+            usage = self._usage.get(resource_id)
+            if usage is None:
+                usage = UsageRecord()
+                self._usage[resource_id] = usage
+
+            now = time.time()
+            usage.call_timestamps.append(now)
+            usage.total_calls += 1
+            usage.last_call_at = now
+
+            if success:
+                usage.consecutive_errors = 0
+            else:
+                usage.consecutive_errors += 1
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return status of all resources with usage stats."""
+        with self._lock:
+            result = {}
+            for rid, resource in self._resources.items():
+                usage = self._usage.get(rid, UsageRecord())
+                status = self._compute_status(resource)
+                result[rid] = {
+                    "model": resource.model,
+                    "tier": resource.tier.value,
+                    "priority": resource.priority,
+                    "enabled": resource.enabled,
+                    "status": status.value,
+                    "total_calls": usage.total_calls,
+                    "consecutive_errors": usage.consecutive_errors,
+                    "description": resource.description,
+                }
+            return result
+
+    def approve_paid_resource(self, resource_id: str):
+        with self._lock:
+            self._approved_paid.add(resource_id)
+            self._log(f"Approved paid resource: {resource_id}")
+
+    def revoke_paid_resource(self, resource_id: str):
+        with self._lock:
+            self._approved_paid.discard(resource_id)
+            self._log(f"Revoked paid resource: {resource_id}")
+
+    def reload_config(self):
+        """Re-read config from disk."""
+        self._log("Reloading resource pool config")
+        self._load_config()
+
+    def _is_rate_limited(self, resource: LLMResource) -> bool:
+        rl = resource.rate_limit
+        if rl is None:
+            return False
+
+        usage = self._usage.get(resource.id)
+        if usage is None:
+            return False
+
+        now = time.time()
+
+        # Check min interval
+        if rl.min_interval_seconds > 0 and usage.last_call_at:
+            if now - usage.last_call_at < rl.min_interval_seconds:
+                return True
+
+        # Check calls per window
+        if rl.max_calls_per_window > 0:
+            window_start = now - rl.window_seconds
+            calls_in_window = sum(1 for ts in usage.call_timestamps if ts >= window_start)
+            if calls_in_window >= rl.max_calls_per_window:
+                return True
+
+        return False
+
+    def _is_budget_available(self, resource: LLMResource) -> bool:
+        budget = resource.budget
+        if budget is None:
+            return True  # No budget constraint
+
+        usage = self._usage.get(resource.id)
+        if usage is None:
+            return True
+
+        now = time.time()
+        window_start = now - budget.window_seconds
+
+        calls_in_window = sum(1 for ts in usage.call_timestamps if ts >= window_start)
+
+        # Agent gets (100 - reserved_for_user_pct)% of the budget
+        agent_limit = int(
+            budget.max_calls_per_window * (100 - budget.reserved_for_user_pct) / 100
+        )
+
+        return calls_in_window < agent_limit
+
+    def _compute_status(self, resource: LLMResource) -> ResourceStatus:
+        if not resource.enabled:
+            return ResourceStatus.DISABLED
+
+        usage = self._usage.get(resource.id)
+        if usage and usage.consecutive_errors >= 5:
+            return ResourceStatus.UNREACHABLE
+
+        if self._is_rate_limited(resource):
+            return ResourceStatus.RATE_LIMITED
+
+        if not self._is_budget_available(resource):
+            return ResourceStatus.BUDGET_EXHAUSTED
+
+        return ResourceStatus.AVAILABLE

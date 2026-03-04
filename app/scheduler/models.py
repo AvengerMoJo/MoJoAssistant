@@ -36,6 +36,7 @@ class TaskType(Enum):
     SCHEDULED = "scheduled"  # User calendar events
     AGENT = "agent"  # OpenCode/OpenClaw operations
     CUSTOM = "custom"  # User-defined tasks
+    AGENTIC = "agentic"  # Autonomous LLM agent loop
 
 
 @dataclass
@@ -46,6 +47,8 @@ class TaskResources:
     max_tokens: Optional[int] = None
     max_duration_seconds: Optional[int] = None
     requires_gpu: bool = False
+    tier_preference: Optional[List[str]] = None  # e.g. ["free", "free_api"]
+    max_iterations: int = 10
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""

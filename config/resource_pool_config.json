@@ -1,0 +1,36 @@
+{
+  "resources": {
+    "lmstudio_glm4": {
+      "type": "local",
+      "provider": "openai",
+      "base_url": "http://localhost:8080/v1",
+      "api_key_env": "LMSTUDIO_API_KEY",
+      "model": "zai-org/glm-4.7-flash",
+      "tier": "free",
+      "priority": 1,
+      "enabled": true,
+      "context_limit": 32768,
+      "output_limit": 8192,
+      "description": "Local GLM-4.7-Flash via LMStudio"
+    },
+    "lmstudio_qwen35b": {
+      "type": "local",
+      "provider": "openai",
+      "base_url": "http://localhost:8080/v1",
+      "api_key_env": "LMSTUDIO_API_KEY",
+      "model": "qwen/qwen3.5-35b-a3b",
+      "tier": "free",
+      "priority": 2,
+      "enabled": true,
+      "context_limit": 32768,
+      "output_limit": 8192,
+      "description": "Local Qwen 3.5-35B via LMStudio"
+    }
+  },
+  "tier_policy": {
+    "free": { "auto_approve": true },
+    "free_api": { "auto_approve": true },
+    "paid": { "auto_approve": false }
+  },
+  "selection_strategy": "priority_then_availability"
+}

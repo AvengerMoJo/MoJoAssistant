@@ -74,6 +74,12 @@ class ToolRegistry:
                 ],
                 "on_change": None,
             },
+            "resource_pool": {
+                "file": "config/resource_pool_config.json",
+                "description": "LLM resource pool for agentic tasks - endpoints, rate limits, budgets",
+                "sensitive_keys": ["resources.*.api_key_env"],
+                "on_change": self._on_resource_pool_config_change,
+            },
         }
 
         self.tools = self._define_tools()
@@ -2385,6 +2391,16 @@ class ToolRegistry:
         try:
             if hasattr(self, "scheduler") and hasattr(self.scheduler, "executor"):
                 self.scheduler.executor.reset_pipeline()
+        except Exception:
+            pass  # non-critical
+
+    def _on_resource_pool_config_change(self) -> None:
+        """Hook called after resource pool config is modified — reloads resource manager."""
+        try:
+            if hasattr(self, "scheduler") and hasattr(self.scheduler, "executor"):
+                executor = self.scheduler.executor
+                if hasattr(executor, "_resource_manager") and executor._resource_manager:
+                    executor._resource_manager.reload_config()
         except Exception:
             pass  # non-critical
 

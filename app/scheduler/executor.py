@@ -24,6 +24,7 @@ class TaskExecutor:
     - Scheduled tasks (user calendar events)
     - Agent tasks (OpenCode/OpenClaw)
     - Custom tasks (user-defined)
+    - Agentic tasks (autonomous LLM loop)
     """
 
     def __init__(self, logger=None, llm_config_path: Optional[str] = None):
@@ -38,6 +39,8 @@ class TaskExecutor:
         self.llm_config_path = llm_config_path or "config/llm_config.json"
         self._dreaming_pipeline = None
         self._cached_quality_level = None
+        self._resource_manager = None
+        self._agentic_executor = None
 
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
@@ -66,6 +69,8 @@ class TaskExecutor:
                 result = await self._execute_agent(task)
             elif task.type == TaskType.CUSTOM:
                 result = await self._execute_custom(task)
+            elif task.type == TaskType.AGENTIC:
+                result = await self._execute_agentic(task)
             else:
                 raise ValueError(f"Unknown task type: {task.type}")
 
@@ -448,4 +453,44 @@ class TaskExecutor:
         except Exception as e:
             return TaskResult(
                 success=False, error_message=f"Failed to execute command: {e}"
+            )
+
+    def _get_resource_manager(self):
+        """Lazy-initialize the ResourceManager."""
+        if self._resource_manager is None:
+            from app.scheduler.resource_pool import ResourceManager
+
+            self._resource_manager = ResourceManager(logger=self.logger)
+        return self._resource_manager
+
+    def _get_agentic_executor(self):
+        """Lazy-initialize the AgenticExecutor."""
+        if self._agentic_executor is None:
+            from app.scheduler.agentic_executor import AgenticExecutor
+
+            self._agentic_executor = AgenticExecutor(
+                resource_manager=self._get_resource_manager(),
+                logger=self.logger,
+            )
+        return self._agentic_executor
+
+    async def _execute_agentic(self, task: Task) -> TaskResult:
+        """
+        Execute an agentic task (autonomous LLM think-act loop).
+
+        Task config should contain:
+        - goal: What the agent should accomplish
+        - system_prompt: Optional override for the system prompt
+        - max_iterations: Optional max LLM round-trips
+        - context: Optional dict of extra context
+        """
+        self._log(f"Executing agentic task {task.id}")
+
+        try:
+            executor = self._get_agentic_executor()
+            return await executor.execute(task)
+        except Exception as e:
+            self._log(f"Agentic task {task.id} failed: {e}", "error")
+            return TaskResult(
+                success=False, error_message=f"Agentic execution error: {e}"
             )
