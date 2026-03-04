@@ -41,6 +41,8 @@ This release introduces a three-phase agentic scheduler that turns MoJoAssistant
 
 `14 commits, 72 files changed, 4254 insertions(+), 4138 deletions(-)`
 
+### System Mode Update
+
 ### Quickstart
 
 ```bash
