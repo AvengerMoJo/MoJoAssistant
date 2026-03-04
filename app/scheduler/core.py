@@ -28,7 +28,8 @@ class Scheduler:
     """
 
     def __init__(self, storage_path: str = None, tick_interval: int = 60,
-                 max_concurrent: int = 3, logger=None, memory_service=None):
+                 max_concurrent: int = 3, logger=None, memory_service=None,
+                 sse_notifier=None):
         """
         Initialize scheduler
 
@@ -38,12 +39,14 @@ class Scheduler:
             max_concurrent: Maximum number of tasks running concurrently (default: 3)
             logger: Optional logger instance
             memory_service: Optional memory service for agentic tool use
+            sse_notifier: Optional SSENotifier for real-time task events
         """
         self.queue = TaskQueue(storage_path)
         self.executor = TaskExecutor(logger=logger, memory_service=memory_service)
         self.tick_interval = tick_interval
         self.max_concurrent = max_concurrent
         self.logger = logger
+        self._sse_notifier = sse_notifier
 
         # State
         self.running = False
@@ -175,6 +178,14 @@ class Scheduler:
         async with self._semaphore:
             await self._execute_task(task)
 
+    async def _broadcast(self, event: dict):
+        """Broadcast an SSE event if notifier is available."""
+        if self._sse_notifier:
+            try:
+                await self._sse_notifier.broadcast(event)
+            except Exception:
+                pass  # non-critical
+
     async def _execute_task(self, task: Task):
         """
         Execute a single task
@@ -189,6 +200,11 @@ class Scheduler:
         try:
             # Task is already marked as RUNNING by the ticker loop
             self._log(f"Task {task.id} started")
+            await self._broadcast({
+                "event_type": "task_started",
+                "task_id": task.id,
+                "task_type": task.type.value,
+            })
 
             # Execute via executor
             result = await self.executor.execute(task)
@@ -196,6 +212,18 @@ class Scheduler:
                 task.mark_completed(result)
                 self.stats["tasks_succeeded"] += 1
                 self._log(f"Task {task.id} completed successfully")
+                await self._broadcast({
+                    "event_type": "task_completed",
+                    "task_id": task.id,
+                    "task_type": task.type.value,
+                    "status": "completed",
+                    "final_answer": (result.metrics or {}).get("final_answer"),
+                    "session_file": (result.metrics or {}).get("session_file"),
+                })
+
+                # Auto-schedule dreaming for completed agentic tasks
+                if task.type == TaskType.AGENTIC:
+                    self._schedule_dreaming_for_agentic_task(task)
 
                 # Check if recurring task needs rescheduling
                 if task.cron_expression:
@@ -221,6 +249,12 @@ class Scheduler:
                     task.mark_failed(result.error_message or "Unknown error")
                     self.stats["tasks_failed"] += 1
                     self._log(f"Task {task.id} failed permanently", "error")
+                    await self._broadcast({
+                        "event_type": "task_failed",
+                        "task_id": task.id,
+                        "task_type": task.type.value,
+                        "error": result.error_message or "Unknown error",
+                    })
 
             # Save updated task
             self.queue.update(task)
@@ -230,9 +264,85 @@ class Scheduler:
             task.mark_failed(str(e))
             self.stats["tasks_failed"] += 1
             self.queue.update(task)
+            await self._broadcast({
+                "event_type": "task_failed",
+                "task_id": task.id,
+                "task_type": task.type.value,
+                "error": str(e),
+            })
 
         finally:
             self.current_task = None
+
+    def _schedule_dreaming_for_agentic_task(self, task: Task):
+        """
+        After a successful agentic task, auto-create a dreaming task
+        to consolidate the session into long-term memory.
+        """
+        try:
+            from app.scheduler.session_storage import SessionStorage
+
+            # Load the session file
+            session_file = None
+            if task.result and task.result.output_file:
+                session_file = task.result.output_file
+            if task.result and task.result.metrics:
+                session_file = session_file or task.result.metrics.get("session_file")
+
+            if not session_file:
+                self._log(f"No session file for task {task.id}, skipping dreaming", "debug")
+                return
+
+            storage = SessionStorage()
+            session = storage.load_session(task.id)
+            if session is None:
+                self._log(f"Could not load session for task {task.id}", "warning")
+                return
+
+            # Convert messages to conversation text
+            lines = []
+            for msg in session.messages:
+                lines.append(f"[{msg.role}] {msg.content}")
+            conversation_text = "\n".join(lines)
+
+            if not conversation_text.strip():
+                self._log(f"Empty session for task {task.id}, skipping dreaming", "debug")
+                return
+
+            # Get goal and final answer for metadata
+            goal = (task.config or {}).get("goal", "")
+            final_answer = session.final_answer or ""
+            iterations = len(session.messages)
+
+            dreaming_task_id = f"dreaming_agentic_{task.id}"
+
+            dreaming_task = Task(
+                id=dreaming_task_id,
+                type=TaskType.DREAMING,
+                priority=TaskPriority.LOW,
+                config={
+                    "conversation_id": f"agentic_{task.id}",
+                    "conversation_text": conversation_text,
+                    "quality_level": "basic",
+                    "metadata": {
+                        "source": "agentic_task",
+                        "original_task_id": task.id,
+                        "goal": goal,
+                        "final_answer": final_answer[:500] if final_answer else None,
+                        "message_count": iterations,
+                    },
+                },
+                description=f"Dreaming consolidation for agentic task {task.id}",
+                created_by="system",
+            )
+
+            if self.queue.add(dreaming_task):
+                self._log(f"Scheduled dreaming task {dreaming_task_id} for agentic task {task.id}")
+            else:
+                self._log(f"Dreaming task {dreaming_task_id} already exists", "debug")
+
+        except Exception as e:
+            self._log(f"Failed to schedule dreaming for task {task.id}: {e}", "error")
 
     def _ensure_default_dreaming_task(self):
         """

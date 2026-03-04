@@ -3,6 +3,7 @@ HTTP Protocol Adapter for Web/Mobile clients with OAuth 2.1 support
 File: app/mcp/adapters/http.py
 """
 
+import asyncio
 import json
 import time
 from datetime import datetime
@@ -175,6 +176,7 @@ class HTTPAdapter(ProtocolAdapter):
                     "mcp": "POST /",
                     "oauth_mcp": "POST /oauth",
                     "health": "GET /health",
+                    "task_events": "GET /events/tasks",
                 },
             }
 
@@ -253,8 +255,57 @@ class HTTPAdapter(ProtocolAdapter):
             uptime = time.time() - self.engine.start_time
             return {"status": "healthy", "uptime": round(uptime, 2)}
 
+        # SSE endpoint for real-time task notifications
+        @app.get("/events/tasks")
+        async def task_events():
+            """Server-Sent Events stream for task lifecycle events."""
+            from fastapi.responses import StreamingResponse
+            from app.mcp.adapters.sse import SSENotifier, format_sse
+
+            notifier = self._get_notifier()
+            if notifier is None:
+                return JSONResponse(
+                    content={"error": "SSE notifier not available"},
+                    status_code=503,
+                )
+
+            async def event_generator():
+                queue = await notifier.subscribe()
+                try:
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                            event_type = event.pop("event_type", "message")
+                            yield format_sse(event_type, event)
+                        except asyncio.TimeoutError:
+                            # Keepalive comment
+                            yield ": keepalive\n\n"
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    await notifier.unsubscribe(queue)
+
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
         self.app = app
         return app
+
+    def _get_notifier(self):
+        """Get the SSE notifier from the engine's tool registry."""
+        try:
+            if hasattr(self.engine, "tool_registry"):
+                return getattr(self.engine.tool_registry, "_sse_notifier", None)
+        except Exception:
+            pass
+        return None
 
     async def _process_mcp_request(
         self, raw_request: Request, user_id: Optional[str] = None

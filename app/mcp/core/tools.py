@@ -47,10 +47,18 @@ class ToolRegistry:
         from app.mcp.agents.registry import AgentRegistry
         self.agent_registry = AgentRegistry(logger=logger)
 
+        # Initialize SSE notifier for real-time task events
+        from app.mcp.adapters.sse import SSENotifier
+
+        self._sse_notifier = SSENotifier()
+
         # Initialize Scheduler (pass memory_service for agentic tool use)
         from app.scheduler.core import Scheduler
 
-        self.scheduler = Scheduler(logger=logger, memory_service=memory_service)
+        self.scheduler = Scheduler(
+            logger=logger, memory_service=memory_service,
+            sse_notifier=self._sse_notifier,
+        )
         self.scheduler_thread = None
 
         # Auto-start scheduler in background thread
@@ -1003,6 +1011,47 @@ class ToolRegistry:
                     "required": [],
                 },
             },
+            # Task Session Tools
+            {
+                "name": "task_session_read",
+                "description": "Read the full conversation trail for an agentic task. Works for both running and completed tasks (live tracking). Returns session status, messages, final_answer, and timestamps.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "ID of the agentic task to read the session for",
+                            "minLength": 1,
+                        },
+                        "include_metadata": {
+                            "type": "boolean",
+                            "description": "Include per-message metadata in the response (default: false)",
+                        },
+                    },
+                    "required": ["task_id"],
+                },
+            },
+            {
+                "name": "scheduler_resume_task",
+                "description": "Resume a failed or timed-out agentic task. Creates a new task that loads the previous session's conversation and continues from where it left off.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "ID of the failed/timed_out agentic task to resume",
+                            "minLength": 1,
+                        },
+                        "max_additional_iterations": {
+                            "type": "integer",
+                            "description": "Maximum additional LLM iterations for the resumed task (default: 10)",
+                            "minimum": 1,
+                            "maximum": 50,
+                        },
+                    },
+                    "required": ["task_id"],
+                },
+            },
             # Resource Pool Tools
             {
                 "name": "resource_pool_status",
@@ -1453,6 +1502,11 @@ class ToolRegistry:
             return await self._execute_config(args)
         elif name == "llm_list_available_models":
             return await self._execute_llm_list_available_models(args)
+        # Task Session Tools
+        elif name == "task_session_read":
+            return await self._execute_task_session_read(args)
+        elif name == "scheduler_resume_task":
+            return await self._execute_scheduler_resume_task(args)
         # Resource Pool Tools
         elif name == "resource_pool_status":
             return await self._execute_resource_pool_status(args)
@@ -2364,6 +2418,132 @@ class ToolRegistry:
             return {
                 "status": "error",
                 "message": f"Quality upgrade failed: {str(e)}"
+            }
+
+    # ========================================================================
+    # Task Session Tools
+    # ========================================================================
+
+    async def _execute_task_session_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute task_session_read tool"""
+        try:
+            from app.scheduler.session_storage import SessionStorage
+
+            task_id = args.get("task_id")
+            include_metadata = args.get("include_metadata", False)
+
+            storage = SessionStorage()
+            session = storage.load_session(task_id)
+
+            if session is None:
+                return {
+                    "status": "error",
+                    "message": f"No session found for task '{task_id}'",
+                }
+
+            # Format messages
+            messages = []
+            for msg in session.messages:
+                entry = {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "timestamp": msg.timestamp,
+                    "iteration": msg.iteration,
+                }
+                if msg.tool_call_id:
+                    entry["tool_call_id"] = msg.tool_call_id
+                if msg.tool_name:
+                    entry["tool_name"] = msg.tool_name
+                if include_metadata and msg.metadata:
+                    entry["metadata"] = msg.metadata
+                messages.append(entry)
+
+            return {
+                "status": "success",
+                "task_id": session.task_id,
+                "session_status": session.status,
+                "started_at": session.started_at,
+                "completed_at": session.completed_at,
+                "final_answer": session.final_answer,
+                "error_message": session.error_message,
+                "message_count": len(messages),
+                "messages": messages,
+                "metadata": session.metadata,
+            }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to read task session: {str(e)}",
+            }
+
+    async def _execute_scheduler_resume_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute scheduler_resume_task tool"""
+        try:
+            from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
+            from app.scheduler.session_storage import SessionStorage
+
+            task_id = args.get("task_id")
+            max_additional = args.get("max_additional_iterations", 10)
+
+            # Validate original task exists and is agentic
+            original_task = self.scheduler.get_task(task_id)
+            if original_task is None:
+                return {"status": "error", "message": f"Task '{task_id}' not found"}
+
+            if original_task.type != TaskType.AGENTIC:
+                return {"status": "error", "message": f"Task '{task_id}' is not an agentic task (type: {original_task.type.value})"}
+
+            if original_task.status.value not in ("failed", "completed"):
+                # Also check session status for timed_out
+                storage = SessionStorage()
+                session = storage.load_session(task_id)
+                if session is None or session.status not in ("failed", "timed_out"):
+                    return {
+                        "status": "error",
+                        "message": f"Task '{task_id}' is not in a resumable state (status: {original_task.status.value})",
+                    }
+
+            # Verify session exists
+            storage = SessionStorage()
+            session = storage.load_session(task_id)
+            if session is None:
+                return {"status": "error", "message": f"No session found for task '{task_id}'"}
+
+            # Create resume task
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            resume_task_id = f"{task_id}_resume_{timestamp}"
+
+            original_config = original_task.config.copy()
+            original_config["resume_from_task_id"] = task_id
+            original_config["max_iterations"] = max_additional
+
+            resume_task = Task(
+                id=resume_task_id,
+                type=TaskType.AGENTIC,
+                priority=original_task.priority,
+                config=original_config,
+                resources=original_task.resources,
+                description=f"Resume of {task_id}",
+                created_by="user",
+            )
+
+            success = self.scheduler.add_task(resume_task)
+            if success:
+                return {
+                    "status": "success",
+                    "message": f"Resume task '{resume_task_id}' created",
+                    "resume_task_id": resume_task_id,
+                    "original_task_id": task_id,
+                    "max_iterations": max_additional,
+                }
+            else:
+                return {"status": "error", "message": f"Failed to create resume task"}
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to resume task: {str(e)}",
             }
 
     # ========================================================================

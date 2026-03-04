@@ -14,6 +14,7 @@ import httpx
 
 from app.scheduler.models import Task, TaskResult
 from app.scheduler.resource_pool import LLMResource, ResourceManager, ResourceTier
+from app.scheduler.session_storage import SessionMessage, SessionStorage, TaskSession
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an autonomous assistant working on a specific goal.
@@ -63,10 +64,24 @@ class AgenticExecutor:
         self._rm = resource_manager
         self._logger = logger
         self._memory_service = memory_service
+        self._session_storage = SessionStorage()
 
     def _log(self, message: str, level: str = "info"):
         if self._logger:
             getattr(self._logger, level)(f"[AgenticExecutor] {message}")
+
+    def _record(self, task_id: str, role: str, content: str, iteration: int, **kwargs):
+        """Append a message to the session log."""
+        self._session_storage.append_message(
+            task_id,
+            SessionMessage(
+                role=role,
+                content=content,
+                timestamp=datetime.now().isoformat(),
+                iteration=iteration,
+                **kwargs,
+            ),
+        )
 
     async def execute(self, task: Task) -> TaskResult:
         """
@@ -79,6 +94,7 @@ class AgenticExecutor:
             context (dict, optional): Extra context injected into first user message.
             max_duration_seconds (int, optional): Wall-clock time budget.
             tier_preference (list[str], optional): Resource tier preference.
+            resume_from_task_id (str, optional): Load previous session and continue.
         """
         config = task.config or {}
         goal = config.get("goal", "")
@@ -102,17 +118,58 @@ class AgenticExecutor:
         enabled_tool_names = config.get("available_tools", [])
         tool_defs = [BUILTIN_TOOLS[t] for t in enabled_tool_names if t in BUILTIN_TOOLS]
 
-        # Build initial messages
-        messages: List[Dict[str, str]] = [
-            {"role": "system", "content": system_prompt},
-        ]
+        # --- Resume support ---
+        resume_from = config.get("resume_from_task_id")
+        if resume_from:
+            messages, start_iteration = self._load_resume_messages(resume_from, system_prompt)
+            if messages is None:
+                return TaskResult(
+                    success=False,
+                    error_message=f"Cannot resume: session '{resume_from}' not found",
+                )
+            # Add a continuation prompt so the LLM knows we're resuming
+            messages.append({
+                "role": "user",
+                "content": (
+                    "The previous attempt ran out of time or failed. "
+                    "Continue working toward the original goal. "
+                    "If you are done, provide your answer inside <FINAL_ANSWER> tags."
+                ),
+            })
+        else:
+            start_iteration = 0
+            # Build initial messages
+            messages: List[Dict[str, str]] = [
+                {"role": "system", "content": system_prompt},
+            ]
+            # Build first user message with goal + optional context
+            user_content = f"Goal: {goal}"
+            context = config.get("context")
+            if context:
+                user_content += f"\n\nContext:\n{json.dumps(context, indent=2, default=str)}"
+            messages.append({"role": "user", "content": user_content})
 
-        # Build first user message with goal + optional context
-        user_content = f"Goal: {goal}"
-        context = config.get("context")
-        if context:
-            user_content += f"\n\nContext:\n{json.dumps(context, indent=2, default=str)}"
-        messages.append({"role": "user", "content": user_content})
+        # --- Create session ---
+        session = TaskSession(
+            task_id=task.id,
+            status="running",
+            messages=[],
+            started_at=datetime.now().isoformat(),
+            metadata={
+                "goal": goal,
+                "max_iterations": max_iterations,
+                "resume_from": resume_from,
+            },
+        )
+        self._session_storage.save_session(session)
+
+        # Record initial messages
+        for msg in messages:
+            role = msg.get("role", msg.get("type", "unknown"))
+            content = msg.get("content", "")
+            if isinstance(content, dict):
+                content = json.dumps(content, default=str)
+            self._record(task.id, role, content or "", iteration=0)
 
         iteration_log: List[Dict[str, Any]] = []
         start_time = time.time()
@@ -121,9 +178,14 @@ class AgenticExecutor:
         self._log(f"Starting agentic loop for task {task.id} (max {max_iterations} iterations)")
 
         for iteration in range(1, max_iterations + 1):
+            abs_iteration = start_iteration + iteration
             elapsed = time.time() - start_time
             if elapsed >= max_duration:
                 self._log(f"Task {task.id}: time budget exhausted at iteration {iteration}")
+                self._session_storage.update_status(
+                    task.id, "timed_out",
+                    error_message="Time budget exhausted",
+                )
                 break
 
             # Acquire a resource
@@ -169,6 +231,12 @@ class AgenticExecutor:
             if tool_calls:
                 # Append assistant message with tool calls
                 messages.append(message)
+                self._record(
+                    task.id, "assistant", response_text,
+                    iteration=abs_iteration,
+                    metadata={"tool_calls": [tc["function"]["name"] for tc in tool_calls]},
+                )
+
                 tool_results = await self._execute_tool_calls(tool_calls)
                 for tc, result_content in zip(tool_calls, tool_results):
                     messages.append({
@@ -176,6 +244,13 @@ class AgenticExecutor:
                         "tool_call_id": tc["id"],
                         "content": result_content,
                     })
+                    self._record(
+                        task.id, "tool", result_content,
+                        iteration=abs_iteration,
+                        tool_call_id=tc["id"],
+                        tool_name=tc["function"]["name"],
+                    )
+
                 iteration_log.append({
                     "iteration": iteration,
                     "resource": resource.id,
@@ -188,6 +263,7 @@ class AgenticExecutor:
 
             # Append assistant response
             messages.append({"role": "assistant", "content": response_text})
+            self._record(task.id, "assistant", response_text, iteration=abs_iteration)
 
             # Check for final answer
             final_answer = self._parse_final_answer(response_text)
@@ -202,24 +278,67 @@ class AgenticExecutor:
 
             if final_answer:
                 self._log(f"Task {task.id}: got final answer at iteration {iteration}")
+                self._session_storage.update_status(
+                    task.id, "completed", final_answer=final_answer,
+                )
                 break
 
             # Append continue prompt for next iteration
             messages.append({"role": "user", "content": CONTINUE_PROMPT})
+            self._record(task.id, "user", CONTINUE_PROMPT, iteration=abs_iteration)
 
         total_elapsed = round(time.time() - start_time, 1)
         success = final_answer is not None
 
+        # Finalize session status if not already set
+        current_session = self._session_storage.load_session(task.id)
+        if current_session and current_session.status == "running":
+            if success:
+                self._session_storage.update_status(
+                    task.id, "completed", final_answer=final_answer,
+                )
+            else:
+                self._session_storage.update_status(
+                    task.id, "failed",
+                    error_message="Agent did not produce a final answer within limits",
+                )
+
+        session_file = str(self._session_storage._path(task.id))
+
         return TaskResult(
             success=success,
+            output_file=session_file,
             metrics={
                 "iterations": len(iteration_log),
                 "iteration_log": iteration_log,
                 "duration_seconds": total_elapsed,
                 "final_answer": final_answer,
+                "session_file": session_file,
             },
             error_message=None if success else "Agent did not produce a final answer within limits",
         )
+
+    def _load_resume_messages(
+        self, task_id: str, system_prompt: str
+    ) -> tuple[Optional[List[Dict]], int]:
+        """
+        Load messages from a previous session for resumption.
+        Returns (messages, last_iteration) or (None, 0) if session not found.
+        """
+        session = self._session_storage.load_session(task_id)
+        if session is None:
+            return None, 0
+
+        messages: List[Dict] = []
+        max_iteration = 0
+        for msg in session.messages:
+            max_iteration = max(max_iteration, msg.iteration)
+            entry: Dict[str, Any] = {"role": msg.role, "content": msg.content}
+            if msg.tool_call_id:
+                entry["tool_call_id"] = msg.tool_call_id
+            messages.append(entry)
+
+        return messages, max_iteration
 
     async def _call_llm(
         self,
