@@ -19,10 +19,6 @@ from app.scheduler.planning_prompt_manager import PlanningPromptManager
 from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
 from app.scheduler.safety_policy import SafetyPolicy
 
-# Use prompt-based system instead of hardcoded prompts
-_planning_prompt_manager = PlanningPromptManager()
-_dynamic_tool_registry = DynamicToolRegistry()
-
 DEFAULT_SYSTEM_PROMPT = """\
 You are an autonomous assistant working on a specific goal.
 Think step by step. When you have completed the goal, wrap your final answer in \
@@ -74,8 +70,8 @@ class AgenticExecutor:
         self._logger = logger
         self._memory_service = memory_service
         self._session_storage = SessionStorage()
-        self._planning_manager = _planning_prompt_manager
-        self._tool_registry = _dynamic_tool_registry
+        self._planning_manager = PlanningPromptManager()
+        self._tool_registry = DynamicToolRegistry()
         self._tool_registry.set_memory_service(memory_service)
         self._policy = SafetyPolicy()
 
@@ -483,7 +479,7 @@ class AgenticExecutor:
 
         # Check safety policy before execution
         if tool:
-            policy_check = self._policy.check_tool_execution(name, tool, args)
+            policy_check = self._policy.check_tool_execution(name, tool.to_dict(), args)
             if not policy_check["allowed"]:
                 self._log(
                     f"Tool {name} blocked by policy: {policy_check['reason']}",

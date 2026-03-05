@@ -7,11 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import httpx
-
-from app.scheduler.session_storage import SessionStorage
-
-
 class SandboxSecurity:
     """Enforces sandbox security boundaries for tools."""
 
@@ -23,7 +18,7 @@ class SandboxSecurity:
         """Check if path is within allowed sandbox directories."""
         path_abs = str(Path(path).resolve())
         for allowed in self.allowed_paths:
-            allowed_abs = str(Path(allowed).resolve())
+            allowed_abs = str(Path(allowed).expanduser().resolve())
             if path_abs.startswith(allowed_abs):
                 return True
         return False
@@ -86,7 +81,7 @@ class DynamicToolRegistry:
             os.path.dirname(__file__), "..", "..", "config", "dynamic_tools.json"
         )
         self.sandbox = SandboxSecurity()
-        self.session_storage = SessionStorage()
+        self._memory_service = None
         self._tools: Dict[str, ToolDefinition] = {}
         self._load_registry()
         self._register_builtins()
@@ -376,6 +371,7 @@ class DynamicToolRegistry:
         try:
             result = subprocess.run(
                 command,
+                shell=True,
                 capture_output=True,
                 text=True,
                 timeout=60,

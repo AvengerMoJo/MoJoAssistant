@@ -94,9 +94,9 @@ class SafetyPolicy:
                 "reason": f"Tool name '{tool_name}' is blocked by immutable rules",
             }
 
-        # For write operations, check sandbox
-        if tool_name in ["write_file", "bash_exec"]:
-            path_arg = args.get("path") or args.get("command", "")
+        # For write operations, check sandbox (bash_exec has its own whitelist)
+        if tool_name == "write_file":
+            path_arg = args.get("path", "")
 
             # Check if path is in allowed sandbox
             allowed = False
@@ -161,6 +161,7 @@ class SafetyPolicy:
         success: bool = True,
         rollback: bool = False,
         backup_path: Optional[str] = None,
+        reason: Optional[str] = None,
     ):
         """Track operation in log file."""
 
@@ -172,6 +173,7 @@ class SafetyPolicy:
             "success": success,
             "rollback": rollback,
             "backup_path": backup_path,
+            "reason": reason,
         }
 
         # Load existing log
@@ -195,4 +197,4 @@ class SafetyPolicy:
     def _ensure_dirs(self):
         """Ensure required directories exist."""
         os.makedirs("config/rollback_snapshots", exist_ok=True)
-        os.makedirs("~/.memory/", exist_ok=True)
+        os.makedirs(Path.home() / ".memory", exist_ok=True)
