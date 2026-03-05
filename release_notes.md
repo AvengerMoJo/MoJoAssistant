@@ -1,52 +1,60 @@
-## Agentic Scheduler — Autonomous LLM Task Engine
+## v1.1.5-beta — Agentic Safety Policy & AI Self-Modification System
 
-This release introduces a three-phase agentic scheduler that turns MoJoAssistant into an autonomous task execution platform. Background LLM agents can now pursue goals, use tools, persist their conversations, resume after failures, and automatically consolidate results into long-term memory.
+This release adds a safety policy layer that governs what agentic tasks can do at runtime. All tool execution is sandboxed to `~/.memory/`, bash commands are restricted to a safe whitelist, and every operation is tracked in an audit log. The system also introduces a dynamic tool registry and a planning prompt manager — both configurable at runtime via the `config` MCP tool.
 
 ### Highlights
 
-**Autonomous Agent Loop** — Schedule a goal, and the system autonomously acquires LLM resources, reasons step-by-step, calls tools (memory search), and produces a final answer — all in the background.
+**Safety Policy Enforcement** — Immutable rules block dangerous tool names (`rm`, `kill`, `dd`, etc.) and restrict file operations to the `~/.memory/` sandbox. AI agents can read the policy but cannot modify it.
 
-**Persistent Session Memory** — Every agentic task records its full conversation trail to `~/.memory/task_sessions/`. Sessions are queryable in real-time (even while running) and resumable after timeout or failure.
+**Dynamic Tool Registry** — Six built-in tools (`read_file`, `write_file`, `list_files`, `search_in_files`, `bash_exec`, `memory_search`) with sandbox security, file size limits, and safe-command whitelisting for bash.
 
-**Resource Pool** — Tier-based LLM resource management (free → free_api → paid) with rate limiting, budget tracking, round-robin selection, and explicit approval for paid endpoints.
+**Planning Prompt Manager** — Four default planning workflows (`agentic_planning`, `documentation_update`, `coding_task`, `debugging_task`) loaded from versioned JSON config. Prompts are swappable at runtime.
 
-**Automatic Dreaming** — When an agentic task completes, a dreaming consolidation task is auto-scheduled to archive the conversation into long-term memory.
+**Operation Tracking** — Every tool execution (allowed or blocked) is logged to `config/tool_operation_logs.json` with timestamps, tool names, success status, and block reasons.
 
-**Real-time SSE Notifications** — `GET /events/tasks` streams task lifecycle events (started, completed, failed) to any SSE client.
+**Runtime Config Modules** — Three new `config` modules (`agentic_tools`, `agentic_prompts`, `policy`) let agents inspect and update tools/prompts without server restart. Safety policy is read-only.
 
 ---
-
-### New MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `task_session_read` | Read full conversation trail for any agentic task (live or completed) |
-| `scheduler_resume_task` | Resume a failed/timed-out agentic task from where it left off |
-| `resource_pool_status` | View all LLM resources, their tiers, rate limits, and usage stats |
-| `resource_pool_approve` | Approve a paid LLM resource for agentic use |
-| `resource_pool_revoke` | Revoke approval for a paid resource |
-| `config` | Generic config tool (replaces 3 rigid LLM tools) — help/get/set with dot-paths |
 
 ### New Files
 
 | File | Purpose |
 |------|---------|
-| `app/scheduler/resource_pool.py` | LLM resource management with tier selection and budgets |
-| `app/scheduler/agentic_executor.py` | Autonomous think-act loop with session logging |
-| `app/scheduler/session_storage.py` | Per-task conversation trail persistence |
-| `app/mcp/adapters/sse.py` | SSE notification fan-out via asyncio queues |
-| `config/resource_pool_config.json` | Resource pool endpoint configuration |
+| `app/scheduler/safety_policy.py` | Sandbox enforcement, immutable rules, operation audit log |
+| `app/scheduler/dynamic_tool_registry.py` | Runtime tool registry with 6 built-in tools and sandbox security |
+| `app/scheduler/planning_prompt_manager.py` | Versioned planning prompt management with 4 default workflows |
+| `config/safety_policy.json` | Immutable safety policy (sandbox paths, blocked tools, danger levels) |
+| `config/agentic_tools.json` | Dynamic tool registry persistence |
+| `config/agentic_prompts.json` | Planning prompt definitions |
 
-### Changes since v1.1.4-beta
+### Modified Files
 
-`14 commits, 72 files changed, 4254 insertions(+), 4138 deletions(-)`
+| File | Changes |
+|------|---------|
+| `app/mcp/core/tools.py` | Added `agentic_tools`, `agentic_prompts`, `policy` config modules; removed incorrect `tool_registry_*` / `planning_*` MCP tools |
+| `app/scheduler/agentic_executor.py` | Integrated safety policy check before tool execution; uses planning prompt manager and dynamic tool registry |
+| `app/scheduler/executor.py` | Passes safety context to agentic executor |
 
-### System Mode Update
+### Bug Fixes (post-release)
+
+Nine runtime bugs were caught and fixed before the first real execution:
+
+| Bug | Description |
+|-----|-------------|
+| Tilde not expanded in `makedirs` | `os.makedirs("~/.memory/")` created a literal `~` directory |
+| Tilde not expanded in sandbox check | `Path("~/.memory/").resolve()` doesn't expand `~` — added `.expanduser()` |
+| `bash_exec` sandbox path check | Full command string was treated as a file path — removed sandbox check for `bash_exec` (has its own whitelist) |
+| Missing `reason` parameter | `track_operation()` was called with `reason=` but didn't accept it |
+| `_memory_service` never initialized | `_memory_search()` referenced `self._memory_service` but `__init__` never set it |
+| `subprocess.run()` without `shell=True` | String command passed without `shell=True` treated entire string as executable name |
+| Type mismatch in policy check | `ToolDefinition` object passed where `Dict` was expected — now calls `.to_dict()` |
+| Module-level singletons | `PlanningPromptManager()` and `DynamicToolRegistry()` instantiated at import time, causing side effects — moved to `AgenticExecutor.__init__` |
+| Unused imports | `httpx` and `SessionStorage` imported but never used |
 
 ### Quickstart
 
 ```bash
-# Schedule an agentic task
+# Schedule an agentic task (tools are sandboxed automatically)
 scheduler_add_task(task_id="my_task", task_type="agentic", config={"goal": "Research X and summarize"})
 
 # Watch it live
@@ -57,4 +65,10 @@ curl -N http://localhost:8000/events/tasks
 
 # Resume if it times out
 scheduler_resume_task(task_id="my_task")
+
+# Inspect safety policy (read-only)
+config(action="get", module="policy")
+
+# List available tools
+config(action="get", module="agentic_tools")
 ```

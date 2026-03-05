@@ -14,14 +14,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Phase 1 — Resource Pool & Executor**: `ResourceManager` with tier-based selection (free/free_api/paid), rate limiting, budget tracking, round-robin within account groups, usage persistence; `AgenticExecutor` think-act loop driving LLM conversations to `<FINAL_ANSWER>` completion
   - **Phase 2 — Concurrent Execution & Tool Use**: Semaphore-based concurrent task execution (`max_concurrent=3`), `resource_pool_status` / `resource_pool_approve` / `resource_pool_revoke` MCP tools, built-in `memory_search` tool for agentic tasks
   - **Phase 3 — Session Memory & Notifications**: Persistent per-task conversation trails (`~/.memory/task_sessions/`), task resume support (`scheduler_resume_task`), automatic dreaming consolidation after agentic task completion, `task_session_read` MCP tool for live session inspection
+- **Safety Policy System**: Immutable safety rules sandboxing all file operations to `~/.memory/`, blocking dangerous tool names, and enforcing danger levels for bash execution
+- **Dynamic Tool Registry**: Six built-in tools (`read_file`, `write_file`, `list_files`, `search_in_files`, `bash_exec`, `memory_search`) with sandbox security and safe-command whitelisting
+- **Planning Prompt Manager**: Four versioned planning workflows (`agentic_planning`, `documentation_update`, `coding_task`, `debugging_task`) configurable at runtime
+- **Operation Audit Log**: All tool executions tracked in `config/tool_operation_logs.json` with timestamps, tool names, success/failure, and block reasons
 - **SSE Notification Sidecar**: Real-time task lifecycle events via `GET /events/tasks` (task_started, task_completed, task_failed) with 30s keepalive
 - **Resource Pool Configuration**: `config/resource_pool_config.json` for LLM endpoint management with sandbox key isolation via `~/.memory/resource_pool.env`
-- **Generic Config Tool**: Single `config` MCP tool replacing 3 rigid LLM tools — supports help/get/set with dot-notation paths, sensitive value redaction, and hot-reload hooks
+- **Generic Config Tool**: Single `config` MCP tool replacing 3 rigid LLM tools — supports help/get/set with dot-notation paths, sensitive value redaction, and hot-reload hooks; 3 new modules: `agentic_tools`, `agentic_prompts`, `policy` (read-only)
 
 ### Changed
 - Unified `agent_*` MCP tools now use `AgentRegistry` for cleaner backend dispatch
 - Scheduler `__init__` accepts optional `sse_notifier` for event broadcasting
 - `TaskResult.output_file` populated with session file path for agentic tasks
+- Agentic executor integrates safety policy check before every tool execution
+- Removed incorrect `tool_registry_*` / `planning_*` MCP tools from external API
+
+### Fixed
+- Tilde not expanded in `os.makedirs()` and `Path.resolve()` — now uses `Path.home()` and `.expanduser()`
+- `bash_exec` sandbox check incorrectly treating command string as file path — removed (has own whitelist)
+- `track_operation()` missing `reason` keyword parameter
+- `DynamicToolRegistry._memory_service` never initialized in `__init__`
+- `subprocess.run()` called without `shell=True` on string command
+- `check_tool_execution()` receiving `ToolDefinition` object instead of `Dict`
+- Module-level singleton instantiation causing import-time side effects
+- Unused `httpx` and `SessionStorage` imports in dynamic tool registry
 
 ## [1.1.4-beta] - 2026-02-23
 
