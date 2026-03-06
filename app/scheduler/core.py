@@ -246,7 +246,9 @@ class Scheduler:
                         f"Task {task.id} failed, will retry ({task.retry_count}/{task.max_retries})"
                     )
                 else:
-                    task.mark_failed(result.error_message or "Unknown error")
+                    task.status = TaskStatus.FAILED
+                    task.completed_at = datetime.now()
+                    task.result = result
                     self.stats["tasks_failed"] += 1
                     self._log(f"Task {task.id} failed permanently", "error")
                     await self._broadcast({

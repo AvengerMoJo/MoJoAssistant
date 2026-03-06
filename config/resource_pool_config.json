@@ -22,8 +22,8 @@
       "tier": "free",
       "priority": 2,
       "enabled": true,
-      "context_limit": "262144",
-      "output_limit": "32768",
+      "context_limit": 262144,
+      "output_limit": 32768,
       "description": "Local Qwen 3.5-35B via LMStudio"
     }
   },

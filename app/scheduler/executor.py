@@ -542,11 +542,21 @@ class TaskExecutor:
         """
         self._log(f"Executing agentic task {task.id}")
 
+        executor = None
         try:
             executor = self._get_agentic_executor()
             return await executor.execute(task)
         except Exception as e:
             self._log(f"Agentic task {task.id} failed: {e}", "error")
+            if executor is not None:
+                session_file = str(executor._session_storage._path(task.id))
+            else:
+                from app.scheduler.session_storage import SessionStorage
+
+                session_file = str(SessionStorage()._path(task.id))
             return TaskResult(
-                success=False, error_message=f"Agentic execution error: {e}"
+                success=False,
+                output_file=session_file,
+                metrics={"session_file": session_file},
+                error_message=f"Agentic execution error: {e}",
             )

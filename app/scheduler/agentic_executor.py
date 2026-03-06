@@ -501,6 +501,8 @@ class AgenticExecutor:
                     operation="execute", tool_name=name, success=True
                 )
                 return result
+            # Preserve concrete tool error for the LLM instead of masking it.
+            return {"error": result.get("error", f"Tool '{name}' failed")}
         except Exception as e:
             self._log(f"Dynamic tool {name} failed: {e}", "error")
 
