@@ -102,7 +102,8 @@ class SafetyPolicy:
             allowed = False
             for allowed_path in sandbox["allowed_paths"]:
                 expanded = os.path.expanduser(allowed_path)
-                if os.path.abspath(path_arg).startswith(expanded):
+                abs_path = os.path.abspath(os.path.expanduser(path_arg))
+                if abs_path.startswith(expanded):
                     allowed = True
                     break
 
