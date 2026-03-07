@@ -25,6 +25,62 @@
       "context_limit": 262144,
       "output_limit": 32768,
       "description": "Local Qwen 3.5-35B via LMStudio"
+    },
+    "openrouter_avengermojo": {
+      "type": "api",
+      "provider": "openai-compatible",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY_AVENGERMOJO",
+      "model": "openrouter/auto",
+      "tier": "free_api",
+      "priority": 10,
+      "enabled": true,
+      "context_limit": 131072,
+      "output_limit": 8192,
+      "account_group": "openrouter_free",
+      "description": "OpenRouter free-tier routing (avengermojo)"
+    },
+    "openrouter_elntri": {
+      "type": "api",
+      "provider": "openai-compatible",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY_ELNTRI",
+      "model": "openrouter/auto",
+      "tier": "free_api",
+      "priority": 10,
+      "enabled": true,
+      "context_limit": 131072,
+      "output_limit": 8192,
+      "account_group": "openrouter_free",
+      "description": "OpenRouter free-tier routing (elntri)"
+    },
+    "openrouter_tinyi": {
+      "type": "api",
+      "provider": "openai-compatible",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY_TINYI",
+      "model": "openrouter/auto",
+      "tier": "free_api",
+      "priority": 10,
+      "enabled": true,
+      "context_limit": 131072,
+      "output_limit": 8192,
+      "account_group": "openrouter_free",
+      "description": "OpenRouter free-tier routing (tinyi)"
+    },
+    "openrouter_yiai": {
+      "type": "api",
+      "provider": "openai-compatible",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY_YIAI",
+      "model": "openrouter/auto",
+      "tier": "free_api",
+      "priority": 11,
+      "enabled": true,
+      "context_limit": 131072,
+      "output_limit": 8192,
+      "account_group": "openrouter_free",
+      "description": "OpenRouter free-tier routing (yiai fallback)"
     }
   },
   "tier_policy": {
