@@ -563,6 +563,72 @@ class ToolRegistry:
                 },
             },
             {
+                "name": "google_service",
+                "description": "Generic Google Workspace gateway via gws CLI. Use one tool by passing service/resource/method and optional params/body.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "service": {
+                            "type": "string",
+                            "description": "Google Workspace service (calendar, drive, sheets, gmail, docs, people)",
+                            "minLength": 1,
+                        },
+                        "resource": {
+                            "type": "string",
+                            "description": "API resource name (e.g., events, files, spreadsheets, users)",
+                            "minLength": 1,
+                        },
+                        "method": {
+                            "type": "string",
+                            "description": "API method (e.g., list, get, create, update, delete)",
+                            "minLength": 1,
+                        },
+                        "sub_resource": {
+                            "type": "string",
+                            "description": "Optional sub-resource between resource and method",
+                        },
+                        "params": {
+                            "type": "object",
+                            "description": "JSON object for gws --params",
+                        },
+                        "json_body": {
+                            "type": "object",
+                            "description": "JSON request body for gws --json",
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["json", "table", "yaml", "csv"],
+                            "default": "json",
+                        },
+                        "api_version": {
+                            "type": "string",
+                            "description": "Optional API version override",
+                        },
+                        "page_all": {
+                            "type": "boolean",
+                            "default": False,
+                        },
+                        "page_limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                        },
+                        "page_delay": {
+                            "type": "integer",
+                            "minimum": 0,
+                        },
+                        "upload_path": {
+                            "type": "string",
+                            "description": "Optional local file path for upload",
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Optional output file path for download/binary responses",
+                        },
+                    },
+                    "required": ["service", "resource", "method"],
+                },
+            },
+            {
                 "name": "get_current_day",
                 "description": "Get the current date, day of week, time, and year information for temporal awareness. When to use: Call for questions about today's date, current day, time, current year, or any date/time related queries. How it works: Returns exact current date/time information without needing web search. Why useful: Provides accurate temporal context for scheduling, reminders, and time-sensitive responses.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
@@ -1488,6 +1554,8 @@ class ToolRegistry:
             return await self._execute_remove_document(args)
         elif name == "web_search":
             return await self._execute_web_search(args)
+        elif name == "google_service":
+            return await self._execute_google_service(args)
         elif name == "get_current_day":
             return await self._execute_get_current_day(args)
         elif name == "get_current_time":
@@ -1847,6 +1915,104 @@ class ToolRegistry:
                 "results": [],
                 "timestamp": time.time(),
             }
+
+    async def _execute_google_service(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute generic Google Workspace operation via gws CLI."""
+        import json
+
+        service = args.get("service")
+        resource = args.get("resource")
+        method = args.get("method")
+        sub_resource = args.get("sub_resource")
+        params = args.get("params")
+        json_body = args.get("json_body")
+        output_format = args.get("format", "json")
+        api_version = args.get("api_version")
+        page_all = bool(args.get("page_all", False))
+        page_limit = args.get("page_limit")
+        page_delay = args.get("page_delay")
+        upload_path = args.get("upload_path")
+        output_path = args.get("output_path")
+
+        if not service or not resource or not method:
+            return {
+                "status": "error",
+                "message": "Missing required arguments: service, resource, method",
+            }
+
+        allowed_services = {"calendar", "drive", "sheets", "gmail", "docs", "people"}
+        if service not in allowed_services:
+            return {
+                "status": "error",
+                "message": f"Service '{service}' not allowed. Allowed: {sorted(allowed_services)}",
+            }
+
+        cmd = ["gws", service, resource]
+        if sub_resource:
+            cmd.append(str(sub_resource))
+        cmd.append(str(method))
+
+        if params is not None:
+            cmd.extend(["--params", json.dumps(params)])
+        if json_body is not None:
+            cmd.extend(["--json", json.dumps(json_body)])
+        if upload_path:
+            cmd.extend(["--upload", str(upload_path)])
+        if output_path:
+            cmd.extend(["--output", str(output_path)])
+        if output_format:
+            cmd.extend(["--format", str(output_format)])
+        if api_version:
+            cmd.extend(["--api-version", str(api_version)])
+        if page_all:
+            cmd.append("--page-all")
+        if page_limit is not None:
+            cmd.extend(["--page-limit", str(page_limit)])
+        if page_delay is not None:
+            cmd.extend(["--page-delay", str(page_delay)])
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            stdout_text = stdout.decode("utf-8", errors="ignore")
+            stderr_text = stderr.decode("utf-8", errors="ignore")
+
+            if proc.returncode != 0:
+                return {
+                    "status": "error",
+                    "message": f"gws failed with exit code {proc.returncode}",
+                    "service": service,
+                    "resource": resource,
+                    "method": method,
+                    "stderr": stderr_text,
+                    "stdout": stdout_text,
+                }
+
+            parsed = None
+            if output_format == "json" and stdout_text.strip():
+                try:
+                    parsed = json.loads(stdout_text)
+                except Exception:
+                    parsed = None
+
+            return {
+                "status": "success",
+                "service": service,
+                "resource": resource,
+                "method": method,
+                "data": parsed if parsed is not None else stdout_text,
+                "stderr": stderr_text,
+                "output_path": output_path,
+                "timestamp": time.time(),
+            }
+        except FileNotFoundError:
+            return {"status": "error", "message": "gws CLI not found in PATH"}
+        except Exception as e:
+            return {"status": "error", "message": f"google_service failed: {str(e)}"}
 
     async def _execute_get_current_day(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute get current day"""
@@ -2357,18 +2523,10 @@ class ToolRegistry:
     ) -> Dict[str, Any]:
         """Execute dreaming_list_archives tool"""
         try:
-            from app.dreaming.pipeline import DreamingPipeline
-            from app.llm.llm_interface import LLMInterface
+            from dreaming.storage.json_backend import JsonFileBackend
 
-            llm = LLMInterface(
-                config_file=self.config.get("llm_config_path", "config/llm_config.json")
-            )
-
-            pipeline = DreamingPipeline(
-                llm_interface=llm, quality_level="basic", logger=self.logger
-            )
-
-            archives = pipeline.list_archives()
+            storage = JsonFileBackend()
+            archives = storage.list_archives()
 
             return {
                 "status": "success",
@@ -2388,27 +2546,23 @@ class ToolRegistry:
             conversation_id = args.get("conversation_id")
             version = args.get("version")
 
-            from app.dreaming.pipeline import DreamingPipeline
-            from app.llm.llm_interface import LLMInterface
+            from dreaming.storage.json_backend import JsonFileBackend
 
-            llm = LLMInterface(
-                config_file=self.config.get("llm_config_path", "config/llm_config.json")
-            )
+            storage = JsonFileBackend()
 
-            pipeline = DreamingPipeline(
-                llm_interface=llm, quality_level="basic", logger=self.logger
-            )
-
-            archive = pipeline.get_archive(
+            archive = storage.load_archive(
                 conversation_id=conversation_id, version=version
             )
 
             if archive:
-                lifecycle = pipeline.get_archive_lifecycle(
-                    conversation_id=conversation_id,
-                    version=archive.get("version"),
-                )
-                manifest = pipeline.get_manifest(conversation_id=conversation_id)
+                manifest = storage.get_manifest(conversation_id=conversation_id)
+                # Build lifecycle from manifest
+                lifecycle = None
+                if manifest:
+                    av = version if version is not None else int(manifest.get("latest_version", 0))
+                    lifecycle = manifest.get("versions", {}).get(str(av))
+                    if lifecycle:
+                        lifecycle = {"conversation_id": conversation_id, "version": av, **lifecycle}
                 return {
                     "status": "success",
                     "archive": archive,

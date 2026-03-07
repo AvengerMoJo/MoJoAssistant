@@ -54,6 +54,32 @@ Example:
 }
 ```
 
+MCP example (`scheduler_add_task`) for a user-owned Google Calendar event:
+
+```json
+{
+  "task_id": "gc_sched_smoke_001",
+  "task_type": "scheduled",
+  "priority": "high",
+  "description": "Create a user calendar event via scheduler",
+  "config": {
+    "provider": "google_calendar",
+    "task_owner": "user",
+    "calendar_scope": "user",
+    "title": "Scheduler Google Test",
+    "details": "Created by scheduled task through google calendar provider",
+    "start_time": "2026-03-07T18:30:00+08:00",
+    "duration_minutes": 30
+  }
+}
+```
+
+Expected result fields in `scheduler_get_task(task_id)`:
+
+- `result.metrics.provider = "google_calendar"`
+- `result.metrics.event_id` (Google event id)
+- `result.metrics.html_link` (Google Calendar event URL)
+
 ## Notes
 
 - This policy is intentionally simple and can be expanded with allowlists (domains/calendar IDs) later.

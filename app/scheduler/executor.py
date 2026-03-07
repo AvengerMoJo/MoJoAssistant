@@ -6,7 +6,8 @@ Routes tasks to appropriate execution handlers based on task type.
 
 import asyncio
 import json
-from typing import Optional
+import uuid
+from typing import Optional, Dict, Any
 from datetime import datetime
 from pathlib import Path
 
@@ -45,6 +46,7 @@ class TaskExecutor:
         self._cached_quality_level = None
         self._resource_manager = None
         self._agentic_executor = None
+        self._agent_registry = None
 
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
@@ -282,137 +284,418 @@ class TaskExecutor:
         """
         Execute scheduled task (user calendar event)
 
-        Executes user-scheduled calendar events like meetings, deadlines, reminders
+        Persists calendar events and optionally runs reminder commands.
+
+        Task config supports:
+        - title (str): Event title
+        - details (str): Event details/notes
+        - start_time (ISO datetime): Overrides task.schedule as event start
+        - end_time (ISO datetime): Explicit event end time
+        - duration_minutes (int): Used when end_time not provided (default: 30)
+        - events_file (str): JSON event store path (default: .memory/scheduler/calendar_events.json)
+        - export_ics (bool): Export a per-event .ics file (default: true)
+        - reminder_command (str): Optional shell command to execute after event persist
         """
         self._log(f"Executing scheduled task {task.id}: {task.description}")
 
         try:
-            # Parse schedule to understand when to run
-            from app.scheduler.models import Schedule
-            from app.scheduler.triggers import CronTrigger
+            config = task.config or {}
+            title = config.get("title") or task.description or f"Scheduled Task {task.id}"
+            details = config.get("details", "")
 
-            # Handle different schedule formats
-            if isinstance(task.schedule, Schedule):
-                # Already a Schedule object
-                schedule_obj = task.schedule
-                trigger = (
-                    CronTrigger(schedule_obj.cron_expression)
-                    if schedule_obj.cron_expression
-                    else None
+            start_time_str = config.get("start_time")
+            if start_time_str:
+                start_at = datetime.fromisoformat(start_time_str)
+            elif task.schedule:
+                start_at = task.schedule
+            else:
+                start_at = datetime.now()
+
+            end_time_str = config.get("end_time")
+            if end_time_str:
+                end_at = datetime.fromisoformat(end_time_str)
+            else:
+                duration_minutes = int(config.get("duration_minutes", 30))
+                from datetime import timedelta
+
+                end_at = start_at + timedelta(minutes=duration_minutes)
+
+            provider = config.get("provider", "local")
+            if provider == "google_calendar":
+                policy = self._load_google_calendar_policy()
+                defaults = policy.get("defaults", {})
+                rules = policy.get("rules", {})
+                scopes = policy.get("scopes", {})
+
+                scope_name = config.get(
+                    "calendar_scope", defaults.get("calendar_scope", "user")
+                )
+                scope_cfg = scopes.get(scope_name, {})
+                calendar_id = config.get(
+                    "calendar_id",
+                    scope_cfg.get("calendar_id", "primary"),
+                )
+                timezone = config.get("timezone", defaults.get("timezone", "UTC"))
+                task_owner = config.get("task_owner", defaults.get("task_owner", "user"))
+
+                if (
+                    rules.get("require_explicit_opt_in_for_agent_write_to_primary", True)
+                    and calendar_id == "primary"
+                    and task_owner != "user"
+                    and not config.get("allow_agent_write_primary", False)
+                ):
+                    return TaskResult(
+                        success=False,
+                        error_message=(
+                            "Agent/system write to primary calendar is blocked by policy. "
+                            "Set allow_agent_write_primary=true for explicit override."
+                        ),
+                    )
+
+                google_result = await self._create_google_calendar_event(
+                    calendar_id=calendar_id,
+                    title=title,
+                    details=details,
+                    start_at=start_at,
+                    end_at=end_at,
+                    timezone=timezone,
                 )
 
-                # Calculate run time
-                if schedule_obj.when:
-                    # Specific datetime schedule (e.g., "run at 2025-02-10T14:00")
-                    run_at = schedule_obj.when
-                else:
-                    # Recurring cron schedule (e.g., "daily at 3pm")
-                    if schedule_obj.cron_expression:
-                        trigger = CronTrigger(schedule_obj.cron_expression)
-                        run_at = trigger.get_next_run_time()
-                    else:
-                        # No trigger, run immediately (shouldn't happen for scheduled tasks)
-                        self._log(
-                            f"Warning: Task {task.id} has invalid schedule", "warning"
-                        )
-                        return TaskResult(
-                            success=False,
-                            error_message="Invalid schedule: must have cron_expression or when datetime",
-                        )
+                if google_result.get("success"):
+                    return TaskResult(
+                        success=True,
+                        metrics={
+                            "provider": "google_calendar",
+                            "calendar_scope": scope_name,
+                            "calendar_id": calendar_id,
+                            "event_id": google_result.get("event_id"),
+                            "html_link": google_result.get("html_link"),
+                            "start_at": start_at.isoformat(),
+                            "end_at": end_at.isoformat(),
+                        },
+                    )
 
-            # Log when task will run
-            self._log(f"Scheduled task {task.id} will run at {run_at.isoformat()}")
+                if not rules.get("fallback_to_local_scheduler_files_on_google_error", True):
+                    return TaskResult(
+                        success=False,
+                        error_message=google_result.get("error", "Google Calendar failed"),
+                    )
 
-            # Mark as running
-            task.mark_started()
+                local_result = await self._persist_local_calendar_event(
+                    task=task,
+                    title=title,
+                    details=details,
+                    start_at=start_at,
+                    end_at=end_at,
+                    config=config,
+                )
+                local_result.metrics["provider"] = "local_fallback"
+                local_result.metrics["google_error"] = google_result.get("error")
+                return local_result
 
-            # Execute action based on task description
-            # For now, just log execution (TODO: implement actual calendar integration)
-            await asyncio.sleep(1)
-
-            # Mark as completed
-            task.mark_completed()
-            self.stats["tasks_succeeded"] += 1
-            self._log(f"Task {task.id} completed successfully")
-
-            # Return success
-            return TaskResult(
-                success=True,
-                output_file=None,
-                metrics={
-                    "executed_at": run_at.isoformat(),
-                    "schedule_type": "datetime" if schedule_obj.when else "cron",
-                },
+            return await self._persist_local_calendar_event(
+                task=task,
+                title=title,
+                details=details,
+                start_at=start_at,
+                end_at=end_at,
+                config=config,
             )
 
         except Exception as e:
             self._log(f"Error executing scheduled task {task.id}: {e}", "error")
             return TaskResult(success=False, error_message=str(e))
 
+    async def _persist_local_calendar_event(
+        self,
+        task: Task,
+        title: str,
+        details: str,
+        start_at: datetime,
+        end_at: datetime,
+        config: Dict[str, Any],
+    ) -> TaskResult:
+        """Persist scheduled event to local JSON/ICS files."""
+        event_id = f"{task.id}_{uuid.uuid4().hex[:8]}"
+        event_record = {
+            "id": event_id,
+            "task_id": task.id,
+            "title": title,
+            "details": details,
+            "start_at": start_at.isoformat(),
+            "end_at": end_at.isoformat(),
+            "created_at": datetime.now().isoformat(),
+            "priority": task.priority.value,
+            "cron_expression": task.cron_expression,
+        }
+
+        events_file = Path(
+            config.get("events_file", ".memory/scheduler/calendar_events.json")
+        ).expanduser()
+        events_file.parent.mkdir(parents=True, exist_ok=True)
+
+        events = []
+        if events_file.exists():
+            try:
+                events = json.loads(events_file.read_text(encoding="utf-8"))
+                if not isinstance(events, list):
+                    events = []
+            except Exception:
+                events = []
+        events.append(event_record)
+        events_file.write_text(json.dumps(events, indent=2), encoding="utf-8")
+
+        ics_file = None
+        if config.get("export_ics", True):
+            ics_dir = events_file.parent / "ics"
+            ics_dir.mkdir(parents=True, exist_ok=True)
+            ics_file = ics_dir / f"{event_id}.ics"
+            ics_content = "\n".join(
+                [
+                    "BEGIN:VCALENDAR",
+                    "VERSION:2.0",
+                    "PRODID:-//MoJoAssistant//Scheduler//EN",
+                    "BEGIN:VEVENT",
+                    f"UID:{event_id}",
+                    f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
+                    f"DTSTART:{start_at.strftime('%Y%m%dT%H%M%S')}",
+                    f"DTEND:{end_at.strftime('%Y%m%dT%H%M%S')}",
+                    f"SUMMARY:{title}",
+                    f"DESCRIPTION:{details}",
+                    "END:VEVENT",
+                    "END:VCALENDAR",
+                    "",
+                ]
+            )
+            ics_file.write_text(ics_content, encoding="utf-8")
+
+        reminder_result = None
+        reminder_command = config.get("reminder_command")
+        if reminder_command:
+            process = await asyncio.create_subprocess_shell(
+                reminder_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            reminder_result = {
+                "command": reminder_command,
+                "return_code": process.returncode,
+                "stdout": stdout.decode("utf-8", errors="ignore"),
+                "stderr": stderr.decode("utf-8", errors="ignore"),
+            }
+
+        return TaskResult(
+            success=True,
+            output_file=str(events_file),
+            metrics={
+                "provider": "local",
+                "event_id": event_id,
+                "title": title,
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "events_file": str(events_file),
+                "ics_file": str(ics_file) if ics_file else None,
+                "reminder": reminder_result,
+            },
+        )
+
+    def _load_google_calendar_policy(self) -> Dict[str, Any]:
+        """Load Google calendar scheduler policy from config with safe defaults."""
+        policy_path = Path("config/google_calendar_scheduler_policy.json")
+        if policy_path.exists():
+            try:
+                return json.loads(policy_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {
+            "defaults": {
+                "task_owner": "user",
+                "calendar_scope": "user",
+                "timezone": "UTC",
+            },
+            "scopes": {
+                "user": {"calendar_id": "primary"},
+                "ops": {"calendar_id": "mojo_assistant_ops"},
+            },
+            "rules": {
+                "require_explicit_opt_in_for_agent_write_to_primary": True,
+                "fallback_to_local_scheduler_files_on_google_error": True,
+            },
+        }
+
+    async def _create_google_calendar_event(
+        self,
+        calendar_id: str,
+        title: str,
+        details: str,
+        start_at: datetime,
+        end_at: datetime,
+        timezone: str,
+    ) -> Dict[str, Any]:
+        """Create an event via gws calendar CLI."""
+        payload = {
+            "summary": title,
+            "description": details,
+            "start": {
+                "dateTime": start_at.isoformat(),
+                "timeZone": timezone,
+            },
+            "end": {
+                "dateTime": end_at.isoformat(),
+                "timeZone": timezone,
+            },
+        }
+        params = {"calendarId": calendar_id}
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "gws",
+                "calendar",
+                "events",
+                "insert",
+                "--params",
+                json.dumps(params),
+                "--json",
+                json.dumps(payload),
+                "--format",
+                "json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            stdout_text = stdout.decode("utf-8", errors="ignore")
+            stderr_text = stderr.decode("utf-8", errors="ignore")
+
+            if proc.returncode != 0:
+                return {
+                    "success": False,
+                    "error": f"gws exit={proc.returncode}: {stderr_text or stdout_text}",
+                }
+
+            try:
+                result = json.loads(stdout_text) if stdout_text.strip() else {}
+            except Exception:
+                return {
+                    "success": False,
+                    "error": f"Failed to parse gws response: {stdout_text}",
+                }
+
+            if isinstance(result, dict) and result.get("error"):
+                err = result["error"]
+                return {
+                    "success": False,
+                    "error": f"{err.get('code')}: {err.get('message')}",
+                }
+
+            return {
+                "success": True,
+                "event_id": result.get("id"),
+                "html_link": result.get("htmlLink"),
+                "raw": result,
+            }
+        except FileNotFoundError:
+            return {"success": False, "error": "gws CLI not found in PATH"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _get_agent_registry(self):
+        """Lazy-initialize AgentRegistry."""
+        if self._agent_registry is None:
+            from app.mcp.agents.registry import AgentRegistry
+
+            self._agent_registry = AgentRegistry(logger=self.logger)
+        return self._agent_registry
+
     async def _execute_agent(self, task: Task) -> TaskResult:
         """
-        Execute agent task (OpenCode/OpenClaw operation)
-
-        Integrates with OpenCode Manager to perform automated code operations
+        Execute agent task using unified AgentRegistry.
         """
         self._log(f"Executing agent task {task.id}: {task.description}")
 
         try:
-            # Parse task config
-            agent_type = task.config.get("agent_type", "opencode")  # opencode, openclaw
-            operation = task.config.get(
-                "operation"
-            )  # start, stop, restart, destroy, list
+            config = task.config or {}
+            agent_type = config.get("agent_type", "opencode")
+            operation = config.get("operation")
+            identifier = (
+                config.get("identifier")
+                or config.get("project_name")
+                or config.get("git_url")
+            )
+            params = config.get("params", {})
 
-            # Get project name from config
-            project_name = task.config.get("project_name")
-
-            # Validate required config
-            if not project_name:
+            if not operation:
                 return TaskResult(
-                    success=False, error_message="Missing project_name in task config"
+                    success=False, error_message="Missing operation in task config"
                 )
 
-            self._log(f"Agent task: {agent_type} {operation} on {project_name}")
+            manager = self._get_agent_registry().get_manager(agent_type)
+            self._log(f"Agent task: {agent_type} {operation} on {identifier}")
 
-            # Import OpenCode Manager
-            from app.mcp.opencode.manager import OpenCodeManager
-
-            manager = OpenCodeManager()
-
-            # Execute operation
-            if agent_type == "opencode":
-                if operation == "start":
-                    result = await manager.start_project(
-                        project_name,
-                        task.config.get("git_url"),
-                        task.config.get("ssh_key_path"),
-                    )
-                elif operation == "stop":
-                    result = await manager.stop_project(project_name)
-                elif operation == "restart":
-                    result = await manager.restart_project(project_name)
-                elif operation == "destroy":
-                    result = await manager.destroy_project(project_name)
-                elif operation == "status":
-                    result = await manager.get_status(project_name)
-                elif operation == "list":
-                    projects = await manager.list_projects()
-                    result = TaskResult(
-                        success=True,
-                        metrics={"projects": len(projects.get("projects", []))},
-                    )
-                else:
+            if operation == "list":
+                result = await manager.list_projects()
+            elif operation == "start":
+                if not identifier:
                     return TaskResult(
-                        success=False, error_message=f"Unknown operation: {operation}"
+                        success=False,
+                        error_message="Missing identifier/project_name/git_url for start",
                     )
-
-            if result.get("success", False):
-                self._log(f"Agent task {task.id} completed successfully")
+                result = await manager.start_project(identifier, **params)
+            elif operation == "stop":
+                if not identifier:
+                    return TaskResult(
+                        success=False,
+                        error_message="Missing identifier/project_name/git_url for stop",
+                    )
+                result = await manager.stop_project(identifier)
+            elif operation == "restart":
+                if not identifier:
+                    return TaskResult(
+                        success=False,
+                        error_message="Missing identifier/project_name/git_url for restart",
+                    )
+                result = await manager.restart_project(identifier)
+            elif operation == "destroy":
+                if not identifier:
+                    return TaskResult(
+                        success=False,
+                        error_message="Missing identifier/project_name/git_url for destroy",
+                    )
+                result = await manager.destroy_project(identifier)
+            elif operation == "status":
+                if not identifier:
+                    return TaskResult(
+                        success=False,
+                        error_message="Missing identifier/project_name/git_url for status",
+                    )
+                result = await manager.get_status(identifier)
+            elif operation == "action":
+                action = config.get("action")
+                if not action:
+                    return TaskResult(
+                        success=False, error_message="Missing action for operation=action"
+                    )
+                result = await manager.execute_action(action, params)
             else:
-                self._log(f"Agent task {task.id} failed")
+                return TaskResult(
+                    success=False, error_message=f"Unknown agent operation: {operation}"
+                )
 
-            return result
+            status = result.get("status")
+            success = status in ("success", "ok", "already_running")
+            if not success and isinstance(result.get("success"), bool):
+                success = result["success"]
+
+            return TaskResult(
+                success=success,
+                metrics={
+                    "agent_type": agent_type,
+                    "operation": operation,
+                    "identifier": identifier,
+                    "result": result,
+                },
+                error_message=None if success else result.get("message") or result.get("error"),
+            )
 
         except Exception as e:
             self._log(f"Error executing agent task {task.id}: {e}", "error")
