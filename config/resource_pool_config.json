@@ -7,7 +7,7 @@
       "api_key_env": "LMSTUDIO_API_KEY",
       "model": "zai-org/glm-4.7-flash",
       "tier": "free",
-      "priority": 1,
+      "priority": 2,
       "enabled": true,
       "context_limit": 32768,
       "output_limit": 8192,
@@ -20,7 +20,7 @@
       "api_key_env": "LMSTUDIO_API_KEY",
       "model": "qwen/qwen3.5-35b-a3b",
       "tier": "free",
-      "priority": 2,
+      "priority": 1,
       "enabled": true,
       "context_limit": 262144,
       "output_limit": 32768,
@@ -52,7 +52,7 @@
       "context_limit": 131072,
       "output_limit": 8192,
       "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (elntri)"
+      "description": "OpenRouter free-tier routing (elmntri)"
     },
     "openrouter_tinyi": {
       "type": "api",

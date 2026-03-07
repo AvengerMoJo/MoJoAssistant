@@ -74,6 +74,8 @@ class AgenticExecutor:
         self._tool_registry = DynamicToolRegistry()
         self._tool_registry.set_memory_service(memory_service)
         self._policy = SafetyPolicy()
+        self._openrouter_model_cache: Dict[str, Dict[str, Any]] = {}
+        self._openrouter_model_cache_ttl_seconds = 600
 
     def _log(self, message: str, level: str = "info"):
         if self._logger:
@@ -288,6 +290,7 @@ class AgenticExecutor:
                 continue  # Try next iteration with potentially different resource
 
             message = response["choices"][0]["message"]
+            used_model = response.get("_selected_model", resource.model)
             response_text = message.get("content", "") or ""
             tool_calls = message.get("tool_calls")
 
@@ -327,7 +330,7 @@ class AgenticExecutor:
                     {
                         "iteration": iteration,
                         "resource": resource.id,
-                        "model": resource.model,
+                        "model": used_model,
                         "status": "tool_use",
                         "tool_calls": [tc["function"]["name"] for tc in tool_calls],
                         "elapsed_s": round(time.time() - iter_start, 1),
@@ -345,7 +348,7 @@ class AgenticExecutor:
                 {
                     "iteration": iteration,
                     "resource": resource.id,
-                    "model": resource.model,
+                    "model": used_model,
                     "status": "final" if final_answer else "continue",
                     "response_length": len(response_text),
                     "elapsed_s": round(time.time() - iter_start, 1),
@@ -435,8 +438,9 @@ class AgenticExecutor:
         if resource.api_key:
             headers["Authorization"] = f"Bearer {resource.api_key}"
 
+        selected_model = await self._resolve_model_for_resource(resource, headers)
         payload: Dict[str, Any] = {
-            "model": resource.model,
+            "model": selected_model,
             "messages": messages,
             "max_tokens": resource.output_limit,
             "temperature": 0.7,
@@ -448,11 +452,102 @@ class AgenticExecutor:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
+            data["_selected_model"] = selected_model
 
         choices = data.get("choices", [])
         if not choices:
             raise ValueError("LLM returned no choices")
         return data
+
+    async def _resolve_model_for_resource(
+        self, resource: LLMResource, headers: Dict[str, str]
+    ) -> str:
+        """Resolve the effective model for a resource."""
+        model = resource.model or ""
+        if not self._is_openrouter_auto(resource):
+            return model
+
+        free_model = await self._get_cached_openrouter_free_model(resource, headers)
+        if free_model:
+            return free_model
+        return model
+
+    def _is_openrouter_auto(self, resource: LLMResource) -> bool:
+        """Return True if this resource should auto-resolve OpenRouter free model."""
+        base = (resource.base_url or "").rstrip("/")
+        return base.startswith("https://openrouter.ai/api/v1") and (
+            resource.model == "openrouter/auto"
+        )
+
+    async def _get_cached_openrouter_free_model(
+        self, resource: LLMResource, headers: Dict[str, str]
+    ) -> Optional[str]:
+        """Fetch/cached OpenRouter free model id for this resource."""
+        if not resource.api_key:
+            return None
+
+        now = time.time()
+        cache_entry = self._openrouter_model_cache.get(resource.id)
+        if cache_entry and now - cache_entry["fetched_at"] < self._openrouter_model_cache_ttl_seconds:
+            return cache_entry.get("model")
+
+        models_url = f"{resource.base_url.rstrip('/')}/models"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(models_url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            self._log(f"OpenRouter model discovery failed for {resource.id}: {e}", "warning")
+            return None
+
+        model_id = self._pick_openrouter_free_model(data)
+        if model_id:
+            self._openrouter_model_cache[resource.id] = {
+                "model": model_id,
+                "fetched_at": now,
+            }
+            self._log(f"Resolved OpenRouter free model for {resource.id}: {model_id}")
+        return model_id
+
+    def _pick_openrouter_free_model(self, models_payload: Dict[str, Any]) -> Optional[str]:
+        """Pick a free model id from OpenRouter /models payload."""
+        models = models_payload.get("data")
+        if not isinstance(models, list):
+            return None
+
+        free_ids: List[str] = []
+        zero_price_ids: List[str] = []
+
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            model_id = model.get("id")
+            if not isinstance(model_id, str) or not model_id:
+                continue
+
+            if model_id.endswith(":free"):
+                free_ids.append(model_id)
+
+            pricing = model.get("pricing")
+            if isinstance(pricing, dict):
+                prompt = str(pricing.get("prompt", ""))
+                completion = str(pricing.get("completion", ""))
+                request = str(pricing.get("request", "0"))
+                image = str(pricing.get("image", "0"))
+                if (
+                    prompt in {"0", "0.0", "0.00"}
+                    and completion in {"0", "0.0", "0.00"}
+                    and request in {"0", "0.0", "0.00"}
+                    and image in {"0", "0.0", "0.00"}
+                ):
+                    zero_price_ids.append(model_id)
+
+        if free_ids:
+            return sorted(set(free_ids))[0]
+        if zero_price_ids:
+            return sorted(set(zero_price_ids))[0]
+        return None
 
     async def _execute_tool_calls(self, tool_calls: List[Dict]) -> List[str]:
         """Execute tool calls and return results as strings."""
