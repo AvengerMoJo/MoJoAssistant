@@ -56,12 +56,29 @@ class PlanningPromptManager:
     """Manage versioned planning prompts for agentic workflows."""
 
     def __init__(self, prompts_path: str = None):
-        self.prompts_path = prompts_path or os.path.join(
-            os.path.dirname(__file__), "..", "..", "config", "planning_prompts.json"
+        config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "config")
+        self.prompts_path = prompts_path or os.path.join(config_dir, "planning_prompts.json")
+        self.example_prompts_path = os.path.join(
+            config_dir, "examples", "planning_prompts.example.json"
         )
         self._prompts: Dict[str, Dict[str, PlanningPrompt]] = {}
+        self._ensure_prompts_seeded()
         self._load_prompts()
         self._load_default_prompts()
+
+    def _ensure_prompts_seeded(self):
+        """Seed runtime prompts from example template if runtime file is missing."""
+        if os.path.exists(self.prompts_path):
+            return
+        try:
+            os.makedirs(os.path.dirname(self.prompts_path), exist_ok=True)
+            if os.path.exists(self.example_prompts_path):
+                with open(self.example_prompts_path, "r", encoding="utf-8") as src:
+                    data = json.load(src)
+                with open(self.prompts_path, "w", encoding="utf-8") as dst:
+                    json.dump(data, dst, indent=2)
+        except Exception as e:
+            print(f"Failed to seed planning prompts from template: {e}")
 
     def _load_prompts(self):
         """Load prompts from file."""

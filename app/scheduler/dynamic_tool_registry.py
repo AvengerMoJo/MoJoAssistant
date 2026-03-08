@@ -77,14 +77,31 @@ class DynamicToolRegistry:
     """Dynamic tool registry that can be updated at runtime."""
 
     def __init__(self, registry_path: str = None):
-        self.registry_path = registry_path or os.path.join(
-            os.path.dirname(__file__), "..", "..", "config", "dynamic_tools.json"
+        config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "config")
+        self.registry_path = registry_path or os.path.join(config_dir, "dynamic_tools.json")
+        self.example_registry_path = os.path.join(
+            config_dir, "examples", "dynamic_tools.example.json"
         )
         self.sandbox = SandboxSecurity()
         self._memory_service = None
         self._tools: Dict[str, ToolDefinition] = {}
+        self._ensure_registry_seeded()
         self._load_registry()
         self._register_builtins()
+
+    def _ensure_registry_seeded(self):
+        """Seed runtime registry from example template if runtime file is missing."""
+        if os.path.exists(self.registry_path):
+            return
+        try:
+            os.makedirs(os.path.dirname(self.registry_path), exist_ok=True)
+            if os.path.exists(self.example_registry_path):
+                with open(self.example_registry_path, "r", encoding="utf-8") as src:
+                    data = json.load(src)
+                with open(self.registry_path, "w", encoding="utf-8") as dst:
+                    json.dump(data, dst, indent=2)
+        except Exception as e:
+            print(f"Failed to seed tool registry from template: {e}")
 
     def _load_registry(self):
         """Load tools from registry file."""

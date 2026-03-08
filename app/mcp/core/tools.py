@@ -92,14 +92,14 @@ class ToolRegistry:
                 "on_change": self._on_resource_pool_config_change,
             },
             "agentic_tools": {
-                "file": "config/agentic_tools.json",
+                "file": "config/dynamic_tools.json",
                 "description": "Dynamic tool registry for agentic LLM tasks - tools available to AI agents during execution. AI can add/remove tools with policy enforcement and automatic rollback.",
                 "sensitive_keys": [],
                 "ai_writable": True,
                 "on_change": self._on_agentic_tools_change,
             },
             "agentic_prompts": {
-                "file": "config/agentic_prompts.json",
+                "file": "config/planning_prompts.json",
                 "description": "Planning prompts for agentic LLM tasks - workflow prompts that guide AI agent behavior. AI can add/update prompts with versioning and rollback support.",
                 "sensitive_keys": [],
                 "ai_writable": True,
