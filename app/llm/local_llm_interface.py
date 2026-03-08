@@ -53,10 +53,7 @@ class LocalLLMInterface(BaseLLMInterface):
         self.verbose = verbose
         self.server_process: Optional[Popen[bytes]] = None
         self._started = False
-
-        # Initialize server if model path is provided and not external server URL
-        if model_path and not server_url:
-            self._start_local_server()
+        self._external_server = server_url is not None
 
     def _start_local_server(self) -> bool:
         """
@@ -121,29 +118,14 @@ class LocalLLMInterface(BaseLLMInterface):
             # Filter out None values from cmd
             cmd_filtered = [str(arg) for arg in cmd if arg is not None]
 
-            # Start server in background
+            # Start server in background (non-blocking — no polling loop)
             self.server_process = subprocess.Popen(
                 cmd_filtered,
                 stdout=subprocess.PIPE if not self.verbose else None,
                 stderr=subprocess.PIPE if not self.verbose else None,
             )
-
-            # Wait for server to start (with timeout)
-            start_time = time.time()
-            while time.time() - start_time < self.timeout:
-                try:
-                    response = requests.get(
-                        f"{self.server_url}/models", timeout=self.timeout
-                    )
-                    if response.status_code == 200:
-                        self._started = True
-                        print(f"Local LLM server started at {self.server_url}")
-                        return True
-                except requests.RequestException:
-                    time.sleep(1)  # Wait and retry
-
-            print("Failed to start local LLM server within timeout period")
-            return False
+            print(f"Local LLM subprocess spawned (PID {self.server_process.pid}), waiting for readiness on first request")
+            return True
 
         except Exception as e:
             print(f"Error starting local LLM server: {e}")
@@ -151,6 +133,37 @@ class LocalLLMInterface(BaseLLMInterface):
                 self.server_process.terminate()
 
             return False
+
+    def _ensure_server(self) -> bool:
+        """Ensure local server is running. Lazy start, single readiness probe."""
+        if self._started:
+            return True
+        if self._external_server:
+            # External server — probe once to confirm it's up
+            try:
+                resp = requests.get(f"{self.server_url}/models", timeout=2)
+                if resp.status_code == 200:
+                    self._started = True
+                    return True
+            except requests.RequestException:
+                pass
+            return False
+        if not self.model_path:
+            return False
+
+        # Spawn subprocess if not already spawned
+        if self.server_process is None:
+            self._start_local_server()
+
+        # Single readiness probe (no blocking loop)
+        try:
+            resp = requests.get(f"{self.server_url}/models", timeout=2)
+            if resp.status_code == 200:
+                self._started = True
+                return True
+        except requests.RequestException:
+            pass
+        return False
 
     def set_model(self, model_path: str, model_type: str = "llama") -> bool:
         """
@@ -186,7 +199,7 @@ class LocalLLMInterface(BaseLLMInterface):
         Returns:
             str: Generated response
         """
-        if not self._started:
+        if not self._ensure_server():
             return self._fallback_response(query, context or [])
 
         # Format context
@@ -261,7 +274,7 @@ Keep your response concise, relevant, and helpful.""",
         Returns:
             str: Generated response
         """
-        if not self._started:
+        if not self._ensure_server():
             # Fallback if server not started
             last_user_msg = next((m['content'] for m in reversed(messages) if m['role'] == 'user'), "")
             return f"I apologize, but I'm having trouble starting. Could you rephrase: {last_user_msg[:100]}..."
@@ -312,7 +325,7 @@ Keep your response concise, relevant, and helpful.""",
         Returns:
             str: Full generated response
         """
-        if not self._started:
+        if not self._ensure_server():
             return self._fallback_response(query, context or [])
 
         # Format context
