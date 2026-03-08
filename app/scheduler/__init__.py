@@ -8,4 +8,4 @@ Provides persistent task scheduling and execution:
 - Task prioritization
 """
 
-__version__ = "1.1.5-beta"
+__version__ = "1.1.6-beta"

@@ -15,6 +15,13 @@ Welcome to the Agent Manager! This guide will help you get started with managing
 
 ---
 
+## Related Guides
+
+- Resource pool account onboarding (no code changes): `docs/guides/RESOURCE_POOL_ACCOUNT_ONBOARDING.md`
+- Google Calendar scheduler policy: `docs/guides/GOOGLE_CALENDAR_SCHEDULER_POLICY.md`
+
+---
+
 ## Quick Start
 
 ### Prerequisites

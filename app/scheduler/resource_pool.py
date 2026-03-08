@@ -88,13 +88,17 @@ class ResourceManager:
         # Round-robin counters per account_group
         self._group_counters: Dict[str, int] = {}
         self._sandbox_env: Dict[str, str] = {}
+        self._config_mtime_ns: Optional[int] = None
+        self._env_mtime_ns: Optional[int] = None
         self._load_sandbox_env()
         self._load_usage()
         self._load_config()
 
     def _load_sandbox_env(self):
         """Load API keys from the sandbox env file (~/.memory/resource_pool.env)."""
+        self._sandbox_env.clear()
         if not self.SANDBOX_ENV_FILE.exists():
+            self._env_mtime_ns = None
             return
         for line in self.SANDBOX_ENV_FILE.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -103,6 +107,7 @@ class ResourceManager:
             if "=" in line:
                 key, _, value = line.partition("=")
                 self._sandbox_env[key.strip()] = value.strip()
+        self._env_mtime_ns = self.SANDBOX_ENV_FILE.stat().st_mtime_ns
 
     def _load_usage(self):
         """Restore persisted usage stats from disk."""
@@ -145,10 +150,12 @@ class ResourceManager:
         path = Path(self._config_path)
         if not path.exists():
             self._log(f"Config not found: {path}", "warning")
+            self._config_mtime_ns = None
             return
 
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        self._config_mtime_ns = path.stat().st_mtime_ns
 
         with self._lock:
             self._resources.clear()
@@ -161,6 +168,29 @@ class ResourceManager:
             self._tier_policy = data.get("tier_policy", {})
             self._selection_strategy = data.get("selection_strategy", "priority_then_availability")
             self._log(f"Loaded {len(self._resources)} resources")
+
+    def _maybe_reload_runtime_state(self):
+        """Reload config/env when changed by another client/process."""
+        config_path = Path(self._config_path)
+        config_changed = config_path.exists() and (
+            self._config_mtime_ns is None
+            or config_path.stat().st_mtime_ns != self._config_mtime_ns
+        )
+        env_changed = self.SANDBOX_ENV_FILE.exists() and (
+            self._env_mtime_ns is None
+            or self.SANDBOX_ENV_FILE.stat().st_mtime_ns != self._env_mtime_ns
+        )
+
+        if not config_changed and not env_changed:
+            return
+
+        self._log(
+            f"Detected external update (config_changed={config_changed}, env_changed={env_changed}); reloading",
+            "info",
+        )
+        # Load env first so fresh keys are present when resources are parsed.
+        self._load_sandbox_env()
+        self._load_config()
 
     def _parse_resource(self, rid: str, conf: Dict[str, Any]) -> LLMResource:
         # Resolve API key: sandbox env > process env
@@ -223,6 +253,7 @@ class ResourceManager:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
 
         with self._lock:
+            self._maybe_reload_runtime_state()
             candidates = []
             for resource in self._resources.values():
                 if not resource.enabled:
@@ -282,6 +313,7 @@ class ResourceManager:
     def get_status(self) -> Dict[str, Any]:
         """Return status of all resources with usage stats."""
         with self._lock:
+            self._maybe_reload_runtime_state()
             result = {}
             for rid, resource in self._resources.items():
                 usage = self._usage.get(rid, UsageRecord())
@@ -300,17 +332,20 @@ class ResourceManager:
 
     def approve_paid_resource(self, resource_id: str):
         with self._lock:
+            self._maybe_reload_runtime_state()
             self._approved_paid.add(resource_id)
             self._log(f"Approved paid resource: {resource_id}")
 
     def revoke_paid_resource(self, resource_id: str):
         with self._lock:
+            self._maybe_reload_runtime_state()
             self._approved_paid.discard(resource_id)
             self._log(f"Revoked paid resource: {resource_id}")
 
     def reload_config(self):
         """Re-read config from disk."""
         self._log("Reloading resource pool config")
+        self._load_sandbox_env()
         self._load_config()
 
     def _is_rate_limited(self, resource: LLMResource) -> bool:

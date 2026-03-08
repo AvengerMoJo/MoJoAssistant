@@ -1,0 +1,35 @@
+{
+  "_version": "1.0.0",
+  "_description": "Policy for mapping scheduler tasks to Google Calendar scopes and calendars",
+  "defaults": {
+    "task_owner": "user",
+    "provider": "google_calendar",
+    "calendar_scope": "user",
+    "timezone": "Asia/Taipei"
+  },
+  "scopes": {
+    "user": {
+      "description": "User-facing schedule (meetings, reminders, personal/business events)",
+      "calendar_id": "primary",
+      "allow_agent_writes": false
+    },
+    "ops": {
+      "description": "Assistant operational schedule (maintenance windows, autonomous runs)",
+      "calendar_id": "mojo_assistant_ops",
+      "allow_agent_writes": true
+    }
+  },
+  "rules": {
+    "require_explicit_opt_in_for_agent_write_to_primary": true,
+    "enforce_scope_for_agent_tasks": true,
+    "fallback_to_local_scheduler_files_on_google_error": true
+  },
+  "scheduler_mapping": {
+    "scheduled_task": {
+      "default_scope": "user"
+    },
+    "agentic_task": {
+      "default_scope": "ops"
+    }
+  }
+}
