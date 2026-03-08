@@ -40,7 +40,7 @@
       "account_group": "openrouter_free",
       "description": "OpenRouter free-tier routing (avengermojo)"
     },
-    "openrouter_elntri": {
+    "openrouter_elmntri": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
