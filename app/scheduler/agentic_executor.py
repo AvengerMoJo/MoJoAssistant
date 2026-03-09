@@ -245,21 +245,29 @@ class AgenticExecutor:
                 )
                 break
 
-            # Acquire a resource
-            resource = self._rm.acquire(tier_preference=tier_preference)
+            # Acquire a resource (dynamic policy can reorder tiers per iteration)
+            iter_tiers, selection_reason = self._determine_tier_preference_for_iteration(
+                base_tiers=tier_preference,
+                goal=goal,
+                config=config,
+                iteration_log=iteration_log,
+            )
+            resource = self._rm.acquire(tier_preference=iter_tiers)
             if resource is None:
                 self._log(f"No resource available, waiting 30s (iteration {iteration})")
                 # Wait and retry once
                 import asyncio
 
                 await asyncio.sleep(30)
-                resource = self._rm.acquire(tier_preference=tier_preference)
+                resource = self._rm.acquire(tier_preference=iter_tiers)
                 if resource is None:
                     self._log("Still no resource available, aborting")
                     iteration_log.append(
                         {
                             "iteration": iteration,
                             "status": "no_resource",
+                            "tier_preference": [t.value for t in iter_tiers],
+                            "selection_reason": selection_reason,
                             "elapsed_s": round(time.time() - start_time, 1),
                         }
                     )
@@ -283,6 +291,8 @@ class AgenticExecutor:
                         "iteration": iteration,
                         "resource": resource.id,
                         "status": "error",
+                        "tier_preference": [t.value for t in iter_tiers],
+                        "selection_reason": selection_reason,
                         "error": str(e),
                         "elapsed_s": round(time.time() - iter_start, 1),
                     }
@@ -331,6 +341,8 @@ class AgenticExecutor:
                         "iteration": iteration,
                         "resource": resource.id,
                         "model": used_model,
+                        "tier_preference": [t.value for t in iter_tiers],
+                        "selection_reason": selection_reason,
                         "status": "tool_use",
                         "tool_calls": [tc["function"]["name"] for tc in tool_calls],
                         "elapsed_s": round(time.time() - iter_start, 1),
@@ -343,14 +355,33 @@ class AgenticExecutor:
             self._record(task.id, "assistant", response_text, iteration=abs_iteration)
 
             # Check for final answer
-            final_answer = self._parse_final_answer(response_text)
+            candidate_final_answer = self._parse_final_answer(response_text)
+            final_validation_error = None
+            final_answer = None
+            if candidate_final_answer is not None:
+                is_valid, validation_error = self._validate_final_answer(
+                    final_answer=candidate_final_answer,
+                    goal=goal,
+                    config=config,
+                )
+                if is_valid:
+                    final_answer = candidate_final_answer
+                else:
+                    final_validation_error = validation_error
             iteration_log.append(
                 {
                     "iteration": iteration,
                     "resource": resource.id,
                     "model": used_model,
-                    "status": "final" if final_answer else "continue",
+                    "tier_preference": [t.value for t in iter_tiers],
+                    "selection_reason": selection_reason,
+                    "status": (
+                        "final"
+                        if final_answer
+                        else ("final_rejected" if final_validation_error else "continue")
+                    ),
                     "response_length": len(response_text),
+                    "validation_error": final_validation_error,
                     "elapsed_s": round(time.time() - iter_start, 1),
                 }
             )
@@ -363,6 +394,15 @@ class AgenticExecutor:
                     final_answer=final_answer,
                 )
                 break
+            if final_validation_error:
+                correction_prompt = (
+                    "Your previous <FINAL_ANSWER> was rejected by validation: "
+                    f"{final_validation_error}. "
+                    "Return a corrected <FINAL_ANSWER> only."
+                )
+                messages.append({"role": "user", "content": correction_prompt})
+                self._record(task.id, "user", correction_prompt, iteration=abs_iteration)
+                continue
 
             # Append continue prompt for next iteration
             messages.append({"role": "user", "content": CONTINUE_PROMPT})
@@ -624,3 +664,142 @@ class AgenticExecutor:
             # Tag opened but not closed — treat the rest as the answer
             return text[start:].strip()
         return text[start:end].strip()
+
+    def _determine_tier_preference_for_iteration(
+        self,
+        base_tiers: List[ResourceTier],
+        goal: str,
+        config: Dict[str, Any],
+        iteration_log: List[Dict[str, Any]],
+    ) -> tuple[List[ResourceTier], str]:
+        """Dynamically choose tier order per iteration based on task complexity and recent failures."""
+        policy = config.get("resource_policy", {})
+        if not policy.get("enabled", True):
+            return base_tiers, "static_policy_disabled"
+
+        complexity = self._estimate_task_complexity(goal, config)
+        prefer_api_for_complex = bool(
+            policy.get("prefer_api_for_complex_tasks", True)
+        )
+        allow_paid_for_complex = bool(
+            policy.get("allow_paid_for_complex_tasks", False)
+        )
+
+        if complexity >= 3 and prefer_api_for_complex:
+            dynamic_tiers: List[ResourceTier] = [ResourceTier.FREE_API, ResourceTier.FREE]
+        else:
+            dynamic_tiers = [ResourceTier.FREE, ResourceTier.FREE_API]
+
+        if allow_paid_for_complex and complexity >= 4:
+            dynamic_tiers.append(ResourceTier.PAID)
+
+        # Respect user-provided tier list as an allowlist.
+        allow = set(base_tiers)
+        dynamic_tiers = [t for t in dynamic_tiers if t in allow]
+        if not dynamic_tiers:
+            dynamic_tiers = base_tiers
+
+        # If recent iterations show repeated failure on first tier, flip order.
+        recent = iteration_log[-3:]
+        if len(recent) >= 2:
+            first_tier = dynamic_tiers[0]
+            failed = 0
+            for item in recent:
+                rid = item.get("resource")
+                if item.get("status") == "error" and rid:
+                    r = self._rm._resources.get(rid)
+                    if r and r.tier == first_tier:
+                        failed += 1
+            if failed >= 2 and len(dynamic_tiers) > 1:
+                dynamic_tiers = dynamic_tiers[1:] + dynamic_tiers[:1]
+                return (
+                    dynamic_tiers,
+                    f"dynamic_flip_after_{failed}_recent_{first_tier.value}_errors",
+                )
+
+        return dynamic_tiers, f"dynamic_complexity_{complexity}"
+
+    def _estimate_task_complexity(self, goal: str, config: Dict[str, Any]) -> int:
+        """Estimate task complexity on a small 1-5 scale."""
+        text = (goal or "").lower()
+        score = 1
+        if len(text) > 300:
+            score += 1
+        hard_keywords = [
+            "architecture",
+            "refactor",
+            "debug",
+            "investigate",
+            "analyze",
+            "design",
+            "multi-step",
+            "integration",
+            "policy",
+        ]
+        if any(k in text for k in hard_keywords):
+            score += 2
+        if config.get("available_tools"):
+            score += 1
+        max_iter = int(config.get("max_iterations", 1) or 1)
+        if max_iter >= 6:
+            score += 1
+        return max(1, min(score, 5))
+
+    def _validate_final_answer(
+        self, final_answer: str, goal: str, config: Dict[str, Any]
+    ) -> tuple[bool, Optional[str]]:
+        """Validate final answer quality gates before marking task completed."""
+        if not final_answer or not final_answer.strip():
+            return False, "empty final answer"
+
+        answer = final_answer.strip()
+        if "<FINAL_ANSWER>" in answer or "</FINAL_ANSWER>" in answer:
+            return False, "nested FINAL_ANSWER tags are not allowed"
+
+        req = config.get("final_answer_requirements", {})
+        min_length = int(req.get("min_length", 1))
+        max_length = req.get("max_length")
+        if len(answer) < min_length:
+            return False, f"answer shorter than min_length={min_length}"
+        if isinstance(max_length, int) and len(answer) > max_length:
+            return False, f"answer longer than max_length={max_length}"
+
+        must_include = req.get("must_include", [])
+        if isinstance(must_include, list):
+            for token in must_include:
+                if token and token not in answer:
+                    return False, f"missing required token '{token}'"
+
+        exact_text = req.get("exact_text") or self._infer_exact_text_from_goal(goal)
+        if exact_text:
+            normalized = answer.strip().strip('"').strip("'")
+            if normalized != exact_text:
+                return False, f"must equal exact_text '{exact_text}'"
+
+        # Guard against leaking planning boilerplate into final answer for "exact" asks.
+        if exact_text and ("## Phase" in answer or "Phase 1:" in answer):
+            return False, "final answer contains planning boilerplate"
+
+        return True, None
+
+    def _infer_exact_text_from_goal(self, goal: str) -> Optional[str]:
+        """Infer exact output requirement from goal text when user asks for exact output."""
+        text = goal or ""
+        lower = text.lower()
+        markers = [
+            "containing exactly:",
+            "exactly:",
+            "exact text:",
+            "exact output:",
+        ]
+        for marker in markers:
+            idx = lower.find(marker)
+            if idx == -1:
+                continue
+            raw = text[idx + len(marker) :].strip()
+            if not raw:
+                return None
+            # Stop at first line break to avoid capturing extra instructions.
+            raw = raw.splitlines()[0].strip()
+            return raw.strip().strip('"').strip("'")
+        return None

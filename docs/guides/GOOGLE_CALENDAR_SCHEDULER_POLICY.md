@@ -5,6 +5,9 @@ This document defines how MoJoAssistant should use Google Calendar for scheduler
 Policy file:
 - `config/google_calendar_scheduler_policy.json`
 
+Prerequisite setup guide:
+- `docs/guides/GOOGLE_WORKSPACE_SETUP.md`
+
 ## Purpose
 
 Separate user scheduling from assistant operations so autonomous workflows do not pollute the user's primary calendar.
@@ -82,5 +85,6 @@ Expected result fields in `scheduler_get_task(task_id)`:
 
 ## Notes
 
+- Google Calendar support depends on `gws` being installed and authenticated first.
 - This policy is intentionally simple and can be expanded with allowlists (domains/calendar IDs) later.
 - Keep `user` and `ops` calendars separate for audit clarity.

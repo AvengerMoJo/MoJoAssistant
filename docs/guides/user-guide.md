@@ -19,6 +19,8 @@ Welcome to the Agent Manager! This guide will help you get started with managing
 
 - Resource pool account onboarding (no code changes): `docs/guides/RESOURCE_POOL_ACCOUNT_ONBOARDING.md`
 - Google Calendar scheduler policy: `docs/guides/GOOGLE_CALENDAR_SCHEDULER_POLICY.md`
+- Google Workspace setup: `docs/guides/GOOGLE_WORKSPACE_SETUP.md`
+- MCP smoke checklist: `docs/guides/MCP_SMOKE_CHECKLIST.md`
 
 ---
 

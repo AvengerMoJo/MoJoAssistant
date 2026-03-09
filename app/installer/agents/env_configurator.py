@@ -36,12 +36,28 @@ class EnvConfiguratorAgent(BaseSetupAgent):
             "ENABLE_DREAMING": "true",
             "ENABLE_SCHEDULER": "true",
         },
+        "hybrid": {
+            "DEBUG": "false",
+            "LOG_LEVEL": "info",
+            "MCP_PORT": "8765",
+            "MCP_HOST": "localhost",
+            "ENABLE_DREAMING": "true",
+            "ENABLE_SCHEDULER": "true",
+        },
         "github_integration": {
             "DEBUG": "false",
             "LOG_LEVEL": "info",
             "MCP_PORT": "8765",
             "MCP_HOST": "localhost",
             "ENABLE_OPENCODE": "true",
+            "ENABLE_DREAMING": "true",
+            "ENABLE_SCHEDULER": "true",
+        },
+        "google_workspace": {
+            "DEBUG": "false",
+            "LOG_LEVEL": "info",
+            "MCP_PORT": "8765",
+            "MCP_HOST": "localhost",
             "ENABLE_DREAMING": "true",
             "ENABLE_SCHEDULER": "true",
         },
@@ -338,11 +354,12 @@ class EnvConfiguratorAgent(BaseSetupAgent):
         print("  2. Local + Cloud AI (mix of both)")
         print("  3. Cloud AI only (OpenAI/Claude/etc.)")
         print("  4. GitHub integration")
-        print("  5. Just trying it out\n")
+        print("  5. Google Calendar / Workspace integration")
+        print("  6. Just trying it out\n")
 
         while True:
-            choice = input("Pick a number (1-5): ").strip()
-            if choice in ("1", "5"):
+            choice = input("Pick a number (1-6): ").strip()
+            if choice in ("1", "6"):
                 return self._setup_local_only()
             elif choice == "2":
                 return self._setup_mixed()
@@ -350,8 +367,10 @@ class EnvConfiguratorAgent(BaseSetupAgent):
                 return self._setup_cloud_only()
             elif choice == "4":
                 return self._setup_github()
+            elif choice == "5":
+                return self._setup_google_workspace()
             else:
-                print("Please enter a number between 1 and 5")
+                print("Please enter a number between 1 and 6")
 
     def _setup_local_only(self) -> Dict:
         """Set up for local-only usage."""
@@ -403,6 +422,24 @@ class EnvConfiguratorAgent(BaseSetupAgent):
     def _setup_cloud_only(self) -> Dict:
         """Set up for cloud-only usage."""
         return self._setup_mixed()  # Same process
+
+    def _setup_google_workspace(self) -> Dict:
+        """Set up for Google Workspace scheduler/tool usage."""
+        print("\n✓ Preparing Google Calendar / Workspace integration.\n")
+
+        settings = self.TEMPLATES["google_workspace"].copy()
+        self._write_env_file(settings)
+        self._print_google_workspace_setup()
+
+        print("✓ Base configuration saved!\n")
+
+        self.set_success(
+            "Prepared Google Workspace configuration",
+            use_case="google_workspace",
+            settings=list(settings.keys()),
+            next_step="install/authenticate gcloud and gws",
+        )
+        return self.result
 
     def _setup_github(self) -> Dict:
         """Set up GitHub integration."""
@@ -652,6 +689,27 @@ class EnvConfiguratorAgent(BaseSetupAgent):
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
 
+    def _print_google_workspace_setup(self):
+        """Print prerequisite steps for Google Workspace features."""
+        print("  Google Calendar / Workspace setup")
+        print("  " + "-" * 58)
+        print("  MoJoAssistant uses the external `gws` CLI for Google Calendar and")
+        print("  other Google Workspace actions. Prepare that first.\n")
+        print("  1. Install Google Cloud SDK (`gcloud`)")
+        print("     - https://cloud.google.com/sdk/docs/install")
+        print("     - Run: gcloud auth application-default login\n")
+        print("  2. Install and authenticate `gws`")
+        print("     - Make sure `gws` is in PATH")
+        print("     - Run: gws auth login")
+        print("     - Enable the services you need, starting with `calendar`\n")
+        print("  3. Verify the integration")
+        print("     - Run: gws calendar calendars list")
+        print("     - Then use MCP `google_service` or scheduler tasks with")
+        print("       `provider=google_calendar`\n")
+        print("  Reference:")
+        print("     - docs/guides/GOOGLE_WORKSPACE_SETUP.md")
+        print("     - docs/guides/GOOGLE_CALENDAR_SCHEDULER_POLICY.md\n")
+
     def _tool_based_configuration(self, use_case: str = None) -> Dict:
         """
         LLM-driven configuration using simple tool calling.
@@ -677,11 +735,12 @@ class EnvConfiguratorAgent(BaseSetupAgent):
             print("  2. Cloud AI       (OpenAI, Anthropic, Google, OpenRouter)")
             print("  3. Local + Cloud  (use both)")
             print("  4. GitHub integration")
-            print("  5. Just trying it out\n")
+            print("  5. Google Calendar / Workspace integration")
+            print("  6. Just trying it out\n")
 
             choice = input("You: ").strip()
 
-            if choice in ("1", "5"):
+            if choice in ("1", "6"):
                 use_case = "local_only"
             elif choice == "2":
                 use_case = "cloud_ai"
@@ -689,12 +748,26 @@ class EnvConfiguratorAgent(BaseSetupAgent):
                 use_case = "hybrid"
             elif choice == "4":
                 use_case = "github_integration"
+            elif choice == "5":
+                use_case = "google_workspace"
             else:
                 # Default to local_only
                 print("\n  Defaulting to local-only mode.\n")
                 use_case = "local_only"
 
         print(f"  Configuring for: {use_case.replace('_', ' ').title()}\n")
+
+        if use_case == "google_workspace":
+            settings = self.TEMPLATES[use_case].copy()
+            self._write_env_file(settings)
+            self._print_google_workspace_setup()
+            self.set_success(
+                "Prepared base configuration for Google Workspace integration",
+                use_case=use_case,
+                settings=list(settings.keys()),
+                next_step="install/authenticate gcloud and gws",
+            )
+            return self.result
 
         # Load the tool-based prompt
         try:

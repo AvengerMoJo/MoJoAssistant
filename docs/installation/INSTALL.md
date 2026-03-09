@@ -43,6 +43,8 @@ That's it! The setup wizard will:
 
 The installer includes an **AI Setup Wizard** powered by specialized agents (Model Selector, Environment Configurator) that guide you through configuration using structured tool calls. Just answer naturally!
 
+If you want Google Calendar or other Google Workspace integration, choose the Google Calendar / Workspace setup path in the environment configurator. It will guide you to prepare `gcloud` and `gws` before using scheduler calendar features.
+
 ---
 
 ## 🎯 What Gets Installed
@@ -74,6 +76,22 @@ The installer includes an **AI Setup Wizard** powered by specialized agents (Mod
 ---
 
 ## 🔧 Post-Installation
+
+### Google Workspace Optional Setup
+
+Google Calendar scheduling and the generic `google_service` MCP tool depend on the external `gws` CLI plus authenticated Google credentials.
+
+Prepare that first:
+
+```bash
+gcloud auth application-default login
+gws auth login
+gws calendar calendars list
+```
+
+Reference:
+- `docs/guides/GOOGLE_WORKSPACE_SETUP.md`
+- `docs/guides/GOOGLE_CALENDAR_SCHEDULER_POLICY.md`
 
 ### 1. Test the Interactive CLI
 
