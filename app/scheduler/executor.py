@@ -822,12 +822,22 @@ class TaskExecutor:
         - system_prompt: Optional override for the system prompt
         - max_iterations: Optional max LLM round-trips
         - context: Optional dict of extra context
+        - parallel_agents: Optional parallel fan-out config:
+            {
+              "enabled": true,
+              "count": 3,
+              "goal_variants": ["...", "..."],
+              "max_concurrent": 3
+            }
         """
         self._log(f"Executing agentic task {task.id}")
 
         executor = None
         try:
             executor = self._get_agentic_executor()
+            parallel_cfg = (task.config or {}).get("parallel_agents", {})
+            if isinstance(parallel_cfg, dict) and parallel_cfg.get("enabled"):
+                return await self._execute_agentic_parallel(task, executor, parallel_cfg)
             return await executor.execute(task)
         except Exception as e:
             self._log(f"Agentic task {task.id} failed: {e}", "error")
@@ -843,3 +853,114 @@ class TaskExecutor:
                 metrics={"session_file": session_file},
                 error_message=f"Agentic execution error: {e}",
             )
+
+    async def _execute_agentic_parallel(
+        self, task: Task, executor, parallel_cfg: Dict[str, Any]
+    ) -> TaskResult:
+        """Execute multiple agentic variants concurrently and aggregate results."""
+        base_config = dict(task.config or {})
+        variants = parallel_cfg.get("goal_variants")
+        count = int(parallel_cfg.get("count", 0) or 0)
+        max_concurrent = int(parallel_cfg.get("max_concurrent", 3) or 3)
+
+        if isinstance(variants, list) and variants:
+            goals = [str(v) for v in variants if str(v).strip()]
+        else:
+            if count <= 0:
+                count = 2
+            base_goal = str(base_config.get("goal", "")).strip()
+            if not base_goal:
+                return TaskResult(
+                    success=False,
+                    error_message="Missing goal for parallel agentic execution",
+                )
+            goals = [base_goal for _ in range(count)]
+
+        if not goals:
+            return TaskResult(
+                success=False, error_message="No valid goals generated for parallel execution"
+            )
+
+        # Remove orchestration hint from child configs to avoid recursion.
+        child_base_config = dict(base_config)
+        child_base_config.pop("parallel_agents", None)
+
+        import asyncio
+        from app.scheduler.models import Task as SchedulerTask
+
+        sem = asyncio.Semaphore(max(1, max_concurrent))
+
+        async def _run_variant(idx: int, goal_text: str) -> Dict[str, Any]:
+            async with sem:
+                child_id = f"{task.id}__p{idx+1}"
+                child_cfg = dict(child_base_config)
+                child_cfg["goal"] = goal_text
+                child_cfg["parallel_parent_task_id"] = task.id
+                child_task = SchedulerTask(
+                    id=child_id,
+                    type=task.type,
+                    priority=task.priority,
+                    config=child_cfg,
+                    resources=task.resources,
+                    created_by=task.created_by,
+                    description=f"{task.description or task.id} [parallel {idx+1}]",
+                )
+                result = await executor.execute(child_task)
+                return {
+                    "variant_index": idx + 1,
+                    "task_id": child_id,
+                    "goal": goal_text,
+                    "success": result.success,
+                    "error_message": result.error_message,
+                    "output_file": result.output_file,
+                    "metrics": result.metrics or {},
+                }
+
+        results = await asyncio.gather(
+            *[_run_variant(i, goal) for i, goal in enumerate(goals)]
+        )
+
+        success_count = sum(1 for r in results if r["success"])
+        best_result = next((r for r in results if r["success"]), results[0])
+        all_final_answers = []
+        for r in results:
+            metrics = r.get("metrics") or {}
+            all_final_answers.append(
+                {
+                    "task_id": r.get("task_id"),
+                    "success": r.get("success"),
+                    "final_answer": metrics.get("final_answer"),
+                    "error_message": r.get("error_message"),
+                    "resource_trace": [
+                        {
+                            "iteration": it.get("iteration"),
+                            "resource": it.get("resource"),
+                            "model": it.get("model"),
+                            "status": it.get("status"),
+                        }
+                        for it in (metrics.get("iteration_log") or [])
+                    ],
+                }
+            )
+
+        aggregate_metrics = {
+            "mode": "parallel_agents",
+            "parent_task_id": task.id,
+            "variant_count": len(results),
+            "success_count": success_count,
+            "failure_count": len(results) - success_count,
+            "results": results,
+            "final_answers": all_final_answers,
+            "selected_best_task_id": best_result.get("task_id"),
+            "selected_best_answer": (best_result.get("metrics") or {}).get("final_answer"),
+        }
+
+        return TaskResult(
+            success=success_count > 0,
+            output_file=(best_result.get("metrics") or {}).get("session_file")
+            or best_result.get("output_file"),
+            metrics=aggregate_metrics,
+            error_message=None
+            if success_count > 0
+            else "All parallel agent variants failed",
+        )
