@@ -1084,6 +1084,18 @@ class TaskExecutor:
         require_human = bool(review_policy.get("require_human_review", True))
         auto_decide = bool(review_policy.get("auto_decide", False))
         decision_required = require_human or not auto_decide
+        recommendation_reason = self._build_parallel_recommendation_reason(best)
+        recommended_next_actions = self._build_parallel_next_actions(
+            best=best,
+            scored=scored,
+            decision_required=decision_required,
+        )
+        summary = self._build_parallel_summary(
+            scored=scored,
+            best=best,
+            decision_required=decision_required,
+            recommendation_reason=recommendation_reason,
+        )
 
         return {
             "policy": {
@@ -1094,8 +1106,87 @@ class TaskExecutor:
             "decision_required": decision_required,
             "recommended_task_id": best.get("task_id") if best else None,
             "recommended_score": best.get("score") if best else None,
+            "recommendation_reason": recommendation_reason,
+            "recommended_next_actions": recommended_next_actions,
+            "summary": summary,
             "ranked_results": scored,
         }
+
+    def _build_parallel_recommendation_reason(
+        self, best: Optional[Dict[str, Any]]
+    ) -> str:
+        """Explain why the top-ranked variant was selected."""
+        if not best:
+            return "No successful variant was available to recommend."
+
+        dims = best.get("dimensions") or {}
+        reasons = []
+        if dims.get("format_compliance", 0) >= 1.0:
+            reasons.append("passed format checks")
+        if dims.get("goal_match", 0) >= 1.0:
+            reasons.append("matched the requested goal")
+        if dims.get("tool_hygiene", 0) >= 1.0:
+            reasons.append("showed clean execution with no tool/runtime errors")
+        latency = dims.get("latency", 0)
+        if latency >= 0.5:
+            reasons.append("completed faster than competing variants")
+
+        if not reasons:
+            reasons.append("achieved the highest overall deterministic score")
+        return ", ".join(reasons)
+
+    def _build_parallel_next_actions(
+        self,
+        best: Optional[Dict[str, Any]],
+        scored: List[Dict[str, Any]],
+        decision_required: bool,
+    ) -> List[str]:
+        """Provide generic next actions for client/UI orchestration."""
+        actions: List[str] = []
+        if best:
+            actions.append(
+                f"Inspect recommended result from {best.get('task_id')} before proceeding."
+            )
+        if decision_required:
+            actions.append(
+                "Human decision required: review ranked_results and approve which variant should move forward."
+            )
+
+        failed = [item for item in scored if not item.get("success")]
+        if failed:
+            actions.append(
+                "Review failed variants to identify reusable corrections or prompt-contract improvements."
+            )
+        else:
+            actions.append(
+                "All variants succeeded; compare quality and latency tradeoffs before selecting one."
+            )
+        return actions
+
+    def _build_parallel_summary(
+        self,
+        scored: List[Dict[str, Any]],
+        best: Optional[Dict[str, Any]],
+        decision_required: bool,
+        recommendation_reason: str,
+    ) -> str:
+        """Build a concise human-readable review summary."""
+        total = len(scored)
+        success_count = sum(1 for item in scored if item.get("success"))
+        failure_count = total - success_count
+
+        if not best:
+            return (
+                f"{total} variants completed with no valid recommendation. "
+                f"Successes: {success_count}. Failures: {failure_count}."
+            )
+
+        return (
+            f"{total} variants completed. Successes: {success_count}. "
+            f"Failures: {failure_count}. Recommended: {best.get('task_id')} "
+            f"(score {best.get('score')}) because it {recommendation_reason}. "
+            f"{'Human decision required.' if decision_required else 'Auto-decision permitted by policy.'}"
+        )
 
     def _infer_exact_text_from_goal(self, goal: str) -> Optional[str]:
         """Infer exact output requirement from goal text for scoring."""
