@@ -850,7 +850,7 @@ class ToolRegistry:
             # Scheduler Tools
             {
                 "name": "scheduler_add_task",
-                "description": "Add a new task to the scheduler queue. Supports immediate execution, scheduled execution (specific datetime), and recurring execution (cron expression). Use this to schedule background tasks like memory consolidation (dreaming), periodic maintenance, or custom jobs. For agentic tasks, config supports: goal, max_iterations, tier_preference, planning_prompt, available_tools, resource_policy, final_answer_requirements, and parallel_agents fan-out execution.",
+                "description": "Add a new task to the scheduler queue. Supports immediate execution, scheduled execution (specific datetime), and recurring execution (cron expression). Use this to schedule background tasks like memory consolidation (dreaming), periodic maintenance, or custom jobs. For agentic tasks, config supports: mode (normal/deep_research/parallel_discovery), goal, max_iterations, tier_preference, planning_prompt, available_tools, resource_policy, final_answer_requirements, and parallel_agents fan-out with review_policy (human-in-loop by default).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

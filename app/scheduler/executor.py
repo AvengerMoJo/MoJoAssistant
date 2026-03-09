@@ -7,7 +7,7 @@ Routes tasks to appropriate execution handlers based on task type.
 import asyncio
 import json
 import uuid
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from pathlib import Path
 
@@ -835,7 +835,26 @@ class TaskExecutor:
         executor = None
         try:
             executor = self._get_agentic_executor()
-            parallel_cfg = (task.config or {}).get("parallel_agents", {})
+            cfg = task.config or {}
+            mode = str(cfg.get("mode", "normal")).strip().lower()
+
+            if mode == "deep_research":
+                cfg.setdefault("max_iterations", max(task.resources.max_iterations, 8))
+                cfg.setdefault("max_duration_seconds", 600)
+                cfg.setdefault("available_tools", ["memory_search"])
+                cfg.setdefault(
+                    "resource_policy",
+                    {"enabled": True, "prefer_api_for_complex_tasks": True},
+                )
+                cfg.setdefault(
+                    "final_answer_requirements",
+                    {"min_length": 120, "must_include": ["Summary"]},
+                )
+
+            parallel_cfg = cfg.get("parallel_agents", {})
+            if mode == "parallel_discovery" and not parallel_cfg:
+                parallel_cfg = {"enabled": True, "count": 3, "max_concurrent": 3}
+
             if isinstance(parallel_cfg, dict) and parallel_cfg.get("enabled"):
                 return await self._execute_agentic_parallel(task, executor, parallel_cfg)
             return await executor.execute(task)
@@ -921,7 +940,12 @@ class TaskExecutor:
         )
 
         success_count = sum(1 for r in results if r["success"])
-        best_result = next((r for r in results if r["success"]), results[0])
+        review_report = self._build_parallel_review_report(results, parallel_cfg)
+        best_task_id = review_report.get("recommended_task_id")
+        best_result = next(
+            (r for r in results if r.get("task_id") == best_task_id),
+            next((r for r in results if r["success"]), results[0]),
+        )
         all_final_answers = []
         for r in results:
             metrics = r.get("metrics") or {}
@@ -951,6 +975,7 @@ class TaskExecutor:
             "failure_count": len(results) - success_count,
             "results": results,
             "final_answers": all_final_answers,
+            "review_report": review_report,
             "selected_best_task_id": best_result.get("task_id"),
             "selected_best_answer": (best_result.get("metrics") or {}).get("final_answer"),
         }
@@ -964,3 +989,131 @@ class TaskExecutor:
             if success_count > 0
             else "All parallel agent variants failed",
         )
+
+    def _build_parallel_review_report(
+        self, results: List[Dict[str, Any]], parallel_cfg: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Build deterministic comparison report for parallel variants."""
+        review_policy = parallel_cfg.get("review_policy", {}) if isinstance(parallel_cfg, dict) else {}
+        weights = {
+            "format_compliance": float(review_policy.get("format_compliance", 0.40)),
+            "goal_match": float(review_policy.get("goal_match", 0.30)),
+            "tool_hygiene": float(review_policy.get("tool_hygiene", 0.15)),
+            "latency": float(review_policy.get("latency", 0.10)),
+            "cost_tier": float(review_policy.get("cost_tier", 0.05)),
+        }
+
+        # Normalize latency score against worst successful variant.
+        durations = []
+        for r in results:
+            metrics = r.get("metrics") or {}
+            dur = metrics.get("duration_seconds")
+            if isinstance(dur, (int, float)):
+                durations.append(float(dur))
+        max_dur = max(durations) if durations else 1.0
+
+        rm = self._get_resource_manager()
+        scored = []
+        for r in results:
+            metrics = r.get("metrics") or {}
+            final_answer = metrics.get("final_answer")
+            goal = str(r.get("goal", ""))
+            exact_text = self._infer_exact_text_from_goal(goal)
+            iteration_log = metrics.get("iteration_log") or []
+
+            format_compliance = 1.0 if r.get("success") and final_answer else 0.0
+
+            if exact_text and isinstance(final_answer, str):
+                norm = final_answer.strip().strip('"').strip("'")
+                goal_match = 1.0 if norm == exact_text else (0.5 if exact_text in norm else 0.0)
+            elif isinstance(final_answer, str) and final_answer.strip():
+                goal_match = 1.0 if r.get("success") else 0.3
+            else:
+                goal_match = 0.0
+
+            total_steps = max(1, len(iteration_log))
+            error_steps = sum(1 for i in iteration_log if i.get("status") == "error")
+            tool_hygiene = max(0.0, 1.0 - (error_steps / total_steps))
+
+            dur = metrics.get("duration_seconds")
+            if isinstance(dur, (int, float)) and max_dur > 0:
+                latency = max(0.0, 1.0 - (float(dur) / max_dur))
+            else:
+                latency = 0.5
+
+            # Prefer lower cost tiers (free >= free_api > paid).
+            tier_score = 0.5
+            if iteration_log:
+                rid = iteration_log[0].get("resource")
+                res = rm._resources.get(rid) if rid else None
+                if res is not None:
+                    tier_score = {
+                        "free": 1.0,
+                        "free_api": 0.8,
+                        "paid": 0.2,
+                    }.get(res.tier.value, 0.5)
+
+            total = (
+                weights["format_compliance"] * format_compliance
+                + weights["goal_match"] * goal_match
+                + weights["tool_hygiene"] * tool_hygiene
+                + weights["latency"] * latency
+                + weights["cost_tier"] * tier_score
+            )
+
+            scored.append(
+                {
+                    "task_id": r.get("task_id"),
+                    "success": r.get("success"),
+                    "score": round(total, 4),
+                    "dimensions": {
+                        "format_compliance": round(format_compliance, 4),
+                        "goal_match": round(goal_match, 4),
+                        "tool_hygiene": round(tool_hygiene, 4),
+                        "latency": round(latency, 4),
+                        "cost_tier": round(tier_score, 4),
+                    },
+                    "final_answer": final_answer,
+                    "error_message": r.get("error_message"),
+                }
+            )
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        best = scored[0] if scored else None
+
+        require_human = bool(review_policy.get("require_human_review", True))
+        auto_decide = bool(review_policy.get("auto_decide", False))
+        decision_required = require_human or not auto_decide
+
+        return {
+            "policy": {
+                "weights": weights,
+                "require_human_review": require_human,
+                "auto_decide": auto_decide,
+            },
+            "decision_required": decision_required,
+            "recommended_task_id": best.get("task_id") if best else None,
+            "recommended_score": best.get("score") if best else None,
+            "ranked_results": scored,
+        }
+
+    def _infer_exact_text_from_goal(self, goal: str) -> Optional[str]:
+        """Infer exact output requirement from goal text for scoring."""
+        text = goal or ""
+        lower = text.lower()
+        markers = [
+            "containing exactly:",
+            "exactly:",
+            "exact text:",
+            "exact output:",
+        ]
+        for marker in markers:
+            idx = lower.find(marker)
+            if idx == -1:
+                continue
+            raw = text[idx + len(marker) :].strip()
+            if not raw:
+                return None
+            raw = raw.splitlines()[0].strip()
+            return raw.strip().strip('"').strip("'")
+        return None
