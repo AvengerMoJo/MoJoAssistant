@@ -160,6 +160,10 @@ class PlanningPromptManager:
 - Review all completed steps
 - Verify the original goal is achieved
 - Provide final answer or results
+- Run a final quality gate before completion:
+  - Ensure output format exactly matches requirements
+  - Ensure required tokens/fields are present
+  - Ensure no planning boilerplate appears in FINAL_ANSWER
 
 ## Progress Updates
 - After each significant step, provide:
@@ -172,6 +176,7 @@ class PlanningPromptManager:
 - When goal is achieved, wrap final answer in <FINAL_ANSWER> tags
 - Include summary of what was accomplished
 - Note any issues or warnings
+- If exact text is requested, FINAL_ANSWER must contain only that exact text
 
 Remember: Work systematically, verify each step, and communicate progress clearly.
 """,
