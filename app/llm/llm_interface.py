@@ -61,15 +61,31 @@ class LLMInterface:
             # Configure API models
             if "api_models" in config:
                 for name, api_config in config["api_models"].items():
-                    if not isinstance(api_config, dict) or not api_config.get("provider"):
-                        continue  # skip empty/placeholder entries like openregistry: {}
-                    self.add_api_interface(
-                        name=name,
-                        provider=api_config.get("provider"),
-                        api_key=api_config.get("api_key"),
-                        model=api_config.get("model"),
-                        config=api_config,
-                    )
+                    if not isinstance(api_config, dict):
+                        continue
+                    if api_config.get("provider"):
+                        # Flat entry — register directly
+                        resolved = self._resolve_api_config(api_config)
+                        self.add_api_interface(
+                            name=name,
+                            provider=resolved["provider"],
+                            api_key=resolved.get("api_key"),
+                            model=resolved.get("model"),
+                            config=resolved,
+                        )
+                    else:
+                        # Nested sub-accounts (e.g. gemini, openrouter multi-account)
+                        # Register each sub-account as "{parent}_{child}"
+                        for sub_name, sub_config in api_config.items():
+                            if isinstance(sub_config, dict) and sub_config.get("provider"):
+                                resolved = self._resolve_api_config(sub_config)
+                                self.add_api_interface(
+                                    name=f"{name}_{sub_name}",
+                                    provider=resolved["provider"],
+                                    api_key=resolved.get("api_key"),
+                                    model=resolved.get("model"),
+                                    config=resolved,
+                                )
 
             # Set active interface
             if (
@@ -88,6 +104,16 @@ class LLMInterface:
 
         except Exception as e:
             print(f"Error loading configuration: {e}")
+
+    def _resolve_api_config(self, api_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Resolve runtime values in an api_model config entry:
+        - key_var: resolve env var name to actual api_key value
+        """
+        resolved = dict(api_config)
+        if not resolved.get("api_key") and resolved.get("key_var"):
+            resolved["api_key"] = os.environ.get(resolved["key_var"])
+        return resolved
 
     def add_local_interface(
         self,

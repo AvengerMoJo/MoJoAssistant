@@ -112,7 +112,17 @@ class APILLMInterface(BaseLLMInterface):
             self.output_limit = self.config.get('output_limit', 32768)
             self.headers['Authorization'] = f"Bearer {self.api_key}"
             self.message_format = "openai"
-        
+
+        elif self.provider == "google":
+            # Google Gemini via its OpenAI-compatible endpoint
+            base_url = self.config.get('base_url', "https://generativelanguage.googleapis.com/v1beta/openai")
+            self.url = f"{base_url.rstrip('/')}/chat/completions"
+            self.model = self.model or "gemini-2.0-flash"
+            self.context_limit = self.config.get('context_limit', 1000000)
+            self.output_limit = self.config.get('output_limit', 8192)
+            self.headers['Authorization'] = f"Bearer {self.api_key}"
+            self.message_format = "openai"
+
         else:
             # Treat any openai-compatible provider as openai (e.g. "openai-compatible", "openrouter", etc.)
             base_url = self.config.get('base_url', "https://api.openai.com/v1")
