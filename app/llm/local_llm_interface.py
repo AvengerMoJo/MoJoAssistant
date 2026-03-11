@@ -134,19 +134,32 @@ class LocalLLMInterface(BaseLLMInterface):
 
             return False
 
+    def _probe_server(self) -> bool:
+        """
+        Probe the server for readiness. Tries common health/model endpoints
+        across different local server implementations (llama.cpp, LMStudio, Ollama, etc.).
+        Returns True if any probe succeeds (even a non-200 that isn't a connection error).
+        """
+        probe_paths = ["/models", "/v1/models", "/health", "/api/tags"]
+        base = self.server_url.rstrip("/")
+        for path in probe_paths:
+            try:
+                resp = requests.get(f"{base}{path}", timeout=2)
+                if resp.status_code < 500:  # any non-server-error means server is up
+                    return True
+            except requests.RequestException:
+                continue
+        return False
+
     def _ensure_server(self) -> bool:
         """Ensure local server is running. Lazy start, single readiness probe."""
         if self._started:
             return True
         if self._external_server:
             # External server — probe once to confirm it's up
-            try:
-                resp = requests.get(f"{self.server_url}/models", timeout=2)
-                if resp.status_code == 200:
-                    self._started = True
-                    return True
-            except requests.RequestException:
-                pass
+            if self._probe_server():
+                self._started = True
+                return True
             return False
         if not self.model_path:
             return False
@@ -156,13 +169,9 @@ class LocalLLMInterface(BaseLLMInterface):
             self._start_local_server()
 
         # Single readiness probe (no blocking loop)
-        try:
-            resp = requests.get(f"{self.server_url}/models", timeout=2)
-            if resp.status_code == 200:
-                self._started = True
-                return True
-        except requests.RequestException:
-            pass
+        if self._probe_server():
+            self._started = True
+            return True
         return False
 
     def set_model(self, model_path: str, model_type: str = "llama") -> bool:

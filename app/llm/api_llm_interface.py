@@ -229,6 +229,54 @@ USER QUERY:
         # Fallback if no response was returned
         return self._fallback_response(query, context or [])
     
+    def generate_chat_response(self, messages: List[Dict[str, str]]) -> str:
+        """
+        Generate response from a list of chat messages using the API.
+        Passes messages directly to the provider without reformatting.
+
+        Args:
+            messages: List of chat messages with 'role' and 'content'
+
+        Returns:
+            str: Generated response
+        """
+        try:
+            if self.message_format == "anthropic":
+                # Anthropic requires system message to be separate
+                system = next((m["content"] for m in messages if m["role"] == "system"), None)
+                user_messages = [m for m in messages if m["role"] != "system"]
+                payload = {
+                    "model": self.model,
+                    "messages": user_messages,
+                    "max_tokens": min(2048, self.output_limit),
+                }
+                if system:
+                    payload["system"] = system
+            else:
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": min(2048, self.output_limit),
+                }
+
+            response = requests.post(self.url, headers=self.headers, json=payload, timeout=60)
+
+            if response.status_code == 200:
+                response_data = response.json()
+                if self.message_format == "openai":
+                    return response_data['choices'][0]['message']['content'].strip()
+                elif self.message_format == "anthropic":
+                    return response_data['content'][0]['text'].strip()
+            else:
+                self.logger.error(f"API Error: {response.status_code} - {response.text}")
+
+        except Exception as e:
+            self.logger.error(f"Error generating chat response: {e}")
+
+        last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        return self._fallback_response(last_user_msg)
+
     def _fallback_response(self, query: str, context: List[Dict[str, Any]] | None = None) -> str:
         """Provide a fallback response when API call fails"""
         context_info = f"(with {len(context)} context items)" if context else "(without context)"
