@@ -953,7 +953,7 @@ class ToolRegistry:
             },
             {
                 "name": "scheduler_remove_task",
-                "description": "Remove a task from the scheduler queue. Only pending tasks can be removed. Use this to cancel a scheduled task before it runs.",
+                "description": "Remove a task from the scheduler queue. Works for any task status (pending, failed, running, completed). Use this to clean up old or zombie tasks.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -964,6 +964,26 @@ class ToolRegistry:
                         },
                     },
                     "required": ["task_id"],
+                },
+            },
+            {
+                "name": "scheduler_purge_tasks",
+                "description": "Bulk remove tasks by status. Use this to clean up all failed, completed, or zombie running tasks in one call.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["failed", "completed", "running", "cancelled"],
+                            "description": "Remove all tasks with this status",
+                        },
+                        "exclude_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Task IDs to keep even if they match the status",
+                        },
+                    },
+                    "required": ["status"],
                 },
             },
             # Scheduler Daemon Control Tools
@@ -1594,6 +1614,8 @@ class ToolRegistry:
             return await self._execute_scheduler_get_task(args)
         elif name == "scheduler_remove_task":
             return await self._execute_scheduler_remove_task(args)
+        elif name == "scheduler_purge_tasks":
+            return await self._execute_scheduler_purge_tasks(args)
         # Scheduler Daemon Control
         elif name == "scheduler_start_daemon":
             return await self._execute_scheduler_start_daemon(args)
@@ -2338,6 +2360,30 @@ class ToolRegistry:
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to remove task: {str(e)}"}
+
+    async def _execute_scheduler_purge_tasks(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Bulk remove all tasks matching a given status"""
+        try:
+            target_status = args.get("status")
+            exclude_ids = set(args.get("exclude_ids") or [])
+
+            all_tasks = self.scheduler.list_tasks()
+            removed = []
+            for task in all_tasks:
+                if task.status.value == target_status and task.id not in exclude_ids:
+                    self.scheduler.remove_task(task.id)
+                    removed.append(task.id)
+
+            return {
+                "status": "success",
+                "removed_count": len(removed),
+                "removed_ids": removed,
+                "message": f"Purged {len(removed)} {target_status} task(s)",
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to purge tasks: {str(e)}"}
 
     # ========================================================================
     # Scheduler Daemon Control execution methods
