@@ -3182,7 +3182,8 @@ class ToolRegistry:
     ) -> Dict[str, Any]:
         """List models available in an OpenAI-compatible server"""
         try:
-            llm_config = self._load_config_file(self._config_modules["llm"]["file"])
+            from app.config.config_loader import load_layered_json_config
+            llm_config = load_layered_json_config(self._config_modules["llm"]["file"])
             interface_name = args.get("interface_name") or llm_config.get(
                 "default_interface"
             )
@@ -3195,10 +3196,11 @@ class ToolRegistry:
                 }
 
             iface = api_models[interface_name]
-            if iface.get("provider") != "openai":
+            openai_compatible_providers = {"openai", "openai-compatible", "local_api", "deepseek", "groq", "deepinfra", "xai", "lmstudio"}
+            if iface.get("provider") not in openai_compatible_providers and not iface.get("base_url"):
                 return {
                     "status": "error",
-                    "message": f"Interface '{interface_name}' uses provider '{iface.get('provider')}', not openai. Model listing is only supported for OpenAI-compatible servers.",
+                    "message": f"Interface '{interface_name}' uses provider '{iface.get('provider')}', which does not support OpenAI-compatible model listing.",
                 }
 
             result = await self._validate_model_available(
