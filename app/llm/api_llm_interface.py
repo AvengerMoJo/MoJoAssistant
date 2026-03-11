@@ -124,13 +124,25 @@ class APILLMInterface(BaseLLMInterface):
             self.message_format = "openai"
 
         else:
-            # Treat any openai-compatible provider as openai (e.g. "openai-compatible", "openrouter", etc.)
-            base_url = self.config.get('base_url', "https://api.openai.com/v1")
-            self.url = f"{base_url.rstrip('/')}/chat/completions"
+            # Generic config-driven provider — no code change needed for new providers.
+            # Required in config: base_url, model
+            # Optional in config: message_format ("openai"|"anthropic"), context_limit,
+            #                     output_limit, search_enabled, anthropic_version
+            base_url = self.config.get('base_url', '').rstrip('/')
+            if not base_url:
+                print(f"⚠️  Provider '{self.provider}' has no base_url in config — requests will fail")
+            self.message_format = self.config.get('message_format', 'openai')
+            if self.message_format == 'anthropic':
+                self.url = f"{base_url}/messages"
+                self.headers['x-api-key'] = self.api_key or ""
+                self.headers['anthropic-version'] = self.config.get('anthropic_version', '2023-06-01')
+            else:
+                self.url = f"{base_url}/chat/completions"
+                self.headers['Authorization'] = f"Bearer {self.api_key}"
             self.context_limit = self.config.get('context_limit', 128000)
-            self.output_limit = self.config.get('output_limit', 16384)
-            self.headers['Authorization'] = f"Bearer {self.api_key}"
-            self.message_format = "openai"
+            self.output_limit = self.config.get('output_limit', 8192)
+            if self.config.get('search_enabled'):
+                self.search_enabled = True
     
     def _format_openai_messages(self, query: str, context_text: str) -> List[Dict[str, str]]:
         """Format messages for OpenAI-compatible API"""
