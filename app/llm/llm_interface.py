@@ -42,8 +42,8 @@ class LLMInterface:
             config_file: Path to configuration file
         """
         try:
-            with open(config_file, "r") as f:
-                config = json.load(f)
+            from app.config.config_loader import load_layered_json_config
+            config = load_layered_json_config(config_file)
 
             # Configure local models
             if "local_models" in config:
@@ -61,6 +61,8 @@ class LLMInterface:
             # Configure API models
             if "api_models" in config:
                 for name, api_config in config["api_models"].items():
+                    if not isinstance(api_config, dict) or not api_config.get("provider"):
+                        continue  # skip empty/placeholder entries like openregistry: {}
                     self.add_api_interface(
                         name=name,
                         provider=api_config.get("provider"),

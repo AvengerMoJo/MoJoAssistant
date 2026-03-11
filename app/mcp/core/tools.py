@@ -3017,7 +3017,8 @@ class ToolRegistry:
         # --- get ---
         if action == "get":
             try:
-                data = self._load_config_file(meta["file"])
+                from app.config.config_loader import load_layered_json_config
+                data = load_layered_json_config(meta["file"])
                 path = args.get("path")
                 if path:
                     try:
@@ -3067,21 +3068,25 @@ class ToolRegistry:
             validate = args.get("validate", True)
 
             try:
-                data = self._load_config_file(meta["file"])
+                from app.config.config_loader import (
+                    load_layered_json_config,
+                    load_runtime_layer,
+                    save_runtime_config,
+                )
 
-                # Get old value for reporting
+                # Read merged config for old_value + validation context
+                merged = load_layered_json_config(meta["file"])
                 try:
-                    old_value = self._resolve_path(data, path)
+                    old_value = self._resolve_path(merged, path)
                 except KeyError:
                     old_value = None
 
                 # Smart validation: LLM model changes on openai-compatible providers
                 if module_name == "llm" and validate and _is_llm_model_path(path):
-                    # Extract interface name from path like "api_models.lmstudio.model"
                     parts = path.split(".")
                     if len(parts) >= 2:
                         interface_name = parts[1]
-                        iface = data.get("api_models", {}).get(interface_name, {})
+                        iface = merged.get("api_models", {}).get(interface_name, {})
                         if iface.get("provider") == "openai":
                             result = await self._validate_model_available(
                                 base_url=iface["base_url"],
@@ -3100,9 +3105,10 @@ class ToolRegistry:
                                     "available_models": result["models"],
                                 }
 
-                # Apply the change
-                self._set_path(data, path, value)
-                self._save_config_file(meta["file"], data)
+                # Apply change to runtime layer only (never touch codebase default)
+                runtime_data = load_runtime_layer(meta["file"])
+                self._set_path(runtime_data, path, value)
+                runtime_path = save_runtime_config(meta["file"], runtime_data)
 
                 # Fire change hook
                 if meta.get("on_change"):
@@ -3114,7 +3120,8 @@ class ToolRegistry:
                     "path": path,
                     "old_value": old_value,
                     "new_value": value,
-                    "message": f"Updated {module_name}.{path}: {old_value!r} -> {value!r}",
+                    "saved_to": runtime_path,
+                    "message": f"Updated {module_name}.{path}: {old_value!r} -> {value!r} (runtime layer)",
                 }
             except Exception as e:
                 return {"status": "error", "message": f"Failed to set config: {e}"}

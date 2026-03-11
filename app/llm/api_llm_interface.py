@@ -114,7 +114,13 @@ class APILLMInterface(BaseLLMInterface):
             self.message_format = "openai"
         
         else:
-            raise ValueError(f"Unsupported provider: {self.provider}")
+            # Treat any openai-compatible provider as openai (e.g. "openai-compatible", "openrouter", etc.)
+            base_url = self.config.get('base_url', "https://api.openai.com/v1")
+            self.url = f"{base_url.rstrip('/')}/chat/completions"
+            self.context_limit = self.config.get('context_limit', 128000)
+            self.output_limit = self.config.get('output_limit', 16384)
+            self.headers['Authorization'] = f"Bearer {self.api_key}"
+            self.message_format = "openai"
     
     def _format_openai_messages(self, query: str, context_text: str) -> List[Dict[str, str]]:
         """Format messages for OpenAI-compatible API"""

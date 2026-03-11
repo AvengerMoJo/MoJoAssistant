@@ -1,5 +1,12 @@
 """
 Configuration loader with environment variable support for MoJoAssistant
+
+Config loading follows a strict layer hierarchy (later layers win):
+  Layer 1: config/*.json          — codebase defaults (committed to git)
+  Layer 2: ~/.memory/config/*.json — personal runtime overrides (never committed)
+
+Use load_layered_json_config() to load any config module through both layers.
+Use save_runtime_config() to write a change to the runtime layer only.
 """
 import os
 import json
@@ -7,6 +14,86 @@ from typing import Dict, Any, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Path to the personal runtime config directory (layer 2)
+MEMORY_CONFIG_DIR = os.path.expanduser("~/.memory/config")
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge override into base. Override wins on all conflicts."""
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def load_layered_json_config(
+    codebase_path: str,
+    memory_config_dir: str = MEMORY_CONFIG_DIR,
+) -> Dict[str, Any]:
+    """
+    Load a JSON config through both layers, runtime overrides winning.
+
+    Args:
+        codebase_path: Path to the codebase default (e.g. 'config/llm_config.json')
+        memory_config_dir: Directory for runtime overrides (default: ~/.memory/config)
+
+    Returns:
+        Merged config dict — runtime values win over codebase defaults.
+    """
+    # Layer 1: codebase default
+    config: Dict[str, Any] = {}
+    if os.path.exists(codebase_path):
+        with open(codebase_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+    # Layer 2: personal runtime override
+    basename = os.path.basename(codebase_path)
+    runtime_path = os.path.join(memory_config_dir, basename)
+    if os.path.exists(runtime_path):
+        with open(runtime_path, "r", encoding="utf-8") as f:
+            runtime = json.load(f)
+        config = _deep_merge(config, runtime)
+        logger.debug(f"Applied runtime override from {runtime_path}")
+
+    return config
+
+
+def load_runtime_layer(
+    codebase_path: str,
+    memory_config_dir: str = MEMORY_CONFIG_DIR,
+) -> Dict[str, Any]:
+    """Load only the runtime layer (~/.memory/config). Returns {} if not present."""
+    basename = os.path.basename(codebase_path)
+    runtime_path = os.path.join(memory_config_dir, basename)
+    if os.path.exists(runtime_path):
+        with open(runtime_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_runtime_config(
+    codebase_path: str,
+    data: Dict[str, Any],
+    memory_config_dir: str = MEMORY_CONFIG_DIR,
+) -> str:
+    """
+    Save config data to the runtime layer (~/.memory/config).
+    Never touches the codebase default.
+
+    Returns:
+        Path to the runtime file that was written.
+    """
+    os.makedirs(memory_config_dir, exist_ok=True)
+    basename = os.path.basename(codebase_path)
+    runtime_path = os.path.join(memory_config_dir, basename)
+    with open(runtime_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    return runtime_path
 
 def load_embedding_config(config_file: str = "config/embedding_config.json") -> Dict[str, Any]:
     """

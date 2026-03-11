@@ -258,6 +258,19 @@ class Scheduler:
                         "error": result.error_message or "Unknown error",
                     })
 
+                    # Cron tasks reschedule even after permanent failure
+                    if task.cron_expression:
+                        from app.scheduler.triggers import CronTrigger
+                        trigger = CronTrigger(task.cron_expression)
+                        next_run = trigger.get_next_run_time(after=datetime.now())
+                        task.status = TaskStatus.PENDING
+                        task.schedule = next_run
+                        task.retry_count = 0
+                        task.started_at = None
+                        task.completed_at = None
+                        task.result = None
+                        self._log(f"Task {task.id} failed but rescheduled (cron) for {next_run.isoformat()}")
+
             # Save updated task
             self.queue.update(task)
 
