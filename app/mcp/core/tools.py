@@ -1101,14 +1101,14 @@ class ToolRegistry:
             # Generic Configuration Tool
             {
                 "name": "config",
-                "description": "Read and write MoJoAssistant configuration. Actions: 'help' lists configurable modules (or shows structure of a specific module), 'get' reads config (optionally at a dot-path), 'set' writes a value at a dot-path and persists to disk. Modules: llm, embedding.",
+                "description": "Read and write MoJoAssistant configuration. Actions: 'help' lists configurable modules (or shows structure of a specific module), 'get' reads config (optionally at a dot-path), 'set' writes a value at a dot-path and persists to disk, 'delete' removes a key at a dot-path from the runtime layer. Modules: llm, embedding.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["help", "get", "set"],
-                            "description": "Action to perform: help (list modules or show structure), get (read config), set (write value)",
+                            "enum": ["help", "get", "set", "delete"],
+                            "description": "Action to perform: help (list modules or show structure), get (read config), set (write value), delete (remove a key from runtime layer)",
                         },
                         "module": {
                             "type": "string",
@@ -3172,9 +3172,66 @@ class ToolRegistry:
             except Exception as e:
                 return {"status": "error", "message": f"Failed to set config: {e}"}
 
+        if action == "delete":
+            path = args.get("path")
+            if not path:
+                return {
+                    "status": "error",
+                    "message": "Parameter 'path' is required for action=delete.",
+                }
+            try:
+                from app.config.config_loader import (
+                    load_layered_json_config,
+                    load_runtime_layer,
+                    save_runtime_config,
+                )
+
+                merged = load_layered_json_config(meta["file"])
+                try:
+                    old_value = self._resolve_path(merged, path)
+                except KeyError:
+                    return {
+                        "status": "error",
+                        "message": f"Path '{path}' not found in config.",
+                    }
+
+                # Delete from runtime layer only
+                runtime_data = load_runtime_layer(meta["file"])
+                parts = path.split(".")
+                target = runtime_data
+                for part in parts[:-1]:
+                    if part not in target:
+                        return {
+                            "status": "error",
+                            "message": f"Path '{path}' not found in runtime layer — nothing to delete.",
+                        }
+                    target = target[part]
+                key = parts[-1]
+                if key not in target:
+                    return {
+                        "status": "error",
+                        "message": f"Key '{key}' not found in runtime layer at '{'.'.join(parts[:-1])}' — nothing to delete.",
+                    }
+                del target[key]
+                runtime_path = save_runtime_config(meta["file"], runtime_data)
+
+                if meta.get("on_change"):
+                    meta["on_change"]()
+
+                return {
+                    "status": "success",
+                    "module": module_name,
+                    "path": path,
+                    "deleted_value": old_value,
+                    "saved_to": runtime_path,
+                    "message": f"Deleted {module_name}.{path} from runtime layer",
+                }
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to delete config: {e}"}
+
         return {
             "status": "error",
-            "message": f"Unknown action '{action}'. Use: help, get, set.",
+            "message": f"Unknown action '{action}'. Use: help, get, set, delete.",
         }
 
     # ========================================================================
