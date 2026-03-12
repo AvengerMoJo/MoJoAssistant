@@ -163,6 +163,9 @@ class AgenticExecutor:
 
         tier_pref_raw = config.get("tier_preference", task.resources.tier_preference)
         if tier_pref_raw:
+            # Normalise: a bare string like "free" should become ["free"], not ["f","r","e","e"]
+            if isinstance(tier_pref_raw, str):
+                tier_pref_raw = [tier_pref_raw]
             tier_preference = [ResourceTier(t) for t in tier_pref_raw]
         else:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
