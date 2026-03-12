@@ -1126,8 +1126,8 @@ class ToolRegistry:
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["help", "get", "set", "delete"],
-                            "description": "Action to perform: help (list modules or show structure), get (read config), set (write value), delete (remove a key from runtime layer)",
+                            "enum": ["help", "get", "set", "delete", "sync_local_models"],
+                            "description": "Action to perform: help (list modules or show structure), get (read config), set (write value), delete (remove a key from runtime layer), sync_local_models (re-query a local LLM server and register one resource entry per loaded model)",
                         },
                         "module": {
                             "type": "string",
@@ -3270,6 +3270,23 @@ class ToolRegistry:
         """Dispatch config actions: help, get, set."""
         action = args.get("action")
         module_name = args.get("module")
+
+        # --- sync_local_models ---
+        if action == "sync_local_models":
+            resource_id = args.get("path") or module_name or "lmstudio"
+            try:
+                rm = self.scheduler.executor._resource_manager
+                synced = rm.sync_local_server_models(resource_id)
+                statuses = rm.get_status()
+                entries = {rid: statuses[rid] for rid in synced if rid in statuses}
+                return {
+                    "status": "success",
+                    "server": resource_id,
+                    "synced_count": len(synced),
+                    "entries": entries,
+                }
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
 
         # --- help ---
         if action == "help":
