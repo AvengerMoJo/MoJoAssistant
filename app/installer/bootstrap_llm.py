@@ -80,11 +80,31 @@ class BootstrapLLM:
 
     def _try_lmstudio(self) -> bool:
         """Try to connect to LM Studio."""
-        # Try common ports: 8080, 1234
-        ports = [8080, 1234]
+        # Resolve API token: config wins over env vars
+        api_token = None
+        base_url_from_config = None
+        try:
+            from app.config.config_loader import resolve_llm_resource
+            lm_conf = resolve_llm_resource("lmstudio")
+            if lm_conf:
+                api_token = lm_conf.get("api_key")
+                base_url_from_config = lm_conf.get("base_url")
+        except Exception:
+            pass
+        # Fall back to env vars if config had nothing
+        if not api_token:
+            api_token = os.environ.get("LMSTUDIO_API_KEY") or os.environ.get("LM_STUDIO_API_KEY")
 
-        # Check if API token is configured
-        api_token = os.environ.get("LMSTUDIO_API_KEY") or os.environ.get("LM_STUDIO_API_KEY")
+        # Derive ports to try: config base_url first, then common defaults
+        ports = [8080, 1234]
+        if base_url_from_config:
+            try:
+                from urllib.parse import urlparse
+                parsed_port = urlparse(base_url_from_config).port
+                if parsed_port and parsed_port not in ports:
+                    ports = [parsed_port] + ports
+            except Exception:
+                pass
 
         for port in ports:
             try:

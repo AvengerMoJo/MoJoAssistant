@@ -32,8 +32,19 @@ class APILLMInterface(BaseLLMInterface):
         """
         super().__init__()
         self.provider = provider.lower()
-        self.api_key = api_key or os.environ.get(f"{provider.upper()}_API_KEY")
         self.config = config or {}
+        # Key resolution: explicit arg → env var → llm_config.json
+        resolved_key = api_key or os.environ.get(f"{provider.upper()}_API_KEY")
+        if not resolved_key:
+            try:
+                from app.config.config_loader import resolve_llm_resource
+                resource_name = self.config.get("resource_id", provider.lower())
+                cfg_key = resolve_llm_resource(resource_name).get("api_key")
+                if cfg_key:
+                    resolved_key = cfg_key
+            except Exception:
+                pass
+        self.api_key = resolved_key
         
         # Set default values
         self.base_url = self.config.get('base_url') or self.config.get('url') or ""

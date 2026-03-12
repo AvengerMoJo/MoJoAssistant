@@ -107,12 +107,31 @@ class LLMInterface:
 
     def _resolve_api_config(self, api_config: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Resolve runtime values in an api_model config entry:
-        - key_var: resolve env var name to actual api_key value
+        Resolve runtime values in an api_model config entry.
+
+        Key resolution order:
+          1. Inline api_key in config (already present — keep it)
+          2. key_var → os.environ[key_var]
+          3. resolve_llm_resource() — reads layered llm_config.json
         """
         resolved = dict(api_config)
-        if not resolved.get("api_key") and resolved.get("key_var"):
-            resolved["api_key"] = os.environ.get(resolved["key_var"])
+        key = resolved.get("api_key", "")
+        if not key or str(key).startswith("{{"):
+            # Try key_var
+            key_var = resolved.get("key_var") or resolved.get("api_key_env")
+            if key_var:
+                resolved["api_key"] = os.environ.get(key_var)
+            # Try config loader as final fallback
+            if not resolved.get("api_key"):
+                try:
+                    from app.config.config_loader import resolve_llm_resource
+                    resource_id = resolved.get("resource_id") or resolved.get("id", "")
+                    if resource_id:
+                        cfg_key = resolve_llm_resource(resource_id).get("api_key")
+                        if cfg_key:
+                            resolved["api_key"] = cfg_key
+                except Exception:
+                    pass
         return resolved
 
     def add_local_interface(
