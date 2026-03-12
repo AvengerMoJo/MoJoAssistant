@@ -369,21 +369,46 @@ class ResourceManager:
         """Return status of all resources with usage stats."""
         with self._lock:
             self._maybe_reload_runtime_state()
-            result = {}
-            for rid, resource in self._resources.items():
-                usage = self._usage.get(rid, UsageRecord())
+            resources_snapshot = list(self._resources.items())
+            usage_snapshot = dict(self._usage)
+
+        # Probe local servers outside the lock to avoid blocking
+        result = {}
+        for rid, resource in resources_snapshot:
+            usage = usage_snapshot.get(rid, UsageRecord())
+            with self._lock:
                 status = self._compute_status(resource)
-                result[rid] = {
-                    "model": resource.model,
-                    "tier": resource.tier.value,
-                    "priority": resource.priority,
-                    "enabled": resource.enabled,
-                    "status": status.value,
-                    "total_calls": usage.total_calls,
-                    "consecutive_errors": usage.consecutive_errors,
-                    "description": resource.description,
-                }
-            return result
+            model = resource.model or self._probe_live_model(resource)
+            result[rid] = {
+                "model": model,
+                "tier": resource.tier.value,
+                "priority": resource.priority,
+                "enabled": resource.enabled,
+                "status": status.value,
+                "total_calls": usage.total_calls,
+                "consecutive_errors": usage.consecutive_errors,
+                "description": resource.description,
+            }
+        return result
+
+    def _probe_live_model(self, resource: "LLMResource") -> str:
+        """For local resources without a configured model, query the server for the active model."""
+        import requests as req
+        if resource.type != "local" or not resource.base_url:
+            return ""
+        base = resource.base_url.rstrip("/")
+        auth = f"Bearer {resource.api_key}" if resource.api_key else ""
+        headers = {"Authorization": auth} if auth else {}
+        for path in ("/models", "/v1/models"):
+            try:
+                resp = req.get(f"{base}{path}", headers=headers, timeout=2)
+                if resp.status_code == 200:
+                    models = resp.json().get("data", [])
+                    if models:
+                        return models[0].get("id", "")
+            except Exception:
+                pass
+        return ""
 
     def approve_paid_resource(self, resource_id: str):
         with self._lock:

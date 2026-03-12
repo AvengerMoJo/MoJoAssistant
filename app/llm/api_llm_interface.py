@@ -36,12 +36,14 @@ class APILLMInterface(BaseLLMInterface):
         self.config = config or {}
         
         # Set default values
-        self.url = self.config.get('base_url') or self.config.get('url') or ""
-        self.model = model or self.config.get('model')
+        self.base_url = self.config.get('base_url') or self.config.get('url') or ""
+        self.url = self.base_url
+        self.model = model or self.config.get('model') or None
+        self._model_probed = False  # lazy: probe server for model if not configured
         self.headers = {
             "Content-Type": "application/json",
         }
-        
+
         # Configure provider-specific settings
         self._configure_provider()
     
@@ -49,8 +51,12 @@ class APILLMInterface(BaseLLMInterface):
         """Configure provider-specific settings"""
         if self.provider == "openai":
             base_url = self.config.get('base_url', "https://api.openai.com/v1")
+            self.base_url = base_url
             self.url = f"{base_url.rstrip('/')}/chat/completions"
-            self.model = self.model or "gpt-4o-mini"
+            # Only set a default model for remote OpenAI; local servers report their own model
+            is_local = any(base_url.startswith(p) for p in ("http://localhost", "http://127.0.0.1"))
+            if not is_local:
+                self.model = self.model or "gpt-4o-mini"
             self.context_limit = self.config.get('context_limit', 128000)
             self.output_limit = self.config.get('output_limit', 16384)
             self.headers['Authorization'] = f"Bearer {self.api_key}"
@@ -144,6 +150,35 @@ class APILLMInterface(BaseLLMInterface):
             if self.config.get('search_enabled'):
                 self.search_enabled = True
     
+    def _resolve_model(self) -> str:
+        """
+        Return the model to use for requests.
+
+        If no model was configured (local server), probe /v1/models once and cache the result.
+        This means the model field always reflects what the server actually has loaded —
+        no stale config required.
+        """
+        if self.model:
+            return self.model
+
+        if not self._model_probed:
+            self._model_probed = True
+            base = self.base_url.rstrip("/")
+            auth = self.headers.get("Authorization", "")
+            probe_headers = {"Authorization": auth} if auth else {}
+            for path in ("/models", "/v1/models"):
+                try:
+                    resp = requests.get(f"{base}{path}", headers=probe_headers, timeout=2)
+                    if resp.status_code == 200:
+                        models = resp.json().get("data", [])
+                        if models:
+                            self.model = models[0].get("id", "")
+                            return self.model
+                except Exception:
+                    pass
+
+        return self.model or "unknown"
+
     def _format_openai_messages(self, query: str, context_text: str) -> List[Dict[str, str]]:
         """Format messages for OpenAI-compatible API"""
         system_message = f"""You are MoJoAssistant, a helpful AI with a tiered memory system.
@@ -184,39 +219,41 @@ USER QUERY:
         try:
             # Format context
             context_text = self.format_context(context) if context else "No context available."
-            
+
+            model = self._resolve_model()
+
             # Initialize payload with default
             payload = {
-                "model": self.model or "unknown",
+                "model": model,
                 "messages": [{"role": "user", "content": query}],
                 "temperature": 0.7,
                 "max_tokens": 1000,
             }
-            
+
             # Format messages according to the provider's API
             if self.message_format == "openai":
                 messages = self._format_openai_messages(query, context_text)
                 payload.update({
-                    "model": self.model,
+                    "model": model,
                     "messages": messages,
                     "max_tokens": min(2048, self.output_limit),
                 })
                 if hasattr(self, 'search_enabled') and self.search_enabled:
                     payload["search"] = True
-                    
+
             elif self.message_format == "anthropic":
                 messages = self._format_anthropic_messages(query, context_text)
                 payload.update({
-                    "model": self.model,
+                    "model": model,
                     "messages": messages,
                     "system": "You are MoJoAssistant, a helpful AI with a tiered memory system.",
                     "max_tokens": min(2048, self.output_limit),
                 })
             
-            # Ensure payload is set
+            # (payload is always set above; guard kept for safety)
             if payload is None:
                 payload = {
-                    "model": self.model or "unknown",
+                    "model": model,
                     "messages": [{"role": "user", "content": query}],
                     "temperature": 0.7,
                     "max_tokens": 1000,
@@ -263,12 +300,13 @@ USER QUERY:
             str: Generated response
         """
         try:
+            model = self._resolve_model()
             if self.message_format == "anthropic":
                 # Anthropic requires system message to be separate
                 system = next((m["content"] for m in messages if m["role"] == "system"), None)
                 user_messages = [m for m in messages if m["role"] != "system"]
                 payload = {
-                    "model": self.model,
+                    "model": model,
                     "messages": user_messages,
                     "max_tokens": min(2048, self.output_limit),
                 }
@@ -276,7 +314,7 @@ USER QUERY:
                     payload["system"] = system
             else:
                 payload = {
-                    "model": self.model,
+                    "model": model,
                     "messages": messages,
                     "temperature": 0.7,
                     "max_tokens": min(2048, self.output_limit),
