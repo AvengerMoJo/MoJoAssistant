@@ -69,6 +69,10 @@ class Scheduler:
 
         self._log("Scheduler initialized")
 
+    def reseed_default_tasks(self) -> None:
+        """Re-read scheduler_config.json and seed any new/enabled default tasks."""
+        self._seed_tasks_from_config()
+
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
         if self.logger:
@@ -91,7 +95,7 @@ class Scheduler:
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self.stats["started_at"] = datetime.now()
         self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
-        self._ensure_default_dreaming_task()
+        self._seed_tasks_from_config()
 
         # Set up signal handlers for graceful shutdown (only in main thread)
         try:
@@ -161,6 +165,22 @@ class Scheduler:
                 if dispatched == 0 and not self._running_tasks:
                     self._log("No tasks ready", "debug")
 
+                # Heartbeat every 10th tick
+                if self.tick_count % 10 == 0:
+                    from app.scheduler.models import TaskStatus as _TS
+                    pending_count = sum(
+                        1 for t in self.queue.list_tasks()
+                        if t.status == _TS.PENDING
+                    )
+                    await self._broadcast({
+                        "event_type": "scheduler_tick",
+                        "tick": self.tick_count,
+                        "running_count": len(self._running_tasks),
+                        "pending_count": pending_count,
+                        "severity": "info",
+                        "title": f"Scheduler heartbeat (tick #{self.tick_count})",
+                    })
+
                 # Sleep until next tick (in 1-second increments for responsiveness)
                 remaining = self.tick_interval
                 while remaining > 0 and self.running:
@@ -204,6 +224,8 @@ class Scheduler:
                 "event_type": "task_started",
                 "task_id": task.id,
                 "task_type": task.type.value,
+                "severity": "info",
+                "title": f"Task {task.id} started",
             })
 
             # Execute via executor
@@ -219,6 +241,8 @@ class Scheduler:
                     "status": "completed",
                     "final_answer": (result.metrics or {}).get("final_answer"),
                     "session_file": (result.metrics or {}).get("session_file"),
+                    "severity": "info",
+                    "title": f"Task {task.id} completed",
                 })
 
                 # Auto-schedule dreaming for completed agentic tasks
@@ -256,6 +280,9 @@ class Scheduler:
                         "task_id": task.id,
                         "task_type": task.type.value,
                         "error": result.error_message or "Unknown error",
+                        "severity": "error",
+                        "title": f"Task {task.id} failed",
+                        "notify_user": True,
                     })
 
                     # Cron tasks reschedule even after permanent failure
@@ -284,6 +311,9 @@ class Scheduler:
                 "task_id": task.id,
                 "task_type": task.type.value,
                 "error": str(e),
+                "severity": "error",
+                "title": f"Task {task.id} failed",
+                "notify_user": True,
             })
 
         finally:
@@ -359,43 +389,75 @@ class Scheduler:
         except Exception as e:
             self._log(f"Failed to schedule dreaming for task {task.id}: {e}", "error")
 
-    def _ensure_default_dreaming_task(self):
+    def _seed_tasks_from_config(self):
         """
-        Ensure there is a default recurring off-peak Dreaming task.
-        This keeps Dreaming automation background-first without manual setup.
+        Seed default recurring tasks from config/scheduler_config.json.
+        Tasks already in the queue are skipped; disabled tasks are ignored.
         """
-        task_id = "dreaming_nightly_offpeak_default"
-        if self.queue.get(task_id):
+        from app.config.config_loader import load_layered_json_config
+        from app.scheduler.triggers import CronTrigger
+
+        try:
+            cfg = load_layered_json_config("config/scheduler_config.json")
+        except Exception as e:
+            self._log(f"Could not load scheduler_config.json: {e}", "warning")
             return
 
-        now = datetime.now()
-        first_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
-        if first_run <= now:
-            from datetime import timedelta
-            first_run = first_run + timedelta(days=1)
+        priority_map = {
+            "critical": TaskPriority.CRITICAL,
+            "high": TaskPriority.HIGH,
+            "medium": TaskPriority.MEDIUM,
+            "low": TaskPriority.LOW,
+        }
+        type_map = {t.value: t for t in TaskType}
 
-        task = Task(
-            id=task_id,
-            type=TaskType.DREAMING,
-            schedule=first_run,
-            cron_expression="0 3 * * *",
-            priority=TaskPriority.LOW,
-            config={
-                "automatic": True,
-                "quality_level": "basic",
-                "off_peak_start": "01:00",
-                "off_peak_end": "05:00",
-                "enforce_off_peak": True,
-                "lookback_messages": 200,
-            },
-            resources=TaskResources(requires_gpu=True),
-            description="Automatic nightly Dreaming consolidation (off-peak)",
-            created_by="system",
-        )
-        if self.queue.add(task):
-            self._log(
-                f"Created default Dreaming task {task_id} scheduled at {first_run.isoformat()}"
+        for entry in cfg.get("default_tasks", []):
+            if not entry.get("enabled", True):
+                continue
+
+            task_id = entry.get("id")
+            if not task_id:
+                self._log("Skipping default_task with no id", "warning")
+                continue
+
+            if self.queue.get(task_id):
+                continue  # already seeded
+
+            task_type_str = entry.get("type", "")
+            task_type = type_map.get(task_type_str)
+            if task_type is None:
+                self._log(f"Unknown task type '{task_type_str}' for {task_id}", "warning")
+                continue
+
+            cron = entry.get("cron")
+            priority = priority_map.get(entry.get("priority", "low"), TaskPriority.LOW)
+            resources_cfg = entry.get("resources", {})
+
+            # Compute first run from cron expression
+            first_run = None
+            if cron:
+                try:
+                    trigger = CronTrigger(cron)
+                    first_run = trigger.get_next_run_time(after=datetime.now())
+                except Exception as e:
+                    self._log(f"Invalid cron '{cron}' for {task_id}: {e}", "warning")
+
+            task = Task(
+                id=task_id,
+                type=task_type,
+                schedule=first_run,
+                cron_expression=cron,
+                priority=priority,
+                config=entry.get("config", {}),
+                resources=TaskResources(**resources_cfg) if resources_cfg else TaskResources(),
+                description=entry.get("description", ""),
+                created_by="system",
             )
+            if self.queue.add(task):
+                self._log(
+                    f"Seeded default task {task_id}"
+                    + (f" scheduled at {first_run.isoformat()}" if first_run else "")
+                )
 
     async def _drain_running_tasks(self, timeout: float = 30.0):
         """Wait for all running tasks to finish, with timeout."""

@@ -49,10 +49,15 @@ class ToolRegistry:
 
         self.agent_registry = AgentRegistry(logger=logger)
 
+        # Initialize persistent event log
+        from app.mcp.adapters.event_log import EventLog
+
+        self._event_log = EventLog()
+
         # Initialize SSE notifier for real-time task events
         from app.mcp.adapters.sse import SSENotifier
 
-        self._sse_notifier = SSENotifier()
+        self._sse_notifier = SSENotifier(event_log=self._event_log)
 
         # Initialize Scheduler (pass memory_service for agentic tool use)
         from app.scheduler.core import Scheduler
@@ -111,6 +116,12 @@ class ToolRegistry:
                 "sensitive_keys": [],
                 "ai_writable": False,
                 "on_change": None,
+            },
+            "scheduler": {
+                "file": "config/scheduler_config.json",
+                "description": "Default recurring scheduler tasks — add/remove/disable background tasks without code changes.",
+                "sensitive_keys": [],
+                "on_change": self._on_scheduler_config_change,
             },
         }
 
@@ -1129,6 +1140,36 @@ class ToolRegistry:
                     "required": ["action"],
                 },
             },
+            # Event Log polling (non-WebSocket clients)
+            {
+                "name": "get_recent_events",
+                "description": "Poll the persistent event log for recent system events. Use this to check what has happened recently (task completions, failures, config changes, etc.). Events with notify_user=true or severity warning/error/critical are worth surfacing to the user. Advance your cursor by passing the timestamp of the last event you saw as since_timestamp.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "since_timestamp": {
+                            "type": "string",
+                            "description": "ISO-8601 timestamp. Only return events after this point. Omit for all recent events.",
+                        },
+                        "types": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Filter by event_type (e.g. ['task_failed', 'config_changed']). Omit for all types.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of events to return (default: 50, max: 500).",
+                            "default": 50,
+                        },
+                        "include_data": {
+                            "type": "boolean",
+                            "description": "Include full event data payload (default: false — returns envelope only).",
+                            "default": False,
+                        },
+                    },
+                    "required": [],
+                },
+            },
             # LLM Server Discovery (not a config operation — queries external service)
             {
                 "name": "llm_list_available_models",
@@ -1634,6 +1675,9 @@ class ToolRegistry:
             return await self._execute_dreaming_get_archive(args)
         elif name == "dreaming_upgrade_quality":
             return await self._execute_dreaming_upgrade_quality(args)
+        # Event Log
+        elif name == "get_recent_events":
+            return await self._execute_get_recent_events(args)
         # Configuration Tool
         elif name == "config":
             return await self._execute_config(args)
@@ -2819,6 +2863,28 @@ class ToolRegistry:
         """Get the ResourceManager from the scheduler's executor, lazy-initializing if needed."""
         return self.scheduler.executor._get_resource_manager()
 
+    async def _execute_get_recent_events(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Return recent events from the persistent event log."""
+        since = args.get("since_timestamp")
+        types = args.get("types")
+        limit = min(int(args.get("limit", 50)), 500)
+        include_data = bool(args.get("include_data", False))
+
+        events = self._event_log.get_recent(
+            since=since,
+            types=types,
+            limit=limit,
+            include_data=include_data,
+        )
+        return {
+            "status": "success",
+            "count": len(events),
+            "events": events,
+            "latest_timestamp": events[-1]["timestamp"] if events else None,
+        }
+
     async def _execute_resource_pool_status(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -3012,6 +3078,14 @@ class ToolRegistry:
         except Exception:
             pass  # non-critical
 
+    def _on_scheduler_config_change(self) -> None:
+        """Hook called after scheduler config is modified — reseeds default tasks."""
+        try:
+            if hasattr(self, "scheduler"):
+                self.scheduler.reseed_default_tasks()
+        except Exception:
+            pass  # non-critical
+
     async def _execute_config(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Dispatch config actions: help, get, set."""
         action = args.get("action")
@@ -3161,6 +3235,17 @@ class ToolRegistry:
                 if meta.get("on_change"):
                     meta["on_change"]()
 
+                # Broadcast config_changed event
+                asyncio.create_task(self._sse_notifier.broadcast({
+                    "event_type": "config_changed",
+                    "module": module_name,
+                    "path": path,
+                    "old_value": old_value,
+                    "new_value": value,
+                    "severity": "info",
+                    "title": f"Config {module_name}.{path} updated",
+                }))
+
                 return {
                     "status": "success",
                     "module": module_name,
@@ -3218,6 +3303,17 @@ class ToolRegistry:
 
                 if meta.get("on_change"):
                     meta["on_change"]()
+
+                # Broadcast config_changed event
+                asyncio.create_task(self._sse_notifier.broadcast({
+                    "event_type": "config_changed",
+                    "module": module_name,
+                    "path": path,
+                    "action": "delete",
+                    "old_value": old_value,
+                    "severity": "info",
+                    "title": f"Config {module_name}.{path} deleted",
+                }))
 
                 return {
                     "status": "success",
