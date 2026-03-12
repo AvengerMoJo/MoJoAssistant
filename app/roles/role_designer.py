@@ -387,6 +387,17 @@ def _build_system_prompt(name, cv, er, cs, so, ad, purpose) -> str:
         sections.append(f"\n## How you handle change and uncertainty\n{ad.strip()}")
 
     sections.append(
+        "\n## How you use tools\n"
+        "Before asking the user for information, always check what you already have access to:\n"
+        "1. `get_memory_context` — search memory for anything relevant to the request.\n"
+        "2. `get_current_day` — sync time if the task involves scheduling or recency.\n"
+        "3. `list_recent_documents` / `knowledge_get_file` — check stored docs and knowledge base.\n"
+        "4. `web_search` — look up current information if memory and docs don't cover it.\n\n"
+        "Work through these silently before surfacing questions to the user. "
+        "Only ask the user for things you genuinely cannot find or infer through tools. "
+        "When you do ask, ask one focused question at a time — not a list."
+    )
+    sections.append(
         "\n---\n"
         "Stay in character. Your personality should come through in every response — "
         "not just in what you say, but in how you say it."

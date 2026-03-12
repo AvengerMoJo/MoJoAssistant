@@ -114,22 +114,46 @@ class AgenticExecutor:
                 success=False, error_message="Missing 'goal' in task config"
             )
 
-        # Load planning prompt based on task type or use default
-        planning_prompt_name = config.get("planning_prompt", "agentic_planning")
+        # Load role personality if role_id is specified
+        role_prefix = ""
+        role_model_preference = None
+        role_id = config.get("role_id")
+        if role_id:
+            try:
+                from app.roles.role_manager import RoleManager
+                role = RoleManager().get(role_id)
+                if role:
+                    role_prefix = role.get("system_prompt", "")
+                    role_model_preference = role.get("model_preference")
+                    self._log(f"Loaded role: {role.get('name')} (id={role_id})")
+                else:
+                    self._log(f"Role '{role_id}' not found — continuing without role")
+            except Exception as e:
+                self._log(f"Failed to load role '{role_id}': {e}")
+
+        # Load planning prompt — default to role_task when a role is active
+        default_prompt = "role_task" if role_id else "agentic_planning"
+        planning_prompt_name = config.get("planning_prompt", default_prompt)
         planning_prompt = self._planning_manager.get_prompt(
             planning_prompt_name, version="latest"
         )
 
         if planning_prompt:
-            system_prompt = planning_prompt.content
+            workflow_prompt = planning_prompt.content
             self._log(
                 f"Using planning prompt: {planning_prompt_name} v{planning_prompt.version}"
             )
         else:
-            system_prompt = config.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
+            workflow_prompt = config.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
             self._log(
                 f"Using default system prompt (no planning prompt found: {planning_prompt_name})"
             )
+
+        # Combine: role personality first, then workflow instructions
+        if role_prefix:
+            system_prompt = role_prefix + "\n\n---\n\n" + workflow_prompt
+        else:
+            system_prompt = workflow_prompt
 
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get(
@@ -274,13 +298,15 @@ class AgenticExecutor:
                     break
 
             # Call LLM
+            effective_model = role_model_preference or resource.model
             self._log(
-                f"Iteration {iteration}: calling {resource.model} via {resource.id}"
+                f"Iteration {iteration}: calling {effective_model} via {resource.id}"
             )
             iter_start = time.time()
             try:
                 response = await self._call_llm(
-                    resource, messages, tools=tool_defs or None
+                    resource, messages, tools=tool_defs or None,
+                    model_override=role_model_preference,
                 )
                 self._rm.record_usage(resource.id, success=True)
             except Exception as e:
@@ -471,6 +497,7 @@ class AgenticExecutor:
         resource: LLMResource,
         messages: List[Dict],
         tools: Optional[List[Dict]] = None,
+        model_override: Optional[str] = None,
     ) -> Dict:
         """Make an OpenAI-compatible chat completion request. Returns the full response dict."""
         url = f"{resource.base_url}/chat/completions"
@@ -478,7 +505,7 @@ class AgenticExecutor:
         if resource.api_key:
             headers["Authorization"] = f"Bearer {resource.api_key}"
 
-        selected_model = await self._resolve_model_for_resource(resource, headers)
+        selected_model = model_override or await self._resolve_model_for_resource(resource, headers)
         payload: Dict[str, Any] = {
             "model": selected_model,
             "messages": messages,
