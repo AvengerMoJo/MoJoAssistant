@@ -1,0 +1,20 @@
+{
+  "default_tasks": [
+    {
+      "id": "dreaming_nightly_offpeak_default",
+      "type": "dreaming",
+      "cron": "0 3 * * *",
+      "priority": "low",
+      "description": "Automatic nightly Dreaming consolidation (off-peak)",
+      "config": {
+        "automatic": true,
+        "quality_level": "basic",
+        "off_peak_start": "01:00",
+        "off_peak_end": "05:00",
+        "enforce_off_peak": true,
+        "lookback_messages": 200
+      },
+      "resources": { "requires_gpu": true }
+    }
+  ]
+}

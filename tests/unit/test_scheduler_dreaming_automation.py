@@ -28,10 +28,10 @@ class TestSchedulerDreamingAutomation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.max_duration_seconds, 120)
         self.assertTrue(restored.requires_gpu)
 
-    def test_scheduler_ensures_default_dreaming_task(self):
+    def test_scheduler_seeds_default_dreaming_task_from_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             scheduler = Scheduler(storage_path=str(Path(tmp) / "tasks.json"), tick_interval=60)
-            scheduler._ensure_default_dreaming_task()
+            scheduler._seed_tasks_from_config()
 
             task = scheduler.get_task("dreaming_nightly_offpeak_default")
             self.assertIsNotNone(task)

@@ -1,63 +1,148 @@
 {
-  "comment": "Unified LLM Configuration - Supports task-specific model selection",
-  "comment2": "Copy to llm_config.json and customize for your setup",
+  "comment": "Unified LLM Configuration — single source of truth for both LLM interfaces and resource pool.",
+  "comment2": "Copy to llm_config.json and customise. Runtime overrides (keys, active model, etc.) go in ~/.memory/config/llm_config.json — never committed.",
+
+  "tier_policy": {
+    "free":     { "auto_approve": true },
+    "free_api": { "auto_approve": true },
+    "paid":     { "auto_approve": false }
+  },
+  "selection_strategy": "priority_then_availability",
 
   "local_models": {
     "qwen-coder-small": {
-      "type": "llama",
-      "description": "Qwen2.5-Coder-1.7B - Fast, good JSON, multi-language (recommended default)",
-      "model_path": "~/.cache/mojoassistant/models/qwen2.5-coder-1.5b-instruct-q5_k_m.gguf",
+      "type": "local",
+      "provider": "openai",
+      "description": "Qwen2.5-Coder-1.7B — Fast, good JSON, multi-language (recommended default)",
+      "path": "~/.cache/mojoassistant/models/qwen2.5-coder-1.5b-instruct-q5_k_m.gguf",
       "context_length": 32768,
+      "context_limit": 32768,
+      "output_limit": 8192,
       "server_url": null,
       "temperature": 0.1,
+      "tier": "free",
+      "priority": 5,
+      "enabled": true,
       "recommended_for": ["dreaming", "chunking", "basic_chat"]
     },
 
     "qwen-coder-large": {
-      "type": "llama",
-      "description": "Qwen3-Coder-Next - Premium quality (48.49 GB)",
-      "model_path": "/path/to/qwen3-coder-next.gguf",
+      "type": "local",
+      "provider": "openai",
+      "description": "Qwen3-Coder-Next — Premium quality (48.49 GB)",
+      "path": "/path/to/qwen3-coder-next.gguf",
       "context_length": 32768,
+      "context_limit": 32768,
+      "output_limit": 8192,
       "server_url": null,
       "temperature": 0.3,
+      "tier": "free",
+      "priority": 4,
+      "enabled": false,
       "recommended_for": ["complex_reasoning", "code_generation"]
-    },
-
-    "lmstudio": {
-      "provider": "openai",
-      "description": "LMStudio local server (user-managed models)",
-      "base_url": "http://localhost:1234/v1",
-      "api_key": "${LMSTUDIO_API_KEY}",
-      "model": "any-model-loaded-in-lmstudio",
-      "recommended_for": ["chat", "general"]
-    },
-
-    "ollama-qwen": {
-      "type": "ollama",
-      "description": "Ollama with Qwen 2.5 7B",
-      "server_url": "http://localhost:11434",
-      "model": "qwen2.5:7b",
-      "context_length": 32768,
-      "recommended_for": ["multi-language", "dreaming"]
     }
   },
 
   "api_models": {
-    "anthropic-haiku": {
-      "provider": "anthropic",
-      "model": "claude-haiku-3-5",
-      "api_key": "${ANTHROPIC_API_KEY}",
-      "temperature": 0.3,
-      "max_tokens": 4096,
-      "recommended_for": ["api_chat", "premium_dreaming"]
+    "lmstudio": {
+      "provider": "openai",
+      "description": "LMStudio local server — active model set at runtime via config set",
+      "base_url": "http://localhost:8080/v1",
+      "key_var": "LMSTUDIO_API_KEY",
+      "model": "any-model-loaded-in-lmstudio",
+      "context_limit": 32768,
+      "output_limit": 8192,
+      "type": "local",
+      "tier": "free",
+      "priority": 1,
+      "enabled": true,
+      "recommended_for": ["chat", "dreaming", "general"]
     },
 
-    "openai-mini": {
+    "ollama": {
       "provider": "openai",
+      "description": "Ollama local server",
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "ollama",
+      "model": "qwen2.5:7b",
+      "context_limit": 32768,
+      "output_limit": 8192,
+      "type": "local",
+      "tier": "free",
+      "priority": 2,
+      "enabled": false,
+      "recommended_for": ["multi-language", "dreaming"]
+    },
+
+    "openrouter": {
+      "account_a": {
+        "provider": "openai-compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "key_var": "OPENROUTER_API_KEY_A",
+        "model": "openrouter/auto",
+        "model_filter": "free",
+        "account_name": "you@example.com",
+        "context_limit": 131072,
+        "output_limit": 8192,
+        "type": "api",
+        "tier": "free_api",
+        "priority": 10,
+        "enabled": true,
+        "account_group": "openrouter_free",
+        "description": "OpenRouter free-tier routing (account A)"
+      },
+      "account_b": {
+        "provider": "openai-compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "key_var": "OPENROUTER_API_KEY_B",
+        "model": "openrouter/auto",
+        "model_filter": "free",
+        "account_name": "alt@example.com",
+        "context_limit": 131072,
+        "output_limit": 8192,
+        "type": "api",
+        "tier": "free_api",
+        "priority": 11,
+        "enabled": true,
+        "account_group": "openrouter_free",
+        "description": "OpenRouter free-tier routing (account B — fallback)"
+      }
+    },
+
+    "anthropic": {
+      "provider": "claude",
+      "description": "Anthropic Claude API",
+      "key_var": "ANTHROPIC_API_KEY",
+      "model": "claude-haiku-4-5-20251001",
+      "context_limit": 200000,
+      "output_limit": 8192,
+      "type": "api",
+      "tier": "paid",
+      "priority": 50,
+      "enabled": true,
+      "recommended_for": ["api_chat", "premium_dreaming"],
+      "rate_limit": {
+        "max_calls_per_window": 1000,
+        "window_seconds": 3600
+      },
+      "budget": {
+        "max_calls_per_window": 500,
+        "window_seconds": 18000,
+        "reserved_for_user_pct": 20.0
+      }
+    },
+
+    "openai": {
+      "provider": "openai",
+      "description": "OpenAI API",
+      "key_var": "OPENAI_API_KEY",
       "model": "gpt-4o-mini",
-      "api_key": "${OPENAI_API_KEY}",
-      "temperature": 0.3,
-      "max_tokens": 4096,
+      "context_limit": 128000,
+      "output_limit": 16384,
+      "type": "api",
+      "tier": "paid",
+      "priority": 50,
+      "enabled": false,
       "recommended_for": ["api_chat", "cost_effective"]
     }
   },
@@ -66,9 +151,15 @@
     "interactive_cli": "lmstudio",
     "dreaming_chunking": "qwen-coder-small",
     "dreaming_synthesis": "qwen-coder-small",
-    "dreaming_upgrade_good": "anthropic-haiku",
-    "dreaming_upgrade_premium": "anthropic-sonnet",
-    "default": "qwen-coder-small"
+    "dreaming_upgrade_good": "openrouter_account_a",
+    "dreaming_upgrade_premium": "anthropic",
+    "default": "lmstudio",
+    "free_routing_strategy": {
+      "default_account_priority": ["account_a", "account_b"],
+      "model_selection_rule": "auto_choose_free_or_cheapest",
+      "failover_enabled": true,
+      "account_fallback_order": ["account_b"]
+    }
   },
 
   "default_interface": "lmstudio"
