@@ -78,7 +78,7 @@ class ResourceManager:
     SANDBOX_ENV_FILE = Path.home() / ".memory" / "resource_pool.env"
     USAGE_FILE = Path.home() / ".memory" / "resource_pool_usage.json"
 
-    def __init__(self, config_path: str = "config/resource_pool_config.json", logger=None):
+    def __init__(self, config_path: str = "config/llm_config.json", logger=None):
         self._config_path = config_path
         self._logger = logger
         self._lock = threading.RLock()
@@ -89,6 +89,7 @@ class ResourceManager:
         self._group_counters: Dict[str, int] = {}
         self._sandbox_env: Dict[str, str] = {}
         self._config_mtime_ns: Optional[int] = None
+        self._runtime_mtime_ns: Optional[int] = None
         self._env_mtime_ns: Optional[int] = None
         self._load_sandbox_env()
         self._load_usage()
@@ -147,35 +148,79 @@ class ResourceManager:
             getattr(self._logger, level)(f"[ResourcePool] {message}")
 
     def _load_config(self):
-        path = Path(self._config_path)
-        if not path.exists():
-            self._log(f"Config not found: {path}", "warning")
-            self._config_mtime_ns = None
-            return
+        from app.config.config_loader import load_layered_json_config, MEMORY_CONFIG_DIR
 
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self._config_mtime_ns = path.stat().st_mtime_ns
+        codebase_path = Path(self._config_path)
+        runtime_path = Path(MEMORY_CONFIG_DIR) / codebase_path.name
+
+        data = load_layered_json_config(self._config_path)
+
+        self._config_mtime_ns = codebase_path.stat().st_mtime_ns if codebase_path.exists() else None
+        self._runtime_mtime_ns = runtime_path.stat().st_mtime_ns if runtime_path.exists() else None
 
         with self._lock:
             self._resources.clear()
-            for rid, rconf in data.get("resources", {}).items():
+
+            # local_models → LLMResource with type="local"
+            for rid, rconf in data.get("local_models", {}).items():
+                if not isinstance(rconf, dict):
+                    continue
+                rconf = dict(rconf)
+                rconf.setdefault("type", "local")
+                rconf.setdefault("provider", "openai")
+                # local_models use "server_url" or "path" — base_url defaults to empty
+                rconf.setdefault("base_url", rconf.get("server_url") or "")
                 resource = self._parse_resource(rid, rconf)
                 self._resources[rid] = resource
                 if rid not in self._usage:
                     self._usage[rid] = UsageRecord()
+
+            # api_models → flat entries or nested sub-accounts
+            for name, api_conf in data.get("api_models", {}).items():
+                if not isinstance(api_conf, dict) or not api_conf:
+                    continue
+                if api_conf.get("provider"):
+                    # Flat entry — register directly
+                    rconf = dict(api_conf)
+                    rconf.setdefault("type", "api")
+                    resource = self._parse_resource(name, rconf)
+                    self._resources[name] = resource
+                    if name not in self._usage:
+                        self._usage[name] = UsageRecord()
+                else:
+                    # Nested sub-accounts: register as "{parent}_{child}"
+                    for sub_name, sub_conf in api_conf.items():
+                        if not isinstance(sub_conf, dict) or not sub_conf.get("provider"):
+                            continue
+                        rid = f"{name}_{sub_name}"
+                        rconf = dict(sub_conf)
+                        rconf.setdefault("type", "api")
+                        resource = self._parse_resource(rid, rconf)
+                        self._resources[rid] = resource
+                        if rid not in self._usage:
+                            self._usage[rid] = UsageRecord()
 
             self._tier_policy = data.get("tier_policy", {})
             self._selection_strategy = data.get("selection_strategy", "priority_then_availability")
             self._log(f"Loaded {len(self._resources)} resources")
 
     def _maybe_reload_runtime_state(self):
-        """Reload config/env when changed by another client/process."""
-        config_path = Path(self._config_path)
-        config_changed = config_path.exists() and (
+        """Reload config/env when changed by another client/process (checks both config layers)."""
+        from app.config.config_loader import MEMORY_CONFIG_DIR
+
+        codebase_path = Path(self._config_path)
+        runtime_path = Path(MEMORY_CONFIG_DIR) / codebase_path.name
+
+        codebase_changed = codebase_path.exists() and (
             self._config_mtime_ns is None
-            or config_path.stat().st_mtime_ns != self._config_mtime_ns
+            or codebase_path.stat().st_mtime_ns != self._config_mtime_ns
         )
+        runtime_changed = runtime_path.exists() and (
+            self._runtime_mtime_ns is None
+            or runtime_path.stat().st_mtime_ns != self._runtime_mtime_ns
+        )
+        config_changed = codebase_changed or runtime_changed
+
         env_changed = self.SANDBOX_ENV_FILE.exists() and (
             self._env_mtime_ns is None
             or self.SANDBOX_ENV_FILE.stat().st_mtime_ns != self._env_mtime_ns
@@ -192,14 +237,24 @@ class ResourceManager:
         self._load_sandbox_env()
         self._load_config()
 
+    def _parse_tier(self, value: str) -> ResourceTier:
+        """Parse a tier string, falling back to FREE for unrecognised values."""
+        try:
+            return ResourceTier(value)
+        except ValueError:
+            self._log(f"Unknown tier value '{value}', treating as 'free'", "warning")
+            return ResourceTier.FREE
+
     def _parse_resource(self, rid: str, conf: Dict[str, Any]) -> LLMResource:
-        # Resolve API key: sandbox env > process env
-        # Keys are copied into ~/.memory/resource_pool.env at setup time,
-        # isolating the runtime sandbox from the user's key files.
-        api_key_env = conf.get("api_key_env")
+        # Resolve API key: inline api_key wins; otherwise resolve from key_var/api_key_env
+        # key_var is the canonical field name; api_key_env is the legacy alias.
+        inline_key = conf.get("api_key")
+        api_key_env = conf.get("key_var") or conf.get("api_key_env")
         api_key = None
-        if api_key_env:
-            api_key = self._sandbox_env.get(api_key_env) or os.getenv(api_key_env, "")
+        if inline_key and not inline_key.startswith("{{"):
+            api_key = inline_key
+        elif api_key_env:
+            api_key = self._sandbox_env.get(api_key_env) or os.getenv(api_key_env, "") or None
 
         rate_limit = None
         if "rate_limit" in conf:
@@ -225,7 +280,7 @@ class ResourceManager:
             provider=conf.get("provider", "openai"),
             base_url=conf.get("base_url", ""),
             model=conf.get("model", ""),
-            tier=ResourceTier(conf.get("tier", "free")),
+            tier=self._parse_tier(conf.get("tier", "free")),
             priority=conf.get("priority", 1),
             enabled=conf.get("enabled", True),
             api_key=api_key,

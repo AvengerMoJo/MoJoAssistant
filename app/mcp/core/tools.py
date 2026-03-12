@@ -86,9 +86,9 @@ class ToolRegistry:
                 "on_change": None,
             },
             "resource_pool": {
-                "file": "config/resource_pool_config.json",
-                "description": "LLM resource pool for agentic tasks - endpoints, rate limits, budgets",
-                "sensitive_keys": ["resources.*.api_key_env"],
+                "file": "config/llm_config.json",
+                "description": "LLM resource pool for agentic tasks — alias for 'llm' module. tier_policy, selection_strategy, and per-resource tier/priority/enabled fields live in api_models and local_models.",
+                "sensitive_keys": ["api_models.*.api_key", "api_models.*.*.api_key"],
                 "on_change": self._on_resource_pool_config_change,
             },
             "agentic_tools": {
@@ -2959,12 +2959,13 @@ class ToolRegistry:
         return config
 
     def _on_llm_config_change(self) -> None:
-        """Hook called after LLM config is modified — resets cached executor pipeline."""
+        """Hook called after LLM config is modified — resets pipeline and reloads resource manager."""
         try:
             if hasattr(self, "scheduler") and hasattr(self.scheduler, "executor"):
                 self.scheduler.executor.reset_pipeline()
         except Exception:
             pass  # non-critical
+        self._on_resource_pool_config_change()
 
     def _on_resource_pool_config_change(self) -> None:
         """Hook called after resource pool config is modified — reloads resource manager."""
