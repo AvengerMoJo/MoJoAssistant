@@ -150,6 +150,7 @@ config/dynamic_tools.json
 config/planning_prompts.json
 config/tool_operation_logs.json
 config/scheduler_config.json
+config/roles/*.json
 
 # MoJoAssistant specific - sensitive files
 .mojo_history
