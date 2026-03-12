@@ -534,12 +534,27 @@ class AgenticExecutor:
     ) -> str:
         """Resolve the effective model for a resource."""
         model = resource.model or ""
-        if not self._is_openrouter_auto(resource):
+
+        # OpenRouter auto-routing
+        if self._is_openrouter_auto(resource):
+            free_model = await self._get_cached_openrouter_free_model(resource, headers)
+            if free_model:
+                return free_model
             return model
 
-        free_model = await self._get_cached_openrouter_free_model(resource, headers)
-        if free_model:
-            return free_model
+        # Local server with no model configured — probe /v1/models
+        if not model and resource.base_url:
+            try:
+                models_url = resource.base_url.rstrip("/").rstrip("/v1") + "/v1/models"
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(models_url, headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json().get("data", [])
+                        if data:
+                            return data[0].get("id", "")
+            except Exception:
+                pass
+
         return model
 
     def _is_openrouter_auto(self, resource: LLMResource) -> bool:
