@@ -1038,6 +1038,14 @@ class ToolRegistry:
                     "properties": {},
                 },
             },
+            {
+                "name": "scheduler_list_agent_tools",
+                "description": "List all tools that can be assigned to an agentic task via the available_tools field in scheduler_add_task. Returns each tool's name, description, and danger_level (low/medium/high). Call this before scheduling an agentic task to know what tools are available to give the agent.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
             # Dreaming Tools
             {
                 "name": "dreaming_process",
@@ -1757,6 +1765,8 @@ class ToolRegistry:
             return await self._execute_scheduler_restart_daemon(args)
         elif name == "scheduler_daemon_status":
             return await self._execute_scheduler_daemon_status(args)
+        elif name == "scheduler_list_agent_tools":
+            return await self._execute_scheduler_list_agent_tools(args)
         # Dreaming Tools
         elif name == "dreaming_process":
             return await self._execute_dreaming_process(args)
@@ -2648,6 +2658,31 @@ class ToolRegistry:
                 "status": "error",
                 "message": f"Failed to get scheduler daemon status: {str(e)}",
             }
+
+    async def _execute_scheduler_list_agent_tools(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Return all tools available for assignment to agentic tasks."""
+        try:
+            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+
+            registry = DynamicToolRegistry()
+            tools = registry.list_tools()
+            return {
+                "status": "success",
+                "tools": [
+                    {
+                        "name": name,
+                        "description": meta.get("description", ""),
+                        "danger_level": meta.get("danger_level", "low"),
+                        "requires_auth": meta.get("requires_auth", False),
+                    }
+                    for name, meta in tools.items()
+                ],
+                "usage": "Pass desired tool names in available_tools when calling scheduler_add_task with task_type='agentic'.",
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     # ========================================================================
     # Dreaming Tool Executors
