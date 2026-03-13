@@ -265,8 +265,8 @@ class ResourceManager:
             return ResourceTier.FREE
 
     def _parse_resource(self, rid: str, conf: Dict[str, Any]) -> LLMResource:
-        # Resolve API key: inline api_key wins; otherwise resolve from key_var/api_key_env
-        # key_var is the canonical field name; api_key_env is the legacy alias.
+        # Resolve API key: inline api_key wins; otherwise resolve from key_var/api_key_env;
+        # final fallback: resolve_llm_resource() reads layered llm_config.json directly.
         inline_key = conf.get("api_key")
         api_key_env = conf.get("key_var") or conf.get("api_key_env")
         api_key = None
@@ -274,6 +274,12 @@ class ResourceManager:
             api_key = inline_key
         elif api_key_env:
             api_key = self._sandbox_env.get(api_key_env) or os.getenv(api_key_env, "") or None
+        if not api_key:
+            try:
+                from app.config.config_loader import resolve_llm_resource
+                api_key = resolve_llm_resource(rid).get("api_key") or None
+            except Exception:
+                pass
 
         rate_limit = None
         if "rate_limit" in conf:
