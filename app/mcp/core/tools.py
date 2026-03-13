@@ -869,7 +869,7 @@ class ToolRegistry:
             # Scheduler Tools
             {
                 "name": "scheduler_add_task",
-                "description": "Add a new task to the scheduler queue. Supports immediate execution, scheduled execution (specific datetime), and recurring execution (cron expression). Use this to schedule background tasks like memory consolidation (dreaming), periodic maintenance, or custom jobs. For agentic tasks, config supports: mode (normal/deep_research/parallel_discovery), goal, max_iterations, tier_preference, planning_prompt, available_tools, resource_policy, final_answer_requirements, and parallel_agents fan-out with review_policy (human-in-loop by default).",
+                "description": "Add a new task to the scheduler queue. Supports immediate, scheduled (datetime), and recurring (cron) execution.\n\nTASK TYPES — choose carefully:\n• agentic — autonomous LLM think-act loop; the agent reasons, calls tools, and iterates until it produces a FINAL_ANSWER. Use this when you want the agent to figure something out.\n• custom — runs a single shell command and stops. No LLM, no iteration. Use this for simple scripts.\n• dreaming — memory consolidation pipeline.\n• agent — launches an OpenCode/OpenClaw agent subprocess.\n\nFor agentic tasks, call scheduler_list_agent_tools first to see available tools, then pass chosen names in available_tools. Config fields: goal, max_iterations, tier_preference, available_tools, role_id, planning_prompt, resource_policy, final_answer_requirements.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

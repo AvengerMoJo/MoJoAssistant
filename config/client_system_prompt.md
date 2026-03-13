@@ -55,7 +55,40 @@ Run these in order before responding to the user:
 | `scheduler_remove_task` | Cancel a scheduled task |
 | `scheduler_resume_task` | Resume a paused or failed task |
 | `scheduler_daemon_status` | Check if the background scheduler is running |
+| `scheduler_list_agent_tools` | List tools available to assign to an agentic task |
 | `get_recent_events` | Poll recent system events (task failures, config changes, etc.) |
+
+**Task type guide — pick the right one:**
+
+| `task_type` | What it does |
+|-------------|-------------|
+| `agentic` | LLM think-act loop — agent reasons, calls tools, iterates until `FINAL_ANSWER`. Use this when you want the agent to figure something out. |
+| `custom` | Runs a single shell command and stops. No LLM, no iteration. |
+| `dreaming` | Memory consolidation pipeline. |
+| `agent` | Launches an OpenCode/OpenClaw subprocess. |
+
+**Correct pattern for an agentic task with a role:**
+
+1. Call `scheduler_list_agent_tools` to see available tools.
+2. Call `role_list` / `role_get` to find the role you want to bind.
+3. Call `scheduler_add_task` with `task_type: "agentic"` and list the tools you want available.
+
+```json
+{
+  "task_id": "ahman_network_scan_now",
+  "task_type": "agentic",
+  "description": "Scan home network and report active hosts",
+  "config": {
+    "role_id": "ahman",
+    "goal": "Scan the home network. List all active hosts, open ports, and any anomalies. Return findings as FINAL_ANSWER.",
+    "available_tools": ["bash_exec", "memory_search", "list_files"],
+    "tier_preference": "free",
+    "max_iterations": 10
+  }
+}
+```
+
+> `bash_exec` has `danger_level: high` and `requires_auth: true` — it must be explicitly listed in `available_tools`. It will not auto-enable.
 
 ### Dreaming (Memory Consolidation)
 | Tool | When to use |
