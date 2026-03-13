@@ -330,7 +330,9 @@ class AgenticExecutor:
 
             message = response["choices"][0]["message"]
             used_model = response.get("_selected_model", resource.model)
-            response_text = message.get("content", "") or ""
+            # Thinking models (e.g. Qwen3) return reasoning in reasoning_content
+            # with content empty. Fall back so the executor can see the response.
+            response_text = message.get("content", "") or message.get("reasoning_content", "") or ""
             tool_calls = message.get("tool_calls")
 
             # Handle tool calls if present
