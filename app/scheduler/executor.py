@@ -180,14 +180,16 @@ class TaskExecutor:
             )
 
             if results.get("status") == "success":
+                archive = results["stages"]["D_archive"]
+                archive_path = archive.get("storage_location") or archive.get("path", "")
                 return TaskResult(
                     success=True,
-                    output_file=results["stages"]["D_archive"]["path"],
+                    output_file=archive_path,
                     metrics={
                         "b_chunks_count": results["stages"]["B_chunks"]["count"],
                         "c_clusters_count": results["stages"]["C_clusters"]["count"],
                         "quality_level": quality_level,
-                        "archive_path": results["stages"]["D_archive"]["path"],
+                        "archive_path": archive_path,
                         "automatic": automatic,
                     },
                 )
