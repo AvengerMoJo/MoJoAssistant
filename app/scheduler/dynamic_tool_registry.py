@@ -394,32 +394,40 @@ class DynamicToolRegistry:
         if not command:
             return {"success": False, "error": "Missing 'command' parameter"}
 
-        SAFE_COMMANDS = [
-            "cat",
-            "head",
-            "tail",
-            "grep",
-            "rg",
-            "ls",
-            "file",
-            "wc",
-            "stat",
-            "find",
-            "git",
-            "pwd",
-            "date",
-            "echo",
-            "python3",
-            "node",
-        ]
+        # Block destructive commands — everything else is allowed.
+        # Rule: read/observe/query = OK; modify/delete/overwrite = blocked.
+        BLOCKED_COMMANDS = {
+            # Deletion / overwrite
+            "rm", "rmdir", "shred", "unlink",
+            # Disk / filesystem
+            "dd", "mkfs", "fdisk", "parted", "wipefs", "mkswap",
+            # Privilege escalation
+            "sudo", "su", "doas", "pkexec",
+            # Permission / ownership changes
+            "chmod", "chown", "chgrp",
+            # Process termination
+            "kill", "killall", "pkill",
+            # Package mutation
+            "apt", "apt-get", "dpkg", "yum", "dnf", "pacman", "snap", "pip",
+            # Network config changes
+            "ifconfig", "ip link set", "iptables", "ufw",
+            # Systemd service changes
+            "systemctl", "service",
+            # Reboot / shutdown
+            "reboot", "shutdown", "halt", "poweroff",
+            # User / group management
+            "useradd", "userdel", "usermod", "groupadd", "passwd",
+            # Overwrite shortcuts
+            "mv", "cp", "tee", "truncate",
+        }
 
         cmd_parts = command.split()
         base_cmd = cmd_parts[0]
 
-        if base_cmd not in SAFE_COMMANDS:
+        if base_cmd in BLOCKED_COMMANDS:
             return {
                 "success": False,
-                "error": f"Command '{base_cmd}' not in safe whitelist. Install via: sudo apt-get install <package>",
+                "error": f"Command '{base_cmd}' is blocked — destructive or privileged commands are not permitted.",
             }
 
         try:
