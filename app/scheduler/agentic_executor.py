@@ -178,15 +178,7 @@ class AgenticExecutor:
             # Check dynamic registry first
             tool = self._tool_registry.get_tool(tool_name)
             if tool:
-                tool_defs.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                        },
-                    }
-                )
+                tool_defs.append(tool.to_openai_function())
             # Fallback to builtins
             elif tool_name in BUILTIN_TOOLS:
                 tool_defs.append(BUILTIN_TOOLS[tool_name])
