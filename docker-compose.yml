@@ -1,65 +1,36 @@
-version: '3.8'
+# MoJoAssistant — Quick Start
+# For full options see docker/docker-compose.yml and docker/docker-compose.dev.yml
+#
+# Install:
+#   cp .env.example .env     # fill in your API keys
+#   docker compose up -d
+#
+# Dev mode with hot reload:
+#   docker compose -f docker/docker-compose.dev.yml up
 
 services:
-  mojo-assistant:
+  mojoassistant:
     build:
       context: .
-      dockerfile: scripts/Dockerfile
-    container_name: mojo-assistant
+      dockerfile: docker/Dockerfile
+    image: mojoassistant:latest
+    container_name: mojoassistant
+    restart: unless-stopped
     ports:
       - "8000:8000"
-    environment:
-      - PYTHONPATH=/app
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GOOGLE_SEARCH_ENGINE_ID=${GOOGLE_SEARCH_ENGINE_ID}
-      - MCP_API_KEY=${MCP_API_KEY}
+    env_file:
+      - .env
     volumes:
-      - ./data:/app/.memory
-      - ./config:/app/config
-      - ./logs:/app/logs
-    restart: unless-stopped
+      - ${HOME}/.memory:/home/mojo/.memory
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/system/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/system/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 15s
     networks:
-      - mojo-network
-
-  # Optional: Redis for caching (uncomment if needed)
-  # redis:
-  #   image: redis:7-alpine
-  #   container_name: mojo-redis
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - redis_data:/data
-  #   restart: unless-stopped
-  #   networks:
-  #     - mojo-network
-
-  # Optional: Nginx reverse proxy (uncomment if needed)
-  # nginx:
-  #   image: nginx:alpine
-  #   container_name: mojo-nginx
-  #   ports:
-  #     - "80:80"
-  #     - "443:443"
-  #   volumes:
-  #     - ./nginx.conf:/etc/nginx/nginx.conf
-  #     - ./ssl:/etc/nginx/ssl
-  #   depends_on:
-  #     - mojo-assistant
-  #   restart: unless-stopped
-  #   networks:
-  #     - mojo-network
-
-volumes:
-  redis_data:
+      - mojo-net
 
 networks:
-  mojo-network:
+  mojo-net:
     driver: bridge

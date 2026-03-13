@@ -1,0 +1,40 @@
+# MoJoAssistant — Production / Installation Compose
+#
+# Usage:
+#   cp .env.example .env          # fill in your API keys
+#   docker compose -f docker/docker-compose.yml up -d
+#
+# Memory is persisted in ~/.memory on the host.
+# Config overrides go in ~/.memory/config/llm_config.json
+
+services:
+  mojoassistant:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: mojoassistant:latest
+    container_name: mojoassistant
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      # Persistent memory store — survives container restarts
+      - ${HOME}/.memory:/home/mojo/.memory
+      # Optional: mount your own llm_config.json without rebuilding
+      # - ./config/llm_config.json:/app/config/llm_config.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/system/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - mojo-net
+
+networks:
+  mojo-net:
+    driver: bridge
