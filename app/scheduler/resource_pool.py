@@ -120,7 +120,9 @@ class ResourceManager:
                 self._usage[rid] = UsageRecord(
                     total_calls=rec.get("total_calls", 0),
                     last_call_at=rec.get("last_call_at"),
-                    consecutive_errors=rec.get("consecutive_errors", 0),
+                    # Reset on startup — stale errors from a dead process must not
+                    # permanently block resources on the next server start.
+                    consecutive_errors=0,
                 )
             self._log(f"Loaded usage stats for {len(data)} resource(s)")
         except Exception as e:
@@ -204,6 +206,25 @@ class ResourceManager:
             self._selection_strategy = data.get("selection_strategy", "priority_then_availability")
             self._log(f"Loaded {len(self._resources)} resources")
 
+        # Auto-sync local servers that have dynamic_discovery enabled or model=null
+        self._auto_sync_local_servers(data)
+
+    def _auto_sync_local_servers(self, config_data: dict) -> None:
+        """
+        After loading config, auto-expand any local server entry that has
+        ``dynamic_discovery: true`` OR has ``model: null`` into per-model entries.
+        Runs outside the lock — calls sync_local_server_models() which re-acquires it.
+        """
+        for name, entry in config_data.get("api_models", {}).items():
+            if not isinstance(entry, dict) or not entry.get("provider"):
+                continue
+            if entry.get("dynamic_discovery") or entry.get("model") is None:
+                if entry.get("type") == "local" or entry.get("base_url", "").startswith("http://localhost"):
+                    try:
+                        self.sync_local_server_models(name)
+                    except Exception as e:
+                        self._log(f"Auto-sync failed for '{name}': {e}", "warning")
+
     def _maybe_reload_runtime_state(self):
         """Reload config/env when changed by another client/process (checks both config layers)."""
         from app.config.config_loader import MEMORY_CONFIG_DIR
@@ -246,15 +267,11 @@ class ResourceManager:
             return ResourceTier.FREE
 
     def _parse_resource(self, rid: str, conf: Dict[str, Any]) -> LLMResource:
-        # Resolve API key: inline api_key wins; otherwise resolve from key_var/api_key_env
-        # key_var is the canonical field name; api_key_env is the legacy alias.
-        inline_key = conf.get("api_key")
+        # Resolve API key: inline api_key wins; otherwise resolve from key_var/api_key_env;
+        # final fallback: resolve_llm_resource() reads layered llm_config.json directly.
+        from app.llm.unified_client import UnifiedLLMClient
+        api_key = UnifiedLLMClient.resolve_key(rid, conf, env_override=self._sandbox_env)
         api_key_env = conf.get("key_var") or conf.get("api_key_env")
-        api_key = None
-        if inline_key and not inline_key.startswith("{{"):
-            api_key = inline_key
-        elif api_key_env:
-            api_key = self._sandbox_env.get(api_key_env) or os.getenv(api_key_env, "") or None
 
         rate_limit = None
         if "rate_limit" in conf:
@@ -325,6 +342,8 @@ class ResourceManager:
                     continue
                 if not self._is_budget_available(resource):
                     continue
+                if self._compute_status(resource) == ResourceStatus.UNREACHABLE:
+                    continue
                 candidates.append(resource)
 
             if not candidates:
@@ -393,22 +412,90 @@ class ResourceManager:
 
     def _probe_live_model(self, resource: "LLMResource") -> str:
         """For local resources without a configured model, query the server for the active model."""
+        models = self._probe_all_models(resource)
+        return models[0] if models else ""
+
+    def _probe_all_models(self, resource: "LLMResource") -> list:
+        """Query a local server's /v1/models and return all model IDs."""
         import requests as req
-        if resource.type != "local" or not resource.base_url:
-            return ""
-        base = resource.base_url.rstrip("/")
+        if not resource.base_url:
+            return []
+        base = resource.base_url.rstrip("/").rstrip("/v1")
         auth = f"Bearer {resource.api_key}" if resource.api_key else ""
         headers = {"Authorization": auth} if auth else {}
-        for path in ("/models", "/v1/models"):
+        for path in ("/v1/models", "/models"):
             try:
                 resp = req.get(f"{base}{path}", headers=headers, timeout=2)
                 if resp.status_code == 200:
-                    models = resp.json().get("data", [])
-                    if models:
-                        return models[0].get("id", "")
+                    return [m.get("id", "") for m in resp.json().get("data", []) if m.get("id")]
             except Exception:
                 pass
-        return ""
+        return []
+
+    def sync_local_server_models(self, template_resource_id: str = "lmstudio") -> list:
+        """
+        Query a local server and expand it into one resource entry per loaded model.
+
+        For each model discovered at {template_resource_id}'s base_url:
+          - Creates/updates a resource entry "{template_resource_id}__{slug}" where
+            slug is the model id with non-alphanumeric chars replaced by '_'
+          - Inherits all settings from the template (api_key, tier, base_url, etc.)
+          - Sets the model field explicitly
+          - Removes stale entries from a previous sync that are no longer loaded
+
+        Returns list of resource IDs that are now registered.
+        """
+        with self._lock:
+            self._maybe_reload_runtime_state()
+            template = self._resources.get(template_resource_id)
+            if not template:
+                self._log(f"sync_local_server_models: template '{template_resource_id}' not found")
+                return []
+
+        model_ids = self._probe_all_models(template)
+        if not model_ids:
+            self._log(f"sync_local_server_models: no models found at {template.base_url}")
+            return []
+
+        prefix = f"{template_resource_id}__"
+        active_ids = set()
+
+        with self._lock:
+            # Remove stale entries from previous sync
+            stale = [rid for rid in list(self._resources) if rid.startswith(prefix)]
+            for rid in stale:
+                del self._resources[rid]
+
+            # Create one entry per model
+            base_priority = template.priority + 1  # slightly lower priority than template
+            for i, model_id in enumerate(model_ids):
+                slug = "".join(c if c.isalnum() else "_" for c in model_id).strip("_")
+                rid = f"{prefix}{slug}"
+                resource = LLMResource(
+                    id=rid,
+                    provider=template.provider,
+                    base_url=template.base_url,
+                    api_key=template.api_key,
+                    api_key_env=template.api_key_env,
+                    model=model_id,
+                    context_limit=template.context_limit,
+                    output_limit=template.output_limit,
+                    type=template.type,
+                    tier=template.tier,
+                    priority=base_priority + i,
+                    enabled=template.enabled,
+                    description=f"{model_id} (via {template_resource_id})",
+                    account_group=template.account_group,
+                    rate_limit=template.rate_limit,
+                    budget=template.budget,
+                )
+                self._resources[rid] = resource
+                if rid not in self._usage:
+                    self._usage[rid] = UsageRecord()
+                active_ids.add(rid)
+
+        self._log(f"sync_local_server_models: registered {len(active_ids)} models from {template_resource_id}")
+        return sorted(active_ids)
 
     def approve_paid_resource(self, resource_id: str):
         with self._lock:

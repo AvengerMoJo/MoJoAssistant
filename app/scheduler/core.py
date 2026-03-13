@@ -248,6 +248,7 @@ class Scheduler:
                 # Auto-schedule dreaming for completed agentic tasks
                 if task.type == TaskType.AGENTIC:
                     self._schedule_dreaming_for_agentic_task(task)
+                    self._store_agentic_result_to_memory(task, result)
 
                 # Check if recurring task needs rescheduling
                 if task.cron_expression:
@@ -388,6 +389,28 @@ class Scheduler:
 
         except Exception as e:
             self._log(f"Failed to schedule dreaming for task {task.id}: {e}", "error")
+
+    def _store_agentic_result_to_memory(self, task: Task, result) -> None:
+        """
+        After a successful agentic task, write the goal + final answer to memory
+        so the user (and future agents) can find it without reading the session file.
+        """
+        try:
+            if not self.memory_service:
+                return
+            final_answer = (result.metrics or {}).get("final_answer", "")
+            goal = (task.config or {}).get("goal", task.id)
+            role_id = (task.config or {}).get("role_id")
+            role_tag = f" (role: {role_id})" if role_id else ""
+
+            user_message = f"Task{role_tag}: {goal}"
+            assistant_message = final_answer or "(task completed — no final answer extracted)"
+
+            self.memory_service.add_user_message(user_message)
+            self.memory_service.add_assistant_message(assistant_message)
+            self._log(f"Stored result of task {task.id} to memory")
+        except Exception as e:
+            self._log(f"Failed to store result to memory for task {task.id}: {e}", "error")
 
     def _seed_tasks_from_config(self):
         """

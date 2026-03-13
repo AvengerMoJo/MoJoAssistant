@@ -32,8 +32,11 @@ class APILLMInterface(BaseLLMInterface):
         """
         super().__init__()
         self.provider = provider.lower()
-        self.api_key = api_key or os.environ.get(f"{provider.upper()}_API_KEY")
         self.config = config or {}
+        from app.llm.unified_client import UnifiedLLMClient
+        resource_id = self.config.get("resource_id", provider.lower())
+        resolved_key = api_key or UnifiedLLMClient.resolve_key(resource_id, self.config)
+        self.api_key = resolved_key
         
         # Set default values
         self.base_url = self.config.get('base_url') or self.config.get('url') or ""
@@ -259,27 +262,21 @@ USER QUERY:
                     "max_tokens": 1000,
                 }
             
-            # Make the API request
-            response = requests.post(
-                self.url,
-                headers=self.headers,
-                json=payload,
-                timeout=60
+            from app.llm.unified_client import UnifiedLLMClient
+            resource_config = {
+                "base_url": self.base_url,
+                "model": self._resolve_model(),
+                "api_key": self.api_key,
+                "output_limit": self.output_limit,
+                "message_format": self.message_format,
+                "provider": self.provider,
+            }
+            uclient = UnifiedLLMClient()
+            response_data = uclient.call_sync(
+                messages=messages,
+                resource_config=resource_config,
             )
-            
-            # Process the response
-            if response.status_code == 200:
-                response_data = response.json()
-                
-                # Extract content from the response based on the provider
-                if self.message_format == "openai":
-                    return response_data['choices'][0]['message']['content'].strip()
-                elif self.message_format == "anthropic":
-                    return response_data['content'][0]['text'].strip()
-                
-            else:
-                self.logger.error(f"API Error: {response.status_code} - {response.text}")
-                return self._fallback_response(query, context or [])
+            return UnifiedLLMClient._extract_text(response_data, self.message_format)
                 
         except Exception as e:
             self.logger.error(f"Error generating API response: {e}")
@@ -320,16 +317,18 @@ USER QUERY:
                     "max_tokens": min(2048, self.output_limit),
                 }
 
-            response = requests.post(self.url, headers=self.headers, json=payload, timeout=60)
-
-            if response.status_code == 200:
-                response_data = response.json()
-                if self.message_format == "openai":
-                    return response_data['choices'][0]['message']['content'].strip()
-                elif self.message_format == "anthropic":
-                    return response_data['content'][0]['text'].strip()
-            else:
-                self.logger.error(f"API Error: {response.status_code} - {response.text}")
+            from app.llm.unified_client import UnifiedLLMClient
+            resource_config = {
+                "base_url": self.base_url,
+                "model": self._resolve_model(),
+                "api_key": self.api_key,
+                "output_limit": self.output_limit,
+                "message_format": self.message_format,
+                "provider": self.provider,
+            }
+            uclient = UnifiedLLMClient()
+            response_data = uclient.call_sync(messages=messages, resource_config=resource_config)
+            return UnifiedLLMClient._extract_text(response_data, self.message_format)
 
         except Exception as e:
             self.logger.error(f"Error generating chat response: {e}")

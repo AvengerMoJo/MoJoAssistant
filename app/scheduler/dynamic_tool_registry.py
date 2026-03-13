@@ -40,6 +40,7 @@ class ToolDefinition:
         requires_auth: bool = False,
         created_at: str = None,
         created_by: str = "system",
+        parameters: Dict[str, Any] = None,
     ):
         self.name = name
         self.description = description
@@ -48,6 +49,19 @@ class ToolDefinition:
         self.requires_auth = requires_auth
         self.created_at = created_at or datetime.now().isoformat()
         self.created_by = created_by
+        # JSON schema for the tool's arguments (OpenAI function-calling format)
+        self.parameters = parameters or {"type": "object", "properties": {}, "required": []}
+
+    def to_openai_function(self) -> Dict[str, Any]:
+        """Return the OpenAI-compatible function definition for LLM tool calling."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -58,6 +72,7 @@ class ToolDefinition:
             "requires_auth": self.requires_auth,
             "created_at": self.created_at,
             "created_by": self.created_by,
+            "parameters": self.parameters,
         }
 
     @classmethod
@@ -70,6 +85,7 @@ class ToolDefinition:
             requires_auth=data.get("requires_auth", False),
             created_at=data.get("created_at"),
             created_by=data.get("created_by", "system"),
+            parameters=data.get("parameters"),
         )
 
 
@@ -135,37 +151,58 @@ class DynamicToolRegistry:
                 name="read_file",
                 description="Read file contents. Returns full text with line numbers.",
                 danger_level="low",
+                parameters={"type": "object", "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative file path to read"},
+                }, "required": ["path"]},
             ),
             ToolDefinition(
                 name="write_file",
                 description="Write content to file. Overwrites existing file. Only allowed in sandbox paths.",
                 danger_level="medium",
+                parameters={"type": "object", "properties": {
+                    "path": {"type": "string", "description": "File path to write"},
+                    "content": {"type": "string", "description": "Content to write"},
+                }, "required": ["path", "content"]},
             ),
             ToolDefinition(
                 name="list_files",
                 description="List files and directories in a path.",
                 danger_level="low",
+                parameters={"type": "object", "properties": {
+                    "path": {"type": "string", "description": "Directory path to list"},
+                }, "required": ["path"]},
             ),
             ToolDefinition(
                 name="search_in_files",
                 description="Search for text across files using grep/ripgrep.",
                 danger_level="low",
+                parameters={"type": "object", "properties": {
+                    "pattern": {"type": "string", "description": "Text or regex pattern to search for"},
+                    "path": {"type": "string", "description": "Directory or file to search in"},
+                }, "required": ["pattern"]},
             ),
             ToolDefinition(
                 name="bash_exec",
                 description="Execute bash command. Only safe commands in whitelist allowed.",
                 danger_level="high",
                 requires_auth=True,
+                parameters={"type": "object", "properties": {
+                    "command": {"type": "string", "description": "Bash command to execute"},
+                }, "required": ["command"]},
             ),
             ToolDefinition(
                 name="memory_search",
                 description="Search user's memory (conversations, documents, knowledge base).",
                 danger_level="low",
+                parameters={"type": "object", "properties": {
+                    "query": {"type": "string", "description": "Search query to find relevant context"},
+                }, "required": ["query"]},
             ),
         ]
         for tool in builtins:
-            if tool.name not in self._tools:
-                self._tools[tool.name] = tool
+            # Always overwrite builtins — code definition (including parameters schema)
+            # must take precedence over any stale on-disk registry entry.
+            self._tools[tool.name] = tool
 
         self._save_registry()
 
@@ -357,32 +394,40 @@ class DynamicToolRegistry:
         if not command:
             return {"success": False, "error": "Missing 'command' parameter"}
 
-        SAFE_COMMANDS = [
-            "cat",
-            "head",
-            "tail",
-            "grep",
-            "rg",
-            "ls",
-            "file",
-            "wc",
-            "stat",
-            "find",
-            "git",
-            "pwd",
-            "date",
-            "echo",
-            "python3",
-            "node",
-        ]
+        # Block destructive commands — everything else is allowed.
+        # Rule: read/observe/query = OK; modify/delete/overwrite = blocked.
+        BLOCKED_COMMANDS = {
+            # Deletion / overwrite
+            "rm", "rmdir", "shred", "unlink",
+            # Disk / filesystem
+            "dd", "mkfs", "fdisk", "parted", "wipefs", "mkswap",
+            # Privilege escalation
+            "sudo", "su", "doas", "pkexec",
+            # Permission / ownership changes
+            "chmod", "chown", "chgrp",
+            # Process termination
+            "kill", "killall", "pkill",
+            # Package mutation
+            "apt", "apt-get", "dpkg", "yum", "dnf", "pacman", "snap", "pip",
+            # Network config changes
+            "ifconfig", "ip link set", "iptables", "ufw",
+            # Systemd service changes
+            "systemctl", "service",
+            # Reboot / shutdown
+            "reboot", "shutdown", "halt", "poweroff",
+            # User / group management
+            "useradd", "userdel", "usermod", "groupadd", "passwd",
+            # Overwrite shortcuts
+            "mv", "cp", "tee", "truncate",
+        }
 
         cmd_parts = command.split()
         base_cmd = cmd_parts[0]
 
-        if base_cmd not in SAFE_COMMANDS:
+        if base_cmd in BLOCKED_COMMANDS:
             return {
                 "success": False,
-                "error": f"Command '{base_cmd}' not in safe whitelist. Install via: sudo apt-get install <package>",
+                "error": f"Command '{base_cmd}' is blocked — destructive or privileged commands are not permitted.",
             }
 
         try:

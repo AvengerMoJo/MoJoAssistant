@@ -95,6 +95,70 @@ def save_runtime_config(
         f.write("\n")
     return runtime_path
 
+def resolve_llm_resource(resource_id: str) -> Dict[str, Any]:
+    """
+    Return the merged config dict for a named LLM resource.
+
+    Looks in ``api_models`` (flat and nested sub-accounts) of the layered
+    llm_config.json.  Returns an empty dict if the resource is not found.
+
+    Key resolution order for ``api_key``:
+      1. Inline ``api_key`` in config (wins)
+      2. ``key_var`` → os.environ[key_var]
+      3. ``LMSTUDIO_API_KEY`` / ``LM_STUDIO_API_KEY`` for lmstudio entries
+      4. ``{PROVIDER}_API_KEY`` env var as last resort
+    """
+    cfg = load_layered_json_config("config/llm_config.json")
+
+    # Search api_models section (flat and nested)
+    resource: Dict[str, Any] = {}
+    for name, entry in cfg.get("api_models", {}).items():
+        if not isinstance(entry, dict):
+            continue
+        if name == resource_id and entry.get("provider"):
+            resource = dict(entry)
+            break
+        # Nested sub-accounts: "{parent}_{child}"
+        if not entry.get("provider"):
+            for sub_name, sub_entry in entry.items():
+                if isinstance(sub_entry, dict) and f"{name}_{sub_name}" == resource_id:
+                    resource = dict(sub_entry)
+                    break
+        if resource:
+            break
+
+    # Fallback: search local_models (flat dict, no nesting)
+    if not resource:
+        local = cfg.get("local_models", {})
+        if resource_id in local and isinstance(local[resource_id], dict):
+            resource = dict(local[resource_id])
+            # local_models use server_url not base_url
+            if "server_url" in resource and "base_url" not in resource:
+                resource["base_url"] = resource["server_url"]
+
+    if not resource:
+        return {}
+
+    # Resolve api_key
+    if not resource.get("api_key") or str(resource.get("api_key", "")).startswith("{{"):
+        key_var = resource.get("key_var") or resource.get("api_key_env")
+        if key_var:
+            resource["api_key"] = os.environ.get(key_var) or resource.get("api_key")
+        if not resource.get("api_key"):
+            # Provider-specific env var fallbacks
+            provider = resource.get("provider", "")
+            candidates = [f"{provider.upper()}_API_KEY"]
+            if resource_id == "lmstudio" or "lmstudio" in resource_id.lower():
+                candidates = ["LMSTUDIO_API_KEY", "LM_STUDIO_API_KEY"] + candidates
+            for var in candidates:
+                val = os.environ.get(var)
+                if val:
+                    resource["api_key"] = val
+                    break
+
+    return resource
+
+
 def load_embedding_config(config_file: str = "config/embedding_config.json") -> Dict[str, Any]:
     """
     Load embedding model configuration with environment variable support

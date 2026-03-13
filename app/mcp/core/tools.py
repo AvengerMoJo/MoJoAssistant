@@ -54,6 +54,10 @@ class ToolRegistry:
 
         self._event_log = EventLog()
 
+        # Initialize role manager
+        from app.roles.role_manager import RoleManager
+        self._role_manager = RoleManager()
+
         # Initialize SSE notifier for real-time task events
         from app.mcp.adapters.sse import SSENotifier
 
@@ -124,6 +128,10 @@ class ToolRegistry:
                 "on_change": self._on_scheduler_config_change,
             },
         }
+
+        # Initialize Role Manager
+        from app.roles.role_manager import RoleManager
+        self._role_manager = RoleManager()
 
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
@@ -861,7 +869,7 @@ class ToolRegistry:
             # Scheduler Tools
             {
                 "name": "scheduler_add_task",
-                "description": "Add a new task to the scheduler queue. Supports immediate execution, scheduled execution (specific datetime), and recurring execution (cron expression). Use this to schedule background tasks like memory consolidation (dreaming), periodic maintenance, or custom jobs. For agentic tasks, config supports: mode (normal/deep_research/parallel_discovery), goal, max_iterations, tier_preference, planning_prompt, available_tools, resource_policy, final_answer_requirements, and parallel_agents fan-out with review_policy (human-in-loop by default).",
+                "description": "Add a new task to the scheduler queue. Supports immediate, scheduled (datetime), and recurring (cron) execution.\n\nTASK TYPES — choose carefully:\n• agentic — autonomous LLM think-act loop; the agent reasons, calls tools, and iterates until it produces a FINAL_ANSWER. Use this when you want the agent to figure something out.\n• custom — runs a single shell command and stops. No LLM, no iteration. Use this for simple scripts.\n• dreaming — memory consolidation pipeline.\n• agent — launches an OpenCode/OpenClaw agent subprocess.\n\nFor agentic tasks, call scheduler_list_agent_tools first to see available tools, then pass chosen names in available_tools. Config fields: goal, max_iterations, tier_preference, available_tools, role_id, planning_prompt, resource_policy, final_answer_requirements.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1030,6 +1038,14 @@ class ToolRegistry:
                     "properties": {},
                 },
             },
+            {
+                "name": "scheduler_list_agent_tools",
+                "description": "List all tools that can be assigned to an agentic task via the available_tools field in scheduler_add_task. Returns each tool's name, description, and danger_level (low/medium/high). Call this before scheduling an agentic task to know what tools are available to give the agent.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
             # Dreaming Tools
             {
                 "name": "dreaming_process",
@@ -1118,8 +1134,8 @@ class ToolRegistry:
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["help", "get", "set", "delete"],
-                            "description": "Action to perform: help (list modules or show structure), get (read config), set (write value), delete (remove a key from runtime layer)",
+                            "enum": ["help", "get", "set", "delete", "sync_local_models"],
+                            "description": "Action to perform: help (list modules or show structure), get (read config), set (write value), delete (remove a key from runtime layer), sync_local_models (re-query a local LLM server and register one resource entry per loaded model)",
                         },
                         "module": {
                             "type": "string",
@@ -1168,6 +1184,89 @@ class ToolRegistry:
                         },
                     },
                     "required": [],
+                },
+            },
+            # Role System — Nine Chapter-based personality design
+            {
+                "name": "role_design_start",
+                "description": "Start a Nine Chapter role design interview. The tool guides a conversation across five personality dimensions (Core Values, Emotional Reaction, Cognitive Style, Social Orientation, Adaptability) to build a complete role config and system prompt. Returns the first question and a session_id to use in follow-up calls.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "description": {
+                            "type": "string",
+                            "description": "Optional initial description of the character to pre-fill the intro step.",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "role_design_answer",
+                "description": "Submit the user's answer to the current role design question and get the next question. When step=synthesis, the draft role spec is returned for review. Reply 'yes' to finalise, 'adjust: ...' to refine, or 'restart' to begin again.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID from role_design_start.",
+                        },
+                        "answer": {
+                            "type": "string",
+                            "description": "The user's answer to the current question.",
+                        },
+                    },
+                    "required": ["session_id", "answer"],
+                },
+            },
+            {
+                "name": "role_create",
+                "description": "Save a finalised role config to the role library. Accepts either a session_id (auto-builds from session) or a complete role spec dict. Saved roles can be used as the personality/system prompt for any agent or agentic task.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID of a completed design session (step=complete).",
+                        },
+                        "role": {
+                            "type": "object",
+                            "description": "Complete role spec dict (alternative to session_id).",
+                        },
+                        "model_preference": {
+                            "type": "string",
+                            "description": "Preferred LLM model for this role (e.g. 'qwen/qwen3-35b-a22b').",
+                        },
+                        "tools": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Tool names this role should have access to.",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "role_list",
+                "description": "List all saved roles in the role library with their Nine Chapter scores, archetypes, and purpose.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            },
+            {
+                "name": "role_get",
+                "description": "Get the full spec for a saved role including its system prompt and all dimension details.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "role_id": {
+                            "type": "string",
+                            "description": "Role ID to retrieve.",
+                        },
+                    },
+                    "required": ["role_id"],
                 },
             },
             # LLM Server Discovery (not a config operation — queries external service)
@@ -1666,6 +1765,8 @@ class ToolRegistry:
             return await self._execute_scheduler_restart_daemon(args)
         elif name == "scheduler_daemon_status":
             return await self._execute_scheduler_daemon_status(args)
+        elif name == "scheduler_list_agent_tools":
+            return await self._execute_scheduler_list_agent_tools(args)
         # Dreaming Tools
         elif name == "dreaming_process":
             return await self._execute_dreaming_process(args)
@@ -1695,6 +1796,17 @@ class ToolRegistry:
             return await self._execute_resource_pool_approve(args)
         elif name == "resource_pool_revoke":
             return await self._execute_resource_pool_revoke(args)
+        # Role System Tools
+        elif name == "role_design_start":
+            return await self._execute_role_design_start(args)
+        elif name == "role_design_answer":
+            return await self._execute_role_design_answer(args)
+        elif name == "role_create":
+            return await self._execute_role_create(args)
+        elif name == "role_list":
+            return await self._execute_role_list(args)
+        elif name == "role_get":
+            return await self._execute_role_get(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -2547,6 +2659,31 @@ class ToolRegistry:
                 "message": f"Failed to get scheduler daemon status: {str(e)}",
             }
 
+    async def _execute_scheduler_list_agent_tools(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Return all tools available for assignment to agentic tasks."""
+        try:
+            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+
+            registry = DynamicToolRegistry()
+            tools = registry.list_tools()
+            return {
+                "status": "success",
+                "tools": [
+                    {
+                        "name": name,
+                        "description": meta.get("description", ""),
+                        "danger_level": meta.get("danger_level", "low"),
+                        "requires_auth": meta.get("requires_auth", False),
+                    }
+                    for name, meta in tools.items()
+                ],
+                "usage": "Pass desired tool names in available_tools when calling scheduler_add_task with task_type='agentic'.",
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     # ========================================================================
     # Dreaming Tool Executors
     # ========================================================================
@@ -2955,6 +3092,84 @@ class ToolRegistry:
                 "message": f"Failed to revoke resource: {str(e)}",
             }
 
+    # ── Role System Tools ────────────────────────────────────────────
+
+    async def _execute_role_design_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Start a new role design session."""
+        from app.roles.role_designer import RoleDesignSession
+        session = RoleDesignSession()
+        session.save()
+        return {
+            "session_id": session.session_id,
+            "step": session.current_step,
+            "question": session.current_question(),
+            "progress": session.progress(),
+        }
+
+    async def _execute_role_design_answer(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit an answer to the current role design step."""
+        from app.roles.role_designer import RoleDesignSession
+        session_id = args.get("session_id")
+        answer = args.get("answer", "")
+        if not session_id:
+            return {"status": "error", "message": "Missing session_id"}
+        session = RoleDesignSession.load(session_id)
+        if session is None:
+            return {"status": "error", "message": f"Session '{session_id}' not found"}
+        next_step, payload = session.submit_answer(answer)
+        result = {
+            "session_id": session_id,
+            "step": next_step,
+            "progress": session.progress(),
+        }
+        result.update(payload)
+        return result
+
+    async def _execute_role_create(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Save a role config (from a design session or provided directly)."""
+        from app.roles.role_designer import RoleDesignSession
+        session_id = args.get("session_id")
+        role_data = args.get("role")
+
+        if session_id and not role_data:
+            session = RoleDesignSession.load(session_id)
+            if session is None:
+                return {"status": "error", "message": f"Session '{session_id}' not found"}
+            role_data = session._build_role_spec()
+
+        if not role_data:
+            return {"status": "error", "message": "Provide session_id or role data"}
+
+        # Apply optional overrides
+        if args.get("model_preference") is not None:
+            role_data["model_preference"] = args["model_preference"]
+        if args.get("tools") is not None:
+            role_data["tools"] = args["tools"]
+
+        path = self._role_manager.save(role_data)
+        return {
+            "status": "success",
+            "role_id": role_data.get("id"),
+            "name": role_data.get("name"),
+            "nine_chapter_score": role_data.get("nine_chapter_score"),
+            "path": path,
+        }
+
+    async def _execute_role_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List all saved roles."""
+        roles = self._role_manager.list_roles()
+        return {"roles": roles, "count": len(roles)}
+
+    async def _execute_role_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get a role config by ID."""
+        role_id = args.get("role_id")
+        if not role_id:
+            return {"status": "error", "message": "Missing role_id"}
+        role = self._role_manager.get(role_id)
+        if role is None:
+            return {"status": "error", "message": f"Role '{role_id}' not found"}
+        return role
+
     # ── LLM Configuration Tools ──────────────────────────────────────
 
     # ========================================================================
@@ -3090,6 +3305,23 @@ class ToolRegistry:
         """Dispatch config actions: help, get, set."""
         action = args.get("action")
         module_name = args.get("module")
+
+        # --- sync_local_models ---
+        if action == "sync_local_models":
+            resource_id = args.get("path") or module_name or "lmstudio"
+            try:
+                rm = self.scheduler.executor._resource_manager
+                synced = rm.sync_local_server_models(resource_id)
+                statuses = rm.get_status()
+                entries = {rid: statuses[rid] for rid in synced if rid in statuses}
+                return {
+                    "status": "success",
+                    "server": resource_id,
+                    "synced_count": len(synced),
+                    "entries": entries,
+                }
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
 
         # --- help ---
         if action == "help":
