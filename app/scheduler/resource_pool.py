@@ -120,7 +120,9 @@ class ResourceManager:
                 self._usage[rid] = UsageRecord(
                     total_calls=rec.get("total_calls", 0),
                     last_call_at=rec.get("last_call_at"),
-                    consecutive_errors=rec.get("consecutive_errors", 0),
+                    # Reset on startup — stale errors from a dead process must not
+                    # permanently block resources on the next server start.
+                    consecutive_errors=0,
                 )
             self._log(f"Loaded usage stats for {len(data)} resource(s)")
         except Exception as e:
