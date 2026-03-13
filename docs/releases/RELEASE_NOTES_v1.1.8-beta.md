@@ -1,4 +1,4 @@
-# Release Notes v1.2.0
+# Release Notes v1.1.8-beta
 
 ## Theme: Unified LLM Infrastructure + Role-Driven Agentic System
 
