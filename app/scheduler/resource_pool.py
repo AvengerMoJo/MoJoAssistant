@@ -344,6 +344,8 @@ class ResourceManager:
                     continue
                 if not self._is_budget_available(resource):
                     continue
+                if self._compute_status(resource) == ResourceStatus.UNREACHABLE:
+                    continue
                 candidates.append(resource)
 
             if not candidates:
