@@ -504,28 +504,29 @@ class AgenticExecutor:
         tools: Optional[List[Dict]] = None,
         model_override: Optional[str] = None,
     ) -> Dict:
-        """Make an OpenAI-compatible chat completion request. Returns the full response dict."""
-        url = f"{resource.base_url}/chat/completions"
-        headers = {"Content-Type": "application/json"}
+        """Make an LLM call via UnifiedLLMClient."""
+        from app.llm.unified_client import UnifiedLLMClient
+        # Resolve model (keeps OpenRouter cache logic on executor)
+        headers_for_probe = {"Content-Type": "application/json"}
         if resource.api_key:
-            headers["Authorization"] = f"Bearer {resource.api_key}"
+            headers_for_probe["Authorization"] = f"Bearer {resource.api_key}"
+        selected_model = model_override or await self._resolve_model_for_resource(resource, headers_for_probe)
 
-        selected_model = model_override or await self._resolve_model_for_resource(resource, headers)
-        payload: Dict[str, Any] = {
+        resource_config = {
+            "base_url": resource.base_url,
             "model": selected_model,
-            "messages": messages,
-            "max_tokens": resource.output_limit,
-            "temperature": 0.7,
+            "api_key": resource.api_key,
+            "output_limit": resource.output_limit,
+            "message_format": "openai",
+            "provider": resource.provider,
         }
-        if tools:
-            payload["tools"] = tools
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            data["_selected_model"] = selected_model
-
+        client = UnifiedLLMClient()
+        data = await client.call_async(
+            messages=messages,
+            resource_config=resource_config,
+            model_override=selected_model,
+            tools=tools,
+        )
         choices = data.get("choices", [])
         if not choices:
             raise ValueError("LLM returned no choices")

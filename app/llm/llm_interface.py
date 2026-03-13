@@ -117,21 +117,9 @@ class LLMInterface:
         resolved = dict(api_config)
         key = resolved.get("api_key", "")
         if not key or str(key).startswith("{{"):
-            # Try key_var
-            key_var = resolved.get("key_var") or resolved.get("api_key_env")
-            if key_var:
-                resolved["api_key"] = os.environ.get(key_var)
-            # Try config loader as final fallback
-            if not resolved.get("api_key"):
-                try:
-                    from app.config.config_loader import resolve_llm_resource
-                    resource_id = resolved.get("resource_id") or resolved.get("id", "")
-                    if resource_id:
-                        cfg_key = resolve_llm_resource(resource_id).get("api_key")
-                        if cfg_key:
-                            resolved["api_key"] = cfg_key
-                except Exception:
-                    pass
+            from app.llm.unified_client import UnifiedLLMClient
+            resource_id = resolved.get("resource_id") or resolved.get("id", "")
+            resolved["api_key"] = UnifiedLLMClient.resolve_key(resource_id, resolved)
         return resolved
 
     def add_local_interface(

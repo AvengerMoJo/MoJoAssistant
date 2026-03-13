@@ -127,6 +127,15 @@ def resolve_llm_resource(resource_id: str) -> Dict[str, Any]:
         if resource:
             break
 
+    # Fallback: search local_models (flat dict, no nesting)
+    if not resource:
+        local = cfg.get("local_models", {})
+        if resource_id in local and isinstance(local[resource_id], dict):
+            resource = dict(local[resource_id])
+            # local_models use server_url not base_url
+            if "server_url" in resource and "base_url" not in resource:
+                resource["base_url"] = resource["server_url"]
+
     if not resource:
         return {}
 
