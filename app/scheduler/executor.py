@@ -75,7 +75,7 @@ class TaskExecutor:
                 result = await self._execute_agent(task)
             elif task.type == TaskType.CUSTOM:
                 result = await self._execute_custom(task)
-            elif task.type == TaskType.AGENTIC:
+            elif task.type == TaskType.ASSISTANT:
                 result = await self._execute_agentic(task)
             else:
                 raise ValueError(f"Unknown task type: {task.type}")

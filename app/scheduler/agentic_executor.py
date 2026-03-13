@@ -59,6 +59,16 @@ CONTINUE_PROMPT = (
     "If you are done, provide your answer inside <FINAL_ANSWER> tags."
 )
 
+NEAR_LIMIT_PROMPT = (
+    "⚠ ITERATION BUDGET WARNING: You are on iteration {current} of {max} — only {remaining} iteration(s) left.\n\n"
+    "You MUST stop using tools and produce a <FINAL_ANSWER> NOW, even if the work is incomplete.\n\n"
+    "Your FINAL_ANSWER should:\n"
+    "1. Summarise everything you have discovered or accomplished so far.\n"
+    "2. Clearly state what remains unfinished and what additional cycles would be needed to complete it.\n"
+    "3. Give the client enough context to resume this task in a future run.\n\n"
+    "Do NOT call any more tools. Synthesise what you know and wrap up."
+)
+
 
 class AgenticExecutor:
     """Executes agentic tasks via an autonomous LLM think-act loop."""
@@ -131,8 +141,8 @@ class AgenticExecutor:
             except Exception as e:
                 self._log(f"Failed to load role '{role_id}': {e}")
 
-        # Load planning prompt — default to role_task when a role is active
-        default_prompt = "role_task" if role_id else "agentic_planning"
+        # Load planning prompt — default to assistant_workflow when a role is active
+        default_prompt = "assistant_workflow" if role_id else "agentic_planning"
         planning_prompt_name = config.get("planning_prompt", default_prompt)
         planning_prompt = self._planning_manager.get_prompt(
             planning_prompt_name, version="latest"
@@ -371,6 +381,15 @@ class AgenticExecutor:
                         "elapsed_s": round(time.time() - iter_start, 1),
                     }
                 )
+                # If we're near the iteration limit, inject a hard wrap-up prompt
+                # so the LLM doesn't keep calling tools and runs out of budget.
+                if iteration >= max_iterations - 1:
+                    remaining = max_iterations - iteration
+                    budget_msg = NEAR_LIMIT_PROMPT.format(
+                        current=iteration, max=max_iterations, remaining=remaining
+                    )
+                    messages.append({"role": "user", "content": budget_msg})
+                    self._record(task.id, "user", budget_msg, iteration=abs_iteration)
                 continue  # Next iteration will get the LLM's response to tool results
 
             # Append assistant response
@@ -427,9 +446,16 @@ class AgenticExecutor:
                 self._record(task.id, "user", correction_prompt, iteration=abs_iteration)
                 continue
 
-            # Append continue prompt for next iteration
-            messages.append({"role": "user", "content": CONTINUE_PROMPT})
-            self._record(task.id, "user", CONTINUE_PROMPT, iteration=abs_iteration)
+            # Append continue prompt for next iteration (budget-aware)
+            if iteration >= max_iterations - 1:
+                remaining = max_iterations - iteration
+                next_msg = NEAR_LIMIT_PROMPT.format(
+                    current=iteration, max=max_iterations, remaining=remaining
+                )
+            else:
+                next_msg = CONTINUE_PROMPT
+            messages.append({"role": "user", "content": next_msg})
+            self._record(task.id, "user", next_msg, iteration=abs_iteration)
 
         total_elapsed = round(time.time() - start_time, 1)
         success = final_answer is not None

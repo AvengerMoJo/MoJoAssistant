@@ -245,8 +245,8 @@ class Scheduler:
                     "title": f"Task {task.id} completed",
                 })
 
-                # Auto-schedule dreaming for completed agentic tasks
-                if task.type == TaskType.AGENTIC:
+                # Auto-schedule dreaming for completed assistant tasks
+                if task.type == TaskType.ASSISTANT:
                     self._schedule_dreaming_for_agentic_task(task)
                     self._store_agentic_result_to_memory(task, result)
 
