@@ -1,8 +1,8 @@
 # Release Notes v1.2.0 — Planned
 
-## Theme: Role Safety + Human-in-the-Loop
+## Theme: Role Safety + Human-in-the-Loop + Extensible Tool System
 
-Two features that complete the role/agentic system started in v1.1.x.
+Three features that complete the role/agentic system started in v1.1.x.
 
 ---
 
@@ -141,6 +141,76 @@ Executor stores the question, sets status `WAITING_FOR_INPUT`, and returns. SSE 
 
 ---
 
+---
+
+## Feature 3: Extensible Tool Executor System
+
+### Problem
+
+Adding a new agent tool currently requires three code changes every time: add a `ToolDefinition` in `_register_builtins()`, add an `elif` branch in `execute_tool()`, and write a handler method. MCP tools, Python scripts, and shell scripts cannot be added as agent tools without touching the core registry code.
+
+### Design
+
+Add an `executor` field to `ToolDefinition` that describes *how* to run the tool. `execute_tool()` dispatches on executor type instead of tool name. New tools become pure config — no code change needed.
+
+#### Executor types
+
+| `executor.type` | Use case | How to add a new tool |
+|---|---|---|
+| `"builtin"` | Existing hardcoded handlers | No change (backwards compatible) |
+| `"shell"` | Python scripts, bash scripts, any subprocess | JSON entry pointing to the script |
+| `"python"` | Python module/function | Drop a `.py` file + JSON entry |
+| `"mcp_proxy"` | Bridge any MCP tool into the agent toolset | JSON entry with the MCP tool name |
+
+#### Shell executor contract
+
+Args are passed as JSON on stdin; the script writes a JSON result to stdout. Any language can implement this.
+
+```json
+{
+  "name": "nmap_scan",
+  "description": "Run nmap scan on a target IP or range",
+  "parameters": {"type": "object", "properties": {
+    "target": {"type": "string", "description": "IP or hostname"}
+  }, "required": ["target"]},
+  "executor": {"type": "shell", "command": "python3 ~/.memory/tools/nmap_scan.py"},
+  "danger_level": "high"
+}
+```
+
+#### MCP proxy executor
+
+```json
+{
+  "name": "web_search",
+  "description": "Search the web for current information",
+  "parameters": {"type": "object", "properties": {
+    "query": {"type": "string"}
+  }, "required": ["query"]},
+  "executor": {"type": "mcp_proxy", "tool": "mcp__MoJoAssistant__web_search"}
+}
+```
+
+### Files to change
+
+- **`app/scheduler/dynamic_tool_registry.py`**
+  - Add `executor: dict` field to `ToolDefinition` (default `{"type": "builtin"}`)
+  - Persist/load `executor` in `to_dict()` / `from_dict()`
+  - `execute_tool()`: dispatch on `tool.executor["type"]` instead of `if name == ...`
+  - Add `_run_shell_executor(tool, args)` — subprocess with JSON stdin/stdout
+  - Add `_run_python_executor(tool, args)` — dynamic `importlib` + call
+  - Add `_run_mcp_proxy_executor(tool, args)` — call through MCP client
+
+### Verification
+
+```bash
+# Add a shell tool via JSON, no code change
+# Schedule agentic task with the new tool in available_tools
+# Agent calls it → executor routes to subprocess → result returned to agent
+```
+
+---
+
 ## Implementation Order
 
 1. `app/scheduler/policy_monitor.py` (new)
@@ -153,3 +223,4 @@ Executor stores the question, sets status `WAITING_FOR_INPUT`, and returns. SSE 
 8. `app/scheduler/core.py` — `resume_task_with_reply()`
 9. `app/mcp/core/tools.py` — `reply_to_task` tool
 10. `app/mcp/adapters/sse.py` — `task_waiting_for_input` event
+11. `app/scheduler/dynamic_tool_registry.py` — extensible executor system (Feature 3)
