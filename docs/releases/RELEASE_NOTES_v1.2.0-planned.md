@@ -1,8 +1,8 @@
 # Release Notes v1.2.0 — Planned
 
-## Theme: Role Safety + Human-in-the-Loop + Extensible Tool System
+## Theme: Role Safety + Human-in-the-Loop + Extensible Tools + Config Doctor
 
-Three features that complete the role/agentic system started in v1.1.x.
+Four features that complete the role/agentic system started in v1.1.x.
 
 ---
 
@@ -211,6 +211,63 @@ Args are passed as JSON on stdin; the script writes a JSON result to stdout. Any
 
 ---
 
+---
+
+## Feature 4: Configuration Doctor
+
+### Problem
+
+Misconfigured values (wrong model names, bad API keys, unreachable servers, typos in role files) cause tasks to fail with cryptic errors at runtime — often deep inside the execution loop with no clear pointer back to the config mistake. Example: Ahman's `model_preference: "qwen/qwen3-35b-a3b"` (missing `.5`) caused consistent 400 errors that looked like a network or auth issue.
+
+### Design
+
+A `mcp__MoJoAssistant__config_doctor` MCP tool (and a standalone CLI script) that validates all runtime configuration before issues surface during task execution.
+
+#### What it checks
+
+| Category | Checks |
+|---|---|
+| **LLM resources** | Each entry in `api_models` / `local_models`: reachability (HEAD /v1/models), API key present, model name exists on server |
+| **Roles** | `model_preference` matches an available model on the assigned resource; `allowed_tools` names exist in registry |
+| **Scheduler tasks** | `available_tools` names exist in registry; `role_id` resolves to an existing role; `tier_preference` is a valid tier |
+| **API keys** | `key_var` env vars actually set; inline keys are not template placeholders (`{{...}}`) |
+| **Local servers** | LMStudio / Ollama reachable; model list non-empty |
+
+#### Output format
+
+```json
+{
+  "status": "warn",
+  "checks": [
+    {"category": "role", "id": "ahman", "field": "model_preference",
+     "value": "qwen/qwen3-35b-a3b", "status": "error",
+     "message": "Model not found on lmstudio. Available: qwen/qwen3.5-35b-a3b"},
+    {"category": "resource", "id": "gemini_tinyi", "field": "api_key",
+     "status": "warn", "message": "GEMINI_API_KEY_TINYI not set in environment"}
+  ],
+  "summary": {"errors": 1, "warnings": 2, "passed": 14}
+}
+```
+
+Severity: `error` = will definitely fail at runtime; `warn` = may fail; `pass` = OK.
+
+### Files to create/change
+
+- **New**: `app/config/doctor.py` — `ConfigDoctor` class with `run_all_checks() -> DoctorReport`
+- **New**: `scripts/config_doctor.py` — CLI entry point (`python3 scripts/config_doctor.py`)
+- **`app/mcp/core/tools.py`** — register `config_doctor` MCP tool
+- **`app/scheduler/core.py`** — optionally run doctor on startup and log warnings
+
+### Verification
+
+```bash
+python3 scripts/config_doctor.py
+# → shows table of all checks, errors in red, warnings in yellow
+# → exits non-zero if any errors found (useful in CI)
+```
+
+---
+
 ## Implementation Order
 
 1. `app/scheduler/policy_monitor.py` (new)
@@ -224,3 +281,4 @@ Args are passed as JSON on stdin; the script writes a JSON result to stdout. Any
 9. `app/mcp/core/tools.py` — `reply_to_task` tool
 10. `app/mcp/adapters/sse.py` — `task_waiting_for_input` event
 11. `app/scheduler/dynamic_tool_registry.py` — extensible executor system (Feature 3)
+12. `app/config/doctor.py` + `scripts/config_doctor.py` + MCP tool (Feature 4)
