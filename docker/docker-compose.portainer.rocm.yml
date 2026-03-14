@@ -1,0 +1,52 @@
+# MoJoAssistant — Portainer Stack (AMD ROCm)
+#
+# Deploy via Portainer: Stacks → Add Stack → Web editor → paste this file.
+# Set the required environment variables in Portainer's "Environment variables"
+# section before deploying.
+#
+# Host requirements:
+#   - ROCm installed and working (rocm-smi should show your GPU)
+#   - /dev/kfd and /dev/dri/renderD128 present
+#   - Docker user in 'render' and 'video' groups
+#
+# Required env vars to set in Portainer:
+#   MOJO_MEMORY_PATH   — host path for persistent memory  e.g. /home/youruser/.memory
+#
+# Optional env vars:
+#   OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY
+#   HSA_OVERRIDE_GFX_VERSION  — defaults to 11.0.3 (Strix Halo → Phoenix APU)
+#                                set to 11.0.0 for RX 7900, 11.0.2 for RX 7600
+
+services:
+  mojoassistant-rocm:
+    image: mojoassistant:rocm
+    container_name: mojoassistant-rocm
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-11.0.3}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ${MOJO_MEMORY_PATH:-/tmp/mojo-memory}:/home/mojo/.memory
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri/renderD128:/dev/dri/renderD128
+    group_add:
+      - render
+      - video
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/system/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - mojo-rocm-net
+
+networks:
+  mojo-rocm-net:
+    driver: bridge

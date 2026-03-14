@@ -1,0 +1,39 @@
+# MoJoAssistant — Portainer Stack (Generic CPU)
+#
+# Deploy via Portainer: Stacks → Add Stack → Web editor → paste this file.
+# Set the required environment variables in Portainer's "Environment variables"
+# section before deploying (no .env file needed).
+#
+# Required env vars to set in Portainer:
+#   MOJO_MEMORY_PATH   — host path for persistent memory  e.g. /home/youruser/.memory
+#
+# Optional env vars:
+#   OPENAI_API_KEY, OPENROUTER_API_KEY, etc. (from your .env.example)
+
+services:
+  mojoassistant:
+    image: mojoassistant:latest
+    container_name: mojoassistant
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      # Paste your API keys here or set them in Portainer's env UI
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ${MOJO_MEMORY_PATH:-/tmp/mojo-memory}:/home/mojo/.memory
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/system/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - mojo-net
+
+networks:
+  mojo-net:
+    driver: bridge
