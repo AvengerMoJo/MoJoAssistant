@@ -1,13 +1,24 @@
-# MoJoAssistant — Production / Installation Compose
+# MoJoAssistant — Docker Compose
 #
-# Usage:
-#   cp .env.example .env          # fill in your API keys
-#   docker compose -f docker/docker-compose.yml up -d
+# Two services — pick the one that matches your hardware:
+#   mojoassistant      → CPU only (works everywhere)
+#   mojoassistant-rocm → AMD GPU via ROCm (requires /dev/kfd)
 #
-# Memory is persisted in ~/.memory on the host.
-# Config overrides go in ~/.memory/config/llm_config.json
+# Build:
+#   docker compose -f docker/docker-compose.yml build
+#
+# Run (CPU):
+#   docker compose -f docker/docker-compose.yml up mojoassistant
+#
+# Run (AMD ROCm):
+#   docker compose -f docker/docker-compose.yml up mojoassistant-rocm
+#
+# Portainer: Stacks → Add Stack → Web editor → paste this file.
+# Set any API keys (OPENAI_API_KEY etc.) in Portainer's Environment variables UI.
 
 services:
+
+  # ── Generic CPU ──────────────────────────────────────────────────────────────
   mojoassistant:
     build:
       context: ..
@@ -17,15 +28,14 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    env_file:
-      - ../.env
     environment:
       - PYTHONPATH=/app
+      - MEMORY_PATH=/home/mojo/.memory
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
-      # Persistent memory store — survives container restarts
-      - ${HOME}/.memory:/home/mojo/.memory
-      # Optional: mount your own llm_config.json without rebuilding
-      # - ./config/llm_config.json:/app/config/llm_config.json:ro
+      - mojo-memory:/home/mojo/.memory
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/system/health"]
       interval: 30s
@@ -34,6 +44,47 @@ services:
       start_period: 15s
     networks:
       - mojo-net
+
+  # ── AMD ROCm ─────────────────────────────────────────────────────────────────
+  # Requires: ROCm installed on host, /dev/kfd present, user in render+video groups.
+  # HSA_OVERRIDE_GFX_VERSION maps gfx1151 (Strix Halo) to gfx1103 (Phoenix APU).
+  # Change this value if you have a different AMD GPU — see Dockerfile.rocm comments.
+  mojoassistant-rocm:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rocm
+    image: mojoassistant:rocm
+    container_name: mojoassistant-rocm
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - MEMORY_PATH=/home/mojo/.memory
+      - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-11.0.3}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - mojo-memory-rocm:/home/mojo/.memory
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri/renderD128:/dev/dri/renderD128
+    group_add:
+      - render
+      - video
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/system/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - mojo-net
+
+volumes:
+  mojo-memory:
+  mojo-memory-rocm:
 
 networks:
   mojo-net:
