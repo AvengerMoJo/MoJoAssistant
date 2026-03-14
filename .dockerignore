@@ -1,0 +1,74 @@
+# ── Secrets & local config ────────────────────────────────────────────────────
+.env
+config/llm_config.json
+config/embedding_config.json
+config/dynamic_tools.json
+config/planning_prompts.json
+config/tool_operation_logs.json
+config/scheduler_config.json
+config/roles/*.json
+
+# ── Runtime memory (mounted as volume at runtime) ─────────────────────────────
+.memory/
+*.memory/
+
+# ── Python build artefacts ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+
+# ── Test / coverage ───────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ── Type checkers & linters ───────────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+
+# ── IDE & dev tooling ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.aider*
+.crush/
+.kiro/
+.claude/
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitmodules
+
+# ── Caches & embeddings ───────────────────────────────────────────────────────
+.embedding_cache/
+.knowledge/
+.ignored_files/
+
+# ── Logs & state files ────────────────────────────────────────────────────────
+*.log
+*.state.json
+error_state.json
+interrupt_state.json
+final_state.json
+memory_state.json
+mcp_new.log
+mcp_server.log
+server.log
+server_output.log
+
+# ── Docs (not needed at runtime) ──────────────────────────────────────────────
+docs/
+
+# ── Submodules (external repos, not baked in) ─────────────────────────────────
+submodules/

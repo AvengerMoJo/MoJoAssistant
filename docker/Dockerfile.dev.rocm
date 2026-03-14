@@ -1,0 +1,53 @@
+# MoJoAssistant — AMD ROCm Development / Test Image
+#
+# Same as Dockerfile.dev but with ROCm-enabled PyTorch for GPU embeddings.
+# Source is mounted live — edit code on host, server reloads automatically.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.rocm.yml up mojoassistant-dev-rocm
+#
+# Run tests:
+#   docker compose -f docker/docker-compose.rocm.yml run --rm test-rocm
+
+FROM python:3.12-slim
+
+# ── System deps ──────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates \
+        iputils-ping net-tools iproute2 nmap \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Non-root user ─────────────────────────────────────────────────────────────
+RUN useradd -m -u 1000 -s /bin/bash mojo
+
+# ── PyTorch with ROCm support ─────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    torch torchvision \
+    --index-url https://download.pytorch.org/whl/rocm6.2
+
+# ── App deps ──────────────────────────────────────────────────────────────────
+WORKDIR /app
+COPY requirements-runtime.txt .
+RUN pip install --no-cache-dir -r requirements-runtime.txt
+
+# ── Dev / test extras ─────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    pytest pytest-asyncio pytest-cov \
+    watchdog \
+    httpx
+
+# ── Source is mounted at runtime (not baked in) ───────────────────────────────
+RUN mkdir -p /home/mojo/.memory && chown -R mojo:mojo /home/mojo/.memory
+
+USER mojo
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    MOJO_ENV=development \
+    HSA_OVERRIDE_GFX_VERSION=11.0.3
+
+EXPOSE 8000
+
+CMD ["python", "-m", "watchdog.watchmedo", "auto-restart", \
+     "--directory=/app", "--pattern=*.py", "--recursive", "--", \
+     "python", "unified_mcp_server.py", "--mode", "http", "--port", "8000"]

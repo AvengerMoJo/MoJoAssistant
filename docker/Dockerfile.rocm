@@ -1,0 +1,62 @@
+# MoJoAssistant — AMD ROCm Production Image
+#
+# For systems with AMD GPUs (iGPU or dGPU) running ROCm.
+# Enables GPU-accelerated sentence-transformers embeddings.
+# LLM inference is still handled externally (LMStudio).
+#
+# Usage:
+#   docker compose -f docker/docker-compose.rocm.yml up -d
+#
+# GPU devices are passed through via docker-compose.rocm.yml.
+# For gfx1151 (Strix Halo / Ryzen AI Max), HSA_OVERRIDE_GFX_VERSION maps
+# the GPU to the nearest ROCm-supported architecture at runtime.
+
+FROM python:3.12-slim
+
+# ── System deps ──────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Non-root user ─────────────────────────────────────────────────────────────
+RUN useradd -m -u 1000 -s /bin/bash mojo
+
+# ── PyTorch with ROCm support ─────────────────────────────────────────────────
+# Installed before requirements-runtime.txt so sentence-transformers picks it up.
+# ROCm 6.2 wheels are the latest stable; gfx1151 users set HSA_OVERRIDE at runtime.
+RUN pip install --no-cache-dir \
+    torch torchvision \
+    --index-url https://download.pytorch.org/whl/rocm6.2
+
+# ── App deps ──────────────────────────────────────────────────────────────────
+WORKDIR /app
+COPY requirements-runtime.txt .
+RUN pip install --no-cache-dir -r requirements-runtime.txt
+
+# ── App source ────────────────────────────────────────────────────────────────
+COPY --chown=mojo:mojo . .
+
+# ── Runtime dirs ─────────────────────────────────────────────────────────────
+RUN mkdir -p /home/mojo/.memory/config /home/mojo/.memory/roles \
+             /home/mojo/.memory/task_sessions \
+    && chown -R mojo:mojo /home/mojo/.memory
+
+# ── Default config (if not provided via volume) ───────────────────────────────
+RUN if [ -f config/llm_config.json.example ]; then \
+        cp config/llm_config.json.example config/llm_config.json; \
+    fi
+
+USER mojo
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    # Map gfx1151 (Strix Halo) to gfx1103 (Phoenix APU) for PyTorch ROCm.
+    # Override at runtime if your GPU differs: -e HSA_OVERRIDE_GFX_VERSION=11.0.0
+    HSA_OVERRIDE_GFX_VERSION=11.0.3
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -sf http://localhost:8000/system/health || exit 1
+
+CMD ["python", "unified_mcp_server.py", "--mode", "http", "--port", "8000"]
