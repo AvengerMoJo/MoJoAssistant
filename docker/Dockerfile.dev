@@ -42,6 +42,7 @@ USER mojo
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
+    MEMORY_PATH=/home/mojo/.memory \
     MOJO_ENV=development
 
 EXPOSE 8000

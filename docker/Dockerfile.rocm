@@ -50,6 +50,7 @@ USER mojo
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
+    MEMORY_PATH=/home/mojo/.memory \
     # Map gfx1151 (Strix Halo) to gfx1103 (Phoenix APU) for PyTorch ROCm.
     # Override at runtime if your GPU differs: -e HSA_OVERRIDE_GFX_VERSION=11.0.0
     HSA_OVERRIDE_GFX_VERSION=11.0.3

@@ -36,7 +36,8 @@ RUN if [ -f config/llm_config.json.example ]; then \
 USER mojo
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    MEMORY_PATH=/home/mojo/.memory
 
 EXPOSE 8000
 

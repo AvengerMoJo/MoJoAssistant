@@ -43,6 +43,7 @@ USER mojo
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
+    MEMORY_PATH=/home/mojo/.memory \
     MOJO_ENV=development \
     HSA_OVERRIDE_GFX_VERSION=11.0.3
 
