@@ -9,10 +9,7 @@
 #   - /dev/kfd and /dev/dri/renderD128 present
 #   - Docker user in 'render' and 'video' groups
 #
-# Required env vars to set in Portainer:
-#   MOJO_MEMORY_PATH   — host path for persistent memory  e.g. /home/youruser/.memory
-#
-# Optional env vars:
+# Optional env vars to set in Portainer:
 #   OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY
 #   HSA_OVERRIDE_GFX_VERSION  — defaults to 11.0.3 (Strix Halo → Phoenix APU)
 #                                set to 11.0.0 for RX 7900, 11.0.2 for RX 7600
@@ -31,7 +28,7 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
-      - ${MOJO_MEMORY_PATH:-/tmp/mojo-memory}:/home/mojo/.memory
+      - mojo-memory-rocm:/home/mojo/.memory
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri/renderD128:/dev/dri/renderD128
@@ -46,6 +43,9 @@ services:
       start_period: 15s
     networks:
       - mojo-rocm-net
+
+volumes:
+  mojo-memory-rocm:
 
 networks:
   mojo-rocm-net:

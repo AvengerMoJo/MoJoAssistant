@@ -4,10 +4,7 @@
 # Set the required environment variables in Portainer's "Environment variables"
 # section before deploying (no .env file needed).
 #
-# Required env vars to set in Portainer:
-#   MOJO_MEMORY_PATH   — host path for persistent memory  e.g. /home/youruser/.memory
-#
-# Optional env vars:
+# Optional env vars to set in Portainer:
 #   OPENAI_API_KEY, OPENROUTER_API_KEY, etc. (from your .env.example)
 
 services:
@@ -24,7 +21,7 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
-      - ${MOJO_MEMORY_PATH:-/tmp/mojo-memory}:/home/mojo/.memory
+      - mojo-memory:/home/mojo/.memory
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/system/health"]
       interval: 30s
@@ -33,6 +30,9 @@ services:
       start_period: 15s
     networks:
       - mojo-net
+
+volumes:
+  mojo-memory:
 
 networks:
   mojo-net:
