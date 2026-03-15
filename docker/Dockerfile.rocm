@@ -42,8 +42,11 @@ RUN pip install --no-cache-dir submodules/dreaming-memory-pipeline/
 
 # ── Pre-download embedding model ──────────────────────────────────────────────
 # Bakes the model into the image so first startup doesn't hit the network.
+# Stored in /opt/hf_cache (shared, readable by mojo at runtime via HF_HOME).
 # Update this if you change the default model in config/embedding_config.json.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
+RUN HF_HOME=/opt/hf_cache python -c \
+    "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')" \
+    && chown -R mojo:mojo /opt/hf_cache
 
 # ── Runtime dirs ─────────────────────────────────────────────────────────────
 RUN mkdir -p /home/mojo/.memory/config /home/mojo/.memory/roles \
@@ -60,6 +63,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
     MEMORY_PATH=/home/mojo/.memory \
+    HF_HOME=/opt/hf_cache \
     # Map gfx1151 (Strix Halo) to gfx1103 (Phoenix APU) for PyTorch ROCm.
     # Override at runtime if your GPU differs: -e HSA_OVERRIDE_GFX_VERSION=11.0.0
     HSA_OVERRIDE_GFX_VERSION=11.0.3

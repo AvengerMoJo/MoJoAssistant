@@ -30,12 +30,15 @@ RUN pip install --no-cache-dir submodules/dreaming-memory-pipeline/
 
 # ── Pre-download embedding model ──────────────────────────────────────────────
 # Bakes the model into the image so first startup doesn't hit the network.
+# Stored in /opt/hf_cache (shared, readable by mojo at runtime via HF_HOME).
 # Update this if you change the default model in config/embedding_config.json.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
+RUN HF_HOME=/opt/hf_cache python -c \
+    "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')" \
+    && chown -R mojo:mojo /opt/hf_cache
 
 # ── Runtime dirs ─────────────────────────────────────────────────────────────
 RUN mkdir -p /home/mojo/.memory/config /home/mojo/.memory/roles \
-             /home/mojo/.memory/task_sessions /home/mojo/.memory/events.json \
+             /home/mojo/.memory/task_sessions \
     && chown -R mojo:mojo /home/mojo/.memory
 
 # ── Default config (if not provided via volume) ───────────────────────────────
@@ -47,7 +50,8 @@ USER mojo
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
-    MEMORY_PATH=/home/mojo/.memory
+    MEMORY_PATH=/home/mojo/.memory \
+    HF_HOME=/opt/hf_cache
 
 EXPOSE 8000
 
