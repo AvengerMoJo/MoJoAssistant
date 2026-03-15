@@ -1,0 +1,31 @@
+name: Docker Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create empty HF cache context
+        run: mkdir -p /tmp/empty-hf-cache
+
+      - name: Build CPU image (validate only, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          build-contexts: hf-cache=/tmp/empty-hf-cache
+          tags: mojoassistant:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
