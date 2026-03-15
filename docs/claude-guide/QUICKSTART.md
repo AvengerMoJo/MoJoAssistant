@@ -4,18 +4,20 @@ Get up and running with MoJoAssistant in minutes!
 
 ## 🚀 5-Minute Quick Start
 
-No setup required! Try MoJoAssistant immediately:
-
 ```bash
-# Clone the repository
-git clone https://github.com/AvengerMoJo/MoJoAssistant.git
+# Clone the repository (with submodules — required for Dreaming/memory consolidation)
+git clone --recurse-submodules https://github.com/AvengerMoJo/MoJoAssistant.git
 cd MoJoAssistant
 
-# Install dependencies
-pip install -r requirements.txt
+# If you already cloned without --recurse-submodules, init them now:
+# git submodule update --init --recursive
 
-# Start interactive demo (works immediately!)
-python app/interactive-cli.py
+# Install dependencies (includes the dreaming pipeline)
+pip install -r requirements.txt
+pip install submodules/dreaming-memory-pipeline/
+
+# Start the MCP server
+python unified_mcp_server.py --mode http --port 8000
 ```
 
 **Try these commands in the CLI:**
@@ -34,11 +36,9 @@ python app/interactive-cli.py
 
 ## Full Installation
 
-For production use or advanced features:
-
 ```bash
-# 1. Clone the repository
-git clone https://github.com/AvengerMoJo/MoJoAssistant.git
+# 1. Clone with submodules
+git clone --recurse-submodules https://github.com/AvengerMoJo/MoJoAssistant.git
 cd MoJoAssistant
 
 # 2. Set up virtual environment (recommended)
@@ -48,10 +48,21 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Set up environment (optional for advanced features)
+# 4. Install the dreaming-memory-pipeline submodule
+#    This enables Dreaming (nightly memory consolidation).
+#    Without it the server starts but dreaming tasks will fail.
+pip install submodules/dreaming-memory-pipeline/
+
+# 5. Set up environment
 cp .env.example .env
 # Edit .env with your API keys if using cloud services
 ```
+
+> **Already cloned without `--recurse-submodules`?**
+> ```bash
+> git submodule update --init --recursive
+> pip install submodules/dreaming-memory-pipeline/
+> ```
 
 ## Basic Usage
 
@@ -145,7 +156,14 @@ The system automatically manages memory transitions and provides semantic search
 
 ### Common Issues
 
-**"Module not found" errors**
+**"No module named 'dreaming'" error**
+```bash
+# The dreaming submodule is not installed. Run:
+git submodule update --init --recursive
+pip install submodules/dreaming-memory-pipeline/
+```
+
+**"Module not found" errors (other)**
 ```bash
 # Make sure you're in the project directory and virtual environment is activated
 cd MoJoAssistant
