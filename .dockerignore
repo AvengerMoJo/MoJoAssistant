@@ -70,5 +70,8 @@ server_output.log
 # ── Docs (not needed at runtime) ──────────────────────────────────────────────
 docs/
 
-# ── Submodules (external repos, not baked in) ─────────────────────────────────
-submodules/
+# ── Submodule dev/test artefacts (src is needed at runtime) ──────────────────
+submodules/**/__pycache__/
+submodules/**/tests/
+submodules/**/*.egg-info/
+submodules/**/.git/

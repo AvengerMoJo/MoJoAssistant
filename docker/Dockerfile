@@ -25,6 +25,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ── App source ────────────────────────────────────────────────────────────────
 COPY --chown=mojo:mojo . .
 
+# ── Submodule packages ────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir submodules/dreaming-memory-pipeline/
+
 # ── Runtime dirs ─────────────────────────────────────────────────────────────
 RUN mkdir -p /home/mojo/.memory/config /home/mojo/.memory/roles \
              /home/mojo/.memory/task_sessions /home/mojo/.memory/events.json \
