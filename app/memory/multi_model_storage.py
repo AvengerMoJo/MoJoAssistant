@@ -6,11 +6,14 @@ import json
 import os
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
+from app.config.paths import get_memory_path
 
 class MultiModelEmbeddingStorage:
     """Stores text with embeddings from multiple models"""
-    
-    def __init__(self, data_dir: str = ".memory"):
+
+    def __init__(self, data_dir: Optional[str] = None):
+        if data_dir is None:
+            data_dir = get_memory_path()
         self.data_dir = data_dir
         self.conversations_file = os.path.join(data_dir, "conversations_multi_model.json")
         self.documents_file = os.path.join(data_dir, "knowledge_multi_model.json")

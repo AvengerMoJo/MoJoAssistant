@@ -11,6 +11,7 @@ import os
 import secrets
 import shutil
 from pathlib import Path
+from app.config.paths import get_memory_path
 from typing import Dict, Optional, Tuple
 from app.mcp.opencode.models import ProjectConfig
 
@@ -19,7 +20,7 @@ class EnvManager:
     """Manages .env files for OpenCode projects"""
 
     def __init__(self, memory_root: str = None):
-        self.memory_root = Path(memory_root or os.path.expanduser("~/.memory"))
+        self.memory_root = Path(memory_root or get_memory_path())
         self.sandboxes_dir = self.memory_root / "opencode-sandboxes"
         self.keys_dir = self.memory_root / "opencode-keys"
         self.template_path = (

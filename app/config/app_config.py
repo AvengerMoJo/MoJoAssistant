@@ -7,6 +7,7 @@ import os
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from pathlib import Path
+from app.config.paths import get_memory_path
 
 # Import with fallback for environments without python-dotenv
 try:
@@ -155,7 +156,7 @@ class MemoryConfig:
     embedding_model: str = "all-MiniLM-L6-v2"
     multi_model_enabled: bool = False
     vector_store: str = "qdrant"
-    memory_path: str = ".memory"
+    memory_path: str = ""  # resolved at init via get_memory_path()
     knowledge_path: str = ".knowledge"
     max_context_items: int = 10
     embedding_cache_ttl: int = 3600
@@ -268,7 +269,7 @@ class AppConfig:
                 multi_model_enabled=os.getenv("MULTI_MODEL_ENABLED", "false").lower()
                 in ("true", "1", "yes"),
                 vector_store=os.getenv("VECTOR_STORE", "qdrant"),
-                memory_path=os.getenv("MEMORY_PATH", ".memory"),
+                memory_path=get_memory_path(),
                 knowledge_path=os.getenv("KNOWLEDGE_PATH", ".knowledge"),
                 max_context_items=int(os.getenv("MAX_CONTEXT_ITEMS", "10")),
                 embedding_cache_ttl=int(os.getenv("EMBEDDING_CACHE_TTL", "3600")),

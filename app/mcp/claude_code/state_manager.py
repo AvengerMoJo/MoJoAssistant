@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from app.config.paths import get_memory_path
 from typing import Dict, Optional, List
 
 from app.mcp.claude_code.models import SessionState
@@ -19,7 +20,7 @@ class ClaudeCodeStateManager:
     """Manages persistent state for Claude Code sessions"""
 
     def __init__(self, memory_root: str = None):
-        self.memory_root = Path(memory_root or os.path.expanduser("~/.memory"))
+        self.memory_root = Path(memory_root or get_memory_path())
         self.state_file = self.memory_root / "claude-code-state.json"
         self._ensure_state_file()
 

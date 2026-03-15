@@ -18,6 +18,7 @@ from typing import Dict, Any, Optional
 from app.mcp.agents.base import BaseAgentManager
 from app.mcp.claude_code.models import SessionConfig, SessionState
 from app.mcp.claude_code.state_manager import ClaudeCodeStateManager
+from app.config.paths import get_memory_path
 
 
 class ClaudeCodeManager(BaseAgentManager):
@@ -34,7 +35,7 @@ class ClaudeCodeManager(BaseAgentManager):
     identifier_description = "session_id (unique string, e.g. 'my-project')"
 
     def __init__(self, memory_root: str = None, logger=None):
-        self.memory_root = memory_root or os.path.expanduser("~/.memory")
+        self.memory_root = memory_root or get_memory_path()
         self.logger = logger
         self.state_manager = ClaudeCodeStateManager(memory_root=self.memory_root)
 

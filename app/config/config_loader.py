@@ -10,13 +10,15 @@ Use save_runtime_config() to write a change to the runtime layer only.
 """
 import os
 import json
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 import logging
+from app.config.paths import get_memory_path, get_memory_subpath
 
 logger = logging.getLogger(__name__)
 
 # Path to the personal runtime config directory (layer 2)
-MEMORY_CONFIG_DIR = os.path.expanduser("~/.memory/config")
+MEMORY_CONFIG_DIR = get_memory_subpath("config")
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -446,7 +448,7 @@ def _get_default_config() -> Dict[str, Any]:
         "memory_settings": {
             "working_memory_max_tokens": 4000,
             "active_memory_max_pages": 20,
-            "data_directory": ".memory"
+            "data_directory": get_memory_path()
         }
     }
 
@@ -460,7 +462,7 @@ def _get_fallback_config() -> Dict[str, Any]:
             }
         },
         "memory_settings": {
-            "data_directory": ".memory"
+            "data_directory": get_memory_path()
         }
     }
 

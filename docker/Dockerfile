@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # MoJoAssistant — Production / Installation Image
 #
 # Lean runtime image. Local model inference is handled externally (LMStudio).
@@ -18,7 +19,8 @@ RUN useradd -m -u 1000 -s /bin/bash mojo
 # ── Python deps ──────────────────────────────────────────────────────────────
 WORKDIR /app
 COPY requirements-runtime.txt .
-RUN pip install --no-cache-dir -r requirements-runtime.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements-runtime.txt
 
 # ── App source ────────────────────────────────────────────────────────────────
 COPY --chown=mojo:mojo . .

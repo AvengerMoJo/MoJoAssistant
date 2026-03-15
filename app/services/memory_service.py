@@ -10,6 +10,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
+from app.config.paths import get_memory_path
+
 from app.scheduler.core import Scheduler
 from app.scheduler.models import Task, TaskType, TaskPriority
 from app.memory.simplified_embeddings import SimpleEmbedding
@@ -34,7 +36,7 @@ class MemoryService:
 
     def __init__(
         self,
-        data_dir: str = ".memory",
+        data_dir: str | None = None,
         embedding_model: str = "nomic-ai/nomic-embed-text-v2-moe",
         embedding_backend: str = "huggingface",
         embedding_device: str | None = None,
@@ -54,6 +56,8 @@ class MemoryService:
         self.logger = get_logger(__name__)
 
         # Set up data directory
+        if data_dir is None:
+            data_dir = get_memory_path()
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
 

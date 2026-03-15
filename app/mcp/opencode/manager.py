@@ -29,6 +29,7 @@ from app.mcp.opencode.errors import (
     format_error_response,
 )
 from app.mcp.agents.base import BaseAgentManager
+from app.config.paths import get_memory_path
 
 
 class OpenCodeManager(BaseAgentManager):
@@ -46,7 +47,7 @@ class OpenCodeManager(BaseAgentManager):
     identifier_description = "git_url (SSH format, e.g. git@github.com:user/repo.git)"
 
     def __init__(self, memory_root: str = None, logger=None):
-        self.memory_root = memory_root or os.path.expanduser("~/.memory")
+        self.memory_root = memory_root or get_memory_path()
         self.logger = logger
         self.env_manager = EnvManager(self.memory_root)
         self.state_manager = StateManager(self.memory_root)

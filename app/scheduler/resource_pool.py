@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
+from app.config.paths import get_memory_subpath
 
 
 class ResourceTier(Enum):
@@ -75,8 +76,8 @@ class UsageRecord:
 class ResourceManager:
     """Manages LLM resource selection, rate limiting, and budget tracking."""
 
-    SANDBOX_ENV_FILE = Path.home() / ".memory" / "resource_pool.env"
-    USAGE_FILE = Path.home() / ".memory" / "resource_pool_usage.json"
+    SANDBOX_ENV_FILE = Path(get_memory_subpath("resource_pool.env"))
+    USAGE_FILE = Path(get_memory_subpath("resource_pool_usage.json"))
 
     def __init__(self, config_path: str = "config/llm_config.json", logger=None):
         self._config_path = config_path

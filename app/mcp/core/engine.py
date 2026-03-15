@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional
 from app.mcp.core.models import MCPRequest, MCPResponse, ErrorCode
 from app.mcp.core.tools import ToolRegistry
 from app.config.logging_config import get_logger
+from app.config.paths import get_memory_path
 
 
 class MCPEngine:
@@ -35,7 +36,10 @@ class MCPEngine:
         if not self.memory_service:
             from app.services.hybrid_memory_service import HybridMemoryService
 
-            self.memory_service = HybridMemoryService(config=self.config)
+            self.memory_service = HybridMemoryService(
+                data_dir=get_memory_path(),
+                config=self.config,
+            )
             self.logger.info("Memory service initialized")
 
         self.tool_registry = ToolRegistry(self.memory_service, self.config)

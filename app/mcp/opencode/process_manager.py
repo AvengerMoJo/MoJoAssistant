@@ -11,6 +11,7 @@ import subprocess
 import time
 import requests
 from pathlib import Path
+from app.config.paths import get_memory_path
 from typing import Tuple, Optional
 from app.mcp.opencode.models import ProjectConfig
 
@@ -19,7 +20,7 @@ class ProcessManager:
     """Manages process lifecycle for OpenCode projects"""
 
     def __init__(self, memory_root: str = None):
-        self.memory_root = Path(memory_root or os.path.expanduser("~/.memory"))
+        self.memory_root = Path(memory_root or get_memory_path())
         self.logs_dir = self.memory_root / "opencode-logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
 

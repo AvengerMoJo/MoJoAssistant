@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from app.config.paths import get_memory_subpath
 
 
 @dataclass
@@ -68,7 +69,9 @@ class TaskSession:
 class SessionStorage:
     """File-based storage for agentic task sessions."""
 
-    STORAGE_DIR = Path.home() / ".memory" / "task_sessions"
+    @property
+    def STORAGE_DIR(self) -> Path:
+        return Path(get_memory_subpath("task_sessions"))
 
     def __init__(self, storage_dir: Optional[Path] = None):
         self._dir = storage_dir or self.STORAGE_DIR

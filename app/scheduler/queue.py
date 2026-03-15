@@ -13,6 +13,7 @@ from datetime import datetime
 import threading
 
 from app.scheduler.models import Task, TaskStatus, TaskPriority
+from app.config.paths import get_memory_subpath
 
 
 class TaskQueue:
@@ -34,7 +35,7 @@ class TaskQueue:
             storage_path: Path to JSON file for task storage
         """
         if storage_path is None:
-            storage_path = os.path.expanduser("~/.memory/scheduler_tasks.json")
+            storage_path = get_memory_subpath("scheduler_tasks.json")
 
         self.storage_path = Path(storage_path)
         self.lock = threading.RLock()  # Reentrant lock for nested operations

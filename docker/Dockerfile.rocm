@@ -22,7 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 -s /bin/bash mojo
 
 # ── PyTorch with ROCm support ─────────────────────────────────────────────────
-# Installed before requirements-runtime.txt so sentence-transformers picks it up.
+# Cache mount keeps the downloaded wheels on the host between builds — torch ROCm
+# is ~4 GB and only re-downloaded when the version changes.
 # ROCm 6.2 wheels are the latest stable; gfx1151 users set HSA_OVERRIDE at runtime.
 RUN pip install --no-cache-dir \
     torch torchvision \
