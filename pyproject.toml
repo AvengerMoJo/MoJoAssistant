@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mojoassistant"
-version = "1.1.8-beta"
+version = "1.1.9-beta"
 description = "AI memory and code understanding system with OpenCode Manager and git-aware capabilities"
 readme = "README.md"
 requires-python = ">=3.9"
