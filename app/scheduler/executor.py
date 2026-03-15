@@ -14,7 +14,7 @@ from pathlib import Path
 from app.scheduler.models import Task, TaskType, TaskResult
 from app.dreaming.pipeline import DreamingPipeline
 from app.llm.llm_interface import LLMInterface
-from app.config.paths import get_memory_subpath
+from app.config.paths import get_memory_subpath, get_memory_path
 
 
 class TaskExecutor:
@@ -433,7 +433,7 @@ class TaskExecutor:
         }
 
         events_file = Path(
-            config.get("events_file", ".memory/scheduler/calendar_events.json")
+            config.get("events_file", get_memory_subpath("scheduler", "calendar_events.json"))
         ).expanduser()
         events_file.parent.mkdir(parents=True, exist_ok=True)
 
