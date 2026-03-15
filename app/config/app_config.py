@@ -155,7 +155,7 @@ class MemoryConfig:
 
     embedding_model: str = "all-MiniLM-L6-v2"
     multi_model_enabled: bool = False
-    vector_store: str = "qdrant"
+    vector_store: str = "duckdb"
     memory_path: str = ""  # resolved at init via get_memory_path()
     knowledge_path: str = ".knowledge"
     max_context_items: int = 10
@@ -268,7 +268,7 @@ class AppConfig:
                 embedding_model=os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
                 multi_model_enabled=os.getenv("MULTI_MODEL_ENABLED", "false").lower()
                 in ("true", "1", "yes"),
-                vector_store=os.getenv("VECTOR_STORE", "qdrant"),
+                vector_store=os.getenv("VECTOR_STORE", "duckdb"),
                 memory_path=get_memory_path(),
                 knowledge_path=os.getenv("KNOWLEDGE_PATH", ".knowledge"),
                 max_context_items=int(os.getenv("MAX_CONTEXT_ITEMS", "10")),

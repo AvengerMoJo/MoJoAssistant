@@ -8,17 +8,6 @@ jobs:
   smoke-test:
     runs-on: ubuntu-latest
 
-    services:
-      qdrant:
-        image: qdrant/qdrant:latest
-        ports:
-          - 6333:6333
-        options: >-
-          --health-cmd "curl -sf http://localhost:6333/health"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-
     steps:
       - uses: actions/checkout@v4
         with:
