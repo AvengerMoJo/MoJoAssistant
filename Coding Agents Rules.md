@@ -82,6 +82,55 @@ service, or account should never require a code change in the common case.
    Personal preferences, API keys, active model selection, and account-specific
    settings always live in the runtime layer. The codebase layer is a template only.
 
+### Docker Image Construction
+
+Building images that are fast, reproducible, and correct on the developer's own machine.
+
+1. **Never re-download what the developer already has.**
+   Use `additional_contexts` in `docker-compose.yml` to expose host directories to the
+   build, then `COPY --from=<context>` to pull them straight into the image layer.
+   This avoids network round-trips for large assets (models, datasets, wheels).
+
+   ```yaml
+   # docker-compose.yml
+   build:
+     context: ..
+     additional_contexts:
+       hf-cache: ${HF_HOME:-~/.cache/huggingface}/hub/models--BAAI--bge-m3
+   ```
+   ```dockerfile
+   # Dockerfile
+   COPY --from=hf-cache . /opt/hf_cache/hub/models--BAAI--bge-m3/
+   ```
+
+2. **Copy only what the container needs.**
+   Point the context at the specific model or file, not the entire cache directory.
+   Copying `~/.cache/huggingface` wholesale transfers every model the developer has
+   ever downloaded — often 10–20 GB — into the build context unnecessarily.
+
+3. **Separate the cache from the runtime user.**
+   Download/copy assets as root during build, then `chown` to the runtime user in the
+   same layer. Store shared assets under `/opt/` (e.g. `/opt/hf_cache`) so they are
+   independent of any user's home directory inside the container.
+
+4. **Set `HF_HOME` (and similar env vars) in the image `ENV`.**
+   The runtime user must be pointed at the baked-in cache, not their non-existent
+   `~/.cache`. Always pair a pre-populated cache directory with the matching env var:
+   ```dockerfile
+   ENV HF_HOME=/opt/hf_cache
+   ```
+
+5. **One builder, always.**
+   Docker maintains separate layer caches per builder. Always build with
+   `docker compose build` (the default BuildKit builder). Switching builders
+   (e.g. `DOCKER_BUILDKIT=0`, `docker buildx create`) busts the layer cache.
+
+6. **All runtime paths from env vars, never hardcoded.**
+   Paths like the memory directory must come from env vars (`MEMORY_PATH`, `HF_HOME`)
+   resolved by a single central helper (e.g. `get_memory_path()`). Hardcoded relative
+   paths like `".memory"` break in containers where the working directory is not the
+   user's home. See `app/config/paths.py`.
+
 ### When Code Changes Are Justified
 - A new wire protocol or message format that cannot be expressed through existing
   config fields (e.g. a non-standard auth scheme, a different request structure).
