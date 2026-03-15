@@ -40,6 +40,11 @@ COPY --chown=mojo:mojo . .
 # ── Submodule packages ────────────────────────────────────────────────────────
 RUN pip install --no-cache-dir submodules/dreaming-memory-pipeline/
 
+# ── Pre-download embedding model ──────────────────────────────────────────────
+# Bakes the model into the image so first startup doesn't hit the network.
+# Update this if you change the default model in config/embedding_config.json.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
+
 # ── Runtime dirs ─────────────────────────────────────────────────────────────
 RUN mkdir -p /home/mojo/.memory/config /home/mojo/.memory/roles \
              /home/mojo/.memory/task_sessions \
@@ -62,6 +67,6 @@ ENV PYTHONUNBUFFERED=1 \
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:8000/system/health || exit 1
+    CMD curl -sf http://localhost:8000/health || exit 1
 
 CMD ["python", "unified_mcp_server.py", "--mode", "http", "--port", "8000"]

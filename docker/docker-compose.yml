@@ -37,7 +37,7 @@ services:
     volumes:
       - mojo-memory:/home/mojo/.memory
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/system/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -74,7 +74,7 @@ services:
       - render
       - video
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/system/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
