@@ -9,6 +9,7 @@ File: app/mcp/opencode/state_manager.py
 import json
 import os
 from pathlib import Path
+from app.config.paths import get_memory_path
 from typing import Dict, Optional, List
 from datetime import datetime
 from app.mcp.opencode.models import ProjectState, GlobalMCPToolInfo, ProcessStatus
@@ -18,7 +19,7 @@ class StateManager:
     """Manages persistent state for OpenCode projects"""
 
     def __init__(self, memory_root: str = None):
-        self.memory_root = Path(memory_root or os.path.expanduser("~/.memory"))
+        self.memory_root = Path(memory_root or get_memory_path())
         self.state_file = self.memory_root / "opencode-state.json"
         self._ensure_state_file()
 

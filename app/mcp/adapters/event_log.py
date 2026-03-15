@@ -12,6 +12,7 @@ import uuid
 from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from app.config.paths import get_memory_subpath
 
 
 class EventLog:
@@ -24,7 +25,7 @@ class EventLog:
     """
 
     MAX_EVENTS = 500
-    PATH = os.path.expanduser("~/.memory/events.json")
+    PATH = get_memory_subpath("events.json")
 
     def __init__(self, path: str = None, max_events: int = None):
         self._path = path or self.PATH

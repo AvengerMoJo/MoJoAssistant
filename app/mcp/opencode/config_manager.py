@@ -9,6 +9,7 @@ File: app/mcp/opencode/config_manager.py
 import os
 import json
 from pathlib import Path
+from app.config.paths import get_memory_path
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -17,7 +18,7 @@ class ConfigManager:
     """Manages opencode-mcp-tool-servers.json configuration"""
 
     def __init__(self, memory_root: str = None):
-        self.memory_root = Path(memory_root or os.path.expanduser("~/.memory"))
+        self.memory_root = Path(memory_root or get_memory_path())
         self.config_path = self.memory_root / "opencode-mcp-tool-servers.json"
 
         # Automatically run migrations if config exists

@@ -6,11 +6,12 @@ import logging.handlers
 import os
 from typing import Optional
 from datetime import datetime
+from app.config.paths import get_memory_subpath
 
 def setup_logging(
     log_level: str = "INFO",
     log_file: Optional[str] = None,
-    log_dir: str = ".memory/logs",
+    log_dir: str = None,
     max_file_size: int = 10 * 1024 * 1024,  # 10MB
     backup_count: int = 5
 ) -> logging.Logger:
@@ -28,6 +29,8 @@ def setup_logging(
         Configured logger instance
     """
     
+    if log_dir is None:
+        log_dir = get_memory_subpath("logs")
     # Create log directory if it doesn't exist
     os.makedirs(log_dir, exist_ok=True)
     

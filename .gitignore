@@ -58,6 +58,9 @@ cover/
 # Django stuff:
 *.log
 local_settings.py
+
+# Personal deployment configs (machine-specific ports, GPU groups, etc.)
+docker/portainer-stack-*.yml
 db.sqlite3
 db.sqlite3-journal
 

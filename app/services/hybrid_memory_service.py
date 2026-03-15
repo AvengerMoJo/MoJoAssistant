@@ -11,6 +11,7 @@ from typing import Dict, List, Any, Optional
 from app.services.memory_service import MemoryService
 from app.memory.multi_model_storage import MultiModelEmbeddingStorage
 from app.memory.simplified_embeddings import SimpleEmbedding
+from app.config.paths import get_memory_path
 
 
 class HybridMemoryService(MemoryService):
@@ -21,12 +22,14 @@ class HybridMemoryService(MemoryService):
 
     def __init__(
         self,
-        data_dir: str = ".memory",
+        data_dir: Optional[str] = None,
         embedding_model: str = "BAAI/bge-m3",
         embedding_backend: str = "huggingface",
         embedding_device: Optional[str] = None,
         config: Any = None,
     ):
+        if data_dir is None:
+            data_dir = get_memory_path()
         # Normalize config: convert AppConfig object to dict if needed
         config_dict = config.to_dict() if hasattr(config, "to_dict") else config
         super().__init__(

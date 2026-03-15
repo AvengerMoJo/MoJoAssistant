@@ -15,8 +15,9 @@ import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
+from app.config.paths import get_memory_subpath
 
-SESSIONS_DIR = os.path.expanduser("~/.memory/role_design_sessions")
+SESSIONS_DIR = get_memory_subpath("role_design_sessions")
 
 # ── Dimension weights (Nine Chapter Set A) ──────────────────────────────────
 _WEIGHTS = {

@@ -258,10 +258,10 @@ class ToolRegistry:
             "agent_list_types": {
                 "template": "List available coding agent types",
                 "examples": [
-                    "What agent types are available?",
-                    "List coding agents",
+                    "What coding agent types are available?",
+                    "List coding assistant agents",
                 ],
-                "usage_tip": "Use to discover available agent types and their supported actions.",
+                "usage_tip": "Use to discover available coding assistant types (opencode, claude_code) and their supported actions.",
             },
         }
 
@@ -717,21 +717,24 @@ class ToolRegistry:
                 "description": "List all repositories registered in the knowledge base. When to use: Use to see which repositories are available for code analysis and their current status. How it works: Shows all registered repositories with their URLs, branches, and status. Why useful: Helps you understand what codebases are available for analysis.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
-            # Unified Agent Manager Tools (replaces opencode_* and claude_code_* tools)
+            # External Agent Manager Tools — manages external agent processes (opencode, claude_code,
+            # or any external agent). NOTE: These are NOT MoJo's internal agentic assistants.
+            # To run a MoJo agentic assistant task (e.g. Ahman), use scheduler_add_task with
+            # task_type="assistant" and a role_id.
             {
                 "name": "agent_list_types",
-                "description": "List all installed and enabled coding agent types. Shows what agent types are available (e.g. 'opencode', 'claude_code'), their supported actions, and how to identify instances.",
+                "description": "List all installed external agent types (e.g. 'opencode', 'claude_code'). Shows supported actions and how to identify instances. NOTE: These are external agent processes — for MoJo's internal agentic assistants use scheduler_add_task.",
                 "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
             {
                 "name": "agent_start",
-                "description": "Start a coding agent instance. For opencode: pass git_url as identifier. For claude_code: pass session_id as identifier with working_dir in params.",
+                "description": "Start an external agent process. For opencode: pass git_url as identifier. For claude_code: pass session_id as identifier with working_dir in params. Use agent_list_types to see available types.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "agent_type": {
                             "type": "string",
-                            "description": "Agent type (e.g. 'opencode', 'claude_code'). Use agent_list_types to see available types.",
+                            "description": "External agent type (e.g. 'opencode', 'claude_code'). Use agent_list_types to see available types.",
                             "minLength": 1,
                         },
                         "identifier": {
@@ -749,13 +752,13 @@ class ToolRegistry:
             },
             {
                 "name": "agent_stop",
-                "description": "Stop a coding agent instance. Terminates the process but preserves state for restart.",
+                "description": "Stop a coding assistant process. Terminates the process but preserves state for restart.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "agent_type": {
                             "type": "string",
-                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
                             "minLength": 1,
                         },
                         "identifier": {
@@ -769,13 +772,13 @@ class ToolRegistry:
             },
             {
                 "name": "agent_status",
-                "description": "Get the status of a coding agent instance. Shows PID, ports, health, and running state.",
+                "description": "Get the status of a coding assistant process. Shows PID, ports, health, and running state.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "agent_type": {
                             "type": "string",
-                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
                             "minLength": 1,
                         },
                         "identifier": {
@@ -789,13 +792,13 @@ class ToolRegistry:
             },
             {
                 "name": "agent_list",
-                "description": "List all instances of a coding agent type. Shows identifiers, running status, and details.",
+                "description": "List all running instances of a coding assistant type. Shows identifiers, running status, and details.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "agent_type": {
                             "type": "string",
-                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
                             "minLength": 1,
                         },
                     },
@@ -804,13 +807,13 @@ class ToolRegistry:
             },
             {
                 "name": "agent_restart",
-                "description": "Restart a coding agent instance. Stops and starts the process with the same configuration.",
+                "description": "Restart a coding assistant process. Stops and starts the process with the same configuration.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "agent_type": {
                             "type": "string",
-                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
                             "minLength": 1,
                         },
                         "identifier": {
@@ -824,13 +827,13 @@ class ToolRegistry:
             },
             {
                 "name": "agent_destroy",
-                "description": "Destroy a coding agent instance and clean up all resources. DESTRUCTIVE: permanently removes local data. The remote Git repository is NOT affected.",
+                "description": "Destroy a coding assistant instance and clean up all local resources. DESTRUCTIVE: permanently removes local data. The remote Git repository is NOT affected.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "agent_type": {
                             "type": "string",
-                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
+                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
                             "minLength": 1,
                         },
                         "identifier": {
@@ -844,7 +847,7 @@ class ToolRegistry:
             },
             {
                 "name": "agent_action",
-                "description": "Execute a backend-specific action on a coding agent. Use agent_list_types to see supported actions per agent type. Examples: sandbox_create, llm_config, get_deploy_key.",
+                "description": "Execute a backend-specific action on a coding assistant. Use agent_list_types to see supported actions per type. Examples: sandbox_create, llm_config, get_deploy_key.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -869,7 +872,7 @@ class ToolRegistry:
             # Scheduler Tools
             {
                 "name": "scheduler_add_task",
-                "description": "Add a new task to the scheduler queue. Supports immediate, scheduled (datetime), and recurring (cron) execution.\n\nTASK TYPES — choose carefully:\n• agentic — autonomous LLM think-act loop; the agent reasons, calls tools, and iterates until it produces a FINAL_ANSWER. Use this when you want the agent to figure something out.\n• custom — runs a single shell command and stops. No LLM, no iteration. Use this for simple scripts.\n• dreaming — memory consolidation pipeline.\n• agent — launches an OpenCode/OpenClaw agent subprocess.\n\nFor agentic tasks, call scheduler_list_agent_tools first to see available tools, then pass chosen names in available_tools. Config fields: goal, max_iterations, tier_preference, available_tools, role_id, planning_prompt, resource_policy, final_answer_requirements.",
+                "description": "Schedule a MoJo task for immediate, one-time (datetime), or recurring (cron) execution.\n\nTO RUN A MOJO AGENTIC ASSISTANT (e.g. Ahman): use task_type='assistant'. MoJo runs an LLM think-act loop where the assistant reasons, calls tools, and iterates until it produces a FINAL_ANSWER.\n  • Call scheduler_list_assistant_tools first to see what capabilities to grant.\n  • Key config fields: goal (required), role_id, planning_prompt, max_iterations, tier_preference, available_tools, resource_policy, final_answer_requirements.\n  • Assign a role with role_id to give the assistant a personality and model (see role_list).\n  • Example: task_type='assistant', role_id='ahman', goal='scan the local network'\n\nOTHER TASK TYPES:\n• custom — runs a single shell command, no LLM.\n• dreaming — memory consolidation pipeline.\n• agent — launches an external agent subprocess (opencode, claude_code, etc.).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -881,13 +884,13 @@ class ToolRegistry:
                         "task_type": {
                             "type": "string",
                             "enum": [
+                                "assistant",
                                 "dreaming",
-                                "scheduled",
-                                "agent",
                                 "custom",
-                                "agentic",
+                                "agent",
+                                "scheduled",
                             ],
-                            "description": "Type of task (dreaming=memory consolidation, scheduled=calendar event, agent=OpenCode/OpenClaw, custom=shell command, agentic=autonomous LLM agent loop)",
+                            "description": "Type of task: assistant=MoJo agentic assistant with a role (use this to run Ahman or any internal assistant), custom=shell command, dreaming=memory consolidation, agent=external agent subprocess, scheduled=calendar event",
                         },
                         "schedule": {
                             "type": "string",
@@ -1039,8 +1042,8 @@ class ToolRegistry:
                 },
             },
             {
-                "name": "scheduler_list_agent_tools",
-                "description": "List all tools that can be assigned to an agentic task via the available_tools field in scheduler_add_task. Returns each tool's name, description, and danger_level (low/medium/high). Call this before scheduling an agentic task to know what tools are available to give the agent.",
+                "name": "scheduler_list_assistant_tools",
+                "description": "List all tools that can be given to a MoJo agentic assistant via the available_tools field in scheduler_add_task. Returns each tool's name, description, and danger_level (low/medium/high). Call this before scheduling an agentic assistant task to know what capabilities to grant.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
@@ -1186,10 +1189,10 @@ class ToolRegistry:
                     "required": [],
                 },
             },
-            # Role System — Nine Chapter-based personality design
+            # Agentic Assistant — Role Design & Personality (Nine Chapter framework)
             {
                 "name": "role_design_start",
-                "description": "Start a Nine Chapter role design interview. The tool guides a conversation across five personality dimensions (Core Values, Emotional Reaction, Cognitive Style, Social Orientation, Adaptability) to build a complete role config and system prompt. Returns the first question and a session_id to use in follow-up calls.",
+                "description": "Start a Nine Chapter role design interview to create a MoJo agentic assistant personality. Guides across five dimensions (Core Values, Emotional Reaction, Cognitive Style, Social Orientation, Adaptability) to build a complete role config and system prompt. Returns the first question and a session_id for follow-up calls.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1221,7 +1224,7 @@ class ToolRegistry:
             },
             {
                 "name": "role_create",
-                "description": "Save a finalised role config to the role library. Accepts either a session_id (auto-builds from session) or a complete role spec dict. Saved roles can be used as the personality/system prompt for any agent or agentic task.",
+                "description": "Save a finalised role config to the role library. Accepts either a session_id (auto-builds from session) or a complete role spec dict. Saved roles define the personality and model for a MoJo agentic assistant — assign via role_id in scheduler_add_task.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1248,7 +1251,7 @@ class ToolRegistry:
             },
             {
                 "name": "role_list",
-                "description": "List all saved roles in the role library with their Nine Chapter scores, archetypes, and purpose.",
+                "description": "List all saved agentic assistant roles with their Nine Chapter scores, archetypes, and purpose. Use role_id from this list when scheduling an assistant task.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
@@ -1726,7 +1729,7 @@ class ToolRegistry:
             return await self._execute_knowledge_get_file(args)
         elif name == "knowledge_list_repos":
             return await self._execute_knowledge_list_repos(args)
-        # Unified Agent Manager Tools
+        # Coding Agent Manager Tools
         elif name == "agent_list_types":
             return await self._execute_agent_list_types(args)
         elif name == "agent_start":
@@ -1765,8 +1768,8 @@ class ToolRegistry:
             return await self._execute_scheduler_restart_daemon(args)
         elif name == "scheduler_daemon_status":
             return await self._execute_scheduler_daemon_status(args)
-        elif name == "scheduler_list_agent_tools":
-            return await self._execute_scheduler_list_agent_tools(args)
+        elif name == "scheduler_list_assistant_tools":
+            return await self._execute_scheduler_list_assistant_tools(args)
         # Dreaming Tools
         elif name == "dreaming_process":
             return await self._execute_dreaming_process(args)
@@ -2659,7 +2662,7 @@ class ToolRegistry:
                 "message": f"Failed to get scheduler daemon status: {str(e)}",
             }
 
-    async def _execute_scheduler_list_agent_tools(
+    async def _execute_scheduler_list_assistant_tools(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Return all tools available for assignment to agentic tasks."""
@@ -2931,10 +2934,10 @@ class ToolRegistry:
             if original_task is None:
                 return {"status": "error", "message": f"Task '{task_id}' not found"}
 
-            if original_task.type != TaskType.AGENTIC:
+            if original_task.type != TaskType.ASSISTANT:
                 return {
                     "status": "error",
-                    "message": f"Task '{task_id}' is not an agentic task (type: {original_task.type.value})",
+                    "message": f"Task '{task_id}' is not an agentic assistant task (type: {original_task.type.value})",
                 }
 
             if original_task.status.value not in ("failed", "completed"):
@@ -2966,7 +2969,7 @@ class ToolRegistry:
 
             resume_task = Task(
                 id=resume_task_id,
-                type=TaskType.AGENTIC,
+                type=TaskType.ASSISTANT,
                 priority=original_task.priority,
                 config=original_config,
                 resources=original_task.resources,

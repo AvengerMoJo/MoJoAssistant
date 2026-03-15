@@ -8,12 +8,34 @@ File: app/dreaming/__init__.py
 """
 
 import sys
+import warnings
 from pathlib import Path
 
-# Add submodule src/ to path so `dreaming.*` imports resolve
+# Try installed package first (Docker / pip install), then fall back to submodule src/.
 _submodule_src = str(Path(__file__).resolve().parent.parent.parent / "submodules" / "dreaming-memory-pipeline" / "src")
-if _submodule_src not in sys.path:
-    sys.path.insert(0, _submodule_src)
+
+try:
+    import dreaming  # noqa: F401 — already installed as a package
+except ModuleNotFoundError:
+    _submodule_populated = Path(_submodule_src).joinpath("dreaming").is_dir()
+    if _submodule_populated:
+        if _submodule_src not in sys.path:
+            sys.path.insert(0, _submodule_src)
+    else:
+        warnings.warn(
+            "\n"
+            "  [MoJoAssistant] Dreaming (memory consolidation) is NOT available.\n"
+            "  The dreaming-memory-pipeline submodule is not initialised.\n"
+            "  Dreaming tasks will fail until you fix this.\n\n"
+            "  To enable it, run ONE of the following:\n\n"
+            "    # Option A — initialise the git submodule (recommended for development)\n"
+            "    git submodule update --init --recursive\n\n"
+            "    # Option B — install the package directly (recommended for production)\n"
+            "    pip install submodules/dreaming-memory-pipeline/\n\n"
+            "  To silence this warning without enabling Dreaming, set:\n"
+            "    DREAMING_DISABLED=1\n",
+            stacklevel=2,
+        )
 
 # Re-export public API so existing `from app.dreaming.X import Y` still works
 from dreaming.models import BChunk, CCluster, DArchive  # noqa: E402, F401

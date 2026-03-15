@@ -14,6 +14,7 @@ from pathlib import Path
 from app.scheduler.models import Task, TaskType, TaskResult
 from app.dreaming.pipeline import DreamingPipeline
 from app.llm.llm_interface import LLMInterface
+from app.config.paths import get_memory_subpath, get_memory_path
 
 
 class TaskExecutor:
@@ -75,7 +76,7 @@ class TaskExecutor:
                 result = await self._execute_agent(task)
             elif task.type == TaskType.CUSTOM:
                 result = await self._execute_custom(task)
-            elif task.type == TaskType.AGENTIC:
+            elif task.type == TaskType.ASSISTANT:
                 result = await self._execute_agentic(task)
             else:
                 raise ValueError(f"Unknown task type: {task.type}")
@@ -232,11 +233,11 @@ class TaskExecutor:
         lookback = int(config.get("lookback_messages", 200))
         store_path = config.get(
             "conversation_store_path",
-            ".memory/conversations_multi_model.json",
+            get_memory_subpath("conversations_multi_model.json"),
         )
         store_candidates = [
             Path(store_path),
-            Path.home() / ".memory" / "conversations_multi_model.json",
+            Path(get_memory_subpath("conversations_multi_model.json")),
         ]
 
         data = None
@@ -432,7 +433,7 @@ class TaskExecutor:
         }
 
         events_file = Path(
-            config.get("events_file", ".memory/scheduler/calendar_events.json")
+            config.get("events_file", get_memory_subpath("scheduler", "calendar_events.json"))
         ).expanduser()
         events_file.parent.mkdir(parents=True, exist_ok=True)
 

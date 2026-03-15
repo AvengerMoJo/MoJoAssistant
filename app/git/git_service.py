@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import logging
 from contextlib import contextmanager
+from app.config.paths import get_memory_path
 
 # Import GitPython with fallback for optional git features
 try:
@@ -50,7 +51,9 @@ logger = logging.getLogger(__name__)
 class GitService:
     """Git integration service for private repository access"""
 
-    def __init__(self, base_dir: str = ".memory"):
+    def __init__(self, base_dir: Optional[str] = None):
+        if base_dir is None:
+            base_dir = get_memory_path()
         self.base_dir = Path(base_dir)
         self.git_dir = self.base_dir / "git_repos"
         self.git_dir.mkdir(parents=True, exist_ok=True)

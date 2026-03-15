@@ -34,9 +34,9 @@ class TaskType(Enum):
 
     DREAMING = "dreaming"  # Memory consolidation (A→B→C→D pipeline)
     SCHEDULED = "scheduled"  # User calendar events
-    AGENT = "agent"  # OpenCode/OpenClaw operations
+    AGENT = "agent"  # External agent subprocess (opencode, claude_code, etc.)
     CUSTOM = "custom"  # User-defined tasks
-    AGENTIC = "agentic"  # Autonomous LLM agent loop
+    ASSISTANT = "assistant"  # MoJo agentic assistant with a role (internal LLM think-act loop)
 
 
 @dataclass

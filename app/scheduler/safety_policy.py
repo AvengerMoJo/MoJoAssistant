@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+from app.config.paths import get_memory_path
 
 
 class SafetyPolicy:
@@ -198,4 +199,4 @@ class SafetyPolicy:
     def _ensure_dirs(self):
         """Ensure required directories exist."""
         os.makedirs("config/rollback_snapshots", exist_ok=True)
-        os.makedirs(Path.home() / ".memory", exist_ok=True)
+        os.makedirs(get_memory_path(), exist_ok=True)

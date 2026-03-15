@@ -9,8 +9,9 @@ import json
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from app.config.paths import get_memory_subpath
 
-ROLES_DIR = os.path.expanduser("~/.memory/roles")
+ROLES_DIR = get_memory_subpath("roles")
 
 
 class RoleManager:
