@@ -32,13 +32,10 @@ RUN pip install --no-cache-dir submodules/dreaming-memory-pipeline/
 # Bakes the model into the image so first startup doesn't hit the network.
 # Stored in /opt/hf_cache (shared, readable by mojo at runtime via HF_HOME).
 # Update this if you change the default model in config/embedding_config.json.
-# Copy local HF cache into image (exposed via additional_contexts hf-cache in compose).
-# If already present, the SentenceTransformer call below is instant.
-# If missing (fresh machine), it downloads once and is baked into the image layer.
-COPY --from=hf-cache . /opt/hf_cache/
-RUN HF_HOME=/opt/hf_cache python -c \
-    "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')" \
-    && chown -R mojo:mojo /opt/hf_cache
+# Copy only the bge-m3 model from local HF cache (via additional_contexts in compose).
+# Falls back to downloading on first run if not available locally.
+COPY --from=hf-cache . /opt/hf_cache/hub/models--BAAI--bge-m3/
+RUN chown -R mojo:mojo /opt/hf_cache
 
 # ── Runtime dirs ─────────────────────────────────────────────────────────────
 RUN mkdir -p /home/mojo/.memory/config /home/mojo/.memory/roles \

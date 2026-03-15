@@ -24,7 +24,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       additional_contexts:
-        hf-cache: ${HF_HOME:-~/.cache/huggingface}
+        hf-cache: ${HF_HOME:-~/.cache/huggingface}/hub/models--BAAI--bge-m3
     image: mojoassistant:latest
     container_name: mojoassistant
     restart: unless-stopped
@@ -56,7 +56,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.rocm
       additional_contexts:
-        hf-cache: ${HF_HOME:-~/.cache/huggingface}
+        hf-cache: ${HF_HOME:-~/.cache/huggingface}/hub/models--BAAI--bge-m3
     image: mojoassistant:rocm
     container_name: mojoassistant-rocm
     restart: unless-stopped
