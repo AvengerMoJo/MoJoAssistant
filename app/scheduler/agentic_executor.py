@@ -823,6 +823,8 @@ class AgenticExecutor:
             return False, "nested FINAL_ANSWER tags are not allowed"
 
         req = config.get("final_answer_requirements", {})
+        if isinstance(req, str):
+            req = {}  # plain-string hint — no structured constraints
         min_length = int(req.get("min_length", 1))
         max_length = req.get("max_length")
         if len(answer) < min_length:
