@@ -862,7 +862,8 @@ class TaskExecutor:
                 return await self._execute_agentic_parallel(task, executor, parallel_cfg)
             return await executor.execute(task)
         except Exception as e:
-            self._log(f"Agentic task {task.id} failed: {e}", "error")
+            import traceback
+            self._log(f"Agentic task {task.id} failed: {e}\n{traceback.format_exc()}", "error")
             if executor is not None:
                 session_file = str(executor._session_storage._path(task.id))
             else:

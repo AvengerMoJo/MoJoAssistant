@@ -99,14 +99,16 @@ class SafetyPolicy:
         if tool_name == "write_file":
             path_arg = args.get("path", "")
 
-            # Check if path is in allowed sandbox
-            allowed = False
-            for allowed_path in sandbox["allowed_paths"]:
-                expanded = os.path.expanduser(allowed_path)
-                abs_path = os.path.abspath(os.path.expanduser(path_arg))
-                if abs_path.startswith(expanded):
-                    allowed = True
-                    break
+            # Check if path is in allowed sandbox.
+            # Always include the runtime memory path (respects MEMORY_PATH env var)
+            # alongside any configured allowed_paths.
+            memory_root = os.path.abspath(get_memory_path())
+            runtime_allowed = [memory_root] + [
+                os.path.abspath(os.path.expanduser(p))
+                for p in sandbox["allowed_paths"]
+            ]
+            abs_path = os.path.abspath(os.path.expanduser(path_arg))
+            allowed = any(abs_path.startswith(ap) for ap in runtime_allowed)
 
             if not allowed:
                 return {
