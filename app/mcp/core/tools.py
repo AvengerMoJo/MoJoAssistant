@@ -63,6 +63,12 @@ class ToolRegistry:
 
         self._sse_notifier = SSENotifier(event_log=self._event_log)
 
+        # Initialize push adapter manager (independent notification channels)
+        from app.mcp.adapters.push.manager import PushAdapterManager
+
+        self._push_manager = PushAdapterManager(event_log=self._event_log)
+        self._push_manager.load_and_start()
+
         # Initialize Scheduler (pass memory_service for agentic tool use)
         from app.scheduler.core import Scheduler
 
@@ -126,6 +132,12 @@ class ToolRegistry:
                 "description": "Default recurring scheduler tasks — add/remove/disable background tasks without code changes.",
                 "sensitive_keys": [],
                 "on_change": self._on_scheduler_config_change,
+            },
+            "notifications": {
+                "file": "config/notifications_config.json",
+                "description": "Push notification adapters — each adapter (ntfy, FCM, etc.) is an independent channel. Enable/disable or configure per adapter without affecting others.",
+                "sensitive_keys": [],
+                "on_change": self._on_notifications_config_change,
             },
         }
 
@@ -3301,6 +3313,14 @@ class ToolRegistry:
         try:
             if hasattr(self, "scheduler"):
                 self.scheduler.reseed_default_tasks()
+        except Exception:
+            pass  # non-critical
+
+    def _on_notifications_config_change(self) -> None:
+        """Hook called after notifications config is modified — reloads all push adapters."""
+        try:
+            if hasattr(self, "_push_manager"):
+                self._push_manager.reload()
         except Exception:
             pass  # non-critical
 
