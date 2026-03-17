@@ -36,7 +36,7 @@ class PushAdapter(ABC):
     """
 
     adapter_type: str = "base"
-    poll_interval: int = 30  # seconds between EventLog polls
+    _default_poll_interval: int = 30  # seconds between EventLog polls
 
     def __init__(self, adapter_id: str, config: Dict[str, Any], event_log):
         self.adapter_id = adapter_id
@@ -45,6 +45,7 @@ class PushAdapter(ABC):
         self._cursor: Optional[str] = self._load_cursor()
         self._task: Optional[asyncio.Task] = None
         self._filter = config.get("filter", {})
+        self.poll_interval: int = int(config.get("poll_interval", self._default_poll_interval))
 
     # ------------------------------------------------------------------
     # Lifecycle
