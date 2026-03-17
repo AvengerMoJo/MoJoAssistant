@@ -33,27 +33,94 @@ Each push adapter:
 
 ---
 
-## Enabling Notifications
+## Setting Up Notifications (Step by Step)
 
-### 1. Copy the example config
+> You never need to edit JSON files by hand. Use the `config` MCP tool to
+> read and write notification settings. The server hot-reloads automatically
+> after every change.
+
+### Step 1 — Check the current config
+
+```
+config get notifications
+```
+
+If the file doesn't exist yet, copy the example first:
 
 ```bash
 cp config/notifications_config.json.example config/notifications_config.json
 ```
 
-### 2. Edit `config/notifications_config.json`
+Then re-run `config get notifications` to confirm it loaded.
 
-The file has one entry per adapter. Set `"enabled": true` and fill in
-channel-specific settings.
+---
 
-### 3. Restart the server or reload via MCP
+### Step 2 — Set your ntfy topic and enable the adapter
 
 ```
+config set notifications adapters[0].endpoint "https://ntfy.sh/YOUR_TOPIC_NAME"
 config set notifications adapters[0].enabled true
 ```
 
-The `_on_notifications_config_change` hook hot-reloads all adapters — no
-server restart needed when changing notification config.
+Replace `YOUR_TOPIC_NAME` with any name you choose (e.g. `MoJoAssistant`).
+This is the topic your phone app will subscribe to.
+
+---
+
+### Step 3 — Add your ntfy token to .env
+
+If you created a free account at ntfy.sh (recommended — protects your topic):
+
+1. Go to **ntfy.sh → Account → Access Tokens → Generate**
+2. Copy the token
+3. Add it to your `.env` file:
+   ```
+   NTFY_TOKEN=tk_yourtokenhere
+   ```
+4. Restart the server so it picks up the new env var
+
+If you skip this and use a public topic, remove `auth_var` from the config:
+```
+config set notifications adapters[0].auth_var null
+```
+
+---
+
+### Step 4 — Subscribe in the ntfy app on your phone
+
+1. Install the **ntfy app** — [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy) / [iOS](https://apps.apple.com/app/ntfy/id1625396347)
+2. Open the app → tap **Subscribe to topic**
+3. Enter:
+   - **Topic**: the exact name you set in Step 2 (e.g. `MoJoAssistant`)
+   - **Server**: `ntfy.sh` (leave as default)
+   - If your topic is protected: tap **Use credentials** and enter your token
+4. Tap Subscribe
+
+> This is the step most people miss. MoJoAssistant only *publishes* events —
+> the ntfy app is what *receives* them on your device. Nothing will arrive
+> until you subscribe in the app.
+
+---
+
+### Step 5 — Verify it works
+
+Check the config looks right:
+```
+config get notifications
+```
+
+Then trigger a test event by making any config change:
+```
+config set scheduler default_tasks[0].priority "low"
+```
+
+Within 30 seconds (the default poll interval) a notification should appear
+on your phone. To speed this up during testing, set `poll_interval` to 5:
+```
+config set notifications adapters[0].poll_interval 5
+```
+
+Set it back to 30 once you've confirmed it works.
 
 ---
 
