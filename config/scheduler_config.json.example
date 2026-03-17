@@ -1,6 +1,22 @@
 {
   "default_tasks": [
     {
+      "id": "ahman_weekly_security_review",
+      "type": "assistant",
+      "cron": "0 4 * * 0",
+      "priority": "low",
+      "description": "Weekly Ahman security review — runs Sunday 4am",
+      "config": {
+        "role_id": "ahman",
+        "goal": "Perform a weekly security review of MoJoAssistant. Check for any new files or config changes that may affect the security posture. Summarize findings.",
+        "max_iterations": 10,
+        "tier_preference": "free",
+        "available_tools": ["read_file", "list_files", "search_in_files", "memory_search"],
+        "final_answer_requirements": { "min_length": 100 }
+      },
+      "resources": { "requires_gpu": false }
+    },
+    {
       "id": "dreaming_nightly_offpeak_default",
       "type": "dreaming",
       "cron": "0 3 * * *",
