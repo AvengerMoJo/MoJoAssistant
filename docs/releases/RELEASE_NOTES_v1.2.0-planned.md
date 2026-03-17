@@ -268,6 +268,81 @@ python3 scripts/config_doctor.py
 
 ---
 
+---
+
+## Feature 5: Scheduler Model Smoke Test (Tool Calling + Thinking Capability Gate)
+
+### Problem
+
+When a model is added to the resource pool, there is no validation that it can actually follow the agentic execution flow. A model that hallucinates tool calls (claims success without calling the tool), ignores tool schemas, or can't produce `<FINAL_ANSWER>` tags will silently waste iterations and produce unreliable results. This was observed with Qwen 3.5 35B fabricating a write operation rather than calling `write_file`.
+
+### Design
+
+A lightweight smoke test that runs before a model is approved for agentic use. Two mandatory checks:
+
+**Check 1 — Tool calling fidelity**: Schedule a minimal assistant task that requires exactly one tool call (`read_file` or `memory_search`) and verify:
+- The model actually emits a tool call (not a hallucinated result)
+- The tool result is used in the final answer
+
+**Check 2 — Final answer compliance**: Same task must produce a `<FINAL_ANSWER>...</FINAL_ANSWER>` block within the iteration limit.
+
+If either check fails, the resource is flagged as `agentic_incompatible` and only eligible for non-agentic uses (e.g., dreaming summarization).
+
+### New MCP tool: `resource_pool_smoke_test`
+
+```
+resource_pool_smoke_test(
+    resource_id: str    — resource to test
+    full: bool = False  — if true, also tests write_file sandbox and parallel calls
+)
+```
+
+Returns:
+```json
+{
+  "resource_id": "lmstudio",
+  "model": "qwen/qwen3.5-35b-a3b",
+  "checks": {
+    "tool_calling": "pass",
+    "final_answer": "pass",
+    "sandbox_write": "skip"
+  },
+  "agentic_capable": true,
+  "iterations_used": 2,
+  "duration_seconds": 14.2
+}
+```
+
+### Integration with resource pool approval
+
+`resource_pool_approve` gains an optional `--smoke-test` flag. If passed, runs the smoke test before approving. Fails approval if `agentic_capable: false`.
+
+Config doctor (Feature 4) also runs the smoke test as part of its resource checks.
+
+### Files to create/change
+
+- **New**: `app/scheduler/agentic_smoke_test.py` — `AgenticSmokeTest` class
+  - Defines minimal test tasks (hardcoded, not user-configurable)
+  - Runs against a given resource via `AgenticExecutor`
+  - Returns structured `SmokeTestResult`
+- **`app/mcp/core/tools.py`** — register `resource_pool_smoke_test` tool
+- **`app/scheduler/resource_pool.py`** — add `agentic_capable` flag to resource metadata; set on approval if smoke test run
+- **`app/config/doctor.py`** — call smoke test as part of resource checks (optional, only if `full=True`)
+
+### Verification
+
+```bash
+# Run smoke test on a known-good resource
+resource_pool_smoke_test(resource_id="lmstudio")
+# → tool_calling: pass, final_answer: pass, agentic_capable: true
+
+# Run on a resource with a hallucinating model
+resource_pool_smoke_test(resource_id="weak_local")
+# → tool_calling: fail (no tool call emitted), agentic_capable: false
+```
+
+---
+
 ## Implementation Order
 
 1. `app/scheduler/policy_monitor.py` (new)
