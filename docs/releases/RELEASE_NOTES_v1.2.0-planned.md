@@ -118,6 +118,10 @@ Executor stores the question, sets status `WAITING_FOR_INPUT`, and returns. SSE 
 - **`app/scheduler/core.py`**: Add `resume_task_with_reply(task_id, reply)` method
 - **`app/mcp/core/tools.py`**: Register `reply_to_task` tool + executor
 - **`app/mcp/adapters/sse.py`**: Add `task_waiting_for_input` event type to envelope
+- **`app/mcp/adapters/push/ntfy.py`**: When event_type is `task_waiting_for_input`,
+  attach ntfy [Action buttons](https://docs.ntfy.sh/publish/#action-buttons) that POST
+  back to `reply_to_task` — user taps a choice on their phone and the agent resumes.
+  Requires a publicly reachable MoJoAssistant URL (or local network access).
 
 ### Client flow
 
