@@ -6,22 +6,43 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from app.config.paths import get_memory_path
+
 
 class SandboxSecurity:
-    """Enforces sandbox security boundaries for tools."""
+    """Enforces sandbox security boundaries for tools.
+
+    Write operations are restricted to the memory path.
+    Read operations additionally allow the project working directory.
+    """
 
     def __init__(self, allowed_paths: List[str] = None, max_file_size_mb: int = 10):
-        self.allowed_paths = allowed_paths or ["~/.memory/"]
+        self.allowed_paths = allowed_paths or []
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 
-    def is_path_allowed(self, path: str) -> bool:
+    def _write_roots(self) -> List[str]:
+        """Absolute paths where writes are permitted."""
+        roots = [str(Path(get_memory_path()).resolve())]
+        for p in self.allowed_paths:
+            roots.append(str(Path(p).expanduser().resolve()))
+        return roots
+
+    def _read_roots(self) -> List[str]:
+        """Absolute paths where reads are permitted (writes + cwd)."""
+        return self._write_roots() + [str(Path.cwd().resolve())]
+
+    def is_path_allowed(self, path: str, write: bool = False) -> bool:
         """Check if path is within allowed sandbox directories."""
-        path_abs = str(Path(path).resolve())
-        for allowed in self.allowed_paths:
-            allowed_abs = str(Path(allowed).expanduser().resolve())
-            if path_abs.startswith(allowed_abs):
-                return True
-        return False
+        path_abs = str(Path(path).expanduser().resolve())
+        roots = self._write_roots() if write else self._read_roots()
+        return any(path_abs.startswith(r) for r in roots)
+
+    def is_write_allowed(self, path: str) -> bool:
+        return self.is_path_allowed(path, write=True)
+
+    def is_file_size_allowed(self, size: int) -> bool:
+        """Check if file size is within limits."""
+        return size <= self.max_file_size_bytes
 
     def is_file_size_allowed(self, size: int) -> bool:
         """Check if file size is within limits."""
@@ -295,8 +316,8 @@ class DynamicToolRegistry:
         if not path or content is None:
             return {"success": False, "error": "Missing 'path' or 'content' parameter"}
 
-        if not self.sandbox.is_path_allowed(path):
-            return {"success": False, "error": f"Path '{path}' not in sandbox"}
+        if not self.sandbox.is_write_allowed(path):
+            return {"success": False, "error": f"Path '{path}' not in write sandbox (only ~/.memory/ allowed)"}
 
         content_size = len(content.encode())
         if not self.sandbox.is_file_size_allowed(content_size):
