@@ -110,6 +110,9 @@ Start here:
 - [Google Calendar Scheduler Policy](docs/guides/GOOGLE_CALENDAR_SCHEDULER_POLICY.md)
 - [Resource Pool Account Onboarding](docs/guides/RESOURCE_POOL_ACCOUNT_ONBOARDING.md)
 
+### Notifications
+- [Notifications Setup Guide](docs/guides/NOTIFICATIONS_SETUP.md)
+
 ### Architecture and Design
 - [System Overview](docs/architecture/SYSTEM_README.md)
 - [Scheduler Architecture](docs/architecture/SCHEDULER_ARCHITECTURE.md)
@@ -142,6 +145,13 @@ Start here:
 - `normal`, `deep_research`, and `parallel_discovery` execution modes
 - sandbox safety policy with read/write separation
 - persistent event log with `get_recent_events` polling
+
+### Notifications
+- persistent event log — all events survive server restarts (500-event circular buffer)
+- SSE stream `GET /events/tasks` — real-time for browser/WebSocket clients
+- `get_recent_events` MCP tool — polling for Claude Desktop and MCP clients
+- independent push adapters — ntfy, FCM, and others; each has its own cursor and filter
+- config-driven: enable/disable/add channels via `notifications_config.json`, no code change
 
 ### Docker
 - CPU image: `docker compose up mojoassistant`

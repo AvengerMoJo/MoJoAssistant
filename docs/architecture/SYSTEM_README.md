@@ -28,6 +28,31 @@ The system can access private repositories with SSH authentication and stores co
 - **Stage D (Versioned Archives)**: Immutable, versioned archive files (`archive_v<N>.json`) with hot/cold lifecycle management and lineage tracking
 - **File-first Architecture**: Append-only JSON archives under `~/.memory/dreams/<conversation_id>/`
 
+### Notification System
+
+Events flow through a single persistent bus (`EventLog`) and are consumed
+independently by each channel — enabling one does not affect others.
+
+**Producers**: scheduler (task lifecycle), config tool (config changes),
+resource pool (approve/revoke). All call `SSENotifier.broadcast()`.
+
+**EventLog** (`~/.memory/events.json`): circular buffer, 500 events, persists
+across restarts. Every broadcaster writes here.
+
+**Consumers** (each independent, own cursor, own filter):
+
+| Channel | Transport | Client |
+|---------|-----------|--------|
+| SSE stream `GET /events/tasks` | Long-lived HTTP | Browser, curl, dashboards |
+| `get_recent_events` MCP tool | MCP tool call + polling | Claude Desktop, MCP clients |
+| Push adapters (`ntfy`, FCM, …) | HTTP POST per event | Android, iOS, desktop |
+
+Push adapters are config-driven — add a new channel with one Python file +
+one JSON entry, no other code changes. Each adapter stores its read cursor
+in `.memory/cursors/{id}.json` to survive server restarts without replaying.
+
+See [Notifications Setup Guide](../guides/NOTIFICATIONS_SETUP.md).
+
 ### OpenCode Manager (Optional)
 - **Disabled by default**: Requires `ENABLE_OPENCODE=true` environment variable
 - **N:1 Architecture**: Multiple OpenCode instances route through single global MCP tool (port 3005)
