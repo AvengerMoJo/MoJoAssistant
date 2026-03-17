@@ -9,7 +9,7 @@ It combines:
 - scheduler and agentic task execution
 - optional coding-agent management
 
-Current release: `v1.1.7-beta`
+Current release: `v1.1.9-beta`
 
 ## What It Is
 
@@ -26,39 +26,35 @@ Core capabilities:
 
 ## Quick Start
 
-### 1. Clone and enter the repo
+### 1. Clone with submodules
 
 ```bash
-git clone https://github.com/AvengerMoJo/MoJoAssistant.git
+git clone --recurse-submodules https://github.com/AvengerMoJo/MoJoAssistant.git
 cd MoJoAssistant
 ```
 
-### 2. Run the setup wizard
+### 2. Install dependencies
 
 ```bash
-python app/interactive-cli.py --setup
+pip install -r requirements-runtime.txt
+pip install submodules/dreaming-memory-pipeline/
 ```
 
-### 3. Start using it
+### 3. Start the server
 
-Interactive CLI:
-
-```bash
-./run_cli.sh
-```
-
-MCP server:
+MCP + HTTP server (recommended):
 
 ```bash
-./run_mcp.sh
-```
-
-Manual server start:
-
-```bash
-python unified_mcp_server.py --mode stdio
 python unified_mcp_server.py --mode http --port 8000
 ```
+
+Or via Docker:
+
+```bash
+docker compose -f docker/docker-compose.yml up mojoassistant
+```
+
+See [Quick Start](docs/claude-guide/QUICKSTART.md) for full setup including `.env` configuration.
 
 ## Main Entry Points
 
@@ -84,10 +80,11 @@ python unified_mcp_server.py --mode http --port 8000
 
 ### Scheduler and Agentic Tasks
 Use MCP tools such as:
-- `scheduler_add_task`
-- `scheduler_get_task`
-- `task_session_read`
-- `resource_pool_status`
+- `scheduler_add_task` — queue a task (immediate, scheduled, or cron)
+- `scheduler_get_task` / `scheduler_list_tasks` — monitor progress
+- `task_session_read` — read the full LLM conversation log for a task
+- `resource_pool_status` / `resource_pool_approve` — manage LLM resources
+- `get_recent_events` — poll the persistent event log
 
 ### Google Workspace
 Google Calendar and related integrations require external setup first.
@@ -119,7 +116,7 @@ Start here:
 - [Dreaming Specification](docs/architecture/DREAMING_SPECIFICATION.md)
 
 ### Releases
-- [v1.1.7-beta Release Notes](docs/releases/RELEASE_NOTES_v1.1.7-beta.md)
+- [v1.1.9-beta Release Notes](docs/releases/RELEASE_NOTES_v1.1.9-beta.md)
 - [Previous Releases](docs/releases)
 
 ### Optional OpenCode Integration
@@ -139,16 +136,23 @@ Start here:
 - Google Workspace gateway
 
 ### Scheduler and Agentic Execution
-- scheduled tasks
-- agentic tasks
-- `normal`, `deep_research`, and `parallel_discovery` modes
-- review reports with human-in-the-loop decision points
+- scheduled tasks (one-time or cron)
+- `assistant` tasks — role-based LLM think-act loops (Ahman and others)
+- `dreaming` tasks — nightly memory consolidation
+- `normal`, `deep_research`, and `parallel_discovery` execution modes
+- sandbox safety policy with read/write separation
+- persistent event log with `get_recent_events` polling
+
+### Docker
+- CPU image: `docker compose up mojoassistant`
+- AMD ROCm GPU image: `docker compose up mojoassistant-rocm`
+- HuggingFace model cache reused from host — no re-download on rebuild
+- Health check at `/health`
 
 ### Local and API LLMs
-- local model support
-- LM Studio support
-- OpenRouter and multi-account free-api routing
-- runtime resource pool configuration
+- local model support via LM Studio or any OpenAI-compatible server
+- OpenRouter with multi-account free-API routing and dynamic model detection
+- runtime resource pool configuration — add/remove/approve LLM backends live
 
 ## Optional Components
 
@@ -158,6 +162,13 @@ Enable only if you want coding-agent orchestration.
 
 See:
 - [OpenCode Manager README](app/mcp/opencode/README.md)
+
+## CI / CD
+
+GitHub Actions run on every push:
+- **Smoke test** — starts the server, polls `/health`, asserts `status=healthy`
+- **Docker build** — builds the CPU image to catch Dockerfile regressions
+- **Docker publish** — pushes to `ghcr.io` on `main` and version tags
 
 ## Development Notes
 
