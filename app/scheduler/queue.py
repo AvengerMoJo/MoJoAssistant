@@ -89,14 +89,17 @@ class TaskQueue:
             # Write to temp file first, then rename (atomic operation)
             temp_path = self.storage_path.with_suffix('.tmp')
             with open(temp_path, 'w') as f:
-                json.dump(data, f, indent=2)
+                json.dump(data, f, indent=2, default=str)
 
             # Atomic rename
             os.replace(temp_path, self.storage_path)
 
         except Exception as e:
+            import logging, traceback
+            logging.getLogger(__name__).error(
+                f"[TaskQueue] Failed to save tasks to {self.storage_path}: {e}\n{traceback.format_exc()}"
+            )
             print(f"Error saving tasks to {self.storage_path}: {e}")
-            raise
 
     def add(self, task: Task) -> bool:
         """
