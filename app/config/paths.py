@@ -16,8 +16,14 @@ from pathlib import Path
 
 
 def get_memory_path() -> str:
-    """Return the root memory directory, resolved once from MEMORY_PATH env var."""
-    return os.getenv("MEMORY_PATH", str(Path.home() / ".memory"))
+    """Return the root memory directory as an absolute path.
+
+    Resolves MEMORY_PATH (which may be relative like '.memory') against cwd
+    so all downstream paths are always absolute regardless of how the server
+    was started.
+    """
+    raw = os.getenv("MEMORY_PATH", str(Path.home() / ".memory"))
+    return str(Path(raw).resolve())
 
 
 def get_memory_subpath(*parts: str) -> str:
