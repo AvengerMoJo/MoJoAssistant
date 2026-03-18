@@ -1201,6 +1201,28 @@ class ToolRegistry:
                     "required": [],
                 },
             },
+            # Configuration Doctor
+            {
+                "name": "config_doctor",
+                "description": (
+                    "Validate all runtime configuration before running tasks. "
+                    "Checks LLM resource reachability, API key presence, model name correctness, "
+                    "role model_preference alignment, allowed_tools existence, and task sanity. "
+                    "Returns structured pass/warn/error report. Run this when tasks fail with "
+                    "cryptic errors to pinpoint configuration mistakes."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Limit checks to specific categories: 'resource', 'role', 'task'. Omit to run all.",
+                        },
+                    },
+                    "required": [],
+                },
+            },
             # Agentic Assistant — Role Design & Personality (Nine Chapter framework)
             {
                 "name": "role_design_start",
@@ -1826,6 +1848,8 @@ class ToolRegistry:
         # Event Log
         elif name == "get_recent_events":
             return await self._execute_get_recent_events(args)
+        elif name == "config_doctor":
+            return await self._execute_config_doctor(args)
         # Configuration Tool
         elif name == "config":
             return await self._execute_config(args)
@@ -3108,6 +3132,26 @@ class ToolRegistry:
             "events": events,
             "latest_timestamp": events[-1]["timestamp"] if events else None,
         }
+
+    async def _execute_config_doctor(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the config doctor and return a structured validation report."""
+        import asyncio
+        try:
+            from app.config.doctor import ConfigDoctor
+            doctor = ConfigDoctor()
+
+            # Run in executor so blocking I/O (URL probes) doesn't stall the event loop
+            loop = asyncio.get_event_loop()
+            report = await loop.run_in_executor(None, doctor.run_all_checks)
+            data = report.to_dict()
+            data["status_label"] = {
+                "pass": "All checks passed",
+                "warn": "Warnings found — some features may be degraded",
+                "error": "Errors found — tasks will likely fail at runtime",
+            }.get(data["status"], data["status"])
+            return data
+        except Exception as e:
+            return {"status": "error", "message": f"Config doctor failed: {e}"}
 
     async def _execute_resource_pool_status(
         self, args: Dict[str, Any]
