@@ -96,6 +96,12 @@ class Scheduler:
         self.stats["started_at"] = datetime.now()
         self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
         self._seed_tasks_from_config()
+        await self._broadcast({
+            "event_type": "system_notification",
+            "severity": "info",
+            "title": "Scheduler started",
+            "data": {"max_concurrent": self.max_concurrent, "version": "v1.1.9-beta"},
+        })
 
         # Set up signal handlers for graceful shutdown (only in main thread)
         try:

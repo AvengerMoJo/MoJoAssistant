@@ -3074,6 +3074,12 @@ class ToolRegistry:
                 }
 
             rm.approve_paid_resource(resource_id)
+            asyncio.create_task(self._sse_notifier.broadcast({
+                "event_type": "resource_event",
+                "severity": "info",
+                "title": f"Resource '{resource_id}' approved",
+                "data": {"resource_id": resource_id, "action": "approved"},
+            }))
             return {
                 "status": "success",
                 "message": f"Paid resource '{resource_id}' approved for agentic use",
@@ -3096,6 +3102,12 @@ class ToolRegistry:
 
             rm = self._get_resource_manager()
             rm.revoke_paid_resource(resource_id)
+            asyncio.create_task(self._sse_notifier.broadcast({
+                "event_type": "resource_event",
+                "severity": "warning",
+                "title": f"Resource '{resource_id}' revoked",
+                "data": {"resource_id": resource_id, "action": "revoked"},
+            }))
             return {
                 "status": "success",
                 "message": f"Paid resource '{resource_id}' approval revoked",
