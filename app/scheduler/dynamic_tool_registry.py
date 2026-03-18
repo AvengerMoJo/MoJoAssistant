@@ -50,7 +50,15 @@ class SandboxSecurity:
 
 
 class ToolDefinition:
-    """Defines a tool with metadata, execution logic, and security levels."""
+    """
+    Defines a tool with metadata, execution logic, and security levels.
+
+    The `executor` field controls how the tool is run:
+      {"type": "builtin"}                                — hardcoded handler (default)
+      {"type": "shell", "command": "python3 /path/script.py"}  — subprocess, JSON on stdin/stdout
+      {"type": "python", "module": "my.module", "function": "run"} — importlib + call
+      {"type": "mcp_proxy", "tool": "mcp__Server__tool_name"}     — proxy to MCP tool
+    """
 
     def __init__(
         self,
@@ -62,6 +70,7 @@ class ToolDefinition:
         created_at: str = None,
         created_by: str = "system",
         parameters: Dict[str, Any] = None,
+        executor: Dict[str, Any] = None,
     ):
         self.name = name
         self.description = description
@@ -72,6 +81,8 @@ class ToolDefinition:
         self.created_by = created_by
         # JSON schema for the tool's arguments (OpenAI function-calling format)
         self.parameters = parameters or {"type": "object", "properties": {}, "required": []}
+        # How to run the tool — defaults to builtin (hardcoded handler lookup)
+        self.executor: Dict[str, Any] = executor or {"type": "builtin"}
 
     def to_openai_function(self) -> Dict[str, Any]:
         """Return the OpenAI-compatible function definition for LLM tool calling."""
@@ -94,6 +105,7 @@ class ToolDefinition:
             "created_at": self.created_at,
             "created_by": self.created_by,
             "parameters": self.parameters,
+            "executor": self.executor,
         }
 
     @classmethod
@@ -107,6 +119,7 @@ class ToolDefinition:
             created_at=data.get("created_at"),
             created_by=data.get("created_by", "system"),
             parameters=data.get("parameters"),
+            executor=data.get("executor"),
         )
 
 
@@ -121,6 +134,7 @@ class DynamicToolRegistry:
         )
         self.sandbox = SandboxSecurity()
         self._memory_service = None
+        self._mcp_registry = None
         self._tools: Dict[str, ToolDefinition] = {}
         self._ensure_registry_seeded()
         self._load_registry()
@@ -273,7 +287,7 @@ class DynamicToolRegistry:
         args: Dict[str, Any],
         user_id: str = None,
     ) -> Dict[str, Any]:
-        """Execute a tool with sandbox security."""
+        """Execute a tool, dispatching on executor type."""
         tool = self.get_tool(name)
         if not tool:
             return {"success": False, "error": f"Tool '{name}' not found"}
@@ -281,24 +295,34 @@ class DynamicToolRegistry:
         if tool.danger_level == "critical" and not user_id:
             return {"success": False, "error": "Critical tools require authentication"}
 
+        executor_type = tool.executor.get("type", "builtin")
+
         try:
-            if name == "read_file":
-                return await self._read_file(args)
-            elif name == "write_file":
-                return await self._write_file(args)
-            elif name == "list_files":
-                return await self._list_files(args)
-            elif name == "search_in_files":
-                return await self._search_in_files(args)
-            elif name == "bash_exec":
-                return await self._bash_exec(args)
-            elif name == "memory_search":
-                return await self._memory_search(args)
+            if executor_type == "shell":
+                return await self._run_shell_executor(tool, args)
+            elif executor_type == "python":
+                return await self._run_python_executor(tool, args)
+            elif executor_type == "mcp_proxy":
+                return await self._run_mcp_proxy_executor(tool, args)
             else:
-                return {
-                    "success": False,
-                    "error": f"Tool '{name}' execution not implemented",
-                }
+                # builtin: dispatch on tool name
+                if name == "read_file":
+                    return await self._read_file(args)
+                elif name == "write_file":
+                    return await self._write_file(args)
+                elif name == "list_files":
+                    return await self._list_files(args)
+                elif name == "search_in_files":
+                    return await self._search_in_files(args)
+                elif name == "bash_exec":
+                    return await self._bash_exec(args)
+                elif name == "memory_search":
+                    return await self._memory_search(args)
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Tool '{name}' has no builtin handler",
+                    }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -510,6 +534,116 @@ class DynamicToolRegistry:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def _run_shell_executor(self, tool: "ToolDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Shell executor: passes args as JSON on stdin, reads JSON result from stdout.
+
+        Executor config:
+          {"type": "shell", "command": "python3 ~/.memory/tools/my_tool.py"}
+          {"type": "shell", "command": "/path/to/script.sh", "timeout": 30}
+
+        Contract: script writes {"success": true/false, ...} JSON to stdout.
+        """
+        command = tool.executor.get("command", "")
+        if not command:
+            return {"success": False, "error": "Shell executor missing 'command'"}
+
+        timeout = tool.executor.get("timeout", 60)
+        command = os.path.expanduser(command)
+
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                input=json.dumps(args),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0 and not result.stdout.strip():
+                return {
+                    "success": False,
+                    "error": result.stderr.strip() or f"Process exited with code {result.returncode}",
+                }
+            output = result.stdout.strip()
+            if output:
+                try:
+                    return json.loads(output)
+                except json.JSONDecodeError:
+                    # Non-JSON output — wrap it
+                    return {"success": result.returncode == 0, "output": output}
+            return {"success": result.returncode == 0}
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": f"Shell tool timed out ({timeout}s)"}
+
+    async def _run_python_executor(self, tool: "ToolDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Python executor: dynamically imports a module and calls a function.
+
+        Executor config:
+          {"type": "python", "module": "my_package.my_module", "function": "run"}
+
+        The function must accept (args: dict) -> dict and return {"success": bool, ...}.
+        """
+        module_path = tool.executor.get("module", "")
+        func_name = tool.executor.get("function", "run")
+        if not module_path:
+            return {"success": False, "error": "Python executor missing 'module'"}
+
+        import importlib
+        import asyncio
+        try:
+            mod = importlib.import_module(module_path)
+        except ImportError as e:
+            return {"success": False, "error": f"Cannot import module '{module_path}': {e}"}
+
+        func = getattr(mod, func_name, None)
+        if func is None:
+            return {"success": False, "error": f"Function '{func_name}' not found in '{module_path}'"}
+
+        try:
+            if asyncio.iscoroutinefunction(func):
+                result = await func(args)
+            else:
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, func, args)
+            return result if isinstance(result, dict) else {"success": True, "result": result}
+        except Exception as e:
+            return {"success": False, "error": f"Python tool '{tool.name}' raised: {e}"}
+
+    async def _run_mcp_proxy_executor(self, tool: "ToolDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        MCP proxy executor: forwards the tool call to a named MCP tool.
+
+        Executor config:
+          {"type": "mcp_proxy", "tool": "mcp__MoJoAssistant__web_search"}
+
+        This allows any registered MCP tool to be exposed to agentic agents
+        without writing a builtin handler.
+        """
+        mcp_tool_name = tool.executor.get("tool", "")
+        if not mcp_tool_name:
+            return {"success": False, "error": "MCP proxy executor missing 'tool'"}
+
+        # MCP proxy requires the ToolRegistry to be available
+        if self._mcp_registry is None:
+            return {
+                "success": False,
+                "error": "MCP proxy not available (no ToolRegistry set)",
+            }
+
+        try:
+            result = await self._mcp_registry.execute(mcp_tool_name, args)
+            if isinstance(result, dict):
+                return result
+            return {"success": True, "result": result}
+        except Exception as e:
+            return {"success": False, "error": f"MCP proxy '{mcp_tool_name}' failed: {e}"}
+
     def set_memory_service(self, memory_service):
         """Set memory service for memory_search tool."""
         self._memory_service = memory_service
+
+    def set_mcp_registry(self, mcp_registry) -> None:
+        """Set the MCP ToolRegistry for mcp_proxy executor support."""
+        self._mcp_registry = mcp_registry
