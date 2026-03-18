@@ -1257,6 +1257,14 @@ class ToolRegistry:
                             "items": {"type": "string"},
                             "description": "Tool names this role should have access to.",
                         },
+                        "notify_on_completion": {
+                            "type": "boolean",
+                            "description": "Push a notification when a task assigned to this role completes. Defaults to false (system tasks are silent; user-initiated tasks always notify regardless).",
+                        },
+                        "policy": {
+                            "type": "object",
+                            "description": "Runtime permission policy for this role. Fields: allowed_tools (list), denied_tools (list), require_confirmation_for (list), max_bash_exec_per_task (int), sandbox_paths_only (bool).",
+                        },
                     },
                     "required": [],
                 },
@@ -3173,6 +3181,10 @@ class ToolRegistry:
             role_data["model_preference"] = args["model_preference"]
         if args.get("tools") is not None:
             role_data["tools"] = args["tools"]
+        if args.get("notify_on_completion") is not None:
+            role_data["notify_on_completion"] = args["notify_on_completion"]
+        if args.get("policy") is not None:
+            role_data["policy"] = args["policy"]
 
         path = self._role_manager.save(role_data)
         return {

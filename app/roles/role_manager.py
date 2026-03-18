@@ -56,6 +56,8 @@ class RoleManager:
                     "nine_chapter_score": role.get("nine_chapter_score"),
                     "purpose": role.get("purpose"),
                     "model_preference": role.get("model_preference"),
+                    "notify_on_completion": role.get("notify_on_completion", False),
+                    "policy": role.get("policy"),
                     "updated_at": role.get("updated_at"),
                 })
             except Exception:
