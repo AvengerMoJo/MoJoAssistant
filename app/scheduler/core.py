@@ -74,6 +74,29 @@ class Scheduler:
         """Re-read scheduler_config.json and seed any new/enabled default tasks."""
         self._seed_tasks_from_config()
 
+    def resume_task_with_reply(self, task_id: str, reply: str) -> Dict[str, Any]:
+        """
+        Resume a task that is in WAITING_FOR_INPUT state by injecting the user's reply.
+
+        The executor will pick up reply_to_question from task.config on the next run,
+        inject it into the message history, and continue the agentic loop.
+        """
+        task = self.queue.get(task_id)
+        if task is None:
+            return {"success": False, "error": f"Task '{task_id}' not found"}
+        if task.status != TaskStatus.WAITING_FOR_INPUT:
+            return {
+                "success": False,
+                "error": f"Task '{task_id}' is not waiting for input (status: {task.status.value})",
+            }
+
+        task.config["reply_to_question"] = reply
+        task.pending_question = None
+        task.status = TaskStatus.PENDING
+        self.queue.update(task)
+        self._log(f"Task {task_id} resumed with user reply")
+        return {"success": True, "task_id": task_id, "status": "pending"}
+
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
         if self.logger:
@@ -251,6 +274,31 @@ class Scheduler:
 
             # Execute via executor
             result = await self.executor.execute(task)
+
+            # Agent paused — waiting for user input
+            if result.waiting_for_input:
+                task.status = TaskStatus.WAITING_FOR_INPUT
+                task.pending_question = result.waiting_for_input
+                task.config["resume_from_task_id"] = task.id
+                self.queue.update(task)
+                notify = self._should_notify_completion(task)
+                await self._broadcast({
+                    "event_type": "task_waiting_for_input",
+                    "task_id": task.id,
+                    "task_type": task.type.value,
+                    "question": result.waiting_for_input,
+                    "severity": "warning",
+                    "title": f"Agent is waiting for your input on task {task.id}",
+                    "notify_user": notify,
+                    "data": {
+                        "task_id": task.id,
+                        "question": result.waiting_for_input,
+                        "description": task.description,
+                    },
+                })
+                self._log(f"Task {task.id} is waiting for user input")
+                return
+
             if result.success:
                 task.mark_completed(result)
                 self.stats["tasks_succeeded"] += 1

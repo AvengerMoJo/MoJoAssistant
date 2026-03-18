@@ -1328,6 +1328,30 @@ class ToolRegistry:
                 },
             },
             {
+                "name": "reply_to_task",
+                "description": (
+                    "Send a reply to an agentic task that is waiting for user input. "
+                    "The task must be in 'waiting_for_input' status (check with scheduler_list_tasks). "
+                    "The agent will resume from where it paused, using your reply as the answer."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "ID of the task in waiting_for_input status",
+                            "minLength": 1,
+                        },
+                        "reply": {
+                            "type": "string",
+                            "description": "Your answer to the agent's question",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["task_id", "reply"],
+                },
+            },
+            {
                 "name": "scheduler_resume_task",
                 "description": "Resume a failed or timed-out agentic task. Creates a new task that loads the previous session's conversation and continues from where it left off.",
                 "inputSchema": {
@@ -1812,6 +1836,8 @@ class ToolRegistry:
             return await self._execute_task_session_read(args)
         elif name == "scheduler_resume_task":
             return await self._execute_scheduler_resume_task(args)
+        elif name == "reply_to_task":
+            return await self._execute_reply_to_task(args)
         # Resource Pool Tools
         elif name == "resource_pool_status":
             return await self._execute_resource_pool_status(args)
@@ -3031,6 +3057,27 @@ class ToolRegistry:
                 "status": "error",
                 "message": f"Failed to resume task: {str(e)}",
             }
+
+    async def _execute_reply_to_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute reply_to_task tool — resume a WAITING_FOR_INPUT task with the user's answer."""
+        task_id = args.get("task_id", "").strip()
+        reply = args.get("reply", "").strip()
+        if not task_id:
+            return {"status": "error", "message": "task_id is required"}
+        if not reply:
+            return {"status": "error", "message": "reply is required"}
+
+        if not self.scheduler:
+            return {"status": "error", "message": "Scheduler not available"}
+
+        result = self.scheduler.resume_task_with_reply(task_id, reply)
+        if result.get("success"):
+            return {
+                "status": "success",
+                "message": f"Task '{task_id}' resumed — agent will continue with your reply",
+                "task_id": task_id,
+            }
+        return {"status": "error", "message": result.get("error", "Unknown error")}
 
     # ========================================================================
     # Resource Pool Tools

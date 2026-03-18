@@ -116,7 +116,11 @@ class AgenticExecutor:
             max_duration_seconds (int, optional): Wall-clock time budget.
             tier_preference (list[str], optional): Resource tier preference.
             resume_from_task_id (str, optional): Load previous session and continue.
+            reply_to_question (str, optional): User reply injected after WAITING_FOR_INPUT resume.
         """
+        # Per-execution state for ask_user
+        self._waiting_for_input_question: Optional[str] = None
+
         config = task.config or {}
         goal = config.get("goal", "")
         if not goal:
@@ -206,6 +210,7 @@ class AgenticExecutor:
 
         # --- Resume support ---
         resume_from = config.get("resume_from_task_id")
+        reply_to_question = config.pop("reply_to_question", None)
         if resume_from:
             messages, start_iteration = self._load_resume_messages(
                 resume_from, system_prompt
@@ -215,17 +220,31 @@ class AgenticExecutor:
                     success=False,
                     error_message=f"Cannot resume: session '{resume_from}' not found",
                 )
-            # Add a continuation prompt so the LLM knows we're resuming
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "The previous attempt ran out of time or failed. "
-                        "Continue working toward the original goal. "
-                        "If you are done, provide your answer inside <FINAL_ANSWER> tags."
-                    ),
-                }
-            )
+            if reply_to_question:
+                # Resume after WAITING_FOR_INPUT: inject the user's reply
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"User's reply: {reply_to_question}",
+                    }
+                )
+                self._record(
+                    task.id, "user",
+                    f"User's reply: {reply_to_question}",
+                    iteration=start_iteration,
+                )
+            else:
+                # Normal resume after timeout/failure
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The previous attempt ran out of time or failed. "
+                            "Continue working toward the original goal. "
+                            "If you are done, provide your answer inside <FINAL_ANSWER> tags."
+                        ),
+                    }
+                )
         else:
             start_iteration = 0
             # Build initial messages
@@ -363,6 +382,7 @@ class AgenticExecutor:
                 )
 
                 tool_results = await self._execute_tool_calls(tool_calls)
+                waiting = self._waiting_for_input_question
                 for tc, result_content in zip(tool_calls, tool_results):
                     messages.append(
                         {
@@ -392,6 +412,13 @@ class AgenticExecutor:
                         "elapsed_s": round(time.time() - iter_start, 1),
                     }
                 )
+                # If agent called ask_user, pause the loop here
+                if waiting:
+                    self._log(
+                        f"Task {task.id}: pausing for user input — '{waiting[:80]}'"
+                    )
+                    break
+
                 # If we're near the iteration limit, inject a hard wrap-up prompt
                 # so the LLM doesn't keep calling tools and runs out of budget.
                 if iteration >= max_iterations - 1:
@@ -469,6 +496,25 @@ class AgenticExecutor:
             self._record(task.id, "user", next_msg, iteration=abs_iteration)
 
         total_elapsed = round(time.time() - start_time, 1)
+
+        # If the agent paused to ask the user a question, return early
+        if self._waiting_for_input_question:
+            self._session_storage.update_status(
+                task.id,
+                "waiting_for_input",
+            )
+            session_file = str(self._session_storage._path(task.id))
+            return TaskResult(
+                success=False,
+                waiting_for_input=self._waiting_for_input_question,
+                output_file=session_file,
+                metrics={
+                    "iterations": len(iteration_log),
+                    "duration_seconds": total_elapsed,
+                    "session_file": session_file,
+                },
+            )
+
         success = final_answer is not None
 
         # Finalize session status if not already set
@@ -713,6 +759,16 @@ class AgenticExecutor:
         if role_decision.warn:
             self._log(f"Role policy warning for '{name}': {role_decision.reason}", "warning")
         self._policy_monitor.record_call(name)
+
+        # Handle ask_user: pause execution and wait for user reply
+        if name == "ask_user":
+            question = args.get("question", "")
+            choices = args.get("choices")
+            self._waiting_for_input_question = question
+            result_msg = f"Question submitted to user: {question}"
+            if choices:
+                result_msg += f" (choices: {choices})"
+            return {"success": True, "message": result_msg}
 
         # Try dynamic registry first
         try:

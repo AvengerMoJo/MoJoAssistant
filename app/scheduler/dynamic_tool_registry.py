@@ -219,6 +219,24 @@ class DynamicToolRegistry:
                     "query": {"type": "string", "description": "Search query to find relevant context"},
                 }, "required": ["query"]},
             ),
+            ToolDefinition(
+                name="ask_user",
+                description=(
+                    "Pause the task and ask the user a question. "
+                    "Use when you need information only the user can provide. "
+                    "The task will wait in WAITING_FOR_INPUT state until the user replies. "
+                    "Do not use this for information you can gather with other tools."
+                ),
+                danger_level="low",
+                parameters={"type": "object", "properties": {
+                    "question": {"type": "string", "description": "The question to ask the user"},
+                    "choices": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of suggested answer choices to present to the user",
+                    },
+                }, "required": ["question"]},
+            ),
         ]
         for tool in builtins:
             # Always overwrite builtins — code definition (including parameters schema)
