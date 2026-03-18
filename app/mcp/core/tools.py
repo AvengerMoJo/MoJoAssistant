@@ -2438,6 +2438,7 @@ class ToolRegistry:
                 config=config,
                 resources=resources,
                 description=description,
+                created_by="user",
             )
 
             # Add to scheduler

@@ -262,12 +262,14 @@ class TaskQueue:
 
             return stats
 
-    def clear_completed(self, older_than_days: int = 7) -> int:
+    def clear_completed(self, older_than_days: int = 7,
+                        task_types: Optional[List] = None) -> int:
         """
         Remove completed tasks older than specified days
 
         Args:
             older_than_days: Remove tasks completed more than this many days ago
+            task_types: If given, only remove tasks whose type is in this list
 
         Returns:
             Number of tasks removed
@@ -281,6 +283,7 @@ class TaskQueue:
                 if task.status == TaskStatus.COMPLETED
                 and task.completed_at
                 and task.completed_at < cutoff
+                and (task_types is None or task.type in task_types)
             ]
 
             for task_id in to_remove:

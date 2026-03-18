@@ -42,6 +42,7 @@ class Scheduler:
             sse_notifier: Optional SSENotifier for real-time task events
         """
         self.queue = TaskQueue(storage_path)
+        self.memory_service = memory_service
         self.executor = TaskExecutor(logger=logger, memory_service=memory_service)
         self.tick_interval = tick_interval
         self.max_concurrent = max_concurrent
@@ -171,6 +172,20 @@ class Scheduler:
                 if dispatched == 0 and not self._running_tasks:
                     self._log("No tasks ready", "debug")
 
+                # Periodic cleanup: remove completed tasks older than 7 days
+                if self.tick_count % 100 == 0:
+                    removed = self.queue.clear_completed(older_than_days=7)
+                    if removed:
+                        self._log(f"Cleaned up {removed} completed task(s) older than 7 days")
+
+                # Fast cleanup: agentic-dreaming tasks are transient — remove after 1 day
+                if self.tick_count % 10 == 0:
+                    removed = self.queue.clear_completed(
+                        older_than_days=1, task_types=[TaskType.DREAMING]
+                    )
+                    if removed:
+                        self._log(f"Cleaned up {removed} completed dreaming task(s)")
+
                 # Heartbeat every 10th tick
                 if self.tick_count % 10 == 0:
                     from app.scheduler.models import TaskStatus as _TS
@@ -240,15 +255,24 @@ class Scheduler:
                 task.mark_completed(result)
                 self.stats["tasks_succeeded"] += 1
                 self._log(f"Task {task.id} completed successfully")
+                final_answer = (result.metrics or {}).get("final_answer")
+                is_assistant = task.type == TaskType.ASSISTANT
+                notify = self._should_notify_completion(task)
+                title = (
+                    f"{task.description or task.id} completed"
+                    if is_assistant
+                    else f"Task {task.id} completed"
+                )
                 await self._broadcast({
                     "event_type": "task_completed",
                     "task_id": task.id,
                     "task_type": task.type.value,
                     "status": "completed",
-                    "final_answer": (result.metrics or {}).get("final_answer"),
+                    "final_answer": final_answer,
                     "session_file": (result.metrics or {}).get("session_file"),
                     "severity": "info",
-                    "title": f"Task {task.id} completed",
+                    "title": title,
+                    "notify_user": notify,
                 })
 
                 # Auto-schedule dreaming for completed assistant tasks
@@ -297,6 +321,9 @@ class Scheduler:
                         from app.scheduler.triggers import CronTrigger
                         trigger = CronTrigger(task.cron_expression)
                         next_run = trigger.get_next_run_time(after=datetime.now())
+                        # Preserve error info before wiping result
+                        task.last_error = result.error_message
+                        task.last_failed_at = datetime.now()
                         task.status = TaskStatus.PENDING
                         task.schedule = next_run
                         task.retry_count = 0
@@ -325,6 +352,34 @@ class Scheduler:
 
         finally:
             self.current_task = None
+
+    def _should_notify_completion(self, task: Task) -> bool:
+        """
+        Decide whether a task completion should push a notification to the user.
+
+        Priority order:
+        1. Explicit per-task override: task.config["notify_on_completion"] (True/False)
+        2. Role default: role["notify_on_completion"] (True/False)
+        3. Fallback: notify if the task was created by a human user (not system/cron)
+        """
+        # 1. Explicit task-level override
+        cfg = task.config or {}
+        if "notify_on_completion" in cfg:
+            return bool(cfg["notify_on_completion"])
+
+        # 2. Role default (for assistant tasks with a role_id)
+        role_id = cfg.get("role_id")
+        if role_id and task.type == TaskType.ASSISTANT:
+            try:
+                from app.roles.role_manager import RoleManager
+                role = RoleManager().get(role_id)
+                if role and "notify_on_completion" in role:
+                    return bool(role["notify_on_completion"])
+            except Exception:
+                pass
+
+        # 3. Fallback: user-initiated tasks get a notification; system/cron do not
+        return task.created_by == "user"
 
     def _schedule_dreaming_for_agentic_task(self, task: Task):
         """

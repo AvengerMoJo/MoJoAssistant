@@ -145,6 +145,10 @@ class Task:
     created_by: str = "system"
     description: Optional[str] = None
 
+    # Last failure info — preserved across cron reschedules so errors are visible
+    last_error: Optional[str] = None
+    last_failed_at: Optional[datetime] = None
+
     def is_due(self) -> bool:
         """Check if task is due to run"""
         if self.status != TaskStatus.PENDING:
@@ -197,6 +201,8 @@ class Task:
             else None,
             "created_by": self.created_by,
             "description": self.description,
+            "last_error": self.last_error,
+            "last_failed_at": self.last_failed_at.isoformat() if self.last_failed_at else None,
         }
         return data
 
@@ -217,6 +223,8 @@ class Task:
             data["started_at"] = datetime.fromisoformat(data["started_at"])
         if "completed_at" in data and data["completed_at"]:
             data["completed_at"] = datetime.fromisoformat(data["completed_at"])
+        if "last_failed_at" in data and data["last_failed_at"]:
+            data["last_failed_at"] = datetime.fromisoformat(data["last_failed_at"])
 
         # Convert nested objects
         if "resources" in data and isinstance(data["resources"], dict):

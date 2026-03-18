@@ -104,7 +104,9 @@ Examples:
     except KeyboardInterrupt:
         print("\nShutdown requested", file=sys.stderr)
     except Exception as e:
+        import traceback
         print(f"Fatal error: {e}", file=sys.stderr)
+        traceback.print_exc()
         sys.exit(1)
 
 

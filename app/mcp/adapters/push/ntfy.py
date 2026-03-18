@@ -18,6 +18,7 @@ Optional:
   "priority_map": { "info": "default", "warning": "high", "error": "urgent", "critical": "urgent" }
 """
 
+import json
 import logging
 import os
 from typing import Any, Dict
@@ -26,18 +27,20 @@ from app.mcp.adapters.push.base import PushAdapter
 
 logger = logging.getLogger(__name__)
 
+# ntfy JSON API priority: 1=min 2=low 3=default 4=high 5=max
 _DEFAULT_PRIORITY_MAP = {
-    "info": "default",
-    "warning": "high",
-    "error": "urgent",
-    "critical": "urgent",
+    "info": 3,
+    "warning": 4,
+    "error": 5,
+    "critical": 5,
 }
 
-_SEVERITY_EMOJI = {
-    "info": "ℹ️",
-    "warning": "⚠️",
-    "error": "🔴",
-    "critical": "🚨",
+# ntfy emoji shortcode tags (text, converted to emoji by the ntfy app)
+_SEVERITY_TAG = {
+    "info": "information_source",
+    "warning": "warning",
+    "error": "rotating_light",
+    "critical": "rotating_light",
 }
 
 
@@ -56,32 +59,39 @@ class NtfyAdapter(PushAdapter):
             logger.warning("[push/%s] no endpoint configured", self.adapter_id)
             return
 
-        import urllib.request
-
         severity = event.get("severity", "info")
         title = self._format_title(event)
-        body = self._format_body(event)
-        emoji = _SEVERITY_EMOJI.get(severity, "")
+        body = self._format_body(event) or title
         priority = self._priority_map.get(severity, "default")
+        sev_tag = _SEVERITY_TAG.get(severity, "information_source")
+        event_tag = event.get("event_type", "event").replace("_", "-")
 
-        headers = {
-            "Title": f"{emoji} {title}".strip(),
-            "Priority": priority,
-            "Tags": f"mojoassistant,{event.get('event_type', 'event')}",
+        # Use JSON API — all fields are UTF-8, emoji work everywhere
+        payload = {
+            "topic": self._endpoint.rsplit("/", 1)[-1],
+            "title": title,
+            "message": body,
+            "priority": priority,
+            "tags": [sev_tag, event_tag],
+            "markdown": True,
         }
+        data = json.dumps(payload).encode("utf-8")
+
+        # Derive base URL (everything before the topic path)
+        base_url = self._endpoint.rsplit("/", 1)[0]
+
+        import urllib.request
+        headers = {"Content-Type": "application/json; charset=utf-8"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
 
-        message = body.encode("utf-8") if body else title.encode("utf-8")
-
         req = urllib.request.Request(
-            self._endpoint,
-            data=message,
+            base_url,
+            data=data,
             headers=headers,
             method="POST",
         )
 
-        # Run blocking HTTP call in executor to avoid blocking the event loop
         import asyncio
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._send, req)

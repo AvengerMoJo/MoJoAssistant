@@ -93,7 +93,11 @@ class PushAdapterManager:
         try:
             from app.config.config_loader import load_layered_json_config
             data = load_layered_json_config("config/notifications_config.json")
-            return data.get("adapters", [])
+            adapters = data.get("adapters", [])
+            # Tolerate dict-of-dicts format (e.g. {"0": {...}, "1": {...}})
+            if isinstance(adapters, dict):
+                adapters = list(adapters.values())
+            return adapters
         except FileNotFoundError:
             return []
         except Exception as exc:

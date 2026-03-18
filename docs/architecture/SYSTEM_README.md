@@ -67,7 +67,41 @@ across restarts. Every broadcaster writes here.
 
 Push adapters are config-driven — add a new channel with one Python file +
 one JSON entry, no other code changes. Each adapter stores its read cursor
-in `.memory/cursors/{id}.json` to survive server restarts without replaying.
+in `~/.memory/cursors/{id}.json` to survive server restarts without replaying.
+
+#### `notify_user` — who decides?
+
+Every event carries a `notify_user: bool` field. Push adapters use this as
+the primary delivery gate (when `notify_user_only: true` in adapter config).
+When `notify_user=true`, the adapter's `min_severity` threshold is waived —
+the flag is an explicit intent signal, not a severity concern.
+
+**Who sets `notify_user` on task completion** (priority order):
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 | `task.config["notify_on_completion"]` | Override per scheduled task |
+| 2 | `role["notify_on_completion"]` | Role-level default (e.g. Ahman = true) |
+| 3 | `task.created_by == "user"` | Fallback: human-initiated → notify |
+
+Background/cron tasks created by `"system"` are silent by default. User-initiated
+tasks and roles that opt in get a push. Per-task config always wins.
+
+#### Push adapter filter (delivery gate)
+
+Each adapter has its own filter in `config/notifications_config.json`
+(personal override at `~/.memory/config/notifications_config.json`):
+
+```json
+"filter": {
+  "notify_user_only": true,   // only deliver events with notify_user=true
+  "min_severity": "warning",  // minimum severity (waived when notify_user=true)
+  "event_types": ["task_failed", "task_completed", "system_notification"]
+}
+```
+
+The personal layer (`~/.memory/config/`) wins over system defaults on any key
+conflict — users can tighten or loosen thresholds without touching the codebase.
 
 See [Notifications Setup Guide](../guides/NOTIFICATIONS_SETUP.md).
 

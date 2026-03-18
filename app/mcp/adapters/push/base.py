@@ -119,16 +119,18 @@ class PushAdapter(ABC):
 
     def _matches_filter(self, event: Dict[str, Any]) -> bool:
         f = self._filter
+        notify_user = event.get("notify_user", False)
 
         # notify_user_only: skip events that don't request user attention
-        if f.get("notify_user_only", True) and not event.get("notify_user", False):
+        if f.get("notify_user_only", True) and not notify_user:
             return False
 
-        # min_severity threshold
-        min_sev = f.get("min_severity", "warning")
-        event_sev = event.get("severity", "info")
-        if _SEVERITY_ORDER.get(event_sev, 0) < _SEVERITY_ORDER.get(min_sev, 0):
-            return False
+        # min_severity threshold — waived when notify_user=True (explicit user signal)
+        if not notify_user:
+            min_sev = f.get("min_severity", "warning")
+            event_sev = event.get("severity", "info")
+            if _SEVERITY_ORDER.get(event_sev, 0) < _SEVERITY_ORDER.get(min_sev, 0):
+                return False
 
         # event_types allowlist
         allowed_types: Optional[List[str]] = f.get("event_types")
@@ -178,8 +180,13 @@ class PushAdapter(ABC):
         parts = []
         if data.get("task_id"):
             parts.append(f"Task: {data['task_id']}")
+        # final_answer lives at top-level on task_completed events
+        final_answer = event.get("final_answer") or data.get("final_answer")
+        if final_answer:
+            snippet = str(final_answer)[:300]
+            parts.append(snippet)
         if data.get("error"):
             parts.append(f"Error: {data['error']}")
         if data.get("message"):
             parts.append(data["message"])
-        return " | ".join(parts) if parts else event.get("event_type", "")
+        return "\n".join(parts) if parts else event.get("event_type", "")
