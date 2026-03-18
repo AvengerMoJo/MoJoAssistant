@@ -1434,6 +1434,32 @@ class ToolRegistry:
                     "required": ["resource_id"],
                 },
             },
+            {
+                "name": "resource_pool_smoke_test",
+                "description": (
+                    "Run an agentic capability smoke test on a specific LLM resource. "
+                    "Validates that the model can: (1) emit real tool calls (not hallucinate results), "
+                    "(2) produce <FINAL_ANSWER> tags within the iteration budget. "
+                    "Sets agentic_capable flag on the resource. "
+                    "Use before approving a new model for agentic tasks."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "resource_id": {
+                            "type": "string",
+                            "description": "ID of the resource to test (from resource_pool_status)",
+                            "minLength": 1,
+                        },
+                        "full": {
+                            "type": "boolean",
+                            "description": "If true, also run extended checks (default: false)",
+                            "default": False,
+                        },
+                    },
+                    "required": ["resource_id"],
+                },
+            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -1869,6 +1895,8 @@ class ToolRegistry:
             return await self._execute_resource_pool_approve(args)
         elif name == "resource_pool_revoke":
             return await self._execute_resource_pool_revoke(args)
+        elif name == "resource_pool_smoke_test":
+            return await self._execute_resource_pool_smoke_test(args)
         # Role System Tools
         elif name == "role_design_start":
             return await self._execute_role_design_start(args)
@@ -3160,6 +3188,10 @@ class ToolRegistry:
         try:
             rm = self._get_resource_manager()
             status = rm.get_status()
+            # Annotate each resource with its agentic_capable flag if tested
+            for res_id, info in status.items():
+                capable = rm.get_agentic_capable(res_id)
+                info["agentic_capable"] = capable  # None = not yet tested
             return {
                 "status": "success",
                 "resources": status,
@@ -3234,6 +3266,32 @@ class ToolRegistry:
                 "status": "error",
                 "message": f"Failed to revoke resource: {str(e)}",
             }
+
+    async def _execute_resource_pool_smoke_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the agentic smoke test on a specific resource."""
+        resource_id = args.get("resource_id", "").strip()
+        full = bool(args.get("full", False))
+        if not resource_id:
+            return {"status": "error", "message": "resource_id is required"}
+
+        try:
+            from app.scheduler.agentic_smoke_test import AgenticSmokeTest
+            tester = AgenticSmokeTest()
+            result = await tester.run(resource_id=resource_id, full=full)
+
+            # Persist agentic_capable flag to ResourceManager
+            try:
+                from app.scheduler.resource_pool import ResourceManager
+                rm = ResourceManager()
+                rm.set_agentic_capable(resource_id, result.agentic_capable)
+            except Exception:
+                pass
+
+            data = result.to_dict()
+            data["status"] = "success"
+            return data
+        except Exception as e:
+            return {"status": "error", "message": f"Smoke test failed: {e}"}
 
     # ── Role System Tools ────────────────────────────────────────────
 
