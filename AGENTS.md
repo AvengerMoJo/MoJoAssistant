@@ -6,6 +6,19 @@ These rules apply to all coding agents working in this repository.
 - Primary policy document: `Coding Agents Rules.md`
 - Agents should follow that file as the canonical rule set.
 
+## Configuration and Data Hierarchy
+
+MoJoAssistant follows a Linux-style layered config convention. Agents must respect this:
+
+| What | Where | Rule |
+|------|-------|------|
+| System defaults, examples, templates | `project/config/` | Read-only at runtime. Never write here from running code. |
+| Personal config overrides | `~/.memory/config/` | User's personal layer. Wins over project defaults. |
+| All personal data and runtime state | `~/.memory/` | Conversations, knowledge, roles, task sessions, events — everything personal. |
+| Secrets and environment | `.env` | Never commit. Never hardcode. |
+
+**Simple rule for agents:** when in doubt, `~/.memory/` is home. Read personal state from there. Write personal state there. `project/config/` is factory defaults — read for fallback, never write at runtime.
+
 ## Mandatory Memory Workflow
 1. Use MoJoAssistant MCP memory context to inform decisions before major edits.
 2. Persist important user/assistant exchanges and decisions to memory.

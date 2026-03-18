@@ -4,6 +4,24 @@
 
 MoJoAssistant is an advanced AI memory and code understanding system that bridges the gap between Chat AI clients (which can't see codebases directly) and Coding AI assistants (which can see code but lack persistent memory). The system provides semantic memory storage, git-aware codebase access, and intelligent document retrieval through a Model Context Protocol (MCP) server.
 
+## Configuration Philosophy — Linux-Style Hierarchy
+
+MoJoAssistant follows the same layering convention as Linux system configuration:
+
+| Layer | Linux analogy | MoJoAssistant path | Purpose |
+|-------|--------------|-------------------|---------|
+| System defaults | `/etc/` | `project/config/` | Shipped with the code. Safe base values, examples, and templates. Committed to git (except files with secrets). |
+| Personal space | `~/` | `~/.memory/` (`MEMORY_PATH`) | Everything personal — user data, runtime state, personal config overrides, roles, conversations, knowledge, task history. Never touched by git. |
+| Environment | `/etc/environment` | `.env` | Runtime secrets, feature flags, paths. Never committed. |
+
+**The one rule:** if it's personal or runtime, it lives in `~/.memory/`. If it's a system default or example, it lives in `project/config/`. Nothing personal ever belongs in the project directory.
+
+**Layered config** (`app/config/config_loader.py`): config files follow the same pattern explicitly — `project/config/foo.json` is the system default, `~/.memory/config/foo.json` is the personal override. The personal layer wins on any key conflict. This means a user can override any system default without touching the codebase.
+
+**For agents and LLMs**: when deciding where to read or write something, apply the same mental model — read from `~/.memory/` first (personal), fall back to `project/config/` (system default). Write personal data and state only to `~/.memory/`. Never write to `project/config/` at runtime.
+
+---
+
 ## Core Architecture
 
 ### Memory System Tiers
