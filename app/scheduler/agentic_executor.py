@@ -128,6 +128,8 @@ class AgenticExecutor:
         role_prefix = ""
         role_model_preference = None
         role_id = config.get("role_id")
+        from app.scheduler.policy_monitor import PolicyMonitor
+        self._policy_monitor = PolicyMonitor(role_id=None, policy=None)
         if role_id:
             try:
                 from app.roles.role_manager import RoleManager
@@ -135,11 +137,20 @@ class AgenticExecutor:
                 if role:
                     role_prefix = role.get("system_prompt", "")
                     role_model_preference = role.get("model_preference")
+                    self._policy_monitor = PolicyMonitor.from_role(role_id, role)
                     self._log(f"Loaded role: {role.get('name')} (id={role_id})")
                 else:
                     self._log(f"Role '{role_id}' not found — continuing without role")
             except Exception as e:
                 self._log(f"Failed to load role '{role_id}': {e}")
+
+        # Setup-time ceiling: validate available_tools against role policy
+        available_tools = config.get("available_tools", [])
+        if available_tools:
+            violations = self._policy_monitor.validate_available_tools(available_tools)
+            if violations:
+                for v in violations:
+                    self._log(f"Policy ceiling violation: {v}", "warning")
 
         # Load planning prompt — default to assistant_workflow when a role is active
         default_prompt = "assistant_workflow" if role_id else "agentic_planning"
@@ -693,6 +704,15 @@ class AgenticExecutor:
                     reason=policy_check["reason"],
                 )
                 return {"error": f"Policy violation: {policy_check['reason']}"}
+
+        # Check role policy (allowed_tools ceiling, denied_tools, per-task limits)
+        role_decision = self._policy_monitor.check(name, args)
+        if not role_decision.allowed:
+            self._log(f"Tool '{name}' blocked by role policy: {role_decision.reason}", "warning")
+            return {"error": f"Role policy blocked: {role_decision.reason}"}
+        if role_decision.warn:
+            self._log(f"Role policy warning for '{name}': {role_decision.reason}", "warning")
+        self._policy_monitor.record_call(name)
 
         # Try dynamic registry first
         try:

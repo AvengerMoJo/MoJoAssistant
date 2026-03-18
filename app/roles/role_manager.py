@@ -64,6 +64,13 @@ class RoleManager:
                 continue
         return roles
 
+    def get_policy(self, role_id: str) -> Optional[Dict[str, Any]]:
+        """Return just the policy block for a role, or None if not set."""
+        role = self.get(role_id)
+        if role is None:
+            return None
+        return role.get("policy")
+
     def delete(self, role_id: str) -> bool:
         path = os.path.join(self._dir, f"{role_id}.json")
         if os.path.exists(path):

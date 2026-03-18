@@ -2431,6 +2431,22 @@ class ToolRegistry:
             if schedule_str:
                 schedule = datetime.fromisoformat(schedule_str)
 
+            # Setup-time ceiling: validate available_tools against role policy
+            role_id = config.get("role_id") if isinstance(config, dict) else None
+            available_tools = config.get("available_tools", []) if isinstance(config, dict) else []
+            if role_id and available_tools:
+                from app.roles.role_manager import RoleManager
+                from app.scheduler.policy_monitor import PolicyMonitor
+                role = RoleManager().get(role_id)
+                monitor = PolicyMonitor.from_role(role_id, role)
+                violations = monitor.validate_available_tools(available_tools)
+                if violations:
+                    return {
+                        "status": "error",
+                        "message": "Task rejected: available_tools exceeds role policy ceiling",
+                        "violations": violations,
+                    }
+
             # Create task
             resources = (
                 TaskResources.from_dict(resources_dict)
