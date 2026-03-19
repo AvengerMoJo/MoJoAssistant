@@ -2430,10 +2430,65 @@ Agent resumes within seconds.
                 response["attention"] = {
                     "blocking": blocking,
                     "alerts": alerts,
-                    "note": "Call get_attention_summary for full details or to advance cursor.",
+                    "note": "Call get_context(type='attention') for full details or to advance cursor.",
                 }
         except Exception:
             pass  # never let attention errors break context
+
+        # Task sessions directory — active + interesting tasks so LLMs can discover task_ids
+        try:
+            from app.scheduler.models import TaskStatus
+            sessions = []
+
+            # Running tasks
+            for task in self.scheduler.list_tasks(status=TaskStatus.RUNNING):
+                sessions.append({
+                    "task_id": task.id,
+                    "status": "running",
+                    "title": task.description or task.id,
+                    "role": task.config.get("role_id") if task.config else None,
+                    "pending_question": None,
+                    "created_at": task.created_at.isoformat(),
+                })
+
+            # Tasks waiting for input
+            for task in self.scheduler.list_tasks(status=TaskStatus.WAITING_FOR_INPUT):
+                sessions.append({
+                    "task_id": task.id,
+                    "status": "waiting_for_input",
+                    "title": task.description or task.id,
+                    "role": task.config.get("role_id") if task.config else None,
+                    "pending_question": task.pending_question,
+                    "created_at": task.created_at.isoformat(),
+                })
+
+            # Recently completed tasks that requested user attention (notify_user via event log)
+            try:
+                recent_events = self._event_log.get_recent(
+                    types=["task_completed"], limit=20
+                )
+                notify_ids = {
+                    e.get("data", {}).get("task_id")
+                    for e in recent_events
+                    if e.get("notify_user") and e.get("data", {}).get("task_id")
+                }
+                for task in self.scheduler.list_tasks(status=TaskStatus.COMPLETED, limit=50):
+                    if task.id in notify_ids:
+                        sessions.append({
+                            "task_id": task.id,
+                            "status": "completed",
+                            "title": task.description or task.id,
+                            "role": task.config.get("role_id") if task.config else None,
+                            "pending_question": None,
+                            "created_at": task.created_at.isoformat(),
+                        })
+            except Exception:
+                pass
+
+            if sessions:
+                response["task_sessions"] = sessions
+        except Exception:
+            pass  # never let task_sessions errors break context
 
         return response
 
