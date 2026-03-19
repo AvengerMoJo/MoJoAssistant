@@ -148,8 +148,10 @@ class ToolRegistry:
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
         self.placeholder_tools = {
-            "get_current_time",  # Redundant with get_current_day
-            "get_memory_stats",  # Internal stats not useful for LLMs
+            "get_current_time",   # Absorbed into get_context
+            "get_current_day",    # Absorbed into get_context
+            "get_memory_context", # Replaced by get_context + search_memory
+            "get_memory_stats",   # Internal stats not useful for LLMs
         }
 
         # Enable web_search tool as implementation is complete
@@ -165,14 +167,22 @@ class ToolRegistry:
 
         # Standardized user prompt templates for LLM usability
         self.user_prompt_templates = {
-            "get_memory_context": {
-                "template": "Search my memory for information about: {query}",
+            "get_context": {
+                "template": "Get current context and orientation",
+                "examples": [
+                    "Get current context",
+                    "Orient me for this conversation",
+                ],
+                "usage_tip": "Call at conversation start. Returns timestamp, recent memory, and any urgent attention items.",
+            },
+            "search_memory": {
+                "template": "Search my memory for: {query}",
                 "examples": [
                     "Search my memory for information about Python programming",
                     "Find information about our previous discussion about machine learning",
-                    "Look up what I know about climate change",
+                    "Search conversations and documents about climate change",
                 ],
-                "usage_tip": "Use this tool to retrieve relevant context from the user's memory before answering questions or providing information.",
+                "usage_tip": "Use after get_context when you need to find specific information. Specify types for targeted search.",
             },
             "add_documents": {
                 "template": "Add these documents to my knowledge base: {content}",
@@ -257,15 +267,6 @@ class ToolRegistry:
                     "Look up current weather in Tokyo",
                 ],
                 "usage_tip": "Use when you need up-to-date information, news, or data not available in local memory.",
-            },
-            "get_current_day": {
-                "template": "What is today's date and day?",
-                "examples": [
-                    "What is today's date and day?",
-                    "Tell me the current date and time",
-                    "What day of the week is it today?",
-                ],
-                "usage_tip": "Use for questions about today's date, current day, time, or year information.",
             },
             "agent_list_types": {
                 "template": "List available coding agent types",
@@ -397,22 +398,51 @@ class ToolRegistry:
         """Define all available tools"""
         return [
             {
-                "name": "get_memory_context",
-                "description": "Search all memory tiers (working, active, archival, knowledge base) for relevant context to enhance responses. Supports both English and Chinese queries. When to use: Call this tool whenever you need to retrieve relevant context from the user's memory during conversations, research, or problem-solving. How it works: Performs semantic search across multiple memory tiers using embeddings. Why useful: Provides personalized, context-aware responses based on user's history and knowledge.",
+                "name": "get_context",
+                "description": (
+                    "Orientation call — always call this at conversation start.\n\n"
+                    "Returns in one shot:\n"
+                    "  • current timestamp, date, day of week\n"
+                    "  • last 3 recent memory items (no query needed)\n"
+                    "  • attention.blocking / attention.alerts if anything needs action\n\n"
+                    "Use search_memory() when you need to search for something specific."
+                ),
+                "inputSchema": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "name": "search_memory",
+                "description": (
+                    "Semantic search across memory tiers. Use after get_context() when you need to "
+                    "find specific information.\n\n"
+                    "Types:\n"
+                    "  conversations — working, active, and archival conversation history\n"
+                    "  documents     — knowledge base (documents added via add_documents)\n"
+                    "Omit types to search all. limit_per_type controls how many results come "
+                    "from each tier — use higher values (10+) for broad research, lower (3) for "
+                    "a quick check."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query in English or Chinese to find relevant context",
+                            "description": "Search query (English or Chinese)",
                             "minLength": 1,
                         },
-                        "max_items": {
+                        "types": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["conversations", "documents"],
+                            },
+                            "description": "Memory types to search. Omit for all types.",
+                        },
+                        "limit_per_type": {
                             "type": "integer",
-                            "description": "Maximum number of context items to return (default: 10, max: 50)",
-                            "default": 10,
+                            "description": "Max results per memory type (default: 5, max: 20).",
+                            "default": 5,
                             "minimum": 1,
-                            "maximum": 50,
+                            "maximum": 20,
                         },
                     },
                     "required": ["query"],
@@ -658,16 +688,6 @@ class ToolRegistry:
                     },
                     "required": ["service", "resource", "method"],
                 },
-            },
-            {
-                "name": "get_current_day",
-                "description": "Get the current date, day of week, time, and year information for temporal awareness. When to use: Call for questions about today's date, current day, time, current year, or any date/time related queries. How it works: Returns exact current date/time information without needing web search. Why useful: Provides accurate temporal context for scheduling, reminders, and time-sensitive responses.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "name": "get_current_time",
-                "description": "Get the current time with timezone information for precise timing. When to use: Use for questions about current time, scheduling, or time-sensitive operations. How it works: Returns detailed time information including hours, minutes, seconds, and timezone. Why useful: Ensures accurate time awareness for all responses.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
             {
                 "name": "knowledge_add_repo",
@@ -1559,7 +1579,7 @@ class ToolRegistry:
             tool_name = tool["name"]
 
             # Categorize tools
-            if tool_name in ["get_memory_context", "get_memory_stats"]:
+            if tool_name in ["get_context", "search_memory", "get_memory_stats"]:
                 categories["memory"].append(tool)
             elif tool_name in [
                 "add_conversation",
@@ -1584,8 +1604,6 @@ class ToolRegistry:
             elif tool_name in [
                 "toggle_multi_model",
                 "web_search",
-                "get_current_day",
-                "get_current_time",
             ]:
                 categories["utilities"].append(tool)
             elif tool_name.startswith("opencode_"):
@@ -1601,14 +1619,14 @@ class ToolRegistry:
 
         # Define priority mapping
         priority_mapping = {
-            "get_memory_context": "high",
+            "get_context": "high",
+            "search_memory": "high",
             "add_conversation": "high",
             "add_documents": "high",
             "end_conversation": "medium",
             "toggle_multi_model": "medium",
             "list_recent_conversations": "medium",
             "web_search": "medium",
-            "get_current_day": "medium",
             "knowledge_add_repo": "medium",
             "knowledge_get_file": "medium",
             "knowledge_list_repos": "medium",
@@ -1616,7 +1634,6 @@ class ToolRegistry:
             "remove_recent_conversations": "low",
             "list_recent_documents": "low",
             "remove_document": "low",
-            "get_current_time": "low",
         }
 
         for tool in tools:
@@ -1629,11 +1646,12 @@ class ToolRegistry:
     def get_essential_tools(self) -> List[Dict[str, Any]]:
         """Get essential tools that should always be available to LLMs"""
         essential_tool_names = [
-            "get_memory_context",  # Core memory functionality
-            "add_conversation",  # Conversation context preservation
-            "add_documents",  # Knowledge base management
-            "end_conversation",  # Conversation management
-            "web_search",  # Current information access
+            "get_context",        # Orientation — timestamp + recent memory + attention
+            "search_memory",      # Targeted memory search
+            "add_conversation",   # Conversation context preservation
+            "add_documents",      # Knowledge base management
+            "end_conversation",   # Conversation management
+            "web_search",         # Current information access
         ]
 
         tools = self.get_tools()
@@ -1686,7 +1704,8 @@ class ToolRegistry:
         guide += (
             "1. Always use `add_conversation` after each exchange to maintain context\n"
         )
-        guide += "2. Use `get_memory_context` before answering questions to retrieve relevant information\n"
+        guide += "2. Call `get_context` at conversation start — get timestamp, recent memory, and attention in one shot\n"
+        guide += "3. Use `search_memory` when you need to find specific information from past conversations or documents\n"
         guide += "3. Use `web_search` for current information not available in local memory\n"
         guide += (
             "4. Use `end_conversation` when switching to completely different topics\n"
@@ -1821,8 +1840,10 @@ class ToolRegistry:
                 "timestamp": time.time(),
             }
 
-        if name == "get_memory_context":
-            return await self._execute_get_memory_context(args)
+        if name == "get_context":
+            return await self._execute_get_context(args)
+        elif name == "search_memory":
+            return await self._execute_search_memory(args)
         elif name == "add_conversation":
             return await self._execute_add_conversation(args)
         elif name == "get_memory_stats":
@@ -1983,6 +2004,114 @@ class ToolRegistry:
             pass  # never let attention errors break memory context
 
         return response
+
+    async def _execute_get_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Orientation call — returns timestamp, recent memory, and attention summary.
+
+        No query needed. Designed to be called once at the start of every
+        conversation so the LLM immediately knows: what time it is, what was
+        recently discussed, and whether anything needs urgent attention.
+        """
+        from datetime import datetime
+
+        now = datetime.now()
+        response: Dict[str, Any] = {
+            "timestamp": now.isoformat(),
+            "date": now.strftime("%Y-%m-%d"),
+            "day_of_week": now.strftime("%A"),
+            "time": now.strftime("%H:%M"),
+        }
+
+        # Last 3 items from working memory — recency-based, no embedding needed
+        try:
+            messages = self.memory_service.working_memory.get_messages()
+            recent = [
+                {"source": "working_memory", "content": m.content}
+                for m in messages[-3:]
+            ]
+            response["recent_memory"] = recent
+        except Exception:
+            response["recent_memory"] = []
+
+        # Attention wake-up hook — inject only if something needs action
+        try:
+            attention = await self._execute_get_attention_summary({})
+            blocking = attention.get("blocking", [])
+            alerts = attention.get("alerts", [])
+            if blocking or alerts:
+                response["attention"] = {
+                    "blocking": blocking,
+                    "alerts": alerts,
+                    "note": "Call get_attention_summary for full details or to advance cursor.",
+                }
+        except Exception:
+            pass  # never let attention errors break context
+
+        return response
+
+    async def _execute_search_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Targeted semantic search across selected memory tiers.
+
+        types:
+          conversations — working + active + archival memory (conversation history)
+          documents     — knowledge base (docs added via add_documents)
+        Omit types to search all.
+        limit_per_type controls how many results come from each tier.
+        """
+        query = args.get("query", "")
+        requested_types = args.get("types")  # None = all
+        limit_per_type = min(int(args.get("limit_per_type", 5)), 20)
+
+        if not query:
+            return {"status": "error", "message": "query is required"}
+
+        all_types = ["conversations", "documents"]
+        if requested_types:
+            search_types = [t for t in requested_types if t in all_types]
+        else:
+            search_types = all_types
+
+        results: Dict[str, Any] = {}
+
+        if "conversations" in search_types:
+            try:
+                # Generate embedding once for working + active searches
+                embedding = self.memory_service.embedding.get_text_embedding(
+                    query, prompt_name="query"
+                )
+                conv = []
+                if embedding:
+                    w = await self.memory_service._search_working_memory_async(embedding)
+                    a = await self.memory_service._search_active_memory_async(embedding)
+                    conv.extend(w + a)
+                arch = await self.memory_service._search_archival_memory_async(
+                    query, limit_per_type
+                )
+                conv.extend(arch)
+                # Sort by relevance, cap at limit
+                conv.sort(key=lambda x: float(x.get("relevance", 0)), reverse=True)
+                results["conversations"] = conv[:limit_per_type]
+            except Exception as e:
+                results["conversations"] = []
+
+        if "documents" in search_types:
+            try:
+                docs = await self.memory_service._search_knowledge_base_async(
+                    query, limit_per_type
+                )
+                results["documents"] = docs[:limit_per_type]
+            except Exception as e:
+                results["documents"] = []
+
+        total = sum(len(v) for v in results.values())
+        return {
+            "query": query,
+            "types_searched": search_types,
+            "results": results,
+            "total": total,
+        }
 
     async def _execute_add_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute add conversation"""
