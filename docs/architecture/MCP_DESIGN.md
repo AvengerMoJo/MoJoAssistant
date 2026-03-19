@@ -896,9 +896,208 @@ git operation. Copies would require manual diffing.
 | Concern | File |
 |---------|------|
 | OpenCode HTTP client, session API, SSE permission bridge | `submodules/coding-agent-mcp-tool/src/coding_agent_mcp/backends/opencode.py` |
-| Claude Code HTTP client | `submodules/coding-agent-mcp-tool/src/coding_agent_mcp/backends/claude_code.py` (future) |
 | Backend registry + base class | `submodules/coding-agent-mcp-tool/src/coding_agent_mcp/backends/` |
-| Coding agent lifecycle (start/stop/status) | `app/scheduler/coding_agent_manager.py` (or existing agent_manager) |
-| CodingAgentExecutor (Popo's local LLM loop) | `app/scheduler/coding_agent_executor.py` (to be created) |
+| Coding agent lifecycle (start/stop/status) | `app/mcp/agents/` (existing agent_manager) |
+| CodingAgentExecutor (role LLM loop driving a MAP backend) | `app/scheduler/coding_agent_executor.py` |
 | Role config with executor + backend fields | `config/roles/<role>.json` |
 | Sandbox worktree paths | `app/config/paths.py` (`OPENCODE_SANDBOXES_DIR`) |
+
+---
+
+## 17. MoJo Agent Protocol (MAP)
+
+This section captures the vision for a universal agent integration standard.
+It exists to prevent MoJo from accumulating ad-hoc plugins for every new agent
+that appears. Read this before building any new backend.
+
+---
+
+### 17.1 The problem it solves
+
+Every external agent (OpenCode, ZeroClaw, DeerFlow, aider, browser-use, ...)
+has a different API, CLI, or UI. Without a standard, each new agent requires
+a new backend in the `coding-agent-mcp-tool` submodule AND changes to MoJo's
+executor. The cost grows linearly with the number of agents.
+
+**MAP inverts this:** define a small standard interface once. New agents either
+implement it natively, or get a thin shim. MoJo never changes for a new agent.
+
+---
+
+### 17.2 The three interaction classes
+
+Agents fall into three interaction classes based on how they are driven:
+
+```
+Class 1: HTTP agents
+  Native:  agent already speaks MAP over HTTP (OpenCode is the reference)
+  Shimmed: agent has its own HTTP API; a shim translates it to MAP
+
+Class 2: Subprocess agents
+  Agent is a CLI tool (aider, goose, claude --print)
+  A subprocess shim wraps stdin/stdout as MAP
+
+Class 3: GUI/Visual agents
+  Agent has no API — it runs in a terminal or browser
+  A visual shim reads the screen (tmux capture-pane, browser screenshot)
+  and drives it (tmux send-keys, browser automation)
+  Requires a multimodal LLM to interpret screen content
+```
+
+**Model requirements differ by class:**
+
+| Class | LLM requirement | Examples |
+|-------|----------------|---------|
+| HTTP (native/shimmed) | Any — local or API | OpenCode, ZeroClaw, DeerFlow |
+| Subprocess | Strong instruction-follower | aider, goose, claude --print |
+| GUI/Visual | Multimodal — must understand screens | browser-use, tmux agents |
+
+The role config's `agent_class` field tells the executor which bridge to use.
+
+---
+
+### 17.3 The MAP HTTP interface (6 endpoints)
+
+This is the minimal interface any HTTP agent must expose (or have exposed via
+a shim) to integrate with MoJo. OpenCode implements this natively.
+
+```
+POST   /session
+  → Create a new session
+  → Returns: { "id": "<session_id>", ... }
+
+DELETE /session/{id}
+  → End and clean up a session
+
+POST   /session/{id}/message
+  → Send a message/instruction; wait for agent response
+  → Body:    { "parts": [{ "type": "text", "text": "<instruction>" }] }
+  → Returns: the completed message object
+
+GET    /session/{id}/message
+  → Full message history for the session
+  → Returns: list of message objects
+
+GET    /event
+  → SSE stream of all session events
+  → Relevant event types:
+      EventPermissionUpdated  — agent needs user approval to proceed
+      EventPermissionReplied  — user responded to a permission
+      EventMessageUpdated     — message content / tool call progress
+      EventSessionUpdated     — session state changed
+
+POST   /session/{id}/permissions/{permissionId}
+  → Respond to a pending permission request
+  → Body:    { "response": "once" | "always" | "reject" }
+```
+
+**Why these 6?** They cover the complete lifecycle: create → instruct → observe
+→ approve → read history → end. Every class of agent work maps onto these.
+
+---
+
+### 17.4 The shim pattern
+
+A shim is a small adapter that translates an agent's native interface to MAP.
+Shims follow three rules:
+
+1. **Shims live outside MoJo.** They belong in the agent's own repo, in
+   `coding-agent-mcp-tool`, or in a future `mojo-agent-adapters` repo.
+   MoJo never imports agent-specific code directly.
+
+2. **Shims are thin.** A shim should have no opinion about the task being
+   done. It translates requests and events — nothing more.
+
+3. **MoJo only ever calls MAP.** `CodingAgentExecutor` calls
+   `backend.send_message()`, `backend.subscribe_permissions()`, etc.
+   It does not know or care whether the backend is OpenCode native,
+   a ZeroClaw shim, or a subprocess adapter.
+
+**Example shim targets:**
+
+| Agent | Native interface | Shim approach |
+|-------|-----------------|---------------|
+| OpenCode | HTTP (MAP native) | No shim needed |
+| ZeroClaw | Webhook gateway (port 42617) | HTTP shim: translate webhook ↔ MAP |
+| DeerFlow | LangGraph server (port 2024) | HTTP shim: LangGraph API ↔ MAP |
+| aider | CLI subprocess | Subprocess shim: stdin/stdout ↔ MAP |
+| browser-use | Python library | HTTP shim: expose as MAP server |
+| tmux agent | Terminal screen | GUI shim: capture-pane + visual LLM ↔ MAP |
+
+---
+
+### 17.5 Role config fields for agent class
+
+```json
+{
+  "id": "popo",
+  "executor": "coding_agent",
+  "backend_type": "opencode",
+  "agent_class": "http_native",
+  "server_id": "git@github.com:...",
+
+  "agent_class_options": {
+    "http_native": {},
+    "http_shimmed": { "shim_url": "http://localhost:8080" },
+    "subprocess": { "command": "aider", "args": ["--no-auto-commits"] },
+    "gui": { "tmux_session": "aider-work", "screenshot_interval_ms": 500 }
+  }
+}
+```
+
+`agent_class` defaults to `http_native` — backward compatible with the current
+Popo setup. Other classes are not yet implemented; this field reserves the
+design space.
+
+---
+
+### 17.6 Why this matters for ZeroClaw and DeerFlow
+
+**ZeroClaw** is a general autonomous task agent ("workforce replacement") —
+strong general LLM, tool use, sandboxed execution. Best fit: a role that
+handles broad work tasks (not just coding). Integration path: HTTP shim
+translating ZeroClaw's webhook gateway to MAP. ZeroClaw's allowlist-based
+permissions map cleanly to the MAP permission endpoints.
+
+**DeerFlow** is a research orchestration platform — parallel sub-agents, web
+search, scientific paper access, strong thinking model. Best fit: a role like
+Ahman that runs deep research tasks. Integration path: HTTP shim translating
+DeerFlow's LangGraph server (port 2024) to MAP. DeerFlow's async task model
+maps onto MAP's SSE stream.
+
+Both need shims, not new MoJo executors. The `CodingAgentExecutor` (renamed
+`AgentExecutor` eventually) drives them identically — different backends,
+same loop.
+
+---
+
+### 17.7 What MAP is NOT
+
+MAP is not MCP (Model Context Protocol). MCP is about tools exposed TO a model.
+MAP is about tasks delegated TO an agent. They are complementary:
+
+```
+MCP:  MoJo → offers tools → LLM uses them
+MAP:  MoJo → delegates tasks → Agent executes them
+```
+
+MAP is also not a general agent communication standard like A2A (Agent-to-Agent).
+It is deliberately minimal — just enough to let MoJo orchestrate external
+agents without coupling to their internals.
+
+---
+
+### 17.8 Evolution path
+
+```
+Current:  OpenCode (MAP native) via CodingAgentExecutor
+Near:     ZeroClaw shim, DeerFlow shim — same executor, different backends
+Medium:   SubprocessAdapter — CLI agents via stdin/stdout bridge
+Long:     GUIAdapter — visual agents via tmux/browser-use + multimodal LLM
+Ultimate: Rename CodingAgentExecutor → AgentExecutor
+          Any role with executor=agent runs any MAP-compatible backend
+```
+
+The rename from `CodingAgentExecutor` to `AgentExecutor` is the milestone that
+marks MAP as production-ready: when the executor no longer assumes "coding" as
+the task type.
