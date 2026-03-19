@@ -16,13 +16,24 @@ User / External World
 
 ---
 
-## v1.2.0-beta (current)
+## v1.2.0-beta (shipped)
 Role safety, HITL, extensible tools, config validation, smoke test.
 Foundation layer — the infrastructure exists, guardrails are opt-in.
 
-## v1.2.1-beta (next)
-Attention Layer + Wake-up hook. LLM gains situational awareness at
-conversation start. HITL becomes usable without manual polling.
+## v1.2.1-beta (current)
+Attention Layer + MCP consolidation + scheduler improvements.
+- AttentionClassifier + EventLog hitl_level at every event write
+- Wake-up hook in `get_context()` — LLM wakes aware, not blind
+- 49 tools → 12 visible (5 top-level + 7 action hubs)
+- `get_context` unified read (replaces 4 separate tools)
+- Scheduler wake signal (zero-latency task dispatch)
+- Config-driven default tasks (`scheduler_config.json`)
+- SSE standard event envelope
+
+## v1.2.2-beta (next)
+Per-source attention routing rules — config-driven escalation levels
+so security failures surface higher than dreaming failures.
+See "Per-Source Routing Rules" below.
 
 ---
 
@@ -237,12 +248,12 @@ text and loses its typed structure before dreaming can see it.
 
 | Feature | Protects / Enables | Scope |
 |---------|---------|-------|
-| Data boundary enforcement | Data flows | v1.x |
-| Audit trail | Accountability | v1.x |
-| PII classification | Sensitive data leakage | v1.x |
-| Sanitization layer | External exposure | v1.x |
-| Per-source routing | Attention quality | v1.3.0 |
-| Infrastructure routing | Reachability | v1.3.0+ |
+| Per-source routing rules | Attention quality | v1.2.2 |
+| Data boundary enforcement | Data flows | v1.3.x |
+| Audit trail | Accountability | v1.3.x |
+| PII classification | Sensitive data leakage | v1.3.x |
+| Sanitization layer | External exposure | v1.3.x |
+| Infrastructure routing | Reachability | v1.3.x |
 | Policy Enforcement Agent | Proactive blocking, context-aware safety | v1.4+ |
 | Message passing + containerization | Fault isolation, language agnosticism, scale | v2.x |
 | Inbox → Dreaming → Knowledge | Institutional memory, pattern learning | v1.4+ |
