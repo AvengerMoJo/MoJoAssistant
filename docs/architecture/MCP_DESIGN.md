@@ -731,3 +731,174 @@ Inbox → Dream      captures   →  Resolved interactions
 
 The inbox model is the architectural spine. Policy, distribution, and
 knowledge refinement all attach to it without requiring the spine to change.
+
+---
+
+## 16. Coding Agent Layer Separation
+
+This section captures the architectural reasoning for how external coding agents
+(OpenCode, Claude Code) integrate with MoJoAssistant. The boundary was decided
+deliberately — future changes should preserve it.
+
+---
+
+### 16.1 Three-tier model
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Tier 1: Lifecycle — agent hub (MoJo MCP)               │
+│  start / stop / status / list                           │
+│  Knows: process lifecycle, config. Knows nothing about  │
+│  sessions, messages, or permissions.                    │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────┐
+│  Tier 2: API Client — coding-agent-mcp-tool submodule   │
+│  OpenCodeBackend / ClaudeCodeBackend                    │
+│  Knows: every HTTP endpoint, SSE stream format,         │
+│  permission event schema, request/response format.      │
+│  Does NOT know: HITL inboxes, task IDs, MoJo events.   │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────┐
+│  Tier 3: Orchestration — CodingAgentExecutor (MoJo)     │
+│  Runs the role's local LLM (e.g. Popo on qwen3.5)      │
+│  Calls submodule methods as tools                       │
+│  Routes permission requests → HITL inbox                │
+│  Routes HITL replies → submodule respond_to_permission  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Rule:** each tier communicates only with the tier directly below it.
+The lifecycle tier never calls session APIs. The submodule never touches
+the event log. The executor bridges them — it knows both sides but owns neither.
+
+---
+
+### 16.2 Why the API client lives in the submodule
+
+The `coding-agent-mcp-tool` submodule is an independently usable package.
+Someone could use `OpenCodeBackend` without MoJoAssistant. Keeping all OpenCode
+API knowledge there (endpoints, SSE format, permission schema, model switching)
+means:
+
+- The submodule is the single source of truth for OpenCode compatibility
+- MoJoAssistant never hard-codes OpenCode API paths or event types
+- When OpenCode changes its API, only the submodule changes
+- `ClaudeCodeBackend` slots into the same interface without touching MoJo
+
+**What belongs in the submodule:**
+
+```python
+# Session management
+create_session(), list_sessions(), get_session(), delete_session()
+send_message(session_id, content)
+get_messages(session_id)
+
+# Permission bridge (OpenCode API knowledge only)
+subscribe_permissions(session_id) -> AsyncIterator[dict]
+  # streams /event SSE, yields EventPermissionUpdated for this session
+
+respond_to_permission(session_id, permission_id, response)
+  # POST /session/{id}/permissions/{permissionID}
+  # response: "once" | "always" | "reject"
+
+# Model / config
+health(), llm_list_models(), llm_set_model(model)
+```
+
+---
+
+### 16.3 Why HITL routing lives in MoJoAssistant
+
+The permission approval flow is:
+
+```
+OpenCode emits EventPermissionUpdated (via SSE /event stream)
+      ↓
+submodule.subscribe_permissions() yields the permission dict
+      ↓
+CodingAgentExecutor (MoJo) receives the permission
+      ↓
+Writes task_waiting_for_input event to EventLog (hitl_level = 4)
+  → surfaces in get_context() attention.blocking
+  → user sees it in Claude Desktop
+      ↓
+User calls reply_to_task(task_id="popo_perm_<id>", reply="approve")
+      ↓
+CodingAgentExecutor maps reply → "once" | "always" | "reject"
+      ↓
+Calls submodule.respond_to_permission(session_id, permission_id, response)
+      ↓
+OpenCode unblocks and continues
+```
+
+The HITL inbox, EventLog, and attention system are MoJo internals. The submodule
+has no concept of them and should never gain one. The executor is the bridge.
+
+---
+
+### 16.4 Role architecture — Popo as an example
+
+Popo is not OpenCode's model pretending to be a character. The layers are:
+
+```
+qwen3.5-35b-a3b (local LLM, via LMStudio)
+    ↑ system prompt: Popo persona
+    ↑ task: "add tests to auth.py"
+    |
+CodingAgentExecutor
+    | calls
+    ↓
+OpenCodeBackend.send_message(session_id, ...)   ← Popo's instructions to OpenCode
+OpenCodeBackend.subscribe_permissions(...)      ← Popo waiting on permission events
+OpenCodeBackend.respond_to_permission(...)      ← Popo forwarding user decisions
+```
+
+The local LLM is the **thinking layer** — it reads Popo's system prompt,
+understands the task, decides what to ask OpenCode to do, and interprets results.
+
+OpenCode is the **execution layer** — it has shell access, can read/write files,
+run tests. It receives instructions from Popo and executes them.
+
+MoJo scheduler is the **orchestration layer** — it starts the executor, manages
+the task lifecycle, handles the HITL inbox.
+
+**What this means for model config:**
+- `role.model_preference` → local LLM resource ID (e.g. `lmstudio_qwen35`)
+- `role.backend_type` → coding agent type (`"opencode"`)
+- `role.server_id` → which OpenCode server instance to use (`null` = default)
+- OpenCode's own model setting is separate — it is not the role's model
+
+---
+
+### 16.5 Sandbox design
+
+Each role gets an isolated git worktree, not a session parameter. OpenCode
+sessions always use the project's `base_dir` — there is no per-session directory
+override via the API.
+
+```
+~/.memory/opencode-sandboxes/<project-slug>/<role-id>-work/
+    ← git worktree add <path> (created before session start)
+    ← OpenCode server started with this as its project dir
+    ← role's session always targets this server instance
+```
+
+**Why worktrees instead of copies:** worktrees share git history with the main
+repo. The role's changes are visible as a branch diff. Merging back is a normal
+git operation. Copies would require manual diffing.
+
+---
+
+### 16.6 File map additions (coding agent layer)
+
+| Concern | File |
+|---------|------|
+| OpenCode HTTP client, session API, SSE permission bridge | `submodules/coding-agent-mcp-tool/src/coding_agent_mcp/backends/opencode.py` |
+| Claude Code HTTP client | `submodules/coding-agent-mcp-tool/src/coding_agent_mcp/backends/claude_code.py` (future) |
+| Backend registry + base class | `submodules/coding-agent-mcp-tool/src/coding_agent_mcp/backends/` |
+| Coding agent lifecycle (start/stop/status) | `app/scheduler/coding_agent_manager.py` (or existing agent_manager) |
+| CodingAgentExecutor (Popo's local LLM loop) | `app/scheduler/coding_agent_executor.py` (to be created) |
+| Role config with executor + backend fields | `config/roles/<role>.json` |
+| Sandbox worktree paths | `app/config/paths.py` (`OPENCODE_SANDBOXES_DIR`) |

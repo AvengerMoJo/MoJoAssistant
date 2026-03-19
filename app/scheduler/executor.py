@@ -816,6 +816,18 @@ class TaskExecutor:
             )
         return self._agentic_executor
 
+    def _get_coding_agent_executor(self):
+        """Lazy-initialize the CodingAgentExecutor."""
+        if not hasattr(self, "_coding_agent_executor") or self._coding_agent_executor is None:
+            from app.scheduler.coding_agent_executor import CodingAgentExecutor
+
+            self._coding_agent_executor = CodingAgentExecutor(
+                resource_manager=self._get_resource_manager(),
+                logger=self.logger,
+                memory_service=self._memory_service,
+            )
+        return self._coding_agent_executor
+
     async def _execute_agentic(self, task: Task) -> TaskResult:
         """
         Execute an agentic task (autonomous LLM think-act loop).
@@ -834,6 +846,19 @@ class TaskExecutor:
             }
         """
         self._log(f"Executing agentic task {task.id}")
+
+        # Route to CodingAgentExecutor if the role has executor="coding_agent"
+        cfg = task.config or {}
+        role_id = cfg.get("role_id")
+        if role_id:
+            try:
+                from app.roles.role_manager import RoleManager
+                role = RoleManager().get(role_id)
+                if role and role.get("executor") == "coding_agent":
+                    self._log(f"Task {task.id}: routing to CodingAgentExecutor (role={role_id})")
+                    return await self._get_coding_agent_executor().execute(task)
+            except Exception as e:
+                self._log(f"Coding agent routing check failed for role '{role_id}': {e}", "warning")
 
         executor = None
         try:
