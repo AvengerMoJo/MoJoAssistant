@@ -13,6 +13,7 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from app.config.paths import get_memory_subpath
+from app.mcp.adapters.attention_classifier import AttentionClassifier
 
 
 class EventLog:
@@ -47,6 +48,11 @@ class EventLog:
         if "timestamp" not in event:
             event = dict(event)
             event["timestamp"] = datetime.now().isoformat()
+
+        # Classify attention level (deterministic, no I/O)
+        if "hitl_level" not in event:
+            event = dict(event)
+            event["hitl_level"] = AttentionClassifier.classify(event)
 
         async with self._lock:
             self._events.append(event)

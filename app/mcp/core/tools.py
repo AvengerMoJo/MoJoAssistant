@@ -943,6 +943,7 @@ class ToolRegistry:
                                 "completed",
                                 "failed",
                                 "cancelled",
+                                "waiting_for_input",
                             ],
                             "description": "Filter by task status",
                         },
@@ -1196,6 +1197,41 @@ class ToolRegistry:
                             "type": "boolean",
                             "description": "Include full event data payload (default: false — returns envelope only).",
                             "default": False,
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            # Attention Layer — proactive situational awareness
+            {
+                "name": "get_attention_summary",
+                "description": (
+                    "Return a token-compact grouped summary of events that need attention, "
+                    "bucketed by urgency. Use this at conversation start (or when checking in) "
+                    "to discover tasks waiting for input, failures, and completions.\n\n"
+                    "Response buckets:\n"
+                    "  blocking  — level 4-5, requires immediate action; each item has reply_with + args\n"
+                    "  alerts    — level 3, errors needing attention\n"
+                    "  digest    — level 1-2, FYI completions and notifications (capped at 10)\n"
+                    "  noise_count — suppressed level-0 events\n"
+                    "  cursor    — pass as 'since' on next call to advance your position\n\n"
+                    "Behaviour:\n"
+                    "  - If blocking is non-empty: surface to user before anything else.\n"
+                    "    Each item includes reply_with so you know how to respond.\n"
+                    "  - If alerts is non-empty: mention in passing, ask if user wants to investigate.\n"
+                    "  - If all buckets are empty: everything is quiet, proceed normally."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "since": {
+                            "type": "string",
+                            "description": "ISO-8601 cursor. Only return events after this timestamp. Omit for the last 24 hours.",
+                        },
+                        "min_level": {
+                            "type": "integer",
+                            "description": "Minimum hitl_level to include (default: 1 — suppresses level-0 noise).",
+                            "default": 1,
                         },
                     },
                     "required": [],
@@ -1871,9 +1907,11 @@ class ToolRegistry:
             return await self._execute_dreaming_get_archive(args)
         elif name == "dreaming_upgrade_quality":
             return await self._execute_dreaming_upgrade_quality(args)
-        # Event Log
+        # Event Log / Attention Layer
         elif name == "get_recent_events":
             return await self._execute_get_recent_events(args)
+        elif name == "get_attention_summary":
+            return await self._execute_get_attention_summary(args)
         elif name == "config_doctor":
             return await self._execute_config_doctor(args)
         # Configuration Tool
@@ -1921,12 +1959,30 @@ class ToolRegistry:
             query, max_items=max_results
         )
 
-        return {
+        response: Dict[str, Any] = {
             "query": query,
             "results": results,
             "count": len(results),
             "timestamp": time.time(),
         }
+
+        # Wake-up hook: inject attention summary if anything needs action.
+        # Only adds the field when there is something to surface — quiet
+        # conversations are not polluted with empty noise.
+        try:
+            attention = await self._execute_get_attention_summary({})
+            blocking = attention.get("blocking", [])
+            alerts = attention.get("alerts", [])
+            if blocking or alerts:
+                response["attention"] = {
+                    "blocking": blocking,
+                    "alerts": alerts,
+                    "note": "Call get_attention_summary for full details or to advance cursor.",
+                }
+        except Exception:
+            pass  # never let attention errors break memory context
+
+        return response
 
     async def _execute_add_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute add conversation"""
@@ -3159,6 +3215,99 @@ class ToolRegistry:
             "count": len(events),
             "events": events,
             "latest_timestamp": events[-1]["timestamp"] if events else None,
+        }
+
+    async def _execute_get_attention_summary(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Return a grouped attention summary bucketed by urgency level.
+
+        Reads events from the persistent event log filtered by hitl_level,
+        groups them into blocking / alerts / digest buckets, and returns
+        a token-compact representation the MCP client LLM can act on.
+        """
+        from datetime import datetime, timedelta
+
+        since = args.get("since")
+        min_level = int(args.get("min_level", 1))
+
+        # Default window: last 24 hours
+        if not since:
+            since = (datetime.now() - timedelta(hours=24)).isoformat()
+
+        # Pull all events with data (needed for task_id in blocking items)
+        all_events = self._event_log.get_recent(
+            since=since,
+            limit=500,
+            include_data=True,
+        )
+
+        blocking = []   # level 4-5
+        alerts = []     # level 3
+        digest = []     # level 1-2
+        noise_count = 0
+
+        for e in all_events:
+            level = e.get("hitl_level", 0)
+            if level == 0:
+                noise_count += 1
+                continue
+            if level < min_level:
+                continue
+
+            event_type = e.get("event_type", "")
+            data = e.get("data") or {}
+            blurb = e.get("title") or event_type
+
+            # Determine source label
+            source = data.get("created_by") or data.get("agent_id") or (
+                "scheduler" if "task" in event_type else "system"
+            )
+
+            item: Dict[str, Any] = {
+                "id": e.get("id"),
+                "level": level,
+                "from": source,
+                "blurb": blurb,
+                "created_at": e.get("timestamp"),
+            }
+
+            # For waiting_for_input events, attach reply guidance
+            if event_type == "task_waiting_for_input":
+                task_id = data.get("task_id")
+                if task_id:
+                    item["reply_with"] = "reply_to_task"
+                    item["task_id"] = task_id
+                question = data.get("question") or data.get("pending_question")
+                if question:
+                    item["blurb"] = f"Waiting: {question}"
+
+            if level >= 4:
+                blocking.append(item)
+            elif level == 3:
+                alerts.append(item)
+            else:
+                digest.append(item)
+
+        # Cap digest at 10 items (keep newest)
+        digest = digest[-10:]
+
+        # Cursor = latest event timestamp in the returned set
+        all_returned = blocking + alerts + digest
+        cursor = max(
+            (e["created_at"] for e in all_returned if e.get("created_at")),
+            default=since,
+        )
+
+        return {
+            "status": "success",
+            "blocking": blocking,
+            "alerts": alerts,
+            "digest": digest,
+            "digest_count": len(digest),
+            "noise_count": noise_count,
+            "cursor": cursor,
         }
 
     async def _execute_config_doctor(self, args: Dict[str, Any]) -> Dict[str, Any]:
