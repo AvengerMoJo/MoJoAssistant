@@ -31,9 +31,20 @@ Attention Layer + MCP consolidation + scheduler improvements.
 - SSE standard event envelope
 
 ## v1.2.2-beta (next)
-Per-source attention routing rules — config-driven escalation levels
-so security failures surface higher than dreaming failures.
-See "Per-Source Routing Rules" below.
+Interactive coding agent integration (OpenCode + Claude Code) + per-source attention routing.
+
+**Coding agent HITL bridge:**
+- New MCP tool `external_agent(action="ask_user", task_id, question, options?)` — lets external
+  coding agents (OpenCode, Claude Code) inject questions into the HITL inbox directly
+- Coding agent task driver in scheduler — spawns agent process, manages task_id lifecycle,
+  bridges process I/O to/from the inbox
+- Reply delivery — `reply_to_task()` routes answers back to the waiting coding agent
+- Any MCP client (ChatMCP, Claude Code, OpenCode) sees waiting questions via `get_context()`
+  attention.blocking and can answer with `reply_to_task()`
+
+**Per-source attention routing:**
+- Config-driven escalation rules so security failures surface higher than dreaming noise.
+  See "Per-Source Routing Rules" below.
 
 ## v1.2.3-beta
 Data boundary enforcement + audit trail. Policy-backed protection for
@@ -268,6 +279,7 @@ text and loses its typed structure before dreaming can see it.
 
 | Feature | Protects / Enables | Scope |
 |---------|---------|-------|
+| Coding agent HITL bridge (OpenCode, Claude Code) | Interactive external agents | v1.2.2 |
 | Per-source routing rules | Attention quality | v1.2.2 |
 | Data boundary enforcement | Data flows | v1.2.3 |
 | Audit trail | Accountability | v1.2.3 |
