@@ -35,6 +35,26 @@ Per-source attention routing rules — config-driven escalation levels
 so security failures surface higher than dreaming failures.
 See "Per-Source Routing Rules" below.
 
+## v1.2.3-beta
+Data boundary enforcement + audit trail. Policy-backed protection for
+local-only data flows. Every external resource call logged with task_id,
+resource type, and token count.
+
+## v1.2.4-beta
+PII classification + sanitization layer. Pattern-based scanner flags
+sensitive data before it crosses a boundary. Configurable per role:
+redact, abstract, or summarise before external exposure.
+
+## v1.2.5-beta
+Infrastructure routing + Policy Enforcement Agent. High-priority events
+reach the user even when no MCP client is open. Policy Agent subscribes
+to the inbox event stream and can block operations before execution.
+
+## v1.2.x → v1.3.0 graduation
+v1.3.0 releases when the base policy layer (data boundary + PII + policy
+enforcement) is solid enough to call "production-grade agentic safety".
+No version jump until the foundation is real.
+
 ---
 
 ## Future Releases
@@ -249,11 +269,11 @@ text and loses its typed structure before dreaming can see it.
 | Feature | Protects / Enables | Scope |
 |---------|---------|-------|
 | Per-source routing rules | Attention quality | v1.2.2 |
-| Data boundary enforcement | Data flows | v1.3.x |
-| Audit trail | Accountability | v1.3.x |
-| PII classification | Sensitive data leakage | v1.3.x |
-| Sanitization layer | External exposure | v1.3.x |
-| Infrastructure routing | Reachability | v1.3.x |
-| Policy Enforcement Agent | Proactive blocking, context-aware safety | v1.4+ |
+| Data boundary enforcement | Data flows | v1.2.3 |
+| Audit trail | Accountability | v1.2.3 |
+| PII classification | Sensitive data leakage | v1.2.4 |
+| Sanitization layer | External exposure | v1.2.4 |
+| Infrastructure routing | Reachability | v1.2.5 |
+| Policy Enforcement Agent | Proactive blocking, context-aware safety | v1.2.5 |
+| Inbox → Dreaming → Knowledge | Institutional memory, pattern learning | v1.2.x |
 | Message passing + containerization | Fault isolation, language agnosticism, scale | v2.x |
-| Inbox → Dreaming → Knowledge | Institutional memory, pattern learning | v1.4+ |
