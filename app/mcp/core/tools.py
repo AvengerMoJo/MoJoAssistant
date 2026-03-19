@@ -4931,10 +4931,19 @@ Agent resumes within seconds.
         elif action == "action":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
+            raw_params = args.get("params") or {}
+            if isinstance(raw_params, str):
+                import json as _json
+                try:
+                    raw_params = _json.loads(raw_params)
+                except Exception:
+                    raw_params = {}
+            sub_action = raw_params.get("action")
+            sub_params = {k: v for k, v in raw_params.items() if k != "action"}
             return await self._execute_agent_action({
                 "agent_type": args.get("agent_type"),
-                "action": args.get("params", {}).get("action"),
-                "params": args.get("params", {}),
+                "action": sub_action,
+                "params": sub_params,
             })
         else:
             return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
