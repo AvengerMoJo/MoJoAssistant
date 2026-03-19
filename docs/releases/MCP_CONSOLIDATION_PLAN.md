@@ -33,59 +33,157 @@ After:   12 visible tools   (hub sub-commands discovered on demand)
 
 **New:** one `get_context(type?, ...)` — same verb, different lens.
 
+---
+
 ### Type: `"orientation"` (default — no type param needed)
 
 ```
 get_context()
 ```
 
-Returns:
+The **directory call** — tells the LLM everything it needs to know to decide
+what to do next.  Includes:
+
+1. **Temporal context** — timestamp, date, day_of_week, time
+2. **Recent memory** — last 3 working memory items (recency, no query)
+3. **Attention** — blocking/alerts if anything needs action (wake-up hook)
+4. **Task sessions** — lightweight directory of active/interesting tasks so
+   the LLM can discover task_ids before drilling in with `type="task_session"`
+
 ```json
 {
   "timestamp": "2026-03-19T10:42:00",
   "date": "2026-03-19",
   "day_of_week": "Thursday",
   "time": "10:42",
-  "recent_memory": [ { "source": "working_memory", "content": "..." } ],
-  "attention": { "blocking": [...], "alerts": [...], "note": "..." }
+  "recent_memory": [
+    { "source": "working_memory", "content": "..." }
+  ],
+  "attention": {
+    "blocking": [
+      {
+        "id": "u_882a", "level": 4, "from": "ahman",
+        "blurb": "Waiting: which subnet should I scan?",
+        "reply_with": "reply_to_task", "task_id": "ahman_scan_001",
+        "created_at": "2026-03-19T09:14:00"
+      }
+    ],
+    "alerts": [],
+    "note": "Call get_context(type='attention') for full details."
+  },
+  "task_sessions": [
+    {
+      "task_id": "ahman_scan_001",
+      "status": "waiting_for_input",
+      "title": "Weekly Ahman security review",
+      "role": "ahman",
+      "pending_question": "which subnet should I scan?",
+      "created_at": "2026-03-19T08:00:00"
+    },
+    {
+      "task_id": "dreaming_nightly_20260319",
+      "status": "running",
+      "title": "Nightly dreaming consolidation",
+      "role": null,
+      "pending_question": null,
+      "created_at": "2026-03-19T03:00:00"
+    }
+  ]
 }
 ```
-`attention` field omitted when nothing needs action.
 
-### Type: `"attention"` — cursor-based attention inbox
+`attention` omitted when empty.
+`task_sessions` shows: running, waiting_for_input, and recently-completed
+tasks with `notify_user=true`. Omitted when empty.
+
+---
+
+### Inbox + Reply Routing — How It Works
+
+`attention.blocking` items and `task_sessions` answer "what needs my attention
+and what is the task_id?"  They are the same data viewed differently:
+
+- `attention.blocking` → urgent, surfaces the question inline
+- `task_sessions` → full directory, includes non-urgent running tasks
+
+**Reply routing** is via `task_id` — a direct pointer, no separate routing table:
+
+```
+attention.blocking[0]:
+  task_id: "ahman_scan_001"
+  reply_with: "reply_to_task"   ← hub already tells LLM the exact call
+
+LLM calls: reply_to_task(task_id="ahman_scan_001", reply="scan 10.0.0.0/24")
+  ↓
+scheduler.resume_task_with_reply() — sets task status PENDING, injects reply
+  ↓
+Scheduler next tick picks up PENDING task and resumes agent with reply as
+injected user message in the conversation history
+  ↓
+Agent continues from where it paused
+```
+
+The scheduler agent does not "watch" for replies — it passively finds the
+PENDING task on the next tick.  This is intentional: the scheduler is a
+pull-based queue, not a push-based event listener.
+
+**Known gap:** up to 60-second tick delay between reply and resume.
+Acceptable for v1.x; a future `scheduler_wake` signal or tick reduction
+can fix it without changing the inbox design.
+
+**`reply_to_task` stays top-level** — it is a direct action on a known task_id,
+time-sensitive (user is waiting), and called frequently enough to warrant
+immediate access.  `scheduler_resume_task` is the same operation and will
+be **retired** — `reply_to_task` is the canonical name.
+
+---
+
+### Type: `"attention"` — cursor-based attention polling
 
 ```
 get_context(type="attention", since="2026-03-19T09:00:00", min_level=1)
 ```
 
-Replaces standalone `get_attention_summary`.  Same response schema
-(blocking / alerts / digest / noise_count / cursor).
+Replaces standalone `get_attention_summary`.
+Returns full grouped summary: blocking / alerts / digest / noise_count / cursor.
+Use `since` cursor to advance position and avoid re-reading old items.
 
-### Type: `"events"` — raw event log polling
+---
+
+### Type: `"events"` — raw event log
 
 ```
-get_context(type="events", since="...", event_types=["task_failed"], limit=50)
+get_context(type="events", since="...", event_types=["task_failed"], limit=50, include_data=false)
 ```
 
 Replaces `get_recent_events`.
-Returns list of events with envelope fields (event_type, severity,
+Returns raw event list with envelope fields (event_type, severity,
 hitl_level, title, notify_user, timestamp).
-Optional `include_data=true` for full payload.
 
-### Type: `"task_session"` — task output / inbox
+---
+
+### Type: `"task_session"` — full task output
 
 ```
 get_context(type="task_session", task_id="ahman_scan_001")
 ```
 
 Replaces `task_session_read`.
-Returns the running task's streamed output, current status,
-and any pending_question if status is `waiting_for_input`.
+Returns full streamed output of the task, current status, and
+`pending_question` if status is `waiting_for_input`.
+
+LLM discovers `task_id` values from `get_context()` → `task_sessions` directory
+before drilling in here.  No blind guessing of IDs required.
+
+---
 
 ### Files
-- `app/mcp/core/tools.py` — update `get_context` schema + `_execute_get_context`
+- `app/mcp/core/tools.py` — expand `get_context` schema with `type` + type-specific
+  params; update `_execute_get_context` to dispatch on `type`
 - Internal `_execute_get_attention_summary`, `_execute_get_recent_events`,
   `_execute_task_session_read` remain as private methods, called via type dispatch
+- `app/scheduler/core.py` — `_build_task_sessions_directory()` helper returning
+  lightweight task list for the orientation response
 
 ---
 
@@ -198,17 +296,18 @@ scheduler(action="daemon_start")
 scheduler(action="daemon_stop")
 scheduler(action="daemon_restart")
 scheduler(action="list_tools")                      → tools available to agents
-scheduler(action="resume_task", task_id, reply)     → same as reply_to_task?
 ```
 
-Note: `reply_to_task` stays **top-level** — it is an interactive/blocking
-response used during HITL and should be immediately accessible.
+**`scheduler_resume_task` is retired** — duplicate of `reply_to_task` which stays
+top-level.  See inbox + reply routing design in Part 1.
 
 **Retired into hub:** `scheduler_add_task`, `scheduler_list_tasks`,
 `scheduler_get_status`, `scheduler_get_task`, `scheduler_remove_task`,
 `scheduler_purge_tasks`, `scheduler_start_daemon`, `scheduler_stop_daemon`,
 `scheduler_restart_daemon`, `scheduler_daemon_status`,
-`scheduler_list_assistant_tools`, `scheduler_resume_task`
+`scheduler_list_assistant_tools`
+
+**Retired entirely:** `scheduler_resume_task` (use `reply_to_task` instead)
 
 ### Files
 - `app/mcp/core/tools.py` — new `scheduler` schema + `_execute_scheduler`
@@ -280,22 +379,40 @@ Future additions land here without adding new top-level tools:
 
 ## Final Tool Map
 
-| # | Tool | Type | Replaces |
+| # | Tool | Type | Replaces / Notes |
 |---|------|------|---------|
-| 1 | `get_context(type?, …)` | top-level | get_context, get_recent_events, get_attention_summary, task_session_read |
-| 2 | `search_memory(query, …)` | top-level | — (already done) |
-| 3 | `add_conversation(user, assistant)` | top-level | — (unchanged) |
-| 4 | `reply_to_task(task_id, reply)` | top-level | — (unchanged) |
-| 5 | `web_search(query)` | top-level | — (unchanged) |
+| 1 | `get_context(type?, …)` | top-level | orientation + get_recent_events + get_attention_summary + task_session_read. Default call returns **directory** (attention + task_sessions list). |
+| 2 | `search_memory(query, …)` | top-level | already done |
+| 3 | `add_conversation(user, assistant)` | top-level | unchanged |
+| 4 | `reply_to_task(task_id, reply)` | top-level | unchanged; `scheduler_resume_task` **retired** — this is the canonical inbox reply |
+| 5 | `web_search(query)` | top-level | unchanged |
 | 6 | `memory(action, …)` | hub | 9 management tools |
 | 7 | `knowledge(action, …)` | hub | 3 knowledge_* tools |
-| 8 | `config(action, …)` | hub | existing config + 11 tools |
-| 9 | `scheduler(action, …)` | hub | 12 scheduler_* tools |
+| 8 | `config(action, …)` | hub | existing config + resource_pool (4) + doctor + llm_models + roles (5) = +11 tools |
+| 9 | `scheduler(action, …)` | hub | 11 scheduler_* tools (resume_task retired) |
 | 10 | `dream(action, …)` | hub | 4 dreaming_* tools |
 | 11 | `agent(action, …)` | hub | 8 agent_* tools |
-| 12 | `external_agent(action, …)` | hub | google_service + future |
+| 12 | `external_agent(action, …)` | hub | google_service + future 3rd-party |
 
 **49 active tools → 12 visible tools**
+
+### Inbox flow at a glance
+
+```
+get_context()
+  └─ attention.blocking[0]
+       task_id: "ahman_scan_001"
+       reply_with: "reply_to_task"     ← pre-filled hint
+       blurb: "Waiting: which subnet?"
+  └─ task_sessions[0]
+       task_id: "ahman_scan_001"       ← same ID, can drill in
+
+get_context(type="task_session", task_id="ahman_scan_001")
+  └─ full output + pending_question    ← LLM decides if it needs more context
+
+reply_to_task(task_id="ahman_scan_001", reply="scan 10.0.0.0/24")
+  └─ task resumes on next scheduler tick
+```
 
 ---
 
