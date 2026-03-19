@@ -547,3 +547,187 @@ standalone `role` hub would create a false conceptual boundary.
 Google has 10+ services. Slack has actions. GitHub has endpoints. A new top-level
 tool per service would blow the 12-tool budget. The hub pattern lets the system
 grow without the LLM's context window growing.
+
+---
+
+## 15. Future Architecture Directions
+
+These are not planned for immediate implementation but are deliberately
+designed into the current architecture so they remain achievable without
+a rewrite. Every decision here should preserve these paths.
+
+---
+
+### 15.1 Policy Enforcement Agent (Inbox as Interception Point)
+
+**What:** A policy role that monitors the inbox event stream and can
+proactively block operations — before execution, not just after logging.
+
+**Why the inbox makes this possible:**
+Today `PolicyMonitor` enforces role-level tool restrictions at task *start*
+(denied_tools, allowed_tools ceiling). This is setup-time enforcement.
+The inbox model exposes a richer interception point: every inter-agent
+communication, every HITL question, every external call is an event in the
+event stream *before* the result lands anywhere.
+
+**Design sketch:**
+
+```
+Event emitted: "task about to call external API with this payload"
+      ↓
+PolicyAgent (scheduled role, monitors inbox at hitl_level ≥ 3) receives event
+      ↓
+PolicyAgent classifies: contains PII? crosses data boundary? dangerous tool?
+      ↓
+  ALLOW → event proceeds, PolicyAgent records decision
+  BLOCK → event elevated to hitl_level 5, operation cancelled,
+          user notified: "PolicyAgent blocked X because Y"
+```
+
+This is the proactive counterpart to the reactive `denied_tools` list.
+`denied_tools` is a static rule. PolicyAgent is dynamic — it can understand
+context, apply role-specific rules, and explain its decisions.
+
+**Connection to ROADMAP_future.md:**
+- Data Boundary Enforcement: PolicyAgent is the enforcer
+- PII Classification: PolicyAgent calls the DataClassifier
+- Sanitization Layer: PolicyAgent triggers sanitization before allowing
+- Audit Trail: PolicyAgent writes every decision to the audit log
+
+**Implementation requirements (preserving this path today):**
+- Events must carry `source_task_id`, `source_role`, `destination` — all
+  already present in the event envelope
+- `hitl_level` must be assignable by a role, not just the classifier —
+  PolicyAgent needs to escalate events it flags
+- The HITL reply mechanism (`reply_to_task`) already handles the
+  "block and ask user" flow — no new plumbing needed
+
+---
+
+### 15.2 Message Passing → Containerized Architecture
+
+**What:** Move from in-process method calls to explicit message passing,
+enabling each component to run in its own container/process boundary.
+
+**Why the inbox model is the foundation:**
+`EventLog` + SSE is already an embryonic message bus. The inbox defines
+the message schema. The attention model defines routing (by hitl_level and
+event_type). What's missing is the boundary — today everything is in one
+Python process communicating via method calls.
+
+**Target architecture:**
+
+```
+┌─────────────────┐     messages      ┌──────────────────┐
+│   MCP Server    │ ←──────────────── │  Scheduler       │
+│  (gateway)      │ ──────────────→   │  (task runner)   │
+└────────┬────────┘                   └────────┬─────────┘
+         │ messages                            │ messages
+         ↓                                     ↓
+┌─────────────────┐                   ┌──────────────────┐
+│  Memory Service │                   │  Agent Container │
+│  (local only)   │                   │  (Ahman, etc.)   │
+└─────────────────┘                   └──────────────────┘
+         ↑                                     ↑
+         └──────────── Message Bus ────────────┘
+                    (EventLog → future: NATS/Redis)
+```
+
+**What enables the migration path:**
+- All inter-component communication already goes through `broadcast()` /
+  `EventLog` — replace in-process calls with message bus calls gradually
+- `reply_to_task` defines the reply message schema — same schema works
+  over a network message bus
+- `task_id` as routing key — works identically in-process or across containers
+- The `executor` field on `ToolDefinition` already supports `mcp_proxy` type —
+  this is the seed of cross-boundary tool calls
+
+**Language agnosticism:** once components communicate via messages, a Rust
+scheduler or Go agent can join the bus without touching the Python codebase.
+
+**Migration path (preserving today's code):**
+1. Current: in-process method calls + EventLog as audit trail
+2. Near-term: EventLog as primary communication, method calls as fallback
+3. Long-term: Replace method calls with message bus; containers optional
+
+---
+
+### 15.3 Inbox → Dreaming → Knowledge Refinement
+
+**What:** Interactions resolved via the inbox (question asked → context
+provided → task resumed → result produced) are structured knowledge events.
+They should flow into the dreaming pipeline and be distilled into reusable
+knowledge for future assistants.
+
+**Why this matters:**
+Today dreaming processes raw conversation text. Inbox interactions are richer:
+- **Typed metadata**: who asked (source_role), what tool triggered it, what
+  the resolution was
+- **Outcome signal**: the task completed after the reply — the resolution worked
+- **Reusability**: "When Ahman encountered X while doing Y, the answer was Z"
+  is more useful than reconstructing that from raw text
+
+**Data flow:**
+
+```
+Inbox interaction resolves:
+  task_waiting_for_input  → reply_to_task(reply) → task_completed
+         ↓
+EventLog has both events with same task_id and timestamps
+         ↓
+Dreaming "inbox stage" (new pipeline stage):
+  - pairs waiting_for_input + task_completed events by task_id
+  - extracts: role, question, context at time, resolution, outcome
+  - produces: structured "resolved interaction" knowledge unit
+         ↓
+Archival memory: "interaction://ahman_scan_001"
+  {
+    "type": "resolved_interaction",
+    "role": "ahman",
+    "problem": "which subnet should I scan?",
+    "context": "weekly security review, home network",
+    "resolution": "scan 10.0.0.0/24",
+    "outcome": "completed — found 3 open ports",
+    "refined_at": "2026-03-20T03:00:00"   ← from nightly dreaming
+  }
+         ↓
+search_memory("subnet scanning") → surfaces this as future context
+```
+
+**Why dreaming (not immediate):**
+Raw interactions are noisy — failed attempts, corrections, rephrasing. The
+dreaming pipeline's LLM can identify the resolved final form and strip noise.
+Immediate storage would preserve confusion alongside resolution.
+
+**Implementation requirements (preserving this path today):**
+- EventLog must store `task_id` on both the question and completion events —
+  already the case
+- Dreaming pipeline needs a new optional stage that receives EventLog events
+  (or a filtered subset) alongside conversation history
+- The distilled output uses the same archive format — no new storage layer
+- `search_memory(types=["conversations"])` already searches archival — refined
+  interactions land there automatically
+
+---
+
+### 15.4 How These Three Connect
+
+These are not independent features — they form a coherent whole:
+
+```
+Policy Agent       monitors   →  Inbox (event stream)
+                   blocks     →  Dangerous events before execution
+                   records    →  Policy decisions to EventLog
+
+Message Bus        carries    →  All inter-component communication
+                   enables    →  Container boundaries (optional)
+                   foundation →  Inbox, Attention, EventLog
+
+Inbox → Dream      captures   →  Resolved interactions
+                   refines    →  Via dreaming pipeline
+                   stores     →  In archival memory for future use
+                   grows      →  The assistant's institutional knowledge
+```
+
+The inbox model is the architectural spine. Policy, distribution, and
+knowledge refinement all attach to it without requiring the spine to change.
