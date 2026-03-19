@@ -6,7 +6,7 @@
 
   "executor": "coding_agent",
   "backend_type": "opencode",
-  "server_id": null,
+  "server_id": null,  // set to your OpenCode server_id (git URL or custom id)
 
   "dimensions": {
     "core_values": {
