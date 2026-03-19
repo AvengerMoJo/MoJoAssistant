@@ -1461,12 +1461,22 @@ class ToolRegistry:
                 "description": (
                     "External services and 3rd-party integrations. Call with no action for help menu.\n\n"
                     "action='google', service, resource, method, params?, json_body?, format?, ... — Google Workspace API proxy\n\n"
+                    "action='opencode_servers' — list configured OpenCode backends\n"
+                    "action='opencode_health', server_id? — check if OpenCode server is reachable\n"
+                    "action='opencode_session_list', server_id? — list sessions\n"
+                    "action='opencode_session_create', server_id? — create new session\n"
+                    "action='opencode_session_message', session_id, content, server_id? — send message\n"
+                    "action='opencode_session_messages', session_id, server_id? — get message history\n"
+                    "action='opencode_session_delete', session_id, server_id? — delete session\n\n"
                     "Future: action='github', action='slack', action='notion', ..."
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "description": "Integration to use. Omit for help menu."},
+                        "server_id": {"type": "string", "description": "OpenCode server ID (opencode actions). Omit for default server."},
+                        "session_id": {"type": "string", "description": "OpenCode session ID (opencode session actions)."},
+                        "content": {"type": "string", "description": "Message content (opencode_session_message)."},
                         "service": {"type": "string", "description": "Google service (google action): calendar, drive, sheets, gmail, docs, people."},
                         "resource": {"type": "string", "description": "API resource (google action)."},
                         "method": {"type": "string", "description": "API method (google action): list, get, create, update, delete."},
