@@ -400,14 +400,55 @@ class ToolRegistry:
             {
                 "name": "get_context",
                 "description": (
-                    "Orientation call — always call this at conversation start.\n\n"
-                    "Returns in one shot:\n"
-                    "  • current timestamp, date, day of week\n"
-                    "  • last 3 recent memory items (no query needed)\n"
-                    "  • attention.blocking / attention.alerts if anything needs action\n\n"
-                    "Use search_memory() when you need to search for something specific."
+                    "Unified context read tool. Call with no args at conversation start for orientation.\n\n"
+                    "type='orientation' (default): timestamp + date + recent memory + attention wake-up.\n"
+                    "type='attention':    grouped inbox — blocking/alerts/digest/cursor. "
+                    "                     params: since (ISO cursor), min_level (default 1).\n"
+                    "type='events':       raw event log. "
+                    "                     params: since, event_types (list), limit (default 50), include_data.\n"
+                    "type='task_session': full output of a specific task. "
+                    "                     params: task_id (required).\n\n"
+                    "Discover task_ids from the task_sessions directory in the orientation response."
                 ),
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["orientation", "attention", "events", "task_session"],
+                            "description": "What to read. Omit for orientation (default).",
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "ISO-8601 cursor (attention + events types).",
+                        },
+                        "min_level": {
+                            "type": "integer",
+                            "description": "Minimum hitl_level to include (attention type, default 1).",
+                            "default": 1,
+                        },
+                        "event_types": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Filter by event_type list (events type).",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max events to return (events type, default 50).",
+                            "default": 50,
+                        },
+                        "include_data": {
+                            "type": "boolean",
+                            "description": "Include full event data payload (events type, default false).",
+                            "default": False,
+                        },
+                        "task_id": {
+                            "type": "string",
+                            "description": "Task to read output from (task_session type).",
+                        },
+                    },
+                    "required": [],
+                },
             },
             {
                 "name": "search_memory",
@@ -2065,12 +2106,36 @@ Agent resumes within seconds.
 
     async def _execute_get_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Orientation call — returns timestamp, recent memory, and attention summary.
+        Unified context read tool — dispatch on type parameter.
 
-        No query needed. Designed to be called once at the start of every
-        conversation so the LLM immediately knows: what time it is, what was
-        recently discussed, and whether anything needs urgent attention.
+        type='orientation' (default): timestamp + recent memory + attention wake-up.
+        type='attention':             grouped inbox with cursor (get_attention_summary).
+        type='events':                raw event log (get_recent_events).
+        type='task_session':          full task output (task_session_read).
         """
+        ctx_type = args.get("type", "orientation")
+
+        if ctx_type == "attention":
+            return await self._execute_get_attention_summary({
+                "since": args.get("since"),
+                "min_level": args.get("min_level", 1),
+            })
+
+        if ctx_type == "events":
+            return await self._execute_get_recent_events({
+                "since_timestamp": args.get("since"),
+                "types": args.get("event_types"),
+                "limit": args.get("limit", 50),
+                "include_data": args.get("include_data", False),
+            })
+
+        if ctx_type == "task_session":
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required for type='task_session'"}
+            return await self._execute_task_session_read({"task_id": task_id})
+
+        # Default: orientation
         from datetime import datetime
 
         now = datetime.now()
