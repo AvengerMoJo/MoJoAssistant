@@ -3059,14 +3059,28 @@ Agent resumes within seconds.
         agent_type = args.get("agent_type")
 
         try:
-            manager = self.agent_registry.get_manager(agent_type)
-            return await manager.list_projects()
+            if agent_type:
+                manager = self.agent_registry.get_manager(agent_type)
+                return await manager.list_projects()
+            # No type — aggregate across all registered managers
+            all_agents = []
+            for atype, manager in self.agent_registry._managers.items():
+                try:
+                    result = await manager.list_projects()
+                    projects = result.get("projects") or result.get("agents") or []
+                    for p in projects:
+                        if isinstance(p, dict):
+                            p.setdefault("agent_type", atype)
+                    all_agents.extend(projects)
+                except Exception:
+                    pass
+            return {"status": "success", "agents": all_agents, "count": len(all_agents)}
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
             return {
                 "status": "error",
-                "message": f"Failed to list {agent_type} agents: {str(e)}",
+                "message": f"Failed to list agents: {str(e)}",
             }
 
     async def _execute_agent_restart(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -4806,7 +4820,21 @@ Agent resumes within seconds.
             return HELP
 
         if action == "add":
-            return await self._execute_scheduler_add_task(args)
+            # Normalise hub params → internal format
+            add_args = dict(args)
+            # 'type' → 'task_type'
+            if "task_type" not in add_args or not add_args.get("task_type"):
+                add_args["task_type"] = add_args.get("type")
+            # 'goal' → config.goal; 'role_id' → config.role_id
+            config = add_args.get("config") or {}
+            if not isinstance(config, dict):
+                config = {}
+            if add_args.get("goal") and "goal" not in config:
+                config["goal"] = add_args["goal"]
+            if add_args.get("role_id") and "role_id" not in config:
+                config["role_id"] = add_args["role_id"]
+            add_args["config"] = config
+            return await self._execute_scheduler_add_task(add_args)
         elif action == "list":
             return await self._execute_scheduler_list_tasks(args)
         elif action == "get":
@@ -4906,28 +4934,32 @@ Agent resumes within seconds.
 
         agent_id = args.get("agent_id")
 
+        # Normalise: MCP schema uses 'type' and 'agent_id'; internal methods use 'agent_type' and 'identifier'
+        agent_type = args.get("agent_type") or args.get("type")
+        normalised = {**args, "agent_type": agent_type, "identifier": agent_id}
+
         if action == "list_types":
             return await self._execute_agent_list_types({})
         elif action == "start":
-            return await self._execute_agent_start(args)
+            return await self._execute_agent_start(normalised)
         elif action == "stop":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
-            return await self._execute_agent_stop({"agent_id": agent_id})
+            return await self._execute_agent_stop(normalised)
         elif action == "status":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
-            return await self._execute_agent_status({"agent_id": agent_id})
+            return await self._execute_agent_status(normalised)
         elif action == "list":
-            return await self._execute_agent_list({})
+            return await self._execute_agent_list(normalised)
         elif action == "restart":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
-            return await self._execute_agent_restart({"agent_id": agent_id})
+            return await self._execute_agent_restart(normalised)
         elif action == "destroy":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
-            return await self._execute_agent_destroy({"agent_id": agent_id})
+            return await self._execute_agent_destroy(normalised)
         elif action == "action":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
@@ -4941,7 +4973,7 @@ Agent resumes within seconds.
             sub_action = raw_params.get("action")
             sub_params = {k: v for k, v in raw_params.items() if k != "action"}
             return await self._execute_agent_action({
-                "agent_type": args.get("agent_type"),
+                "agent_type": agent_type,
                 "action": sub_action,
                 "params": sub_params,
             })
