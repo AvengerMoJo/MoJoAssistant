@@ -78,6 +78,7 @@ class ResourceManager:
 
     SANDBOX_ENV_FILE = Path(get_memory_subpath("resource_pool.env"))
     USAGE_FILE = Path(get_memory_subpath("resource_pool_usage.json"))
+    META_FILE = Path(get_memory_subpath("resource_pool_meta.json"))
 
     def __init__(self, config_path: str = "config/llm_config.json", logger=None):
         self._config_path = config_path
@@ -92,8 +93,11 @@ class ResourceManager:
         self._config_mtime_ns: Optional[int] = None
         self._runtime_mtime_ns: Optional[int] = None
         self._env_mtime_ns: Optional[int] = None
+        # Smoke test results: resource_id → bool (agentic_capable)
+        self._agentic_capable: Dict[str, bool] = {}
         self._load_sandbox_env()
         self._load_usage()
+        self._load_meta()
         self._load_config()
 
     def _load_sandbox_env(self):
@@ -497,6 +501,35 @@ class ResourceManager:
 
         self._log(f"sync_local_server_models: registered {len(active_ids)} models from {template_resource_id}")
         return sorted(active_ids)
+
+    def _load_meta(self) -> None:
+        """Load persistent resource metadata (e.g. smoke test results) from disk."""
+        if not self.META_FILE.exists():
+            return
+        try:
+            data = json.loads(self.META_FILE.read_text(encoding="utf-8"))
+            self._agentic_capable = data.get("agentic_capable", {})
+        except Exception:
+            pass
+
+    def _save_meta(self) -> None:
+        """Persist resource metadata to disk."""
+        try:
+            data = {"agentic_capable": self._agentic_capable}
+            self.META_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def set_agentic_capable(self, resource_id: str, capable: bool) -> None:
+        """Record the smoke test result for a resource."""
+        with self._lock:
+            self._agentic_capable[resource_id] = capable
+            self._save_meta()
+            self._log(f"Resource '{resource_id}' agentic_capable = {capable}")
+
+    def get_agentic_capable(self, resource_id: str) -> Optional[bool]:
+        """Return the smoke test result for a resource, or None if not tested."""
+        return self._agentic_capable.get(resource_id)
 
     def approve_paid_resource(self, resource_id: str):
         with self._lock:

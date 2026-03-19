@@ -18,6 +18,7 @@ class TaskStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    WAITING_FOR_INPUT = "waiting_for_input"
 
 
 class TaskPriority(Enum):
@@ -94,6 +95,7 @@ class TaskResult:
     metrics: Dict[str, Any] = field(default_factory=dict)
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
+    waiting_for_input: Optional[str] = None  # question the agent asked the user
 
     def __post_init__(self):
         if self.created_at is None:
@@ -149,6 +151,9 @@ class Task:
     last_error: Optional[str] = None
     last_failed_at: Optional[datetime] = None
 
+    # Human-in-the-loop: question waiting for user reply
+    pending_question: Optional[str] = None
+
     def is_due(self) -> bool:
         """Check if task is due to run"""
         if self.status != TaskStatus.PENDING:
@@ -203,6 +208,7 @@ class Task:
             "description": self.description,
             "last_error": self.last_error,
             "last_failed_at": self.last_failed_at.isoformat() if self.last_failed_at else None,
+            "pending_question": self.pending_question,
         }
         return data
 

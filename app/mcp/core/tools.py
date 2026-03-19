@@ -148,31 +148,87 @@ class ToolRegistry:
         self.tools = self._define_tools()
         # Re-enable the working placeholder tools
         self.placeholder_tools = {
-            "get_current_time",  # Redundant with get_current_day
-            "get_memory_stats",  # Internal stats not useful for LLMs
+            "get_current_time",            # Absorbed into get_context
+            "get_current_day",             # Absorbed into get_context
+            "get_memory_context",          # Replaced by get_context + search_memory
+            "get_memory_stats",            # Now under memory(action='stats')
+            "get_recent_events",           # Now get_context(type='events')
+            "get_attention_summary",       # Now get_context(type='attention')
+            "task_session_read",           # Now get_context(type='task_session')
+            "scheduler_resume_task",       # Retired — use reply_to_task
+            # Memory management → memory hub
+            "end_conversation",
+            "toggle_multi_model",
+            "list_recent_conversations",
+            "remove_conversation_message",
+            "remove_recent_conversations",
+            "add_documents",
+            "list_recent_documents",
+            "remove_document",
+            # Knowledge → knowledge hub
+            "knowledge_add_repo",
+            "knowledge_get_file",
+            "knowledge_list_repos",
+            # Agent → agent hub
+            "agent_list_types",
+            "agent_start",
+            "agent_stop",
+            "agent_status",
+            "agent_list",
+            "agent_restart",
+            "agent_destroy",
+            "agent_action",
+            # Scheduler → scheduler hub
+            "scheduler_add_task",
+            "scheduler_list_tasks",
+            "scheduler_get_status",
+            "scheduler_get_task",
+            "scheduler_remove_task",
+            "scheduler_purge_tasks",
+            "scheduler_start_daemon",
+            "scheduler_stop_daemon",
+            "scheduler_restart_daemon",
+            "scheduler_daemon_status",
+            "scheduler_list_assistant_tools",
+            # Dream → dream hub
+            "dreaming_process",
+            "dreaming_list_archives",
+            "dreaming_get_archive",
+            "dreaming_upgrade_quality",
+            # Config hub expansion
+            "config_doctor",
+            "llm_list_available_models",
+            "resource_pool_status",
+            "resource_pool_approve",
+            "resource_pool_revoke",
+            "resource_pool_smoke_test",
+            "role_design_start",
+            "role_design_answer",
+            "role_create",
+            "role_list",
+            "role_get",
+            # External agent → external_agent hub
+            "google_service",
         }
-
-        # Enable web_search tool as implementation is complete
-        if "web_search" in self.placeholder_tools:
-            self.placeholder_tools.remove("web_search")
-
-        # Enable web_search tool as implementation is complete
-        if "web_search" in self.placeholder_tools:
-            self.placeholder_tools.remove("web_search")
-
-        # Enable web_search tool as implementation is complete
-        self.enable_placeholder_tool("web_search")
 
         # Standardized user prompt templates for LLM usability
         self.user_prompt_templates = {
-            "get_memory_context": {
-                "template": "Search my memory for information about: {query}",
+            "get_context": {
+                "template": "Get current context and orientation",
+                "examples": [
+                    "Get current context",
+                    "Orient me for this conversation",
+                ],
+                "usage_tip": "Call at conversation start. Returns timestamp, recent memory, and any urgent attention items.",
+            },
+            "search_memory": {
+                "template": "Search my memory for: {query}",
                 "examples": [
                     "Search my memory for information about Python programming",
                     "Find information about our previous discussion about machine learning",
-                    "Look up what I know about climate change",
+                    "Search conversations and documents about climate change",
                 ],
-                "usage_tip": "Use this tool to retrieve relevant context from the user's memory before answering questions or providing information.",
+                "usage_tip": "Use after get_context when you need to find specific information. Specify types for targeted search.",
             },
             "add_documents": {
                 "template": "Add these documents to my knowledge base: {content}",
@@ -257,15 +313,6 @@ class ToolRegistry:
                     "Look up current weather in Tokyo",
                 ],
                 "usage_tip": "Use when you need up-to-date information, news, or data not available in local memory.",
-            },
-            "get_current_day": {
-                "template": "What is today's date and day?",
-                "examples": [
-                    "What is today's date and day?",
-                    "Tell me the current date and time",
-                    "What day of the week is it today?",
-                ],
-                "usage_tip": "Use for questions about today's date, current day, time, or year information.",
             },
             "agent_list_types": {
                 "template": "List available coding agent types",
@@ -397,22 +444,92 @@ class ToolRegistry:
         """Define all available tools"""
         return [
             {
-                "name": "get_memory_context",
-                "description": "Search all memory tiers (working, active, archival, knowledge base) for relevant context to enhance responses. Supports both English and Chinese queries. When to use: Call this tool whenever you need to retrieve relevant context from the user's memory during conversations, research, or problem-solving. How it works: Performs semantic search across multiple memory tiers using embeddings. Why useful: Provides personalized, context-aware responses based on user's history and knowledge.",
+                "name": "get_context",
+                "description": (
+                    "Unified context read tool. Call with no args at conversation start for orientation.\n\n"
+                    "type='orientation' (default): timestamp + date + recent memory + attention wake-up.\n"
+                    "type='attention':    grouped inbox — blocking/alerts/digest/cursor. "
+                    "                     params: since (ISO cursor), min_level (default 1).\n"
+                    "type='events':       raw event log. "
+                    "                     params: since, event_types (list), limit (default 50), include_data.\n"
+                    "type='task_session': full output of a specific task. "
+                    "                     params: task_id (required).\n\n"
+                    "Discover task_ids from the task_sessions directory in the orientation response."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["orientation", "attention", "events", "task_session"],
+                            "description": "What to read. Omit for orientation (default).",
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "ISO-8601 cursor (attention + events types).",
+                        },
+                        "min_level": {
+                            "type": "integer",
+                            "description": "Minimum hitl_level to include (attention type, default 1).",
+                            "default": 1,
+                        },
+                        "event_types": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Filter by event_type list (events type).",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max events to return (events type, default 50).",
+                            "default": 50,
+                        },
+                        "include_data": {
+                            "type": "boolean",
+                            "description": "Include full event data payload (events type, default false).",
+                            "default": False,
+                        },
+                        "task_id": {
+                            "type": "string",
+                            "description": "Task to read output from (task_session type).",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "search_memory",
+                "description": (
+                    "Semantic search across memory tiers. Use after get_context() when you need to "
+                    "find specific information.\n\n"
+                    "Types:\n"
+                    "  conversations — working, active, and archival conversation history\n"
+                    "  documents     — knowledge base (documents added via add_documents)\n"
+                    "Omit types to search all. limit_per_type controls how many results come "
+                    "from each tier — use higher values (10+) for broad research, lower (3) for "
+                    "a quick check."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query in English or Chinese to find relevant context",
+                            "description": "Search query (English or Chinese)",
                             "minLength": 1,
                         },
-                        "max_items": {
+                        "types": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["conversations", "documents"],
+                            },
+                            "description": "Memory types to search. Omit for all types.",
+                        },
+                        "limit_per_type": {
                             "type": "integer",
-                            "description": "Maximum number of context items to return (default: 10, max: 50)",
-                            "default": 10,
+                            "description": "Max results per memory type (default: 5, max: 20).",
+                            "default": 5,
                             "minimum": 1,
-                            "maximum": 50,
+                            "maximum": 20,
                         },
                     },
                     "required": ["query"],
@@ -420,7 +537,7 @@ class ToolRegistry:
             },
             {
                 "name": "add_documents",
-                "description": "Add reference documents, code examples, or knowledge to the permanent knowledge base for future retrieval. When to use: Use this when you want to permanently store reference material, documentation, code snippets, or any information that should be available for future conversations. How it works: Documents are embedded and stored in the knowledge base with optional metadata. Why useful: Builds a personal knowledge repository that can be searched later using get_memory_context.",
+                "description": "Add reference documents, code examples, or knowledge to the permanent knowledge base for future retrieval. When to use: Use this when you want to permanently store reference material, documentation, code snippets, or any information that should be available for future conversations. How it works: Documents are embedded and stored in the knowledge base with optional metadata. Why useful: Builds a personal knowledge repository that can be searched later using search_memory.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -658,16 +775,6 @@ class ToolRegistry:
                     },
                     "required": ["service", "resource", "method"],
                 },
-            },
-            {
-                "name": "get_current_day",
-                "description": "Get the current date, day of week, time, and year information for temporal awareness. When to use: Call for questions about today's date, current day, time, current year, or any date/time related queries. How it works: Returns exact current date/time information without needing web search. Why useful: Provides accurate temporal context for scheduling, reminders, and time-sensitive responses.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "name": "get_current_time",
-                "description": "Get the current time with timezone information for precise timing. When to use: Use for questions about current time, scheduling, or time-sensitive operations. How it works: Returns detailed time information including hours, minutes, seconds, and timezone. Why useful: Ensures accurate time awareness for all responses.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
             },
             {
                 "name": "knowledge_add_repo",
@@ -943,6 +1050,7 @@ class ToolRegistry:
                                 "completed",
                                 "failed",
                                 "cancelled",
+                                "waiting_for_input",
                             ],
                             "description": "Filter by task status",
                         },
@@ -1143,14 +1251,36 @@ class ToolRegistry:
             # Generic Configuration Tool
             {
                 "name": "config",
-                "description": "Read and write MoJoAssistant configuration. Actions: 'help' lists configurable modules (or shows structure of a specific module), 'get' reads config (optionally at a dot-path), 'set' writes a value at a dot-path and persists to disk, 'delete' removes a key at a dot-path from the runtime layer. Modules: llm, embedding.",
+                "description": (
+                    "Config management hub. Call with no action for help menu.\n\n"
+                    "action='modules'                                    → list all config modules\n"
+                    "action='get',    module, path?                      → read config\n"
+                    "action='set',    module, path, value                → write config\n"
+                    "action='list',   module                             → list config file structure\n"
+                    "action='delete', module, path                       → remove a config key\n"
+                    "action='validate', module                           → validate config\n"
+                    "action='sync_local_models', resource_id             → sync models from local server\n\n"
+                    "# Resource pool (runtime LLM state)\n"
+                    "action='resource_status'                            → all resources + approval state\n"
+                    "action='resource_approve',   resource_id            → approve a resource for use\n"
+                    "action='resource_revoke',    resource_id            → revoke a resource\n"
+                    "action='resource_smoke_test',resource_id            → test connectivity\n"
+                    "action='llm_models',         resource_id            → list live models from server\n\n"
+                    "# Validation\n"
+                    "action='doctor'                                     → full config pre-flight report\n\n"
+                    "# Role management\n"
+                    "action='role_list'                                  → list all roles\n"
+                    "action='role_get',           role_id                → get role details\n"
+                    "action='role_create',        role_id, system_prompt, model_preference, ... → create role\n"
+                    "action='role_design_start'                          → guided role design (Nine Chapter Q1)\n"
+                    "action='role_design_answer', session_id, answer     → next design question / finish"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["help", "get", "set", "delete", "sync_local_models"],
-                            "description": "Action to perform: help (list modules or show structure), get (read config), set (write value), delete (remove a key from runtime layer), sync_local_models (re-query a local LLM server and register one resource entry per loaded model)",
+                            "description": "Operation to perform. Omit for help menu.",
                         },
                         "module": {
                             "type": "string",
@@ -1167,8 +1297,191 @@ class ToolRegistry:
                             "type": "boolean",
                             "description": "For LLM model changes: validate the model is loaded in the server before applying (default: true)",
                         },
+                        "resource_id": {"type": "string", "description": "Resource ID (resource_* and llm_models actions)."},
+                        "role_id": {"type": "string", "description": "Role ID (role_* actions)."},
+                        "system_prompt": {"type": "string", "description": "Role system prompt (role_create)."},
+                        "model_preference": {"type": "string", "description": "Preferred model for role (role_create)."},
+                        "session_id": {"type": "string", "description": "Design session ID (role_design_answer)."},
+                        "answer": {"type": "string", "description": "Answer to design question (role_design_answer)."},
                     },
-                    "required": ["action"],
+                    "required": [],
+                },
+            },
+            # Memory Hub
+            {
+                "name": "memory",
+                "description": (
+                    "Memory management hub. Call with no action for help menu.\n\n"
+                    "action='end_conversation'                   — archive current conversation topic\n"
+                    "action='list_conversations', limit?         — recent conversation history\n"
+                    "action='remove_conversation', id            — delete a specific conversation message\n"
+                    "action='remove_conversations', count        — bulk delete recent conversations\n"
+                    "action='add_documents', documents           — add reference material to knowledge base\n"
+                    "action='list_documents', limit?             — recent knowledge base documents\n"
+                    "action='remove_document', id                — delete a document\n"
+                    "action='stats'                              — memory tier statistics\n"
+                    "action='toggle_multi_model', enabled        — switch embedding mode"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "description": "Operation to perform. Omit for help menu.",
+                        },
+                        "limit": {"type": "integer", "description": "Result limit (list actions)."},
+                        "id": {"type": "string", "description": "Message or document ID (remove actions)."},
+                        "count": {"type": "integer", "description": "Number to remove (remove_conversations)."},
+                        "documents": {
+                            "type": "array",
+                            "description": "Documents to add (add_documents action).",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": {"type": "string"},
+                                    "metadata": {"type": "object", "additionalProperties": True},
+                                },
+                                "required": ["content"],
+                            },
+                        },
+                        "enabled": {"type": "boolean", "description": "Embedding mode (toggle_multi_model)."},
+                    },
+                    "required": [],
+                },
+            },
+            # Knowledge Hub
+            {
+                "name": "knowledge",
+                "description": (
+                    "Git repository knowledge base. Call with no action for help menu.\n\n"
+                    "action='list_repos'                                       — list registered repos\n"
+                    "action='add_repo', name, url, ssh_key_path, branch?      — register a repo\n"
+                    "action='get_file', repo, path, git_hash?                 — read file from repo"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "Operation. Omit for help menu."},
+                        "name": {"type": "string", "description": "Repository name."},
+                        "url": {"type": "string", "description": "Git SSH URL."},
+                        "ssh_key_path": {"type": "string", "description": "Path to passwordless SSH private key."},
+                        "branch": {"type": "string", "description": "Branch to track (default: main)."},
+                        "repo": {"type": "string", "description": "Registered repo name (get_file)."},
+                        "path": {"type": "string", "description": "File path within repo (get_file)."},
+                        "git_hash": {"type": "string", "description": "Commit hash (get_file, optional)."},
+                    },
+                    "required": [],
+                },
+            },
+            # Scheduler Hub
+            {
+                "name": "scheduler",
+                "description": (
+                    "Scheduler management hub. Call with no action for help menu.\n\n"
+                    "action='add',    task_id, type, goal, ...   — schedule a task\n"
+                    "action='list',   status?, priority?, limit? — list tasks\n"
+                    "action='get',    task_id                    — task detail\n"
+                    "action='remove', task_id                    — remove a task\n"
+                    "action='purge',  before_date?               — bulk remove old completed/failed tasks\n"
+                    "action='status'                             — daemon + queue stats\n"
+                    "action='daemon_start'                       — start the scheduler daemon\n"
+                    "action='daemon_stop'                        — stop the scheduler daemon\n"
+                    "action='daemon_restart'                     — restart the scheduler daemon\n"
+                    "action='list_tools'                         — tools available to scheduled agents"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "Operation. Omit for help menu."},
+                        "task_id": {"type": "string"},
+                        "type": {"type": "string", "description": "Task type (add action)."},
+                        "goal": {"type": "string", "description": "Task goal (add action)."},
+                        "cron": {"type": "string", "description": "Cron expression (add action)."},
+                        "priority": {"type": "string", "enum": ["low", "normal", "high"]},
+                        "role_id": {"type": "string", "description": "Role for assistant tasks."},
+                        "status": {"type": "string", "description": "Filter by status (list action)."},
+                        "limit": {"type": "integer"},
+                        "before_date": {"type": "string", "description": "ISO date for purge cutoff."},
+                    },
+                    "required": [],
+                },
+            },
+            # Dream Hub
+            {
+                "name": "dream",
+                "description": (
+                    "Memory consolidation (dreaming) hub. Call with no action for help menu.\n\n"
+                    "action='process',  conversation_id, quality? — run dreaming pipeline\n"
+                    "action='list'                                — list dreaming archives\n"
+                    "action='get',      conversation_id, version? — retrieve archive\n"
+                    "action='upgrade',  conversation_id, target_quality — quality upgrade"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "Operation. Omit for help menu."},
+                        "conversation_id": {"type": "string"},
+                        "quality": {"type": "string", "description": "Quality level (process action)."},
+                        "version": {"type": "string", "description": "Archive version (get action)."},
+                        "target_quality": {"type": "string", "description": "Target quality (upgrade action)."},
+                    },
+                    "required": [],
+                },
+            },
+            # Agent Hub
+            {
+                "name": "agent",
+                "description": (
+                    "External agent lifecycle hub. Call with no action for help menu.\n"
+                    "NOTE: These are external agent processes (opencode, claude_code). "
+                    "For MoJo internal agentic tasks use scheduler(action='add', type='assistant', role_id=...).\n\n"
+                    "action='list_types'                          — available agent types\n"
+                    "action='start',   agent_id, type, ...        — start an agent\n"
+                    "action='stop',    agent_id                   — stop an agent\n"
+                    "action='status',  agent_id                   — agent status\n"
+                    "action='list'                                — all running agents\n"
+                    "action='restart', agent_id                   — restart an agent\n"
+                    "action='destroy', agent_id                   — destroy an agent\n"
+                    "action='action',  agent_id, action, params   — send action to agent"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "Operation. Omit for help menu."},
+                        "agent_id": {"type": "string"},
+                        "type": {"type": "string", "description": "Agent type (start action)."},
+                        "params": {"type": "object", "description": "Action params (action sub-action)."},
+                    },
+                    "required": [],
+                },
+            },
+            # External Agent Hub
+            {
+                "name": "external_agent",
+                "description": (
+                    "External services and 3rd-party integrations. Call with no action for help menu.\n\n"
+                    "action='google', service, resource, method, params?, json_body?, format?, ... — Google Workspace API proxy\n\n"
+                    "Future: action='github', action='slack', action='notion', ..."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "Integration to use. Omit for help menu."},
+                        "service": {"type": "string", "description": "Google service (google action): calendar, drive, sheets, gmail, docs, people."},
+                        "resource": {"type": "string", "description": "API resource (google action)."},
+                        "method": {"type": "string", "description": "API method (google action): list, get, create, update, delete."},
+                        "sub_resource": {"type": "string"},
+                        "params": {"type": "object"},
+                        "json_body": {"type": "object"},
+                        "format": {"type": "string", "enum": ["json", "table", "yaml", "csv"], "default": "json"},
+                        "api_version": {"type": "string"},
+                        "page_all": {"type": "boolean", "default": False},
+                        "page_limit": {"type": "integer", "minimum": 1},
+                        "page_delay": {"type": "integer", "minimum": 0},
+                        "upload_path": {"type": "string"},
+                        "output_path": {"type": "string"},
+                    },
+                    "required": [],
                 },
             },
             # Event Log polling (non-WebSocket clients)
@@ -1196,6 +1509,63 @@ class ToolRegistry:
                             "type": "boolean",
                             "description": "Include full event data payload (default: false — returns envelope only).",
                             "default": False,
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            # Attention Layer — proactive situational awareness
+            {
+                "name": "get_attention_summary",
+                "description": (
+                    "Return a token-compact grouped summary of events that need attention, "
+                    "bucketed by urgency. Use this at conversation start (or when checking in) "
+                    "to discover tasks waiting for input, failures, and completions.\n\n"
+                    "Response buckets:\n"
+                    "  blocking  — level 4-5, requires immediate action; each item has reply_with + args\n"
+                    "  alerts    — level 3, errors needing attention\n"
+                    "  digest    — level 1-2, FYI completions and notifications (capped at 10)\n"
+                    "  noise_count — suppressed level-0 events\n"
+                    "  cursor    — pass as 'since' on next call to advance your position\n\n"
+                    "Behaviour:\n"
+                    "  - If blocking is non-empty: surface to user before anything else.\n"
+                    "    Each item includes reply_with so you know how to respond.\n"
+                    "  - If alerts is non-empty: mention in passing, ask if user wants to investigate.\n"
+                    "  - If all buckets are empty: everything is quiet, proceed normally."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "since": {
+                            "type": "string",
+                            "description": "ISO-8601 cursor. Only return events after this timestamp. Omit for the last 24 hours.",
+                        },
+                        "min_level": {
+                            "type": "integer",
+                            "description": "Minimum hitl_level to include (default: 1 — suppresses level-0 noise).",
+                            "default": 1,
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            # Configuration Doctor
+            {
+                "name": "config_doctor",
+                "description": (
+                    "Validate all runtime configuration before running tasks. "
+                    "Checks LLM resource reachability, API key presence, model name correctness, "
+                    "role model_preference alignment, allowed_tools existence, and task sanity. "
+                    "Returns structured pass/warn/error report. Run this when tasks fail with "
+                    "cryptic errors to pinpoint configuration mistakes."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "categories": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Limit checks to specific categories: 'resource', 'role', 'task'. Omit to run all.",
                         },
                     },
                     "required": [],
@@ -1328,6 +1698,30 @@ class ToolRegistry:
                 },
             },
             {
+                "name": "reply_to_task",
+                "description": (
+                    "Send a reply to an agentic task that is waiting for user input. "
+                    "The task must be in 'waiting_for_input' status (check with scheduler_list_tasks). "
+                    "The agent will resume from where it paused, using your reply as the answer."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "ID of the task in waiting_for_input status",
+                            "minLength": 1,
+                        },
+                        "reply": {
+                            "type": "string",
+                            "description": "Your answer to the agent's question",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["task_id", "reply"],
+                },
+            },
+            {
                 "name": "scheduler_resume_task",
                 "description": "Resume a failed or timed-out agentic task. Creates a new task that loads the previous session's conversation and continues from where it left off.",
                 "inputSchema": {
@@ -1383,6 +1777,32 @@ class ToolRegistry:
                             "type": "string",
                             "description": "ID of the paid resource to revoke approval for",
                             "minLength": 1,
+                        },
+                    },
+                    "required": ["resource_id"],
+                },
+            },
+            {
+                "name": "resource_pool_smoke_test",
+                "description": (
+                    "Run an agentic capability smoke test on a specific LLM resource. "
+                    "Validates that the model can: (1) emit real tool calls (not hallucinate results), "
+                    "(2) produce <FINAL_ANSWER> tags within the iteration budget. "
+                    "Sets agentic_capable flag on the resource. "
+                    "Use before approving a new model for agentic tasks."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "resource_id": {
+                            "type": "string",
+                            "description": "ID of the resource to test (from resource_pool_status)",
+                            "minLength": 1,
+                        },
+                        "full": {
+                            "type": "boolean",
+                            "description": "If true, also run extended checks (default: false)",
+                            "default": False,
                         },
                     },
                     "required": ["resource_id"],
@@ -1451,7 +1871,7 @@ class ToolRegistry:
             tool_name = tool["name"]
 
             # Categorize tools
-            if tool_name in ["get_memory_context", "get_memory_stats"]:
+            if tool_name in ["get_context", "search_memory", "get_memory_stats"]:
                 categories["memory"].append(tool)
             elif tool_name in [
                 "add_conversation",
@@ -1476,8 +1896,6 @@ class ToolRegistry:
             elif tool_name in [
                 "toggle_multi_model",
                 "web_search",
-                "get_current_day",
-                "get_current_time",
             ]:
                 categories["utilities"].append(tool)
             elif tool_name.startswith("opencode_"):
@@ -1493,14 +1911,14 @@ class ToolRegistry:
 
         # Define priority mapping
         priority_mapping = {
-            "get_memory_context": "high",
+            "get_context": "high",
+            "search_memory": "high",
             "add_conversation": "high",
             "add_documents": "high",
             "end_conversation": "medium",
             "toggle_multi_model": "medium",
             "list_recent_conversations": "medium",
             "web_search": "medium",
-            "get_current_day": "medium",
             "knowledge_add_repo": "medium",
             "knowledge_get_file": "medium",
             "knowledge_list_repos": "medium",
@@ -1508,7 +1926,6 @@ class ToolRegistry:
             "remove_recent_conversations": "low",
             "list_recent_documents": "low",
             "remove_document": "low",
-            "get_current_time": "low",
         }
 
         for tool in tools:
@@ -1521,11 +1938,12 @@ class ToolRegistry:
     def get_essential_tools(self) -> List[Dict[str, Any]]:
         """Get essential tools that should always be available to LLMs"""
         essential_tool_names = [
-            "get_memory_context",  # Core memory functionality
-            "add_conversation",  # Conversation context preservation
-            "add_documents",  # Knowledge base management
-            "end_conversation",  # Conversation management
-            "web_search",  # Current information access
+            "get_context",        # Orientation — timestamp + recent memory + attention
+            "search_memory",      # Targeted memory search
+            "add_conversation",   # Conversation context preservation
+            "add_documents",      # Knowledge base management
+            "end_conversation",   # Conversation management
+            "web_search",         # Current information access
         ]
 
         tools = self.get_tools()
@@ -1543,49 +1961,108 @@ class ToolRegistry:
         return descriptions.get(category, "General tools")
 
     def get_tools_usage_guide(self) -> str:
-        """Generate a comprehensive usage guide for LLMs"""
-        categories = self.get_tools_by_category()
+        """
+        Return the recommended system prompt and usage guide for MCP clients.
 
-        guide = "## MCP Tools Usage Guide\n\n"
-        guide += "### Tool Categories and Usage Patterns\n\n"
+        This is the authoritative guide — returned by the MCP server when
+        a client asks how to use the tools. It reflects the 12-tool architecture.
+        """
+        return """\
+## MoJoAssistant — MCP Usage Guide
 
-        for category, tools in categories.items():
-            if tools:
-                guide += f"#### {category.title()} Tools\n"
-                guide += f"*{self.get_category_description(category)}*\n\n"
+### Every Conversation — Start Here
 
-                for tool in tools:
-                    tool_name = tool["name"]
-                    template = self.get_user_prompt_template(tool_name)
+Call get_context() as your first action. Returns in one shot:
+- Current date, day of week, and time
+- Last 3 memory items from the previous session
+- attention.blocking — agents waiting for your input right now
+- task_sessions — active or recently completed background tasks
 
-                    guide += f"**{tool_name}**\n"
-                    guide += f"- *Description*: {tool['description']}\n"
+If attention.blocking is non-empty, surface those items immediately.
+Each blocking item includes reply_with + task_id so you know how to respond.
 
-                    if template:
-                        guide += f"- *User Prompt Template*: {template['template']}\n"
-                        guide += f"- *Usage Tip*: {template['usage_tip']}\n"
+---
 
-                    guide += "\n"
+### Top-Level Tools (always available)
 
-        guide += "### Priority Guidelines\n"
-        guide += (
-            "- **High Priority**: Core memory and conversation tools (use frequently)\n"
-        )
-        guide += "- **Medium Priority**: Supporting tools for enhanced functionality\n"
-        guide += "- **Low Priority**: Cleanup and management tools (use as needed)\n\n"
+| Tool | When to use |
+|------|------------|
+| get_context() | First call every session. Orientation + attention check. |
+| get_context(type="attention", since=cursor) | Cursor-based inbox polling. |
+| get_context(type="task_session", task_id=...) | Read full task output before replying. |
+| get_context(type="events", ...) | Raw event history — failures, config changes. |
+| search_memory(query, types?, limit_per_type?) | Find past context. types: conversations, documents. |
+| add_conversation(user_message, assistant_message) | After every exchange worth keeping. |
+| reply_to_task(task_id, reply) | Answer an agent waiting for input (from attention.blocking). |
+| web_search(query) | Current information not in local memory. |
 
-        guide += "### Best Practices\n"
-        guide += (
-            "1. Always use `add_conversation` after each exchange to maintain context\n"
-        )
-        guide += "2. Use `get_memory_context` before answering questions to retrieve relevant information\n"
-        guide += "3. Use `web_search` for current information not available in local memory\n"
-        guide += (
-            "4. Use `end_conversation` when switching to completely different topics\n"
-        )
-        guide += "5. Regularly clean up old conversations and documents to maintain system performance\n"
+---
 
-        return guide
+### Hub Tools (call with no action to see help menu)
+
+Every hub returns a compact help menu when called without arguments.
+A wrong action also returns the help menu — you can never get stuck.
+
+| Hub | Covers |
+|-----|--------|
+| memory(action) | end_conversation, list/remove conversations and documents, stats |
+| knowledge(action) | Git repository access (add_repo, list_repos, get_file) |
+| config(action) | LLM resources, roles, smoke tests, config doctor |
+| scheduler(action) | Schedule tasks, list/get/remove tasks, daemon management |
+| dream(action) | Dreaming pipeline, list/get/upgrade archives |
+| agent(action) | Coding agent start/stop/status/action |
+| external_agent(action) | Google services and future 3rd-party integrations |
+
+---
+
+### Workflow Pattern
+
+```
+1. get_context()
+   → check attention.blocking (reply immediately if non-empty)
+   → note task_sessions (any tasks to follow up on?)
+   → time and recent memory now available
+
+2. search_memory(query=user_topic) if deeper context needed
+   → types=["conversations"] for past discussions
+   → types=["documents"] for stored reference material
+
+3. Respond to user
+
+4. add_conversation(user_message, assistant_message)
+   → skip trivial exchanges ("ok", "thanks")
+   → always save when new information or decisions were made
+```
+
+---
+
+### HITL Inbox — Replying to Agent Questions
+
+```
+get_context() shows:
+  attention.blocking[0]:
+    task_id: "ahman_scan_001"
+    blurb: "Waiting: which subnet should I scan?"
+    reply_with: "reply_to_task"
+
+→ Optionally drill in first:
+  get_context(type="task_session", task_id="ahman_scan_001")
+
+→ Reply:
+  reply_to_task(task_id="ahman_scan_001", reply="scan 10.0.0.0/24")
+
+Agent resumes within seconds.
+```
+
+---
+
+### Language & Formatting
+
+- Respond in the user's language
+- Use markdown when it aids clarity
+- Use mermaid for diagrams
+- Be concise — prefer direct answers
+"""
 
     def get_copy_paste_prompt_list(self) -> str:
         """Generate a copy-paste friendly prompt list for users"""
@@ -1713,8 +2190,10 @@ class ToolRegistry:
                 "timestamp": time.time(),
             }
 
-        if name == "get_memory_context":
-            return await self._execute_get_memory_context(args)
+        if name == "get_context":
+            return await self._execute_get_context(args)
+        elif name == "search_memory":
+            return await self._execute_search_memory(args)
         elif name == "add_conversation":
             return await self._execute_add_conversation(args)
         elif name == "get_memory_stats":
@@ -1799,9 +2278,13 @@ class ToolRegistry:
             return await self._execute_dreaming_get_archive(args)
         elif name == "dreaming_upgrade_quality":
             return await self._execute_dreaming_upgrade_quality(args)
-        # Event Log
+        # Event Log / Attention Layer
         elif name == "get_recent_events":
             return await self._execute_get_recent_events(args)
+        elif name == "get_attention_summary":
+            return await self._execute_get_attention_summary(args)
+        elif name == "config_doctor":
+            return await self._execute_config_doctor(args)
         # Configuration Tool
         elif name == "config":
             return await self._execute_config(args)
@@ -1812,6 +2295,8 @@ class ToolRegistry:
             return await self._execute_task_session_read(args)
         elif name == "scheduler_resume_task":
             return await self._execute_scheduler_resume_task(args)
+        elif name == "reply_to_task":
+            return await self._execute_reply_to_task(args)
         # Resource Pool Tools
         elif name == "resource_pool_status":
             return await self._execute_resource_pool_status(args)
@@ -1819,6 +2304,8 @@ class ToolRegistry:
             return await self._execute_resource_pool_approve(args)
         elif name == "resource_pool_revoke":
             return await self._execute_resource_pool_revoke(args)
+        elif name == "resource_pool_smoke_test":
+            return await self._execute_resource_pool_smoke_test(args)
         # Role System Tools
         elif name == "role_design_start":
             return await self._execute_role_design_start(args)
@@ -1830,6 +2317,19 @@ class ToolRegistry:
             return await self._execute_role_list(args)
         elif name == "role_get":
             return await self._execute_role_get(args)
+        # Hub Tools
+        elif name == "memory":
+            return await self._execute_memory(args)
+        elif name == "knowledge":
+            return await self._execute_knowledge(args)
+        elif name == "scheduler":
+            return await self._execute_scheduler_hub(args)
+        elif name == "dream":
+            return await self._execute_dream(args)
+        elif name == "agent":
+            return await self._execute_agent_hub(args)
+        elif name == "external_agent":
+            return await self._execute_external_agent(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1843,11 +2343,216 @@ class ToolRegistry:
             query, max_items=max_results
         )
 
-        return {
+        response: Dict[str, Any] = {
             "query": query,
             "results": results,
             "count": len(results),
             "timestamp": time.time(),
+        }
+
+        # Wake-up hook: inject attention summary if anything needs action.
+        # Only adds the field when there is something to surface — quiet
+        # conversations are not polluted with empty noise.
+        try:
+            attention = await self._execute_get_attention_summary({})
+            blocking = attention.get("blocking", [])
+            alerts = attention.get("alerts", [])
+            if blocking or alerts:
+                response["attention"] = {
+                    "blocking": blocking,
+                    "alerts": alerts,
+                    "note": "Call get_context(type='attention') for full details or to advance cursor.",
+                }
+        except Exception:
+            pass  # never let attention errors break memory context
+
+        return response
+
+    async def _execute_get_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Unified context read tool — dispatch on type parameter.
+
+        type='orientation' (default): timestamp + recent memory + attention wake-up.
+        type='attention':             grouped inbox with cursor (get_attention_summary).
+        type='events':                raw event log (get_recent_events).
+        type='task_session':          full task output (task_session_read).
+        """
+        ctx_type = args.get("type", "orientation")
+
+        if ctx_type == "attention":
+            return await self._execute_get_attention_summary({
+                "since": args.get("since"),
+                "min_level": args.get("min_level", 1),
+            })
+
+        if ctx_type == "events":
+            return await self._execute_get_recent_events({
+                "since_timestamp": args.get("since"),
+                "types": args.get("event_types"),
+                "limit": args.get("limit", 50),
+                "include_data": args.get("include_data", False),
+            })
+
+        if ctx_type == "task_session":
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required for type='task_session'"}
+            return await self._execute_task_session_read({"task_id": task_id})
+
+        # Default: orientation
+        from datetime import datetime
+
+        now = datetime.now()
+        response: Dict[str, Any] = {
+            "timestamp": now.isoformat(),
+            "date": now.strftime("%Y-%m-%d"),
+            "day_of_week": now.strftime("%A"),
+            "time": now.strftime("%H:%M"),
+        }
+
+        # Last 3 items from working memory — recency-based, no embedding needed
+        try:
+            messages = self.memory_service.working_memory.get_messages()
+            recent = [
+                {"source": "working_memory", "content": m.content}
+                for m in messages[-3:]
+            ]
+            response["recent_memory"] = recent
+        except Exception:
+            response["recent_memory"] = []
+
+        # Attention wake-up hook — inject only if something needs action
+        try:
+            attention = await self._execute_get_attention_summary({})
+            blocking = attention.get("blocking", [])
+            alerts = attention.get("alerts", [])
+            if blocking or alerts:
+                response["attention"] = {
+                    "blocking": blocking,
+                    "alerts": alerts,
+                    "note": "Call get_context(type='attention') for full details or to advance cursor.",
+                }
+        except Exception:
+            pass  # never let attention errors break context
+
+        # Task sessions directory — active + interesting tasks so LLMs can discover task_ids
+        try:
+            from app.scheduler.models import TaskStatus
+            sessions = []
+
+            # Running tasks
+            for task in self.scheduler.list_tasks(status=TaskStatus.RUNNING):
+                sessions.append({
+                    "task_id": task.id,
+                    "status": "running",
+                    "title": task.description or task.id,
+                    "role": task.config.get("role_id") if task.config else None,
+                    "pending_question": None,
+                    "created_at": task.created_at.isoformat(),
+                })
+
+            # Tasks waiting for input
+            for task in self.scheduler.list_tasks(status=TaskStatus.WAITING_FOR_INPUT):
+                sessions.append({
+                    "task_id": task.id,
+                    "status": "waiting_for_input",
+                    "title": task.description or task.id,
+                    "role": task.config.get("role_id") if task.config else None,
+                    "pending_question": task.pending_question,
+                    "created_at": task.created_at.isoformat(),
+                })
+
+            # Recently completed tasks that requested user attention (notify_user via event log)
+            try:
+                recent_events = self._event_log.get_recent(
+                    types=["task_completed"], limit=20
+                )
+                notify_ids = {
+                    e.get("data", {}).get("task_id")
+                    for e in recent_events
+                    if e.get("notify_user") and e.get("data", {}).get("task_id")
+                }
+                for task in self.scheduler.list_tasks(status=TaskStatus.COMPLETED, limit=50):
+                    if task.id in notify_ids:
+                        sessions.append({
+                            "task_id": task.id,
+                            "status": "completed",
+                            "title": task.description or task.id,
+                            "role": task.config.get("role_id") if task.config else None,
+                            "pending_question": None,
+                            "created_at": task.created_at.isoformat(),
+                        })
+            except Exception:
+                pass
+
+            if sessions:
+                response["task_sessions"] = sessions
+        except Exception:
+            pass  # never let task_sessions errors break context
+
+        return response
+
+    async def _execute_search_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Targeted semantic search across selected memory tiers.
+
+        types:
+          conversations — working + active + archival memory (conversation history)
+          documents     — knowledge base (docs added via add_documents)
+        Omit types to search all.
+        limit_per_type controls how many results come from each tier.
+        """
+        query = args.get("query", "")
+        requested_types = args.get("types")  # None = all
+        limit_per_type = min(int(args.get("limit_per_type", 5)), 20)
+
+        if not query:
+            return {"status": "error", "message": "query is required"}
+
+        all_types = ["conversations", "documents"]
+        if requested_types:
+            search_types = [t for t in requested_types if t in all_types]
+        else:
+            search_types = all_types
+
+        results: Dict[str, Any] = {}
+
+        if "conversations" in search_types:
+            try:
+                # Generate embedding once for working + active searches
+                embedding = self.memory_service.embedding.get_text_embedding(
+                    query, prompt_name="query"
+                )
+                conv = []
+                if embedding:
+                    w = await self.memory_service._search_working_memory_async(embedding)
+                    a = await self.memory_service._search_active_memory_async(embedding)
+                    conv.extend(w + a)
+                arch = await self.memory_service._search_archival_memory_async(
+                    query, limit_per_type
+                )
+                conv.extend(arch)
+                # Sort by relevance, cap at limit
+                conv.sort(key=lambda x: float(x.get("relevance", 0)), reverse=True)
+                results["conversations"] = conv[:limit_per_type]
+            except Exception as e:
+                results["conversations"] = []
+
+        if "documents" in search_types:
+            try:
+                docs = await self.memory_service._search_knowledge_base_async(
+                    query, limit_per_type
+                )
+                results["documents"] = docs[:limit_per_type]
+            except Exception as e:
+                results["documents"] = []
+
+        total = sum(len(v) for v in results.values())
+        return {
+            "query": query,
+            "types_searched": search_types,
+            "results": results,
+            "total": total,
         }
 
     async def _execute_add_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -2430,6 +3135,22 @@ class ToolRegistry:
             schedule = None
             if schedule_str:
                 schedule = datetime.fromisoformat(schedule_str)
+
+            # Setup-time ceiling: validate available_tools against role policy
+            role_id = config.get("role_id") if isinstance(config, dict) else None
+            available_tools = config.get("available_tools", []) if isinstance(config, dict) else []
+            if role_id and available_tools:
+                from app.roles.role_manager import RoleManager
+                from app.scheduler.policy_monitor import PolicyMonitor
+                role = RoleManager().get(role_id)
+                monitor = PolicyMonitor.from_role(role_id, role)
+                violations = monitor.validate_available_tools(available_tools)
+                if violations:
+                    return {
+                        "status": "error",
+                        "message": "Task rejected: available_tools exceeds role policy ceiling",
+                        "violations": violations,
+                    }
 
             # Create task
             resources = (
@@ -3016,6 +3737,27 @@ class ToolRegistry:
                 "message": f"Failed to resume task: {str(e)}",
             }
 
+    async def _execute_reply_to_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute reply_to_task tool — resume a WAITING_FOR_INPUT task with the user's answer."""
+        task_id = args.get("task_id", "").strip()
+        reply = args.get("reply", "").strip()
+        if not task_id:
+            return {"status": "error", "message": "task_id is required"}
+        if not reply:
+            return {"status": "error", "message": "reply is required"}
+
+        if not self.scheduler:
+            return {"status": "error", "message": "Scheduler not available"}
+
+        result = self.scheduler.resume_task_with_reply(task_id, reply)
+        if result.get("success"):
+            return {
+                "status": "success",
+                "message": f"Task '{task_id}' resumed — agent will continue with your reply",
+                "task_id": task_id,
+            }
+        return {"status": "error", "message": result.get("error", "Unknown error")}
+
     # ========================================================================
     # Resource Pool Tools
     # ========================================================================
@@ -3046,6 +3788,119 @@ class ToolRegistry:
             "latest_timestamp": events[-1]["timestamp"] if events else None,
         }
 
+    async def _execute_get_attention_summary(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Return a grouped attention summary bucketed by urgency level.
+
+        Reads events from the persistent event log filtered by hitl_level,
+        groups them into blocking / alerts / digest buckets, and returns
+        a token-compact representation the MCP client LLM can act on.
+        """
+        from datetime import datetime, timedelta
+
+        since = args.get("since")
+        min_level = int(args.get("min_level", 1))
+
+        # Default window: last 24 hours
+        if not since:
+            since = (datetime.now() - timedelta(hours=24)).isoformat()
+
+        # Pull all events with data (needed for task_id in blocking items)
+        all_events = self._event_log.get_recent(
+            since=since,
+            limit=500,
+            include_data=True,
+        )
+
+        blocking = []   # level 4-5
+        alerts = []     # level 3
+        digest = []     # level 1-2
+        noise_count = 0
+
+        for e in all_events:
+            level = e.get("hitl_level", 0)
+            if level == 0:
+                noise_count += 1
+                continue
+            if level < min_level:
+                continue
+
+            event_type = e.get("event_type", "")
+            data = e.get("data") or {}
+            blurb = e.get("title") or event_type
+
+            # Determine source label
+            source = data.get("created_by") or data.get("agent_id") or (
+                "scheduler" if "task" in event_type else "system"
+            )
+
+            item: Dict[str, Any] = {
+                "id": e.get("id"),
+                "level": level,
+                "from": source,
+                "blurb": blurb,
+                "created_at": e.get("timestamp"),
+            }
+
+            # For waiting_for_input events, attach reply guidance
+            if event_type == "task_waiting_for_input":
+                task_id = data.get("task_id")
+                if task_id:
+                    item["reply_with"] = "reply_to_task"
+                    item["task_id"] = task_id
+                question = data.get("question") or data.get("pending_question")
+                if question:
+                    item["blurb"] = f"Waiting: {question}"
+
+            if level >= 4:
+                blocking.append(item)
+            elif level == 3:
+                alerts.append(item)
+            else:
+                digest.append(item)
+
+        # Cap digest at 10 items (keep newest)
+        digest = digest[-10:]
+
+        # Cursor = latest event timestamp in the returned set
+        all_returned = blocking + alerts + digest
+        cursor = max(
+            (e["created_at"] for e in all_returned if e.get("created_at")),
+            default=since,
+        )
+
+        return {
+            "status": "success",
+            "blocking": blocking,
+            "alerts": alerts,
+            "digest": digest,
+            "digest_count": len(digest),
+            "noise_count": noise_count,
+            "cursor": cursor,
+        }
+
+    async def _execute_config_doctor(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the config doctor and return a structured validation report."""
+        import asyncio
+        try:
+            from app.config.doctor import ConfigDoctor
+            doctor = ConfigDoctor()
+
+            # Run in executor so blocking I/O (URL probes) doesn't stall the event loop
+            loop = asyncio.get_event_loop()
+            report = await loop.run_in_executor(None, doctor.run_all_checks)
+            data = report.to_dict()
+            data["status_label"] = {
+                "pass": "All checks passed",
+                "warn": "Warnings found — some features may be degraded",
+                "error": "Errors found — tasks will likely fail at runtime",
+            }.get(data["status"], data["status"])
+            return data
+        except Exception as e:
+            return {"status": "error", "message": f"Config doctor failed: {e}"}
+
     async def _execute_resource_pool_status(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -3053,6 +3908,10 @@ class ToolRegistry:
         try:
             rm = self._get_resource_manager()
             status = rm.get_status()
+            # Annotate each resource with its agentic_capable flag if tested
+            for res_id, info in status.items():
+                capable = rm.get_agentic_capable(res_id)
+                info["agentic_capable"] = capable  # None = not yet tested
             return {
                 "status": "success",
                 "resources": status,
@@ -3127,6 +3986,32 @@ class ToolRegistry:
                 "status": "error",
                 "message": f"Failed to revoke resource: {str(e)}",
             }
+
+    async def _execute_resource_pool_smoke_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the agentic smoke test on a specific resource."""
+        resource_id = args.get("resource_id", "").strip()
+        full = bool(args.get("full", False))
+        if not resource_id:
+            return {"status": "error", "message": "resource_id is required"}
+
+        try:
+            from app.scheduler.agentic_smoke_test import AgenticSmokeTest
+            tester = AgenticSmokeTest()
+            result = await tester.run(resource_id=resource_id, full=full)
+
+            # Persist agentic_capable flag to ResourceManager
+            try:
+                from app.scheduler.resource_pool import ResourceManager
+                rm = ResourceManager()
+                rm.set_agentic_capable(resource_id, result.agentic_capable)
+            except Exception:
+                pass
+
+            data = result.to_dict()
+            data["status"] = "success"
+            return data
+        except Exception as e:
+            return {"status": "error", "message": f"Smoke test failed: {e}"}
 
     # ── Role System Tools ────────────────────────────────────────────
 
@@ -3371,8 +4256,64 @@ class ToolRegistry:
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
+        # --- resource pool actions ---
+        if action == "resource_status":
+            return await self._execute_resource_pool_status({})
+        if action == "resource_approve":
+            resource_id = args.get("resource_id")
+            if not resource_id:
+                return {"status": "error", "message": "Parameter 'resource_id' is required."}
+            return await self._execute_resource_pool_approve({"resource_id": resource_id})
+        if action == "resource_revoke":
+            resource_id = args.get("resource_id")
+            if not resource_id:
+                return {"status": "error", "message": "Parameter 'resource_id' is required."}
+            return await self._execute_resource_pool_revoke({"resource_id": resource_id})
+        if action == "resource_smoke_test":
+            resource_id = args.get("resource_id")
+            if not resource_id:
+                return {"status": "error", "message": "Parameter 'resource_id' is required."}
+            return await self._execute_resource_pool_smoke_test({"resource_id": resource_id})
+        if action == "llm_models":
+            resource_id = args.get("resource_id")
+            if not resource_id:
+                return {"status": "error", "message": "Parameter 'resource_id' is required."}
+            return await self._execute_llm_list_available_models({"resource_id": resource_id})
+
+        # --- doctor ---
+        if action == "doctor":
+            return await self._execute_config_doctor({})
+
+        # --- role management ---
+        if action == "role_list":
+            return await self._execute_role_list({})
+        if action == "role_get":
+            role_id = args.get("role_id")
+            if not role_id:
+                return {"status": "error", "message": "Parameter 'role_id' is required."}
+            return await self._execute_role_get({"role_id": role_id})
+        if action == "role_create":
+            return await self._execute_role_create(args)
+        if action == "role_design_start":
+            return await self._execute_role_design_start({})
+        if action == "role_design_answer":
+            return await self._execute_role_design_answer({
+                "session_id": args.get("session_id"),
+                "answer": args.get("answer"),
+            })
+
+        # --- modules list ---
+        if action == "modules":
+            modules = {}
+            for name, meta in self._config_modules.items():
+                modules[name] = {
+                    "description": meta["description"],
+                    "file": meta["file"],
+                }
+            return {"status": "success", "modules": modules}
+
         # --- help ---
-        if action == "help":
+        if action == "help" or not action:
             if not module_name:
                 # List all modules
                 modules = {}
@@ -3381,7 +4322,31 @@ class ToolRegistry:
                         "description": meta["description"],
                         "file": meta["file"],
                     }
-                return {"status": "success", "modules": modules}
+                return {
+                    "status": "success",
+                    "modules": modules,
+                    "actions": {
+                        "get":                   "Read config — params: module, path?",
+                        "set":                   "Write config — params: module, path, value",
+                        "list":                  "Show config structure — params: module",
+                        "delete":                "Remove config key — params: module, path",
+                        "validate":              "Validate config — params: module",
+                        "modules":               "List all config modules",
+                        "sync_local_models":     "Sync models from local server — params: resource_id",
+                        "resource_status":       "All resources + approval state",
+                        "resource_approve":      "Approve a resource — params: resource_id",
+                        "resource_revoke":       "Revoke a resource — params: resource_id",
+                        "resource_smoke_test":   "Test resource connectivity — params: resource_id",
+                        "llm_models":            "List live models from server — params: resource_id",
+                        "doctor":                "Full config pre-flight report",
+                        "role_list":             "List all roles",
+                        "role_get":              "Get role details — params: role_id",
+                        "role_create":           "Create a role — params: role_id, system_prompt, model_preference, ...",
+                        "role_design_start":     "Guided role design (Nine Chapter Q1)",
+                        "role_design_answer":    "Next design question — params: session_id, answer",
+                    },
+                    "example": 'config(action="resource_status")',
+                }
             # Show specific module structure
             if module_name not in self._config_modules:
                 return {
@@ -3700,3 +4665,290 @@ class ToolRegistry:
             }
         except Exception as e:
             return {"status": "error", "message": f"Failed to list models: {e}"}
+
+    # ========================================================================
+    # Hub Dispatchers
+    # ========================================================================
+
+    async def _execute_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Memory management hub dispatcher."""
+        action = args.get("action")
+
+        HELP = {
+            "tool": "memory",
+            "actions": {
+                "end_conversation": "Archive current conversation topic",
+                "list_conversations": "Recent conversation history — params: limit?",
+                "remove_conversation": "Delete a conversation message — params: id",
+                "remove_conversations": "Bulk delete recent conversations — params: count",
+                "add_documents": "Add reference material — params: documents",
+                "list_documents": "Recent documents — params: limit?",
+                "remove_document": "Delete a document — params: id",
+                "stats": "Memory tier statistics",
+                "toggle_multi_model": "Switch embedding mode — params: enabled",
+            },
+            "example": 'memory(action="list_conversations", limit=5)',
+        }
+
+        if not action or action == "help":
+            return HELP
+
+        if action == "end_conversation":
+            return await self._execute_end_conversation({})
+        elif action == "list_conversations":
+            return await self._execute_list_recent_conversations({"limit": args.get("limit", 10)})
+        elif action == "remove_conversation":
+            id_ = args.get("id")
+            if not id_:
+                return {"status": "error", "message": "Parameter 'id' is required."}
+            return await self._execute_remove_conversation_message({"message_id": id_})
+        elif action == "remove_conversations":
+            count = args.get("count")
+            if not count:
+                return {"status": "error", "message": "Parameter 'count' is required."}
+            return await self._execute_remove_recent_conversations({"count": count})
+        elif action == "add_documents":
+            docs = args.get("documents")
+            if not docs:
+                return {"status": "error", "message": "Parameter 'documents' is required."}
+            return await self._execute_add_documents({"documents": docs})
+        elif action == "list_documents":
+            return await self._execute_list_recent_documents({"limit": args.get("limit", 10)})
+        elif action == "remove_document":
+            id_ = args.get("id")
+            if not id_:
+                return {"status": "error", "message": "Parameter 'id' is required."}
+            return await self._execute_remove_document({"document_id": id_})
+        elif action == "stats":
+            return await self._execute_get_memory_stats({})
+        elif action == "toggle_multi_model":
+            enabled = args.get("enabled")
+            if enabled is None:
+                return {"status": "error", "message": "Parameter 'enabled' is required."}
+            return await self._execute_toggle_multi_model({"enabled": enabled})
+        else:
+            return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_knowledge(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Knowledge hub dispatcher."""
+        action = args.get("action")
+
+        HELP = {
+            "tool": "knowledge",
+            "actions": {
+                "list_repos": "List registered repos",
+                "add_repo": "Register a repo — params: name, url, ssh_key_path, branch?",
+                "get_file": "Read file from repo — params: repo, path, git_hash?",
+            },
+            "example": 'knowledge(action="list_repos")',
+        }
+
+        if not action or action == "help":
+            return HELP
+
+        if action == "list_repos":
+            return await self._execute_knowledge_list_repos({})
+        elif action == "add_repo":
+            for param in ("name", "url", "ssh_key_path"):
+                if not args.get(param):
+                    return {"status": "error", "message": f"Parameter '{param}' is required."}
+            return await self._execute_knowledge_add_repo({
+                "repo_name": args["name"],
+                "repo_url": args["url"],
+                "ssh_key_path": args["ssh_key_path"],
+                "branch": args.get("branch", "main"),
+            })
+        elif action == "get_file":
+            for param in ("repo", "path"):
+                if not args.get(param):
+                    return {"status": "error", "message": f"Parameter '{param}' is required."}
+            return await self._execute_knowledge_get_file({
+                "repo_name": args["repo"],
+                "file_path": args["path"],
+                "git_hash": args.get("git_hash"),
+            })
+        else:
+            return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_scheduler_hub(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Scheduler hub dispatcher."""
+        action = args.get("action")
+
+        HELP = {
+            "tool": "scheduler",
+            "actions": {
+                "add":            "Schedule a task — params: task_id, type, goal, cron?, priority?, role_id?, ...",
+                "list":           "List tasks — params: status?, priority?, limit?",
+                "get":            "Task detail — params: task_id",
+                "remove":         "Remove a task — params: task_id",
+                "purge":          "Bulk remove old tasks — params: before_date?",
+                "status":         "Daemon + queue stats",
+                "daemon_start":   "Start the scheduler daemon",
+                "daemon_stop":    "Stop the scheduler daemon",
+                "daemon_restart": "Restart the scheduler daemon",
+                "list_tools":     "Tools available to scheduled agents",
+            },
+            "note": "To reply to a waiting task use reply_to_task(task_id=..., reply=...) directly.",
+            "example": 'scheduler(action="list", status="waiting_for_input")',
+        }
+
+        if not action or action == "help":
+            return HELP
+
+        if action == "add":
+            return await self._execute_scheduler_add_task(args)
+        elif action == "list":
+            return await self._execute_scheduler_list_tasks(args)
+        elif action == "get":
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "Parameter 'task_id' is required."}
+            return await self._execute_scheduler_get_task({"task_id": task_id})
+        elif action == "remove":
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "Parameter 'task_id' is required."}
+            return await self._execute_scheduler_remove_task({"task_id": task_id})
+        elif action == "purge":
+            return await self._execute_scheduler_purge_tasks({"before_date": args.get("before_date")})
+        elif action == "status":
+            return await self._execute_scheduler_daemon_status({})
+        elif action == "daemon_start":
+            return await self._execute_scheduler_start_daemon({})
+        elif action == "daemon_stop":
+            return await self._execute_scheduler_stop_daemon({})
+        elif action == "daemon_restart":
+            return await self._execute_scheduler_restart_daemon({})
+        elif action == "list_tools":
+            return await self._execute_scheduler_list_assistant_tools({})
+        else:
+            return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_dream(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Dream hub dispatcher."""
+        action = args.get("action")
+
+        HELP = {
+            "tool": "dream",
+            "actions": {
+                "process": "Run dreaming pipeline — params: conversation_id, quality?",
+                "list":    "List dreaming archives",
+                "get":     "Retrieve archive — params: conversation_id, version?",
+                "upgrade": "Quality upgrade — params: conversation_id, target_quality",
+            },
+            "example": 'dream(action="list")',
+        }
+
+        if not action or action == "help":
+            return HELP
+
+        if action == "process":
+            conv_id = args.get("conversation_id")
+            if not conv_id:
+                return {"status": "error", "message": "Parameter 'conversation_id' is required."}
+            return await self._execute_dreaming_process({
+                "conversation_id": conv_id,
+                "quality": args.get("quality"),
+            })
+        elif action == "list":
+            return await self._execute_dreaming_list_archives({})
+        elif action == "get":
+            conv_id = args.get("conversation_id")
+            if not conv_id:
+                return {"status": "error", "message": "Parameter 'conversation_id' is required."}
+            return await self._execute_dreaming_get_archive({
+                "conversation_id": conv_id,
+                "version": args.get("version"),
+            })
+        elif action == "upgrade":
+            for param in ("conversation_id", "target_quality"):
+                if not args.get(param):
+                    return {"status": "error", "message": f"Parameter '{param}' is required."}
+            return await self._execute_dreaming_upgrade_quality({
+                "conversation_id": args["conversation_id"],
+                "target_quality": args["target_quality"],
+            })
+        else:
+            return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_agent_hub(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Agent hub dispatcher."""
+        action = args.get("action")
+
+        HELP = {
+            "tool": "agent",
+            "actions": {
+                "list_types": "Available agent types",
+                "start":      "Start an agent — params: agent_id, type, ...",
+                "stop":       "Stop an agent — params: agent_id",
+                "status":     "Agent status — params: agent_id",
+                "list":       "All running agents",
+                "restart":    "Restart an agent — params: agent_id",
+                "destroy":    "Destroy an agent — params: agent_id",
+                "action":     "Send action to agent — params: agent_id, action, params",
+            },
+            "note": "For MoJo internal agentic tasks use scheduler(action='add', type='assistant', role_id=...).",
+            "example": 'agent(action="list")',
+        }
+
+        if not action or action == "help":
+            return HELP
+
+        agent_id = args.get("agent_id")
+
+        if action == "list_types":
+            return await self._execute_agent_list_types({})
+        elif action == "start":
+            return await self._execute_agent_start(args)
+        elif action == "stop":
+            if not agent_id:
+                return {"status": "error", "message": "Parameter 'agent_id' is required."}
+            return await self._execute_agent_stop({"agent_id": agent_id})
+        elif action == "status":
+            if not agent_id:
+                return {"status": "error", "message": "Parameter 'agent_id' is required."}
+            return await self._execute_agent_status({"agent_id": agent_id})
+        elif action == "list":
+            return await self._execute_agent_list({})
+        elif action == "restart":
+            if not agent_id:
+                return {"status": "error", "message": "Parameter 'agent_id' is required."}
+            return await self._execute_agent_restart({"agent_id": agent_id})
+        elif action == "destroy":
+            if not agent_id:
+                return {"status": "error", "message": "Parameter 'agent_id' is required."}
+            return await self._execute_agent_destroy({"agent_id": agent_id})
+        elif action == "action":
+            if not agent_id:
+                return {"status": "error", "message": "Parameter 'agent_id' is required."}
+            return await self._execute_agent_action({
+                "agent_type": args.get("type"),
+                "action": args.get("params", {}).get("action"),
+                "params": args.get("params", {}),
+            })
+        else:
+            return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_external_agent(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """External agent hub dispatcher."""
+        action = args.get("action")
+
+        HELP = {
+            "tool": "external_agent",
+            "actions": {
+                "google": "Google Workspace API proxy — params: service, resource, method, params?, json_body?, format?, ...",
+            },
+            "future": ["github", "slack", "notion"],
+            "example": 'external_agent(action="google", service="calendar", resource="events", method="list")',
+        }
+
+        if not action or action == "help":
+            return HELP
+
+        if action == "google":
+            for param in ("service", "resource", "method"):
+                if not args.get(param):
+                    return {"status": "error", "message": f"Parameter '{param}' is required for google action."}
+            return await self._execute_google_service(args)
+        else:
+            return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
