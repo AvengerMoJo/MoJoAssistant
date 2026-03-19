@@ -537,7 +537,7 @@ class ToolRegistry:
             },
             {
                 "name": "add_documents",
-                "description": "Add reference documents, code examples, or knowledge to the permanent knowledge base for future retrieval. When to use: Use this when you want to permanently store reference material, documentation, code snippets, or any information that should be available for future conversations. How it works: Documents are embedded and stored in the knowledge base with optional metadata. Why useful: Builds a personal knowledge repository that can be searched later using get_memory_context.",
+                "description": "Add reference documents, code examples, or knowledge to the permanent knowledge base for future retrieval. When to use: Use this when you want to permanently store reference material, documentation, code snippets, or any information that should be available for future conversations. How it works: Documents are embedded and stored in the knowledge base with optional metadata. Why useful: Builds a personal knowledge repository that can be searched later using search_memory.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -2361,7 +2361,7 @@ Agent resumes within seconds.
                 response["attention"] = {
                     "blocking": blocking,
                     "alerts": alerts,
-                    "note": "Call get_attention_summary for full details or to advance cursor.",
+                    "note": "Call get_context(type='attention') for full details or to advance cursor.",
                 }
         except Exception:
             pass  # never let attention errors break memory context
