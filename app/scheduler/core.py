@@ -59,6 +59,9 @@ class Scheduler:
         self._semaphore: Optional[asyncio.Semaphore] = None  # Created in start()
         self._running_tasks: set = set()
 
+        # Wake signal — set by wake() to interrupt the inter-tick sleep early
+        self._wake_event: Optional[asyncio.Event] = None  # Created in start()
+
         # Statistics
         self.stats = {
             "started_at": None,
@@ -95,7 +98,18 @@ class Scheduler:
         task.status = TaskStatus.PENDING
         self.queue.update(task)
         self._log(f"Task {task_id} resumed with user reply")
+        self.wake()  # Don't wait for the next tick — run now
         return {"success": True, "task_id": task_id, "status": "pending"}
+
+    def wake(self) -> None:
+        """
+        Wake the scheduler immediately to process pending work.
+
+        Safe to call from any context (sync or async, before or after start()).
+        No-op if the scheduler has not started yet.
+        """
+        if self._wake_event is not None:
+            self._wake_event.set()
 
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
@@ -117,6 +131,7 @@ class Scheduler:
 
         self.running = True
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        self._wake_event = asyncio.Event()
         self.stats["started_at"] = datetime.now()
         self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
         self._seed_tasks_from_config()
@@ -225,12 +240,17 @@ class Scheduler:
                         "title": f"Scheduler heartbeat (tick #{self.tick_count})",
                     })
 
-                # Sleep until next tick (in 1-second increments for responsiveness)
-                remaining = self.tick_interval
-                while remaining > 0 and self.running:
-                    sleep_time = min(1, remaining)
-                    await asyncio.sleep(sleep_time)
-                    remaining -= sleep_time
+                # Sleep until next tick — or wake early if new work arrives.
+                # asyncio.wait_for returns immediately when _wake_event is set;
+                # TimeoutError means the full tick_interval passed normally.
+                try:
+                    await asyncio.wait_for(
+                        self._wake_event.wait(), timeout=self.tick_interval
+                    )
+                    self._wake_event.clear()
+                    self._log("Woken early — processing pending work", "debug")
+                except asyncio.TimeoutError:
+                    pass  # Normal tick interval elapsed
 
             except Exception as e:
                 self._log(f"Error in ticker loop: {e}", "error")
@@ -623,6 +643,7 @@ class Scheduler:
         success = self.queue.add(task)
         if success:
             self._log(f"Task added: {task.id} ({task.type.value})")
+            self.wake()  # Don't wait for the next tick — run now
         else:
             self._log(f"Task already exists: {task.id}", "warning")
         return success
