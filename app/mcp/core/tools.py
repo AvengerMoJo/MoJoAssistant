@@ -4932,7 +4932,7 @@ Agent resumes within seconds.
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
             return await self._execute_agent_action({
-                "agent_type": args.get("type"),
+                "agent_type": args.get("agent_type"),
                 "action": args.get("params", {}).get("action"),
                 "params": args.get("params", {}),
             })
