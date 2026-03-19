@@ -49,6 +49,10 @@ def registry():
         reg._stop_scheduler_daemon()
     except Exception:
         pass
+    try:
+        reg._push_manager.stop_all()
+    except Exception:
+        pass
 
 
 def run(coro):

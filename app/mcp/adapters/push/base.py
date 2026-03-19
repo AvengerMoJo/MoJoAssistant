@@ -53,8 +53,14 @@ class PushAdapter(ABC):
 
     def start(self) -> None:
         """Start the background polling loop (non-blocking)."""
-        self._task = asyncio.create_task(self._run(), name=f"push/{self.adapter_id}")
-        logger.info("[push/%s] adapter started", self.adapter_id)
+        coro = self._run()
+        try:
+            self._task = asyncio.create_task(coro, name=f"push/{self.adapter_id}")
+            logger.info("[push/%s] adapter started", self.adapter_id)
+        except RuntimeError:
+            # No running event loop — close coroutine cleanly to avoid "never awaited" warning
+            coro.close()
+            logger.debug("[push/%s] no running event loop — adapter deferred", self.adapter_id)
 
     def stop(self) -> None:
         """Cancel the background polling loop."""
