@@ -1101,3 +1101,205 @@ Ultimate: Rename CodingAgentExecutor → AgentExecutor
 The rename from `CodingAgentExecutor` to `AgentExecutor` is the milestone that
 marks MAP as production-ready: when the executor no longer assumes "coding" as
 the task type.
+
+**MAP is not coding-specific.** The protocol covers any agent type — coding,
+research, general task execution, GUI automation. The executor drives a role's
+local LLM (the thinking layer) which delegates work to a MAP-compatible backend.
+The backend can be a coding agent, a research orchestrator, a general-purpose
+task runner, or a browser automation agent. The local LLM and the MAP protocol
+don't care.
+
+---
+
+## 18. Agent Integration Analysis Log
+
+Pre-integration analysis for agents not yet implemented. Purpose: avoid
+repeating research when implementation time comes. Each entry captures the
+API shape, MAP fit assessment, and the blockers that deferred it.
+
+---
+
+### 18.1 ZeroClaw
+
+**Researched:** 2026-03-20
+**Status:** Deferred — wrong executor, thick shim
+**Revisit when:** `CodingAgentExecutor` → `AgentExecutor` generalisation is done
+
+**What it is:**
+Rust single-binary general autonomous task agent. "Workforce replacement"
+class — strong general LLM, built-in memory, tool use, scheduling. 28K GitHub
+stars, v0.5.1. Production-grade: <5 MB RAM, <10ms startup, single binary,
+runs on ARM/x86/RISC-V.
+
+**HTTP API surface (gateway mode, default port 42617):**
+
+```
+# Public (no auth)
+GET  /health                 → server health + component snapshot
+GET  /metrics                → Prometheus text format
+
+# Authentication
+POST /pair                   → exchange 6-digit pairing code for bearer token
+                               X-Pairing-Code: 123456 → {"token": "..."}
+
+# Main processing
+POST /webhook                → send message to agent, get response
+                               Body:     {"message": "user query"}
+                               Response: {"response": "...", "model": "..."}
+                               Auth:     Authorization: Bearer <token>
+                               Idempotency: X-Idempotency-Key: <uuid>
+
+# Runtime management
+GET  /api/status             → provider, model, uptime, gateway port
+GET  /api/config             → current config (secrets masked)
+PUT  /api/config             → update config
+GET  /api/tools              → list registered tools
+GET  /api/cron               → list scheduled jobs
+POST /api/cron               → add cron job
+DELETE /api/cron/:id         → remove cron job
+GET  /api/memory?query=      → semantic search over memory (70% vector + 30% FTS5)
+POST /api/memory             → store memory entry
+DELETE /api/memory/:key      → delete memory entry
+
+# Streaming
+GET  /events                 → SSE stream: agent progress, tool execution, costs
+GET  /ws/chat                → WebSocket: bidirectional streaming chat
+                               Client: {"content": "message"}
+                               Server: {"role": "assistant", "content": "chunk..."}
+                               Done:   {"type": "done", "full_response": "..."}
+```
+
+**Authentication:**
+Bearer tokens via pairing flow (6-digit one-time code → token). SHA-256
+hashed at rest. 5 failure lockout. Rate limited (10 req/min on /pair,
+60 req/min on /webhook). Configurable via TOML.
+
+**MAP fit assessment:**
+
+| MAP endpoint | ZeroClaw equivalent | Fit |
+|---|---|---|
+| `POST /session` | None — stateless, no sessions | ✗ Must synthesize |
+| `POST /session/{id}/message` | `POST /webhook {"message": "..."}` | ~50% — no session context |
+| `GET /session/{id}/message` | `GET /api/memory?query=session_{id}` | ✗ Indirect, lossy |
+| `GET /event` (SSE) | `GET /events` | ✓ Exists |
+| `POST /session/{id}/permissions/{id}` | None — allowlist-based, no runtime prompts | ✗ N/A |
+
+**Why the shim would be thick (not thin):**
+
+1. **No sessions.** ZeroClaw is stateless. A shim would have to synthesize
+   sessions by injecting a session ID into each message text
+   (`"[session abc123] actual instruction"`) and filtering `/events` by that
+   prefix. Fragile.
+
+2. **No message history endpoint.** `GET /session/{id}/message` would have
+   to be reconstructed from `/api/memory?query=session_{id}`. ZeroClaw stores
+   what its LLM remembers — not a guaranteed ordered transcript. The shim
+   would be guessing at history.
+
+3. **No permission prompts.** ZeroClaw uses allowlists, not runtime permission
+   dialogs. The MAP permission bridge has nothing to bridge. Any tool ZeroClaw
+   is configured to use, it uses — silently. This is fine for many use cases
+   but means the HITL permission flow doesn't apply.
+
+4. **Wrong executor.** ZeroClaw is a general autonomous task agent, not a
+   coding agent. Driving it with `CodingAgentExecutor` is the wrong frame.
+   It needs `AgentExecutor` (the generalised executor) which doesn't exist yet.
+   `CodingAgentExecutor` injects coding-specific context into the system prompt
+   and expects file/code output.
+
+**What ZeroClaw is good for in MoJo:**
+A role that handles general "do this work" tasks — drafting, research synthesis,
+multi-step planning, tool-assisted execution. Not file-editing coding tasks.
+The local LLM (thinking layer) would describe a high-level goal; ZeroClaw's own
+LLM + tools would execute it.
+
+**Integration path when ready:**
+1. Wait for `AgentExecutor` generalisation
+2. Build a thin session-synthesis shim:
+   - Session = UUID injected as message prefix
+   - `POST /webhook` with `"[{session_id}] {instruction}"` body
+   - `/events` SSE filtered by session_id prefix
+   - Accept that permission bridge is N/A (allowlist model)
+3. Role config: `agent_class: "http_shimmed"`, `shim_url: "http://127.0.0.1:42617"`
+4. Memory history: use `/api/memory?query={session_id}` as best-effort only
+
+**Installation:** `brew install zeroclaw` or single-binary download
+
+---
+
+### 18.2 DeerFlow
+
+**Researched:** 2026-03-20
+**Status:** Deferred — needs `AgentExecutor`, fits research role not coding role
+**Revisit when:** `AgentExecutor` done + Ahman needs a research execution backend
+
+**What it is:**
+Python 3.12+ multi-agent research orchestration platform by ByteDance.
+Parallel sub-agent spawning, web search, scientific paper access (PubMed etc.),
+Markdown-based skill system, sandboxed Docker execution, persistent memory.
+Strong thinking model recommended. LangGraph-based internally.
+
+**API surface:**
+
+```
+HTTP Gateway:      port 8001
+LangGraph Server:  port 2024  (standard LangGraph API — well-documented)
+Web UI:            port 2026
+Messaging:         Telegram long-poll, Slack Socket Mode, Feishu WebSocket
+```
+
+**MAP fit:**
+LangGraph Server (port 2024) has a standard REST API for running graphs
+(threads = sessions, runs = messages). Fit is better than ZeroClaw:
+- Sessions → LangGraph threads ✓
+- Messages → LangGraph runs ✓
+- SSE → LangGraph streaming ✓
+- Permissions → not applicable (research tasks, no filesystem prompts)
+
+Shim would translate LangGraph thread/run API → MAP session/message API.
+Should be thin once `AgentExecutor` exists.
+
+**Best role fit:**
+Research roles (Ahman-equivalent) — complex web research, scientific literature,
+multi-step content synthesis. Wrong for coding tasks.
+
+**Integration path when ready:**
+1. Wait for `AgentExecutor`
+2. Build LangGraph→MAP shim (thread=session, run=message, LangGraph stream=SSE)
+3. Model: strong thinking model (qwen3-30b+ or similar) for the local LLM layer
+4. DeerFlow's own agents handle the actual research execution
+
+---
+
+### 18.3 Claude Code (Remote Control)
+
+**Researched:** 2026-03-20
+**Status:** Not applicable as HTTP backend
+**Alternative:** tmux/GUI class agent (future)
+
+**What it is:**
+Claude Code with `--remote-control` flag connects a local `claude` process to
+claude.ai/code (browser) or Claude mobile app. It is a **UI relay for humans**,
+not a programmatic API.
+
+**Why MAP doesn't apply:**
+- No HTTP endpoints — claude makes outbound HTTPS calls to Anthropic, receives
+  work via polling. No inbound REST API.
+- Auth: claude.ai OAuth only (no API key). User must be logged in interactively.
+- Permissions: shown in browser/terminal, responded to by human.
+- No SSE stream accessible programmatically.
+
+**Why subprocess doesn't apply cleanly:**
+`claude --print "task"` runs once and exits. Permission prompts appear on
+stderr as interactive prompts — parsing these reliably is fragile.
+
+**Correct integration class:** GUI/Visual (Class 3)
+- Run `claude` in a tmux pane
+- `tmux capture-pane -p` to read output
+- `tmux send-keys` to send messages and respond to prompts
+- Visual LLM to parse screen content when output is complex
+- Requires multimodal LLM in the thinking layer
+
+**When to revisit:** When `GUIAdapter` (tmux shim) is being built.
+Claude Code would be a natural first target — well-known output format,
+predictable permission prompt patterns.
