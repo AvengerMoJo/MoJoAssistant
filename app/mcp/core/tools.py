@@ -4922,9 +4922,9 @@ Agent resumes within seconds.
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
             return await self._execute_agent_action({
-                "agent_id": agent_id,
-                "action": args.get("params", {}).get("action") or args.get("action"),
-                **{k: v for k, v in args.items() if k not in ("action", "agent_id")},
+                "agent_type": args.get("type"),
+                "action": args.get("params", {}).get("action"),
+                "params": args.get("params", {}),
             })
         else:
             return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
