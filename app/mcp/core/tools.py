@@ -4937,9 +4937,16 @@ Agent resumes within seconds.
             "tool": "external_agent",
             "actions": {
                 "google": "Google Workspace API proxy — params: service, resource, method, params?, json_body?, format?, ...",
+                "opencode_servers": "List configured OpenCode backends",
+                "opencode_health": "Check if an OpenCode server is reachable — params: server_id?",
+                "opencode_session_list": "List all sessions on a backend — params: server_id?",
+                "opencode_session_create": "Create a new coding session — params: server_id?",
+                "opencode_session_message": "Send a message and get a response — params: session_id, content, server_id?",
+                "opencode_session_messages": "Get full message history — params: session_id, server_id?",
+                "opencode_session_delete": "Delete a session — params: session_id, server_id?",
             },
             "future": ["github", "slack", "notion"],
-            "example": 'external_agent(action="google", service="calendar", resource="events", method="list")',
+            "example": 'external_agent(action="opencode_health")',
         }
 
         if not action or action == "help":
@@ -4950,5 +4957,73 @@ Agent resumes within seconds.
                 if not args.get(param):
                     return {"status": "error", "message": f"Parameter '{param}' is required for google action."}
             return await self._execute_google_service(args)
-        else:
-            return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+        if action.startswith("opencode"):
+            return await self._execute_opencode(action, args)
+
+        return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_opencode(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """OpenCode backend actions via coding-agent-mcp-tool."""
+        try:
+            from coding_agent_mcp.backends import BackendRegistry
+            from coding_agent_mcp.config.loader import load_config
+        except ImportError:
+            return {"status": "error", "message": "coding-agent-mcp-tool not installed. Run: pip install -e submodules/coding-agent-mcp-tool/"}
+
+        try:
+            config = load_config()
+            registry = BackendRegistry()
+            registry.reload(config.servers, config.default_server)
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to load OpenCode config: {e}"}
+
+        server_id = args.get("server_id")
+
+        try:
+            if action == "opencode_servers":
+                return {"status": "ok", "servers": registry.list_all()}
+
+            if action == "opencode_health":
+                backend = registry.get(server_id)
+                return await backend.health()
+
+            if action == "opencode_session_list":
+                backend = registry.get(server_id)
+                sessions = await backend.list_sessions()
+                return {"status": "ok", "sessions": sessions}
+
+            if action == "opencode_session_create":
+                backend = registry.get(server_id)
+                session = await backend.create_session()
+                return {"status": "ok", "session": session}
+
+            if action == "opencode_session_message":
+                session_id = args.get("session_id")
+                content = args.get("content")
+                if not session_id or not content:
+                    return {"status": "error", "message": "session_id and content are required"}
+                backend = registry.get(server_id)
+                result = await backend.send_message(session_id, content)
+                return {"status": "ok", "result": result}
+
+            if action == "opencode_session_messages":
+                session_id = args.get("session_id")
+                if not session_id:
+                    return {"status": "error", "message": "session_id is required"}
+                backend = registry.get(server_id)
+                messages = await backend.get_messages(session_id)
+                return {"status": "ok", "messages": messages}
+
+            if action == "opencode_session_delete":
+                session_id = args.get("session_id")
+                if not session_id:
+                    return {"status": "error", "message": "session_id is required"}
+                backend = registry.get(server_id)
+                result = await backend.delete_session(session_id)
+                return {"status": "ok", "result": result}
+
+            return {"status": "error", "message": f"Unknown opencode action: {action}"}
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
