@@ -1669,50 +1669,108 @@ class ToolRegistry:
         return descriptions.get(category, "General tools")
 
     def get_tools_usage_guide(self) -> str:
-        """Generate a comprehensive usage guide for LLMs"""
-        categories = self.get_tools_by_category()
+        """
+        Return the recommended system prompt and usage guide for MCP clients.
 
-        guide = "## MCP Tools Usage Guide\n\n"
-        guide += "### Tool Categories and Usage Patterns\n\n"
+        This is the authoritative guide — returned by the MCP server when
+        a client asks how to use the tools. It reflects the 12-tool architecture.
+        """
+        return """\
+## MoJoAssistant — MCP Usage Guide
 
-        for category, tools in categories.items():
-            if tools:
-                guide += f"#### {category.title()} Tools\n"
-                guide += f"*{self.get_category_description(category)}*\n\n"
+### Every Conversation — Start Here
 
-                for tool in tools:
-                    tool_name = tool["name"]
-                    template = self.get_user_prompt_template(tool_name)
+Call get_context() as your first action. Returns in one shot:
+- Current date, day of week, and time
+- Last 3 memory items from the previous session
+- attention.blocking — agents waiting for your input right now
+- task_sessions — active or recently completed background tasks
 
-                    guide += f"**{tool_name}**\n"
-                    guide += f"- *Description*: {tool['description']}\n"
+If attention.blocking is non-empty, surface those items immediately.
+Each blocking item includes reply_with + task_id so you know how to respond.
 
-                    if template:
-                        guide += f"- *User Prompt Template*: {template['template']}\n"
-                        guide += f"- *Usage Tip*: {template['usage_tip']}\n"
+---
 
-                    guide += "\n"
+### Top-Level Tools (always available)
 
-        guide += "### Priority Guidelines\n"
-        guide += (
-            "- **High Priority**: Core memory and conversation tools (use frequently)\n"
-        )
-        guide += "- **Medium Priority**: Supporting tools for enhanced functionality\n"
-        guide += "- **Low Priority**: Cleanup and management tools (use as needed)\n\n"
+| Tool | When to use |
+|------|------------|
+| get_context() | First call every session. Orientation + attention check. |
+| get_context(type="attention", since=cursor) | Cursor-based inbox polling. |
+| get_context(type="task_session", task_id=...) | Read full task output before replying. |
+| get_context(type="events", ...) | Raw event history — failures, config changes. |
+| search_memory(query, types?, limit_per_type?) | Find past context. types: conversations, documents. |
+| add_conversation(user_message, assistant_message) | After every exchange worth keeping. |
+| reply_to_task(task_id, reply) | Answer an agent waiting for input (from attention.blocking). |
+| web_search(query) | Current information not in local memory. |
 
-        guide += "### Best Practices\n"
-        guide += (
-            "1. Always use `add_conversation` after each exchange to maintain context\n"
-        )
-        guide += "2. Call `get_context` at conversation start — get timestamp, recent memory, and attention in one shot\n"
-        guide += "3. Use `search_memory` when you need to find specific information from past conversations or documents\n"
-        guide += "3. Use `web_search` for current information not available in local memory\n"
-        guide += (
-            "4. Use `end_conversation` when switching to completely different topics\n"
-        )
-        guide += "5. Regularly clean up old conversations and documents to maintain system performance\n"
+---
 
-        return guide
+### Hub Tools (call with no action to see help menu)
+
+Every hub returns a compact help menu when called without arguments.
+A wrong action also returns the help menu — you can never get stuck.
+
+| Hub | Covers |
+|-----|--------|
+| memory(action) | end_conversation, list/remove conversations and documents, stats |
+| knowledge(action) | Git repository access (add_repo, list_repos, get_file) |
+| config(action) | LLM resources, roles, smoke tests, config doctor |
+| scheduler(action) | Schedule tasks, list/get/remove tasks, daemon management |
+| dream(action) | Dreaming pipeline, list/get/upgrade archives |
+| agent(action) | Coding agent start/stop/status/action |
+| external_agent(action) | Google services and future 3rd-party integrations |
+
+---
+
+### Workflow Pattern
+
+```
+1. get_context()
+   → check attention.blocking (reply immediately if non-empty)
+   → note task_sessions (any tasks to follow up on?)
+   → time and recent memory now available
+
+2. search_memory(query=user_topic) if deeper context needed
+   → types=["conversations"] for past discussions
+   → types=["documents"] for stored reference material
+
+3. Respond to user
+
+4. add_conversation(user_message, assistant_message)
+   → skip trivial exchanges ("ok", "thanks")
+   → always save when new information or decisions were made
+```
+
+---
+
+### HITL Inbox — Replying to Agent Questions
+
+```
+get_context() shows:
+  attention.blocking[0]:
+    task_id: "ahman_scan_001"
+    blurb: "Waiting: which subnet should I scan?"
+    reply_with: "reply_to_task"
+
+→ Optionally drill in first:
+  get_context(type="task_session", task_id="ahman_scan_001")
+
+→ Reply:
+  reply_to_task(task_id="ahman_scan_001", reply="scan 10.0.0.0/24")
+
+Agent resumes within seconds.
+```
+
+---
+
+### Language & Formatting
+
+- Respond in the user's language
+- Use markdown when it aids clarity
+- Use mermaid for diagrams
+- Be concise — prefer direct answers
+"""
 
     def get_copy_paste_prompt_list(self) -> str:
         """Generate a copy-paste friendly prompt list for users"""
