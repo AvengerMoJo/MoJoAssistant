@@ -369,6 +369,25 @@ class ResourceManager:
 
             return best
 
+    def acquire_by_id(self, resource_id: str) -> Optional[LLMResource]:
+        """
+        Acquire a specific resource by ID, applying the same availability checks as acquire().
+
+        Returns None if the resource doesn't exist, is disabled, rate-limited, or unreachable.
+        """
+        with self._lock:
+            self._maybe_reload_runtime_state()
+            resource = self._resources.get(resource_id)
+            if resource is None or not resource.enabled:
+                return None
+            if self._is_rate_limited(resource):
+                return None
+            if not self._is_budget_available(resource):
+                return None
+            if self._compute_status(resource) == ResourceStatus.UNREACHABLE:
+                return None
+            return resource
+
     def record_usage(self, resource_id: str, tokens_used: int = 0, success: bool = True):
         """Record a completed LLM call."""
         with self._lock:

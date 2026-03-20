@@ -39,6 +39,7 @@
   "purpose": "Write correct, readable Python that fits the existing codebase and has tests.",
 
   "model_preference": null,
+  "preferred_resource_id": null,  // set to a specific resource ID from llm_config to pin this role to that resource
 
   "tools": ["read_file", "write_file", "run_tests", "search_in_files"],
 
