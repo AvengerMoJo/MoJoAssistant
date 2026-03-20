@@ -20,7 +20,9 @@ from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
 from app.scheduler.safety_policy import SafetyPolicy
 
 DEFAULT_SYSTEM_PROMPT = """\
-You are an autonomous assistant working on a specific goal.
+You are an autonomous assistant running as a scheduled task. Your owner can help \
+if you hit a blocker you cannot resolve on your own.
+
 Think step by step. When you have completed the goal, wrap your final answer in \
 <FINAL_ANSWER> tags like this:
 
@@ -31,7 +33,11 @@ Your complete answer here.
 If you need more steps to reach the answer, continue reasoning. \
 Do not use FINAL_ANSWER until you are confident the goal is fully addressed.
 
-You may have tools available. Use them when needed to gather information."""
+You may have tools available. Use them when needed to gather information.
+
+If you encounter an unresolvable blocker — a required tool is unavailable, you need \
+information only the owner has, or a decision requires human judgment — use ask_user \
+to surface it. Do NOT use ask_user to report progress; only use it when genuinely stuck."""
 
 # Tool definitions for the agentic loop - dynamically loaded from registry
 BUILTIN_TOOLS = {
@@ -49,6 +55,28 @@ BUILTIN_TOOLS = {
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    "ask_user": {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": (
+                "Pause the task and surface a blocker to the owner (user). "
+                "Use this when you cannot proceed without human help: a required tool is unavailable, "
+                "you need information only the owner has, or a decision requires human judgment. "
+                "Do NOT use this to report progress or status — only when genuinely blocked."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The specific question or blocker to surface to the owner",
+                    },
+                },
+                "required": ["question"],
             },
         },
     },
@@ -195,8 +223,11 @@ class AgenticExecutor:
         else:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
 
-        # Load tools from dynamic registry (fallback to builtins)
+        # Load tools from dynamic registry (fallback to builtins).
+        # ask_user is always included — it's the HITL escape hatch for any blocker.
         enabled_tool_names = config.get("available_tools", ["memory_search"])
+        if "ask_user" not in enabled_tool_names:
+            enabled_tool_names = list(enabled_tool_names) + ["ask_user"]
         tool_defs = []
 
         for tool_name in enabled_tool_names:
