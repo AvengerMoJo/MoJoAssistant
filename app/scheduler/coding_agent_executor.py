@@ -162,11 +162,28 @@ class CodingAgentExecutor:
                 error_message=f"Could not load coding agent backend for role '{role_id}'",
             )
 
-        # Health check
+        # Health check — if unreachable, attempt auto-start then re-check.
+        # Only escalate to waiting_for_input if auto-start fails.
+        server_id = config.get("server_id") or role.get("server_id")
         try:
             await backend.health()
-        except Exception as e:
-            return TaskResult(success=False, error_message=f"Coding agent not reachable: {e}")
+        except Exception:
+            self._log(f"Task {task.id}: backend unhealthy, attempting auto-start (server_id={server_id})")
+            backend = await self._auto_start_backend(role, config, server_id)
+            if backend is None:
+                hint = (
+                    f"agent(action='start', agent_id='{server_id}')"
+                    if server_id
+                    else "agent(action='list') to see available servers, then agent(action='start', agent_id=...)"
+                )
+                return TaskResult(
+                    success=False,
+                    waiting_for_input=(
+                        f"OpenCode backend not reachable and auto-start failed "
+                        f"(server_id={server_id!r}). "
+                        f"Start it manually with: {hint}"
+                    ),
+                )
 
         # Get or create an OpenCode session
         opencode_session_id = config.get("opencode_session_id")
@@ -562,6 +579,48 @@ class CodingAgentExecutor:
         except Exception as e:
             self._log(f"Failed to load role '{role_id}': {e}", "warning")
             return None
+
+    async def _auto_start_backend(
+        self, role: dict, config: dict, server_id: str | None
+    ) -> Any | None:
+        """
+        Attempt to auto-start the OpenCode server for *server_id*, then poll
+        until healthy.  Returns a healthy backend or None on failure.
+        """
+        if not server_id:
+            self._log("No server_id — cannot auto-start backend", "warning")
+            return None
+
+        try:
+            from app.mcp.opencode.manager import OpenCodeManager
+            manager = OpenCodeManager()
+            result = await manager.start_project(server_id)
+            status = result.get("status", "")
+            self._log(f"Auto-start result for {server_id}: {status}")
+            if status not in ("success", "already_running", "running"):
+                self._log(f"Auto-start did not succeed: {result}", "warning")
+                return None
+        except Exception as e:
+            self._log(f"Auto-start exception for {server_id}: {e}", "warning")
+            return None
+
+        # Poll until healthy (up to 90 s, 6 s intervals)
+        deadline = asyncio.get_event_loop().time() + 90
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(6)
+            # Reload backend — base_url is now populated after start
+            backend = self._get_backend(role, config)
+            if backend is not None:
+                try:
+                    await backend.health()
+                    self._log(f"Backend {server_id} is healthy after auto-start")
+                    return backend
+                except Exception:
+                    pass
+            self._log("Waiting for backend to become healthy…")
+
+        self._log(f"Backend {server_id} still unhealthy after 90 s", "warning")
+        return None
 
     def _get_backend(self, role: dict, config: dict) -> Any | None:
         server_id = config.get("server_id") or role.get("server_id")
