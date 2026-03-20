@@ -325,30 +325,38 @@ class TestCodingAgentSendPolling(unittest.IsolatedAsyncioTestCase):
         return ex
 
     async def test_polls_until_no_running_parts(self):
-        """send_message returns immediately; polling detects completion after 1 poll cycle."""
+        """
+        send_message returns immediately; polling waits for a new ASSISTANT message.
+        OpenCode messages use nested info.role, not top-level role.
+        """
         from app.scheduler.coding_agent_executor import CodingAgentExecutor
 
         ex = self._make_executor()
 
-        running_msgs = [
-            {"role": "assistant", "parts": [{"type": "tool-invocation", "state": {"status": "running"}}]}
-        ]
-        done_msgs = [
-            {"role": "assistant", "parts": [{"type": "text", "text": "Done."}]}
-        ]
+        # OpenCode message format: info.role, not top-level role
+        user_msg = {"info": {"role": "user"}, "parts": [{"type": "text", "text": "do it"}]}
+        running_msg = {
+            "info": {"role": "assistant"},
+            "parts": [{"type": "tool-invocation", "state": {"status": "running"}}],
+        }
+        done_msg = {
+            "info": {"role": "assistant"},
+            "parts": [{"type": "text", "text": "Done."}],
+        }
 
         backend = AsyncMock()
         backend.send_message = AsyncMock(return_value={"id": "m1"})
         backend.get_messages = AsyncMock(side_effect=[
-            [],            # initial count snapshot
-            running_msgs,  # first poll — still running
-            done_msgs,     # second poll — complete
+            [],                      # initial snapshot: 0 assistant messages
+            [user_msg],              # poll 1: user msg added, no assistant yet
+            [user_msg, running_msg], # poll 2: assistant started, still running
+            [user_msg, done_msg],    # poll 3: assistant complete
         ])
 
         result = await ex._send_and_wait_for_completion(backend, "sess1", "do it")
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["result"], "Done.")
-        self.assertEqual(backend.get_messages.call_count, 3)
+        self.assertEqual(backend.get_messages.call_count, 4)
 
     async def test_has_running_parts_detects_running_status(self):
         from app.scheduler.coding_agent_executor import CodingAgentExecutor
@@ -361,6 +369,17 @@ class TestCodingAgentSendPolling(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(CodingAgentExecutor._has_running_parts(msgs_done))
         self.assertFalse(CodingAgentExecutor._has_running_parts(msgs_no_state))
         self.assertFalse(CodingAgentExecutor._has_running_parts([]))
+
+    async def test_msg_role_handles_nested_and_flat(self):
+        from app.scheduler.coding_agent_executor import CodingAgentExecutor
+
+        nested = {"info": {"role": "assistant"}, "parts": []}
+        flat = {"role": "user", "content": "hi"}
+        no_role = {"parts": []}
+
+        self.assertEqual(CodingAgentExecutor._msg_role(nested), "assistant")
+        self.assertEqual(CodingAgentExecutor._msg_role(flat), "user")
+        self.assertEqual(CodingAgentExecutor._msg_role(no_role), "")
 
     async def test_permission_wins_over_completion(self):
         """Permission arriving concurrently with polling causes permission path."""

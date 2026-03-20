@@ -534,24 +534,28 @@ class CodingAgentExecutor:
     ) -> dict:
         """
         Fire send_message (HTTP POST returns immediately while tools run), then poll
-        get_messages until OpenCode has finished processing.
+        get_messages until OpenCode has produced a new assistant response.
+
+        OpenCode messages use {"info": {"role": "..."}, "parts": [...]} structure.
+        We snapshot the assistant-message count before sending and wait until a new
+        assistant message appears with no parts still running.
 
         Returns the last assistant response as a result dict.
         """
-        # Snapshot message count before sending so we can detect a new response
+        # Snapshot assistant-message count before sending
         try:
             initial_msgs = await backend.get_messages(session_id)
-            initial_count = len(initial_msgs)
+            initial_count = self._count_assistant_messages(initial_msgs)
         except Exception:
             initial_count = 0
 
         await backend.send_message(session_id, content)
 
-        # Poll until a new completed response appears
+        # Poll until a new assistant response appears
         msgs = await self._poll_for_completion(backend, session_id, initial_count)
 
         last_assistant = next(
-            (m for m in reversed(msgs) if m.get("role") == "assistant"),
+            (m for m in reversed(msgs) if self._msg_role(m) == "assistant"),
             None,
         )
         if last_assistant:
@@ -564,18 +568,19 @@ class CodingAgentExecutor:
         return {"status": "completed", "result": response_text}
 
     async def _poll_for_completion(
-        self, backend: Any, session_id: str, initial_count: int, timeout: float = 280.0
+        self, backend: Any, session_id: str, initial_assistant_count: int, timeout: float = 280.0
     ) -> list[dict]:
         """
-        Poll get_messages until OpenCode has added new messages with no running parts.
-        Falls back to whatever is available when the timeout expires.
+        Poll get_messages until OpenCode has added a new assistant message with no
+        parts still running.  Falls back to whatever is available on timeout.
         """
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(3)
             try:
                 msgs = await backend.get_messages(session_id)
-                if len(msgs) > initial_count and not self._has_running_parts(msgs):
+                new_count = self._count_assistant_messages(msgs)
+                if new_count > initial_assistant_count and not self._has_running_parts(msgs):
                     return msgs
             except Exception as e:
                 self._log(f"get_messages poll error: {e}", "warning")
@@ -584,6 +589,21 @@ class CodingAgentExecutor:
             return await backend.get_messages(session_id)
         except Exception:
             return []
+
+    @staticmethod
+    def _msg_role(msg: dict) -> str:
+        """Extract role from an OpenCode message (supports both flat and nested formats)."""
+        # OpenCode: {"info": {"role": "assistant"}, "parts": [...]}
+        # Fallback: {"role": "assistant", ...}
+        return msg.get("info", {}).get("role") or msg.get("role", "")
+
+    @staticmethod
+    def _count_assistant_messages(messages: list[dict]) -> int:
+        """Count messages with role == 'assistant'."""
+        return sum(
+            1 for m in messages
+            if (m.get("info", {}).get("role") or m.get("role", "")) == "assistant"
+        )
 
     @staticmethod
     def _has_running_parts(messages: list[dict]) -> bool:
