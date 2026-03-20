@@ -306,5 +306,93 @@ class TestCodingAgentExecutorRouting(unittest.IsolatedAsyncioTestCase):
         executor._get_coding_agent_executor.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# CodingAgentExecutor — send_message polling fix
+# ---------------------------------------------------------------------------
+
+class TestCodingAgentSendPolling(unittest.IsolatedAsyncioTestCase):
+    """
+    Verify that _send_with_permission_watch polls for completion after the
+    fire-and-forget send_message HTTP call returns.
+    """
+
+    def _make_executor(self):
+        from app.scheduler.coding_agent_executor import CodingAgentExecutor
+        ex = CodingAgentExecutor.__new__(CodingAgentExecutor)
+        ex._log = lambda *a, **k: None
+        ex._pending_permission = None
+        ex._waiting_for_input_question = None
+        return ex
+
+    async def test_polls_until_no_running_parts(self):
+        """send_message returns immediately; polling detects completion after 1 poll cycle."""
+        from app.scheduler.coding_agent_executor import CodingAgentExecutor
+
+        ex = self._make_executor()
+
+        running_msgs = [
+            {"role": "assistant", "parts": [{"type": "tool-invocation", "state": {"status": "running"}}]}
+        ]
+        done_msgs = [
+            {"role": "assistant", "parts": [{"type": "text", "text": "Done."}]}
+        ]
+
+        backend = AsyncMock()
+        backend.send_message = AsyncMock(return_value={"id": "m1"})
+        backend.get_messages = AsyncMock(side_effect=[
+            [],            # initial count snapshot
+            running_msgs,  # first poll — still running
+            done_msgs,     # second poll — complete
+        ])
+
+        result = await ex._send_and_wait_for_completion(backend, "sess1", "do it")
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["result"], "Done.")
+        self.assertEqual(backend.get_messages.call_count, 3)
+
+    async def test_has_running_parts_detects_running_status(self):
+        from app.scheduler.coding_agent_executor import CodingAgentExecutor
+
+        msgs_running = [{"parts": [{"type": "tool-invocation", "state": {"status": "running"}}]}]
+        msgs_done = [{"parts": [{"type": "text", "state": {"status": "completed"}}]}]
+        msgs_no_state = [{"parts": [{"type": "text"}]}]
+
+        self.assertTrue(CodingAgentExecutor._has_running_parts(msgs_running))
+        self.assertFalse(CodingAgentExecutor._has_running_parts(msgs_done))
+        self.assertFalse(CodingAgentExecutor._has_running_parts(msgs_no_state))
+        self.assertFalse(CodingAgentExecutor._has_running_parts([]))
+
+    async def test_permission_wins_over_completion(self):
+        """Permission arriving concurrently with polling causes permission path."""
+        from app.scheduler.coding_agent_executor import CodingAgentExecutor
+
+        ex = self._make_executor()
+
+        done_msgs = [{"role": "assistant", "parts": [{"type": "text", "text": "Done."}]}]
+        backend = AsyncMock()
+        backend.send_message = AsyncMock(return_value={"id": "m1"})
+        # get_messages: initial snapshot + two fast polls returning done
+        backend.get_messages = AsyncMock(return_value=done_msgs)
+
+        perm_event = {"id": "perm1", "type": "tool", "title": "Write /tmp/file.txt"}
+
+        async def fake_subscribe(_session_id):
+            yield perm_event
+
+        backend.subscribe_permissions = fake_subscribe
+
+        # Patch _poll_for_completion to be slow so permission wins
+        async def slow_poll(*a, **k):
+            await asyncio.sleep(10)
+            return done_msgs
+
+        ex._poll_for_completion = slow_poll
+
+        result = await ex._send_with_permission_watch(backend, "sess1", "do it")
+        self.assertEqual(result["status"], "permission_required")
+        self.assertEqual(result["permission_id"], "perm1")
+        self.assertIsNotNone(ex._pending_permission)
+
+
 if __name__ == "__main__":
     unittest.main()

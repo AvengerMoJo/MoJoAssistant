@@ -36,7 +36,7 @@ SYNTHETIC_ROLE = {
     "name": "TestCodingAgent",
     "executor": "coding_agent",
     "backend_type": "opencode",
-    "server_id": None,  # uses default OpenCode server
+    "server_id": None,  # set to a git_url at runtime (queue_live_test fills this in)
     "system_prompt": (
         "You are a minimal test coding agent. "
         "Follow instructions exactly. Produce a <FINAL_ANSWER> when done."
