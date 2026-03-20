@@ -2570,12 +2570,22 @@ Agent resumes within seconds.
         user_message = args.get("user_message", "")
         assistant_message = args.get("assistant_message", "")
 
-        self.memory_service.add_user_message(user_message)
-        self.memory_service.add_assistant_message(assistant_message)
+        # Embedding generation + file writes are blocking (CPU-bound, up to several seconds).
+        # Run them in a thread executor as a background task so the caller gets an immediate
+        # response instead of waiting for all embedding models to finish.
+        loop = asyncio.get_event_loop()
+
+        async def _store() -> None:
+            await loop.run_in_executor(None, self.memory_service.add_user_message, user_message)
+            await loop.run_in_executor(
+                None, self.memory_service.add_assistant_message, assistant_message
+            )
+
+        asyncio.create_task(_store())
 
         return {
             "status": "success",
-            "message": "Conversation exchange added to working memory",
+            "message": "Conversation exchange queued for storage",
             "user_message_length": len(user_message),
             "assistant_message_length": len(assistant_message),
         }
