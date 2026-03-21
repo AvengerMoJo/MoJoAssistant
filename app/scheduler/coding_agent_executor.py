@@ -28,23 +28,23 @@ from app.scheduler.session_storage import SessionMessage, SessionStorage, TaskSe
 
 logger = logging.getLogger(__name__)
 
-# Popo tool definitions for the LLM
-_OPENCODE_TOOLS = [
+# Tool definitions exposed to the orchestrating LLM
+_CODING_AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "opencode_send_message",
+            "name": "agent_send_message",
             "description": (
-                "Send an instruction to the OpenCode coding agent and wait for it to respond. "
-                "OpenCode has shell access, can read/write files, run tests, and use tools. "
-                "The response will include what OpenCode did and any output it produced."
+                "Send an instruction to the coding agent and wait for it to respond. "
+                "The agent has shell access, can read/write files, run tests, and use tools. "
+                "The response will include what the agent did and any output it produced."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "instruction": {
                         "type": "string",
-                        "description": "Clear instruction for OpenCode to execute",
+                        "description": "Clear instruction for the coding agent to execute",
                     }
                 },
                 "required": ["instruction"],
@@ -54,9 +54,9 @@ _OPENCODE_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "opencode_get_messages",
+            "name": "agent_get_messages",
             "description": (
-                "Get the full conversation history of the current OpenCode session, "
+                "Get the full conversation history of the current agent session, "
                 "including all messages and tool outputs so far. Use this to understand "
                 "the current state when resuming after an interruption."
             ),
@@ -131,10 +131,10 @@ class CodingAgentExecutor:
         Run the coding agent loop for a task.
 
         Task config keys:
-            goal (str): What Popo should accomplish.
+            goal (str): What the role should accomplish.
             role_id (str): Which role to load (must have executor="coding_agent").
-            opencode_session_id (str, optional): Existing OpenCode session to resume.
-            opencode_pending_permission_id (str, optional): Permission ID awaiting response.
+            agent_session_id (str, optional): Existing agent session to resume.
+            agent_pending_permission_id (str, optional): Permission ID awaiting response.
             resume_from_task_id (str, optional): Resume a previous LLM session.
             reply_to_question (str, optional): User reply injected after WAITING_FOR_INPUT.
         """
@@ -154,7 +154,7 @@ class CodingAgentExecutor:
                 error_message=f"Role '{role_id}' not found or has no executor=coding_agent",
             )
 
-        # Load the OpenCode backend
+        # Load the coding agent backend
         backend = self._get_backend(role, config)
         if backend is None:
             return TaskResult(
@@ -179,50 +179,50 @@ class CodingAgentExecutor:
                 return TaskResult(
                     success=False,
                     waiting_for_input=(
-                        f"OpenCode backend not reachable and auto-start failed "
+                        f"Coding agent backend not reachable and auto-start failed "
                         f"(server_id={server_id!r}). "
                         f"Start it manually with: {hint}"
                     ),
                 )
 
-        # Get or create an OpenCode session
-        opencode_session_id = config.get("opencode_session_id")
-        if not opencode_session_id:
+        # Get or create an agent session
+        agent_session_id = config.get("agent_session_id")
+        if not agent_session_id:
             try:
                 session_data = await backend.create_session()
-                opencode_session_id = session_data.get("id") or session_data.get("sessionID")
-                if not opencode_session_id:
+                agent_session_id = session_data.get("id") or session_data.get("sessionID")
+                if not agent_session_id:
                     return TaskResult(
                         success=False,
-                        error_message=f"OpenCode session create returned no ID: {session_data}",
+                        error_message=f"Agent session create returned no ID: {session_data}",
                     )
                 # Persist for resume
-                task.config["opencode_session_id"] = opencode_session_id
+                task.config["agent_session_id"] = agent_session_id
             except Exception as e:
                 return TaskResult(
-                    success=False, error_message=f"Failed to create OpenCode session: {e}"
+                    success=False, error_message=f"Failed to create agent session: {e}"
                 )
 
-        self._log(f"Task {task.id}: using OpenCode session {opencode_session_id}")
+        self._log(f"Task {task.id}: using agent session {agent_session_id}")
 
         # If resuming after a permission was granted by the user
-        pending_perm_id = config.pop("opencode_pending_permission_id", None)
+        pending_perm_id = config.pop("agent_pending_permission_id", None)
         reply = config.pop("reply_to_question", None)
 
         if pending_perm_id and reply is not None:
             response = self._map_reply_to_permission_response(reply)
-            directory = config.pop("opencode_pending_permission_directory", "")
+            directory = config.pop("agent_pending_permission_directory", "")
             self._log(
                 f"Responding to permission {pending_perm_id} with '{response}' "
                 f"(user said: '{reply}', directory: '{directory}')"
             )
             try:
                 await backend.respond_to_permission(
-                    opencode_session_id, pending_perm_id, response, directory=directory
+                    agent_session_id, pending_perm_id, response, directory=directory
                 )
             except Exception as e:
                 self._log(f"respond_to_permission failed: {e}", "warning")
-                # Continue anyway — OpenCode may have timed out the permission
+                # Continue anyway — agent may have timed out the permission
 
         # Build resource / LLM config
         from app.scheduler.resource_pool import ResourceTier
@@ -242,7 +242,7 @@ class CodingAgentExecutor:
         max_duration = config.get("max_duration_seconds", task.resources.max_duration_seconds or 600)
 
         # Build system prompt: role persona + coding agent context
-        system_prompt = self._build_system_prompt(role, backend, opencode_session_id)
+        system_prompt = self._build_system_prompt(role, backend, agent_session_id)
 
         # Build initial messages (or resume existing LLM session)
         resume_from = config.get("resume_from_task_id")
@@ -251,22 +251,22 @@ class CodingAgentExecutor:
         if resume_from:
             messages = self._load_resume_messages(resume_from, system_prompt)
             if messages is None:
-                messages = self._initial_messages(system_prompt, goal, config, opencode_session_id)
+                messages = self._initial_messages(system_prompt, goal, config, agent_session_id)
             else:
                 # Inject context about the permission resume
                 if pending_perm_id:
                     messages.append({
                         "role": "user",
                         "content": (
-                            f"The OpenCode permission request was resolved (user said: '{reply}' → '{response}'). "
-                            "The OpenCode session is still active — call `opencode_send_message` to "
+                            f"The permission request was resolved (user said: '{reply}' → '{response}'). "
+                            "The agent session is still active — call `agent_send_message` to "
                             "continue toward the goal (the session remembers all previous work)."
                         ),
                     })
                 elif reply:
                     messages.append({"role": "user", "content": f"User reply: {reply}"})
         else:
-            messages = self._initial_messages(system_prompt, goal, config, opencode_session_id)
+            messages = self._initial_messages(system_prompt, goal, config, agent_session_id)
 
         # Create session record
         session = TaskSession(
@@ -274,7 +274,7 @@ class CodingAgentExecutor:
             status="running",
             messages=[],
             started_at=datetime.now().isoformat(),
-            metadata={"goal": goal, "opencode_session_id": opencode_session_id},
+            metadata={"goal": goal, "agent_session_id": agent_session_id},
         )
         self._session_storage.save_session(session)
         for msg in messages:
@@ -314,7 +314,7 @@ class CodingAgentExecutor:
 
             try:
                 response_data = await self._call_llm(
-                    resource, messages, tools=_OPENCODE_TOOLS, model_override=role_model_preference
+                    resource, messages, tools=_CODING_AGENT_TOOLS, model_override=role_model_preference
                 )
                 self._rm.record_usage(resource.id, success=True)
             except Exception as e:
@@ -331,7 +331,7 @@ class CodingAgentExecutor:
                 self._record(task.id, "assistant", response_text, iteration)
 
                 tool_results = await self._execute_tool_calls(
-                    tool_calls, backend, opencode_session_id, task
+                    tool_calls, backend, agent_session_id, task
                 )
 
                 for tc, result_content in zip(tool_calls, tool_results):
@@ -395,18 +395,18 @@ class CodingAgentExecutor:
                 metrics={"duration_seconds": total_elapsed, "session_file": session_file},
             )
 
-        # Paused for OpenCode permission — store permission_id + directory for resume
+        # Paused for agent permission — store permission_id + directory for resume
         if self._pending_permission:
             perm = self._pending_permission
             perm_id = perm.get("requestID") or perm.get("id")
-            task.config["opencode_pending_permission_id"] = perm_id
-            task.config["opencode_pending_permission_directory"] = perm.get("directory", "")
+            task.config["agent_pending_permission_id"] = perm_id
+            task.config["agent_pending_permission_directory"] = perm.get("directory", "")
             task.config["resume_from_task_id"] = task.id
             self._session_storage.update_status(task.id, "waiting_for_input")
             title = perm.get("title") or perm.get("type") or "permission required"
             return TaskResult(
                 success=False,
-                waiting_for_input=f"OpenCode needs permission: {title}",
+                waiting_for_input=f"Agent needs permission: {title}",
                 output_file=session_file,
                 metrics={"duration_seconds": total_elapsed, "session_file": session_file},
             )
@@ -436,7 +436,7 @@ class CodingAgentExecutor:
         self,
         tool_calls: list[dict],
         backend: Any,
-        opencode_session_id: str,
+        agent_session_id: str,
         task: Task,
     ) -> list[str]:
         results = []
@@ -449,7 +449,7 @@ class CodingAgentExecutor:
 
             try:
                 result = await self._execute_single_tool(
-                    fn_name, fn_args, backend, opencode_session_id
+                    fn_name, fn_args, backend, agent_session_id
                 )
                 results.append(json.dumps(result, default=str))
             except Exception as e:
@@ -462,23 +462,23 @@ class CodingAgentExecutor:
         name: str,
         args: dict,
         backend: Any,
-        opencode_session_id: str,
+        agent_session_id: str,
     ) -> Any:
         if name == "ask_user":
             self._waiting_for_input_question = args.get("question", "")
             return {"success": True, "message": f"Question submitted: {self._waiting_for_input_question}"}
 
-        if name == "opencode_get_messages":
+        if name == "agent_get_messages":
             try:
-                msgs = await backend.get_messages(opencode_session_id)
+                msgs = await backend.get_messages(agent_session_id)
                 return {"messages": msgs, "count": len(msgs)}
             except Exception as e:
                 return {"error": f"get_messages failed: {e}"}
 
-        if name == "opencode_send_message":
+        if name == "agent_send_message":
             instruction = args.get("instruction", "")
             return await self._send_with_permission_watch(
-                backend, opencode_session_id, instruction
+                backend, agent_session_id, instruction
             )
 
         return {"error": f"Unknown tool: {name}"}
@@ -538,7 +538,7 @@ class CodingAgentExecutor:
                         await send_task
                     return {
                         "status": "permission_required",
-                        "message": f"OpenCode needs permission: {title}",
+                        "message": f"Agent needs permission: {title}",
                         "permission_id": perm_id,
                         "permission_directory": perm.get("directory", ""),
                     }
@@ -551,7 +551,7 @@ class CodingAgentExecutor:
             with suppress(Exception):
                 await send_task
             self._log("send_message timed out after 280s", "warning")
-            return {"status": "timeout", "result": "(timed out — no response from OpenCode)"}
+            return {"status": "timeout", "result": "(timed out — no response from coding agent)"}
 
         if send_error is not None:
             raise send_error
@@ -669,18 +669,19 @@ class CodingAgentExecutor:
 
     def _build_system_prompt(self, role: dict, backend: Any, session_id: str) -> str:
         persona = role.get("system_prompt", "You are a coding assistant.")
+        backend_type = getattr(backend, "backend_type", "coding agent")
         context = (
             f"\n\n---\n\n"
             f"## Coding Agent Context\n\n"
-            f"You are driving an external coding agent (OpenCode) via tool calls.\n"
-            f"OpenCode session ID: `{session_id}`\n\n"
+            f"You are driving an external coding agent ({backend_type}) via tool calls.\n"
+            f"Agent session ID: `{session_id}`\n\n"
             f"**How to work:**\n"
             f"1. Break the goal into discrete steps.\n"
-            f"2. Send each step to OpenCode via `opencode_send_message`.\n"
+            f"2. Send each step to the agent via `agent_send_message`.\n"
             f"3. Read results and plan the next step.\n"
-            f"4. If OpenCode asks for a permission, the request will be paused and routed to the user.\n"
+            f"4. If the agent asks for a permission, the request will be paused and routed to the user.\n"
             f"5. When the task is complete, summarise what was done in a `<FINAL_ANSWER>`.\n\n"
-            f"Call `opencode_get_messages()` first if you are resuming a previous session."
+            f"Call `agent_get_messages()` first if you are resuming a previous session."
         )
         return persona + context
 
