@@ -32,7 +32,7 @@
         "notify_user_only": true,
         "_notify_note": "Only send events flagged as user-facing (task_failed, system errors, etc.)",
 
-        "event_types": ["task_failed", "task_completed", "system_notification"],
+        "event_types": ["task_failed", "task_completed", "system_notification", "task_waiting_for_input", "task_started", "task_cancelled"],
         "_types_note": "Allowlist of event types to forward. Remove this line to forward all types that pass severity filter."
       }
     },
