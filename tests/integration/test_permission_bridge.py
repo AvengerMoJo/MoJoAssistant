@@ -101,7 +101,7 @@ class TestPermissionBridgeSetup(unittest.TestCase):
 
         with patch("app.roles.role_manager.RoleManager") as MockRM:
             MockRM.return_value.get.return_value = SYNTHETIC_ROLE
-            asyncio.get_event_loop().run_until_complete(executor._execute_agentic(task))
+            asyncio.run(executor._execute_agentic(task))
 
         coding_exec.execute.assert_called_once_with(task)
         executor._get_agentic_executor.assert_not_called()
