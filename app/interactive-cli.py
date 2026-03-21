@@ -602,8 +602,8 @@ def main() -> int:
         # Initialize memory service with the selected embedding model
         memory_service = MemoryService(
             data_dir=embedding_config.get("memory_settings", {}).get(
-                "data_directory", ".memory"
-            ),
+                "data_directory"
+            ) or os.getenv("MEMORY_PATH", str(Path.home() / ".memory")),
             embedding_model=embed_config.get("model_name", embed_model_name),
             embedding_backend=embed_config.get("backend", "huggingface"),
             embedding_device=embed_config.get("device"),

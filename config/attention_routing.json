@@ -1,0 +1,31 @@
+{
+  "_comment": "Per-source attention routing rules. Applied after base level calculation in AttentionClassifier.",
+  "_levels": {
+    "5": "critical — server crash, fatal error",
+    "4": "blocking — waiting for human input",
+    "3": "error — task failed permanently",
+    "2": "notable — task completed, user asked to be notified",
+    "1": "background note — worth logging, not worth interrupting",
+    "0": "noise — heartbeats, ticks, internal bookkeeping"
+  },
+  "source_rules": {
+    "dreaming": {
+      "_comment": "Memory consolidation is background work. Never interrupt the user for it.",
+      "max_level": 1
+    },
+    "assistant": {
+      "_comment": "Role-based assistant tasks: normal rules apply. waiting_for_input=4, failures=3, notify completions=2."
+    },
+    "agent": {
+      "_comment": "External coding agents (OpenCode, etc): failures and completions are always worth surfacing.",
+      "min_level": 2
+    },
+    "scheduled": {
+      "_comment": "Calendar/cron tasks: notify on completion if the task asked, otherwise quiet.",
+      "max_level": 2
+    },
+    "custom": {
+      "_comment": "User-defined tasks: normal rules apply."
+    }
+  }
+}

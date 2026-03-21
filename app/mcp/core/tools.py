@@ -1461,12 +1461,22 @@ class ToolRegistry:
                 "description": (
                     "External services and 3rd-party integrations. Call with no action for help menu.\n\n"
                     "action='google', service, resource, method, params?, json_body?, format?, ... — Google Workspace API proxy\n\n"
+                    "action='backend_servers' — list all configured coding agent backends (OpenCode, Claude Code, ...)\n"
+                    "action='backend_health', server_id? — check if a backend is reachable\n"
+                    "action='backend_session_list', server_id? — list sessions on a backend\n"
+                    "action='backend_session_create', server_id? — create a new session\n"
+                    "action='backend_session_message', session_id, content, server_id? — send a message\n"
+                    "action='backend_session_messages', session_id, server_id? — get message history\n"
+                    "action='backend_session_delete', session_id, server_id? — delete a session\n\n"
                     "Future: action='github', action='slack', action='notion', ..."
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "description": "Integration to use. Omit for help menu."},
+                        "server_id": {"type": "string", "description": "Backend server ID (backend actions). Omit for default server."},
+                        "session_id": {"type": "string", "description": "Session ID (backend session actions)."},
+                        "content": {"type": "string", "description": "Message content (backend_session_message)."},
                         "service": {"type": "string", "description": "Google service (google action): calendar, drive, sheets, gmail, docs, people."},
                         "resource": {"type": "string", "description": "API resource (google action)."},
                         "method": {"type": "string", "description": "API method (google action): list, get, create, update, delete."},
@@ -2560,12 +2570,22 @@ Agent resumes within seconds.
         user_message = args.get("user_message", "")
         assistant_message = args.get("assistant_message", "")
 
-        self.memory_service.add_user_message(user_message)
-        self.memory_service.add_assistant_message(assistant_message)
+        # Embedding generation + file writes are blocking (CPU-bound, up to several seconds).
+        # Run them in a thread executor as a background task so the caller gets an immediate
+        # response instead of waiting for all embedding models to finish.
+        loop = asyncio.get_event_loop()
+
+        async def _store() -> None:
+            await loop.run_in_executor(None, self.memory_service.add_user_message, user_message)
+            await loop.run_in_executor(
+                None, self.memory_service.add_assistant_message, assistant_message
+            )
+
+        asyncio.create_task(_store())
 
         return {
             "status": "success",
-            "message": "Conversation exchange added to working memory",
+            "message": "Conversation exchange queued for storage",
             "user_message_length": len(user_message),
             "assistant_message_length": len(assistant_message),
         }
@@ -3049,14 +3069,28 @@ Agent resumes within seconds.
         agent_type = args.get("agent_type")
 
         try:
-            manager = self.agent_registry.get_manager(agent_type)
-            return await manager.list_projects()
+            if agent_type:
+                manager = self.agent_registry.get_manager(agent_type)
+                return await manager.list_projects()
+            # No type — aggregate across all registered managers
+            all_agents = []
+            for atype, manager in self.agent_registry._managers.items():
+                try:
+                    result = await manager.list_projects()
+                    projects = result.get("projects") or result.get("agents") or []
+                    for p in projects:
+                        if isinstance(p, dict):
+                            p.setdefault("agent_type", atype)
+                    all_agents.extend(projects)
+                except Exception:
+                    pass
+            return {"status": "success", "agents": all_agents, "count": len(all_agents)}
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
             return {
                 "status": "error",
-                "message": f"Failed to list {agent_type} agents: {str(e)}",
+                "message": f"Failed to list agents: {str(e)}",
             }
 
     async def _execute_agent_restart(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -4796,7 +4830,21 @@ Agent resumes within seconds.
             return HELP
 
         if action == "add":
-            return await self._execute_scheduler_add_task(args)
+            # Normalise hub params → internal format
+            add_args = dict(args)
+            # 'type' → 'task_type'
+            if "task_type" not in add_args or not add_args.get("task_type"):
+                add_args["task_type"] = add_args.get("type")
+            # 'goal' → config.goal; 'role_id' → config.role_id
+            config = add_args.get("config") or {}
+            if not isinstance(config, dict):
+                config = {}
+            if add_args.get("goal") and "goal" not in config:
+                config["goal"] = add_args["goal"]
+            if add_args.get("role_id") and "role_id" not in config:
+                config["role_id"] = add_args["role_id"]
+            add_args["config"] = config
+            return await self._execute_scheduler_add_task(add_args)
         elif action == "list":
             return await self._execute_scheduler_list_tasks(args)
         elif action == "get":
@@ -4896,35 +4944,61 @@ Agent resumes within seconds.
 
         agent_id = args.get("agent_id")
 
+        # Normalise: MCP schema uses 'type' and 'agent_id'; internal methods use 'agent_type' and 'identifier'
+        agent_type = args.get("agent_type") or args.get("type")
+
+        # For lifecycle actions that don't require knowing the type up-front,
+        # look it up from the registry so callers only need to pass agent_id.
+        if not agent_type and agent_id and action in ("stop", "restart", "destroy", "status"):
+            found = await self.agent_registry.find_manager_for_agent(agent_id)
+            if found:
+                agent_type = found[0]
+            else:
+                return {
+                    "status": "error",
+                    "message": f"No running agent found with id '{agent_id}'. Use agent(action='list') to see available agents.",
+                }
+
+        normalised = {**args, "agent_type": agent_type, "identifier": agent_id}
+
         if action == "list_types":
             return await self._execute_agent_list_types({})
         elif action == "start":
-            return await self._execute_agent_start(args)
+            return await self._execute_agent_start(normalised)
         elif action == "stop":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
-            return await self._execute_agent_stop({"agent_id": agent_id})
+            return await self._execute_agent_stop(normalised)
         elif action == "status":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
-            return await self._execute_agent_status({"agent_id": agent_id})
+            return await self._execute_agent_status(normalised)
         elif action == "list":
-            return await self._execute_agent_list({})
+            return await self._execute_agent_list(normalised)
         elif action == "restart":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
-            return await self._execute_agent_restart({"agent_id": agent_id})
+            return await self._execute_agent_restart(normalised)
         elif action == "destroy":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
-            return await self._execute_agent_destroy({"agent_id": agent_id})
+            return await self._execute_agent_destroy(normalised)
         elif action == "action":
             if not agent_id:
                 return {"status": "error", "message": "Parameter 'agent_id' is required."}
+            raw_params = args.get("params") or {}
+            if isinstance(raw_params, str):
+                import json as _json
+                try:
+                    raw_params = _json.loads(raw_params)
+                except Exception:
+                    raw_params = {}
+            sub_action = raw_params.get("action")
+            sub_params = {k: v for k, v in raw_params.items() if k != "action"}
             return await self._execute_agent_action({
-                "agent_type": args.get("type"),
-                "action": args.get("params", {}).get("action"),
-                "params": args.get("params", {}),
+                "agent_type": agent_type,
+                "action": sub_action,
+                "params": sub_params,
             })
         else:
             return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
@@ -4937,16 +5011,16 @@ Agent resumes within seconds.
             "tool": "external_agent",
             "actions": {
                 "google": "Google Workspace API proxy — params: service, resource, method, params?, json_body?, format?, ...",
-                "opencode_servers": "List configured OpenCode backends",
-                "opencode_health": "Check if an OpenCode server is reachable — params: server_id?",
-                "opencode_session_list": "List all sessions on a backend — params: server_id?",
-                "opencode_session_create": "Create a new coding session — params: server_id?",
-                "opencode_session_message": "Send a message and get a response — params: session_id, content, server_id?",
-                "opencode_session_messages": "Get full message history — params: session_id, server_id?",
-                "opencode_session_delete": "Delete a session — params: session_id, server_id?",
+                "backend_servers": "List all configured coding agent backends (OpenCode, Claude Code, ...)",
+                "backend_health": "Check if a backend is reachable — params: server_id?",
+                "backend_session_list": "List all sessions on a backend — params: server_id?",
+                "backend_session_create": "Create a new coding session — params: server_id?",
+                "backend_session_message": "Send a message and get a response — params: session_id, content, server_id?",
+                "backend_session_messages": "Get full message history — params: session_id, server_id?",
+                "backend_session_delete": "Delete a session — params: session_id, server_id?",
             },
             "future": ["github", "slack", "notion"],
-            "example": 'external_agent(action="opencode_health")',
+            "example": 'external_agent(action="backend_health")',
         }
 
         if not action or action == "help":
@@ -4958,13 +5032,17 @@ Agent resumes within seconds.
                     return {"status": "error", "message": f"Parameter '{param}' is required for google action."}
             return await self._execute_google_service(args)
 
-        if action.startswith("opencode"):
-            return await self._execute_opencode(action, args)
+        if action.startswith("backend") or action.startswith("opencode"):
+            # opencode_* prefix kept as a backward-compat alias
+            return await self._execute_backend(action, args)
 
         return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
 
-    async def _execute_opencode(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """OpenCode backend actions via coding-agent-mcp-tool."""
+    async def _execute_backend(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Coding agent backend actions via coding-agent-mcp-tool.
+
+        Accepts both backend_* (canonical) and opencode_* (backward-compat alias) prefixes.
+        """
         try:
             from coding_agent_mcp.backends import BackendRegistry
             from coding_agent_mcp.config.loader import load_config
@@ -4976,29 +5054,32 @@ Agent resumes within seconds.
             registry = BackendRegistry()
             registry.reload(config.servers, config.default_server)
         except Exception as e:
-            return {"status": "error", "message": f"Failed to load OpenCode config: {e}"}
+            return {"status": "error", "message": f"Failed to load backend config: {e}"}
 
         server_id = args.get("server_id")
 
+        # Normalise opencode_* aliases → backend_*
+        normalised = action.replace("opencode_", "backend_", 1) if action.startswith("opencode_") else action
+
         try:
-            if action == "opencode_servers":
+            if normalised == "backend_servers":
                 return {"status": "ok", "servers": registry.list_all()}
 
-            if action == "opencode_health":
+            if normalised == "backend_health":
                 backend = registry.get(server_id)
                 return await backend.health()
 
-            if action == "opencode_session_list":
+            if normalised == "backend_session_list":
                 backend = registry.get(server_id)
                 sessions = await backend.list_sessions()
                 return {"status": "ok", "sessions": sessions}
 
-            if action == "opencode_session_create":
+            if normalised == "backend_session_create":
                 backend = registry.get(server_id)
                 session = await backend.create_session()
                 return {"status": "ok", "session": session}
 
-            if action == "opencode_session_message":
+            if normalised == "backend_session_message":
                 session_id = args.get("session_id")
                 content = args.get("content")
                 if not session_id or not content:
@@ -5007,7 +5088,7 @@ Agent resumes within seconds.
                 result = await backend.send_message(session_id, content)
                 return {"status": "ok", "result": result}
 
-            if action == "opencode_session_messages":
+            if normalised == "backend_session_messages":
                 session_id = args.get("session_id")
                 if not session_id:
                     return {"status": "error", "message": "session_id is required"}
@@ -5015,7 +5096,7 @@ Agent resumes within seconds.
                 messages = await backend.get_messages(session_id)
                 return {"status": "ok", "messages": messages}
 
-            if action == "opencode_session_delete":
+            if normalised == "backend_session_delete":
                 session_id = args.get("session_id")
                 if not session_id:
                     return {"status": "error", "message": "session_id is required"}
@@ -5023,7 +5104,7 @@ Agent resumes within seconds.
                 result = await backend.delete_session(session_id)
                 return {"status": "ok", "result": result}
 
-            return {"status": "error", "message": f"Unknown opencode action: {action}"}
+            return {"status": "error", "message": f"Unknown backend action: {action}"}
 
         except Exception as e:
             return {"status": "error", "message": str(e)}

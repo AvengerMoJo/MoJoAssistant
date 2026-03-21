@@ -731,3 +731,784 @@ Inbox → Dream      captures   →  Resolved interactions
 
 The inbox model is the architectural spine. Policy, distribution, and
 knowledge refinement all attach to it without requiring the spine to change.
+
+---
+
+## 16. Coding Agent Layer Separation
+
+This section captures the architectural reasoning for how external coding agents
+(OpenCode, Claude Code) integrate with MoJoAssistant. The boundary was decided
+deliberately — future changes should preserve it.
+
+---
+
+### 16.1 Three-tier model
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Tier 1: Lifecycle — agent hub (MoJo MCP)               │
+│  start / stop / status / list                           │
+│  Knows: process lifecycle, config. Knows nothing about  │
+│  sessions, messages, or permissions.                    │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────┐
+│  Tier 2: API Client — coding-agent-mcp-tool submodule   │
+│  OpenCodeBackend / ClaudeCodeBackend                    │
+│  Knows: every HTTP endpoint, SSE stream format,         │
+│  permission event schema, request/response format.      │
+│  Does NOT know: HITL inboxes, task IDs, MoJo events.   │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────┐
+│  Tier 3: Orchestration — CodingAgentExecutor (MoJo)     │
+│  Runs the role's local LLM (e.g. Popo on qwen3.5)      │
+│  Calls submodule methods as tools                       │
+│  Routes permission requests → HITL inbox                │
+│  Routes HITL replies → submodule respond_to_permission  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Rule:** each tier communicates only with the tier directly below it.
+The lifecycle tier never calls session APIs. The submodule never touches
+the event log. The executor bridges them — it knows both sides but owns neither.
+
+---
+
+### 16.2 Why the API client lives in the submodule
+
+The `coding-agent-mcp-tool` submodule is an independently usable package.
+Someone could use `OpenCodeBackend` without MoJoAssistant. Keeping all OpenCode
+API knowledge there (endpoints, SSE format, permission schema, model switching)
+means:
+
+- The submodule is the single source of truth for OpenCode compatibility
+- MoJoAssistant never hard-codes OpenCode API paths or event types
+- When OpenCode changes its API, only the submodule changes
+- `ClaudeCodeBackend` slots into the same interface without touching MoJo
+
+**What belongs in the submodule:**
+
+```python
+# Session management
+create_session(), list_sessions(), get_session(), delete_session()
+send_message(session_id, content)
+get_messages(session_id)
+
+# Permission bridge (OpenCode API knowledge only)
+subscribe_permissions(session_id) -> AsyncIterator[dict]
+  # streams /event SSE, yields EventPermissionUpdated for this session
+
+respond_to_permission(session_id, permission_id, response)
+  # POST /session/{id}/permissions/{permissionID}
+  # response: "once" | "always" | "reject"
+
+# Model / config
+health(), llm_list_models(), llm_set_model(model)
+```
+
+---
+
+### 16.3 Why HITL routing lives in MoJoAssistant
+
+The permission approval flow is:
+
+```
+OpenCode emits EventPermissionUpdated (via SSE /event stream)
+      ↓
+submodule.subscribe_permissions() yields the permission dict
+      ↓
+CodingAgentExecutor (MoJo) receives the permission
+      ↓
+Writes task_waiting_for_input event to EventLog (hitl_level = 4)
+  → surfaces in get_context() attention.blocking
+  → user sees it in Claude Desktop
+      ↓
+User calls reply_to_task(task_id="popo_perm_<id>", reply="approve")
+      ↓
+CodingAgentExecutor maps reply → "once" | "always" | "reject"
+      ↓
+Calls submodule.respond_to_permission(session_id, permission_id, response)
+      ↓
+OpenCode unblocks and continues
+```
+
+The HITL inbox, EventLog, and attention system are MoJo internals. The submodule
+has no concept of them and should never gain one. The executor is the bridge.
+
+---
+
+### 16.4 Role architecture — Popo as an example
+
+Popo is not OpenCode's model pretending to be a character. The layers are:
+
+```
+qwen3.5-35b-a3b (local LLM, via LMStudio)
+    ↑ system prompt: Popo persona
+    ↑ task: "add tests to auth.py"
+    |
+CodingAgentExecutor
+    | calls
+    ↓
+OpenCodeBackend.send_message(session_id, ...)   ← Popo's instructions to OpenCode
+OpenCodeBackend.subscribe_permissions(...)      ← Popo waiting on permission events
+OpenCodeBackend.respond_to_permission(...)      ← Popo forwarding user decisions
+```
+
+The local LLM is the **thinking layer** — it reads Popo's system prompt,
+understands the task, decides what to ask OpenCode to do, and interprets results.
+
+OpenCode is the **execution layer** — it has shell access, can read/write files,
+run tests. It receives instructions from Popo and executes them.
+
+MoJo scheduler is the **orchestration layer** — it starts the executor, manages
+the task lifecycle, handles the HITL inbox.
+
+**What this means for model config:**
+- `role.model_preference` → local LLM resource ID (e.g. `lmstudio_qwen35`)
+- `role.backend_type` → coding agent type (`"opencode"`)
+- `role.server_id` → which OpenCode server instance to use (`null` = default)
+- OpenCode's own model setting is separate — it is not the role's model
+
+---
+
+### 16.5 Sandbox design
+
+Each role gets an isolated git worktree, not a session parameter. OpenCode
+sessions always use the project's `base_dir` — there is no per-session directory
+override via the API.
+
+```
+~/.memory/opencode-sandboxes/<project-slug>/<role-id>-work/
+    ← git worktree add <path> (created before session start)
+    ← OpenCode server started with this as its project dir
+    ← role's session always targets this server instance
+```
+
+**Why worktrees instead of copies:** worktrees share git history with the main
+repo. The role's changes are visible as a branch diff. Merging back is a normal
+git operation. Copies would require manual diffing.
+
+---
+
+### 16.6 File map additions (coding agent layer)
+
+| Concern | File |
+|---------|------|
+| OpenCode HTTP client, session API, SSE permission bridge | `submodules/coding-agent-mcp-tool/src/coding_agent_mcp/backends/opencode.py` |
+| Backend registry + base class | `submodules/coding-agent-mcp-tool/src/coding_agent_mcp/backends/` |
+| Coding agent lifecycle (start/stop/status) | `app/mcp/agents/` (existing agent_manager) |
+| CodingAgentExecutor (role LLM loop driving a MAP backend) | `app/scheduler/coding_agent_executor.py` |
+| Role config with executor + backend fields | `config/roles/<role>.json` |
+| Sandbox worktree paths | `app/config/paths.py` (`OPENCODE_SANDBOXES_DIR`) |
+
+---
+
+## 17. MoJo Agent Protocol (MAP)
+
+This section captures the vision for a universal agent integration standard.
+It exists to prevent MoJo from accumulating ad-hoc plugins for every new agent
+that appears. Read this before building any new backend.
+
+---
+
+### 17.1 The problem it solves
+
+Every external agent (OpenCode, ZeroClaw, DeerFlow, aider, browser-use, ...)
+has a different API, CLI, or UI. Without a standard, each new agent requires
+a new backend in the `coding-agent-mcp-tool` submodule AND changes to MoJo's
+executor. The cost grows linearly with the number of agents.
+
+**MAP inverts this:** define a small standard interface once. New agents either
+implement it natively, or get a thin shim. MoJo never changes for a new agent.
+
+---
+
+### 17.2 The three interaction classes
+
+Agents fall into three interaction classes based on how they are driven:
+
+```
+Class 1: HTTP agents
+  Native:  agent already speaks MAP over HTTP (OpenCode is the reference)
+  Shimmed: agent has its own HTTP API; a shim translates it to MAP
+
+Class 2: Subprocess agents
+  Agent is a CLI tool (aider, goose, claude --print)
+  A subprocess shim wraps stdin/stdout as MAP
+
+Class 3: GUI/Visual agents
+  Agent has no API — it runs in a terminal or browser
+  A visual shim reads the screen (tmux capture-pane, browser screenshot)
+  and drives it (tmux send-keys, browser automation)
+  Requires a multimodal LLM to interpret screen content
+```
+
+**Model requirements differ by class:**
+
+| Class | LLM requirement | Examples |
+|-------|----------------|---------|
+| HTTP (native/shimmed) | Any — local or API | OpenCode, ZeroClaw, DeerFlow |
+| Subprocess | Strong instruction-follower | aider, goose, claude --print |
+| GUI/Visual | Multimodal — must understand screens | browser-use, tmux agents |
+
+The role config's `agent_class` field tells the executor which bridge to use.
+
+---
+
+### 17.3 The MAP HTTP interface (6 endpoints)
+
+This is the minimal interface any HTTP agent must expose (or have exposed via
+a shim) to integrate with MoJo. OpenCode implements this natively.
+
+```
+POST   /session
+  → Create a new session
+  → Returns: { "id": "<session_id>", ... }
+
+DELETE /session/{id}
+  → End and clean up a session
+
+POST   /session/{id}/message
+  → Send a message/instruction; wait for agent response
+  → Body:    { "parts": [{ "type": "text", "text": "<instruction>" }] }
+  → Returns: the completed message object
+
+GET    /session/{id}/message
+  → Full message history for the session
+  → Returns: list of message objects
+
+GET    /event
+  → SSE stream of all session events
+  → Relevant event types:
+      EventPermissionUpdated  — agent needs user approval to proceed
+      EventPermissionReplied  — user responded to a permission
+      EventMessageUpdated     — message content / tool call progress
+      EventSessionUpdated     — session state changed
+
+POST   /session/{id}/permissions/{permissionId}
+  → Respond to a pending permission request
+  → Body:    { "response": "once" | "always" | "reject" }
+```
+
+**Why these 6?** They cover the complete lifecycle: create → instruct → observe
+→ approve → read history → end. Every class of agent work maps onto these.
+
+---
+
+### 17.4 The shim pattern
+
+A shim is a small adapter that translates an agent's native interface to MAP.
+Shims follow three rules:
+
+1. **Shims live outside MoJo.** They belong in the agent's own repo, in
+   `coding-agent-mcp-tool`, or in a future `mojo-agent-adapters` repo.
+   MoJo never imports agent-specific code directly.
+
+2. **Shims are thin.** A shim should have no opinion about the task being
+   done. It translates requests and events — nothing more.
+
+3. **MoJo only ever calls MAP.** `CodingAgentExecutor` calls
+   `backend.send_message()`, `backend.subscribe_permissions()`, etc.
+   It does not know or care whether the backend is OpenCode native,
+   a ZeroClaw shim, or a subprocess adapter.
+
+**Example shim targets:**
+
+| Agent | Native interface | Shim approach |
+|-------|-----------------|---------------|
+| OpenCode | HTTP (MAP native) | No shim needed |
+| ZeroClaw | Webhook gateway (port 42617) | HTTP shim: translate webhook ↔ MAP |
+| DeerFlow | LangGraph server (port 2024) | HTTP shim: LangGraph API ↔ MAP |
+| aider | CLI subprocess | Subprocess shim: stdin/stdout ↔ MAP |
+| browser-use | Python library | HTTP shim: expose as MAP server |
+| tmux agent | Terminal screen | GUI shim: capture-pane + visual LLM ↔ MAP |
+
+---
+
+### 17.5 Role config fields for agent class
+
+```json
+{
+  "id": "popo",
+  "executor": "coding_agent",
+  "backend_type": "opencode",
+  "agent_class": "http_native",
+  "server_id": "git@github.com:...",
+
+  "agent_class_options": {
+    "http_native": {},
+    "http_shimmed": { "shim_url": "http://localhost:8080" },
+    "subprocess": { "command": "aider", "args": ["--no-auto-commits"] },
+    "gui": { "tmux_session": "aider-work", "screenshot_interval_ms": 500 }
+  }
+}
+```
+
+`agent_class` defaults to `http_native` — backward compatible with the current
+Popo setup. Other classes are not yet implemented; this field reserves the
+design space.
+
+---
+
+### 17.6 Why this matters for ZeroClaw and DeerFlow
+
+**ZeroClaw** is a general autonomous task agent ("workforce replacement") —
+strong general LLM, tool use, sandboxed execution. Best fit: a role that
+handles broad work tasks (not just coding). Integration path: HTTP shim
+translating ZeroClaw's webhook gateway to MAP. ZeroClaw's allowlist-based
+permissions map cleanly to the MAP permission endpoints.
+
+**DeerFlow** is a research orchestration platform — parallel sub-agents, web
+search, scientific paper access, strong thinking model. Best fit: a role like
+Ahman that runs deep research tasks. Integration path: HTTP shim translating
+DeerFlow's LangGraph server (port 2024) to MAP. DeerFlow's async task model
+maps onto MAP's SSE stream.
+
+Both need shims, not new MoJo executors. The `CodingAgentExecutor` (renamed
+`AgentExecutor` eventually) drives them identically — different backends,
+same loop.
+
+---
+
+### 17.7 What MAP is NOT
+
+MAP is not MCP (Model Context Protocol). MCP is about tools exposed TO a model.
+MAP is about tasks delegated TO an agent. They are complementary:
+
+```
+MCP:  MoJo → offers tools → LLM uses them
+MAP:  MoJo → delegates tasks → Agent executes them
+```
+
+MAP is also not a general agent communication standard like A2A (Agent-to-Agent).
+It is deliberately minimal — just enough to let MoJo orchestrate external
+agents without coupling to their internals.
+
+---
+
+### 17.8 Evolution path
+
+```
+Current:  OpenCode (MAP native) via CodingAgentExecutor
+Near:     ZeroClaw shim, DeerFlow shim — same executor, different backends
+Medium:   SubprocessAdapter — CLI agents via stdin/stdout bridge
+Long:     GUIAdapter — visual agents via tmux/browser-use + multimodal LLM
+Ultimate: Rename CodingAgentExecutor → AgentExecutor
+          Any role with executor=agent runs any MAP-compatible backend
+```
+
+The rename from `CodingAgentExecutor` to `AgentExecutor` is the milestone that
+marks MAP as production-ready: when the executor no longer assumes "coding" as
+the task type.
+
+**MAP is not coding-specific.** The protocol covers any agent type — coding,
+research, general task execution, GUI automation. The executor drives a role's
+local LLM (the thinking layer) which delegates work to a MAP-compatible backend.
+The backend can be a coding agent, a research orchestrator, a general-purpose
+task runner, or a browser automation agent. The local LLM and the MAP protocol
+don't care.
+
+---
+
+## 18. Agent Integration Analysis Log
+
+Pre-integration analysis for agents not yet implemented. Purpose: avoid
+repeating research when implementation time comes. Each entry captures the
+API shape, MAP fit assessment, and the blockers that deferred it.
+
+---
+
+### 18.1 ZeroClaw
+
+**Researched:** 2026-03-20
+**Status:** Deferred — wrong executor, thick shim
+**Revisit when:** `CodingAgentExecutor` → `AgentExecutor` generalisation is done
+
+**What it is:**
+Rust single-binary general autonomous task agent. "Workforce replacement"
+class — strong general LLM, built-in memory, tool use, scheduling. 28K GitHub
+stars, v0.5.1. Production-grade: <5 MB RAM, <10ms startup, single binary,
+runs on ARM/x86/RISC-V.
+
+**HTTP API surface (gateway mode, default port 42617):**
+
+```
+# Public (no auth)
+GET  /health                 → server health + component snapshot
+GET  /metrics                → Prometheus text format
+
+# Authentication
+POST /pair                   → exchange 6-digit pairing code for bearer token
+                               X-Pairing-Code: 123456 → {"token": "..."}
+
+# Main processing
+POST /webhook                → send message to agent, get response
+                               Body:     {"message": "user query"}
+                               Response: {"response": "...", "model": "..."}
+                               Auth:     Authorization: Bearer <token>
+                               Idempotency: X-Idempotency-Key: <uuid>
+
+# Runtime management
+GET  /api/status             → provider, model, uptime, gateway port
+GET  /api/config             → current config (secrets masked)
+PUT  /api/config             → update config
+GET  /api/tools              → list registered tools
+GET  /api/cron               → list scheduled jobs
+POST /api/cron               → add cron job
+DELETE /api/cron/:id         → remove cron job
+GET  /api/memory?query=      → semantic search over memory (70% vector + 30% FTS5)
+POST /api/memory             → store memory entry
+DELETE /api/memory/:key      → delete memory entry
+
+# Streaming
+GET  /events                 → SSE stream: agent progress, tool execution, costs
+GET  /ws/chat                → WebSocket: bidirectional streaming chat
+                               Client: {"content": "message"}
+                               Server: {"role": "assistant", "content": "chunk..."}
+                               Done:   {"type": "done", "full_response": "..."}
+```
+
+**Authentication:**
+Bearer tokens via pairing flow (6-digit one-time code → token). SHA-256
+hashed at rest. 5 failure lockout. Rate limited (10 req/min on /pair,
+60 req/min on /webhook). Configurable via TOML.
+
+**MAP fit assessment:**
+
+| MAP endpoint | ZeroClaw equivalent | Fit |
+|---|---|---|
+| `POST /session` | None — stateless, no sessions | ✗ Must synthesize |
+| `POST /session/{id}/message` | `POST /webhook {"message": "..."}` | ~50% — no session context |
+| `GET /session/{id}/message` | `GET /api/memory?query=session_{id}` | ✗ Indirect, lossy |
+| `GET /event` (SSE) | `GET /events` | ✓ Exists |
+| `POST /session/{id}/permissions/{id}` | None — allowlist-based, no runtime prompts | ✗ N/A |
+
+**Why the shim would be thick (not thin):**
+
+1. **No sessions.** ZeroClaw is stateless. A shim would have to synthesize
+   sessions by injecting a session ID into each message text
+   (`"[session abc123] actual instruction"`) and filtering `/events` by that
+   prefix. Fragile.
+
+2. **No message history endpoint.** `GET /session/{id}/message` would have
+   to be reconstructed from `/api/memory?query=session_{id}`. ZeroClaw stores
+   what its LLM remembers — not a guaranteed ordered transcript. The shim
+   would be guessing at history.
+
+3. **No permission prompts.** ZeroClaw uses allowlists, not runtime permission
+   dialogs. The MAP permission bridge has nothing to bridge. Any tool ZeroClaw
+   is configured to use, it uses — silently. This is fine for many use cases
+   but means the HITL permission flow doesn't apply.
+
+4. **Wrong executor.** ZeroClaw is a general autonomous task agent, not a
+   coding agent. Driving it with `CodingAgentExecutor` is the wrong frame.
+   It needs `AgentExecutor` (the generalised executor) which doesn't exist yet.
+   `CodingAgentExecutor` injects coding-specific context into the system prompt
+   and expects file/code output.
+
+**What ZeroClaw is good for in MoJo:**
+A role that handles general "do this work" tasks — drafting, research synthesis,
+multi-step planning, tool-assisted execution. Not file-editing coding tasks.
+The local LLM (thinking layer) would describe a high-level goal; ZeroClaw's own
+LLM + tools would execute it.
+
+**Integration path when ready:**
+1. Wait for `AgentExecutor` generalisation
+2. Build a thin session-synthesis shim:
+   - Session = UUID injected as message prefix
+   - `POST /webhook` with `"[{session_id}] {instruction}"` body
+   - `/events` SSE filtered by session_id prefix
+   - Accept that permission bridge is N/A (allowlist model)
+3. Role config: `agent_class: "http_shimmed"`, `shim_url: "http://127.0.0.1:42617"`
+4. Memory history: use `/api/memory?query={session_id}` as best-effort only
+
+**Installation:** `brew install zeroclaw` or single-binary download
+
+---
+
+### 18.2 DeerFlow
+
+**Researched:** 2026-03-20
+**Status:** Deferred — needs `AgentExecutor`, fits research role not coding role
+**Revisit when:** `AgentExecutor` done + Ahman needs a research execution backend
+
+**What it is:**
+Python 3.12+ multi-agent research orchestration platform by ByteDance.
+Parallel sub-agent spawning, web search, scientific paper access (PubMed etc.),
+Markdown-based skill system, sandboxed Docker execution, persistent memory.
+Strong thinking model recommended. LangGraph-based internally.
+
+**API surface:**
+
+```
+HTTP Gateway:      port 8001
+LangGraph Server:  port 2024  (standard LangGraph API — well-documented)
+Web UI:            port 2026
+Messaging:         Telegram long-poll, Slack Socket Mode, Feishu WebSocket
+```
+
+**MAP fit:**
+LangGraph Server (port 2024) has a standard REST API for running graphs
+(threads = sessions, runs = messages). Fit is better than ZeroClaw:
+- Sessions → LangGraph threads ✓
+- Messages → LangGraph runs ✓
+- SSE → LangGraph streaming ✓
+- Permissions → not applicable (research tasks, no filesystem prompts)
+
+Shim would translate LangGraph thread/run API → MAP session/message API.
+Should be thin once `AgentExecutor` exists.
+
+**Best role fit:**
+Research roles (Ahman-equivalent) — complex web research, scientific literature,
+multi-step content synthesis. Wrong for coding tasks.
+
+**Integration path when ready:**
+1. Wait for `AgentExecutor`
+2. Build LangGraph→MAP shim (thread=session, run=message, LangGraph stream=SSE)
+3. Model: strong thinking model (qwen3-30b+ or similar) for the local LLM layer
+4. DeerFlow's own agents handle the actual research execution
+
+---
+
+### 18.3 Claude Code (Remote Control)
+
+**Researched:** 2026-03-20
+**Status:** Not applicable as HTTP backend
+**Alternative:** tmux/GUI class agent (future)
+
+**What it is:**
+Claude Code with `--remote-control` flag connects a local `claude` process to
+claude.ai/code (browser) or Claude mobile app. It is a **UI relay for humans**,
+not a programmatic API.
+
+**Why MAP doesn't apply:**
+- No HTTP endpoints — claude makes outbound HTTPS calls to Anthropic, receives
+  work via polling. No inbound REST API.
+- Auth: claude.ai OAuth only (no API key). User must be logged in interactively.
+- Permissions: shown in browser/terminal, responded to by human.
+- No SSE stream accessible programmatically.
+
+**Why subprocess doesn't apply cleanly:**
+`claude --print "task"` runs once and exits. Permission prompts appear on
+stderr as interactive prompts — parsing these reliably is fragile.
+
+**Correct integration class:** GUI/Visual (Class 3)
+- Run `claude` in a tmux pane
+- `tmux capture-pane -p` to read output
+- `tmux send-keys` to send messages and respond to prompts
+- Visual LLM to parse screen content when output is complex
+- Requires multimodal LLM in the thinking layer
+
+**When to revisit:** When `GUIAdapter` (tmux shim) is being built.
+Claude Code would be a natural first target — well-known output format,
+predictable permission prompt patterns.
+
+---
+
+## 19. Generic Coding Agent — v1.3 Backlog
+
+**Status:** Deferred from v1.2.2. Architecture is in place; items below are
+polish and extensibility work. Higher-priority features ship first.
+
+**What landed in v1.2.2:**
+- `AgentBackend` ABC + `BackendRegistry` with pluggable `backend_type`
+- `OpenCodeBackend` (HTTP REST, full HITL permission bridge, tested)
+- `ClaudeCodeBackend` (stdio subprocess, `--resume` session continuity, yolo mode)
+- `CodingAgentExecutor` renamed to generic terms (`agent_session_id`,
+  `agent_send_message`, `agent_get_messages`, etc.)
+- Config file renamed: `opencode-mcp-tool-servers.json` → `coding-agent-mcp-tool-servers.json`
+
+**v1.3 TODO — three gaps to close:**
+
+### 19.1 — `_auto_start_backend` should be backend-aware
+
+Currently always calls `OpenCodeManager.start_project(server_id)`.
+
+Fix: branch on `backend.backend_type`:
+- `opencode` → existing OpenCodeManager flow
+- `claude_code` → no-op (binary is always present; `health()` already validates)
+- unknown → log warning, skip
+
+### 19.2 — Rename `opencode_*` actions in `tools.py` to `backend_*`
+
+`_execute_opencode_backend_action()` and its actions (`opencode_servers`,
+`opencode_health`, `opencode_session_*`) work for all backends but are named
+OpenCode-specific. Rename to `backend_servers`, `backend_health`, etc.
+
+Breaking change — coordinate with any existing assistant prompts that use these names.
+
+### 19.3 — Claude Code HITL (permission bridge)
+
+Currently `--dangerously-skip-permissions` (yolo mode).
+
+For real HITL, Claude Code would need:
+- Run with `--permission-mode default` (no bypass)
+- Stream output via `--output-format stream-json --verbose`
+- Parse `type: "tool_use"` + permission prompt events from the stream
+- Surface via MoJo `waiting_for_input` inbox
+- Write user reply to process stdin (or restart with `--resume` + explicit allow)
+
+This requires the `input_bridge` translation defined in `AGENT_PROFILE.md §Claude Code`.
+Verify the stream-json format reliably surfaces permission requests before building.
+
+### 19.4 — User-facing backend registration
+
+Currently adding a new backend (e.g. a new OpenCode server, a Claude Code
+project, or a future "Crush" coding agent) requires manually editing
+`coding-agent-mcp-tool-servers.json`.
+
+Target UX: MoJo assistant can register a new backend via:
+```
+agent(action='add_backend', backend_type='claude_code', working_dir='/path/to/project', id='my-project')
+```
+
+Writes a new entry to the servers JSON and hot-reloads the registry.
+Also enables: `agent(action='add_backend', backend_type='opencode', url='http://...', id='...')`
+
+### 19.5 — Fix dead `backend_type` field in role JSON
+
+`popo.json` has `"backend_type": "opencode"` which `CodingAgentExecutor` never reads.
+Routing is purely via `server_id` → servers JSON entry → `backend_type` there.
+
+Options:
+- Remove `backend_type` from role JSON (clean)
+- Or read it in `_get_backend` as a validation hint (belt + suspenders)
+
+### 19.6 — Move session ownership to the coding-agent layer ⚠️ design boundary
+
+**Problem discovered 2026-03-21:**
+`agent_session_id` is stored in MoJo's `TaskConfig` so `CodingAgentExecutor` can
+resume an existing coding agent session. This is a design boundary violation.
+
+MoJo oversees many roles and agents simultaneously. It cannot carry per-agent
+ephemeral state (session tokens, resume handles, partial results) in its own
+scheduler config — that couples MoJo to implementation details of each backend.
+
+When we tried to schedule a follow-up Popo task, there was no way to pass the
+session ID through the MCP tool because it should not exist at that layer.
+
+**The boundary:**
+
+| MoJo's responsibility | Coding agent's responsibility |
+|---|---|
+| Deliver a goal + role to execute | Decide whether to resume or start fresh |
+| Route HITL questions to inbox | Manage session lifecycle (create/resume/close) |
+| Classify events by attention level | Track permission state, retry context |
+| Assign LLM resource | Translate goal → backend API calls |
+
+**Target design:**
+`coding-agent-mcp-tool` maintains its own session store, keyed by `(role_id, task_id)`
+or a stable goal hash. When `CodingAgentExecutor.execute(task)` is called, it asks
+the backend manager: "do you have an active session for this role + task?" The manager
+returns an existing session or creates a new one. MoJo never sees session IDs.
+
+**Scope of change (v1.3):**
+- `coding-agent-mcp-tool`: add `SessionStore` (file-backed dict: `role_id+task_id → session_id`)
+- `BackendRegistry` / `AgentBackend`: `get_or_create_session(role_id, task_id, working_dir)` → session_id
+- `CodingAgentExecutor`: remove `agent_session_id` from `task.config` reads/writes; call registry instead
+- `TaskConfig` (scheduler models): remove `agent_session_id` field
+- Same principle applies to `agent_pending_permission_id` / `agent_pending_permission_directory`
+  — permission state is agent-internal, not scheduler state
+
+**Note:** `agent_session_id` is currently stored in `task.config` at
+`coding_agent_executor.py:189–200`. That is the primary site to refactor.
+
+---
+
+## 20. Resource Pool and Tool Registry — Unified Catalog Architecture
+
+**Discovered 2026-03-22.** Both the resource pool and the tool registry have the same
+architectural problem: they are fragmented across multiple config files and partially
+hardcoded into role profiles. The right design treats both as **self-describing catalogs**
+with exactly two layers: system default + user personal.
+
+---
+
+### 20.1 — Resource Pool: two layers, no hardcoding in roles
+
+**Current problems:**
+- `llm_config.json` (project) + `resource_pool_config.json` (project) + `~/.memory/config/llm_config.json` (personal) — three config surfaces for the same concern
+- `preferred_resource_id` is hardcoded in role JSON (`popo.json`) — couples the role persona to a specific infrastructure account
+- The scheduler MCP tool has no `preferred_resource_id` parameter — users cannot specify a resource from the client at all; requests are silently dropped and fall through to dynamic selection
+
+**Target design:**
+```
+System default layer   config/resource_pool.json   — shipped defaults, no API keys
+User personal layer    ~/.memory/config/resource_pool.json   — user's accounts, keys, overrides
+```
+
+One file name, two layers merged by `load_layered_json_config`. Roles declare
+**capability requirements** (tier, speed class, context size), not a specific resource ID.
+The pool selects the best match from what the user has configured.
+
+```json
+// Role declares what it needs — not which account to use
+"resource_requirements": {
+  "tier": ["free_api", "free"],
+  "min_context_tokens": 32000
+}
+```
+
+The user's personal layer adds their own accounts (Gemini, OpenRouter, etc.) and the
+pool auto-discovers them. No role JSON changes needed when the user adds a new API key.
+
+**Migration:**
+- Merge `llm_config.json` and `resource_pool_config.json` into `resource_pool.json`
+- Remove `preferred_resource_id` from role JSON; replace with `resource_requirements`
+- Rename the runtime override to `~/.memory/config/resource_pool.json`
+- Keep backward compat: `llm_config.json` still loaded if `resource_pool.json` absent
+
+---
+
+### 20.2 — Tool Registry: pre-defined catalog + user custom tools
+
+**Current problems:**
+- Tools are loaded from `config.get("available_tools", ["memory_search"])` in the task config — every task must enumerate its tools or get the bare minimum
+- `ask_user` is force-injected by the executor but not documented in role profiles
+- Adding a new tool requires editing executor code or every task config that needs it
+- No way for an agent to discover what tools are available to it at runtime
+
+**Target design — same pattern as resource pool:**
+```
+System catalog    config/tool_catalog.json       — pre-defined tools (bash, web_search, memory_search, file ops, ...)
+User extensions   ~/.memory/config/tool_catalog.json  — user's custom scripts, MCP proxies, local APIs
+```
+
+Tool entries declare capability category (`system`, `web`, `file`, `memory`, `custom`),
+executor type (`builtin`, `shell`, `mcp_proxy`), and access level.
+
+Roles declare **tool access categories**, not individual tool names:
+```json
+"tool_access": ["memory", "web", "file"]
+```
+
+At task start, the executor builds the available tool set from the catalog filtered by
+the role's `tool_access`. A `list_tools()` meta-tool is always injected, letting the agent
+discover its full tool set at runtime without it being enumerated in the system prompt.
+
+```
+Agent start:  tools = [list_tools, ask_user]  +  role default category tools
+Agent calls:  list_tools()  →  {"available": ["web_search", "bash", "memory_search", ...]}
+Next iter:    executor expands tool list dynamically based on agent's discovery
+```
+
+User adds a custom tool by dropping a JSON entry in `~/.memory/config/tool_catalog.json`:
+```json
+{
+  "my_script": {
+    "category": "custom",
+    "executor": {"type": "shell", "command": "python3 ~/.memory/scripts/my_tool.py"},
+    "description": "Runs my local analysis script"
+  }
+}
+```
+
+No code changes, no prompt updates — the tool is immediately available to any role
+that has `"custom"` in its `tool_access`.
+
+**Migration path:**
+- `dynamic_tool_registry.py` becomes the runtime loader for the two-layer catalog
+- `available_tools` in task config remains as an explicit override (still works)
+- `ask_user` and `list_tools` are always present regardless of role config
+- Existing tool definitions migrate to `config/tool_catalog.json` entries
