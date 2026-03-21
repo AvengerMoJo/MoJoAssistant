@@ -211,12 +211,15 @@ class CodingAgentExecutor:
 
         if pending_perm_id and reply is not None:
             response = self._map_reply_to_permission_response(reply)
+            directory = config.pop("opencode_pending_permission_directory", "")
             self._log(
                 f"Responding to permission {pending_perm_id} with '{response}' "
-                f"(user said: '{reply}')"
+                f"(user said: '{reply}', directory: '{directory}')"
             )
             try:
-                await backend.respond_to_permission(opencode_session_id, pending_perm_id, response)
+                await backend.respond_to_permission(
+                    opencode_session_id, pending_perm_id, response, directory=directory
+                )
             except Exception as e:
                 self._log(f"respond_to_permission failed: {e}", "warning")
                 # Continue anyway — OpenCode may have timed out the permission
@@ -255,9 +258,9 @@ class CodingAgentExecutor:
                     messages.append({
                         "role": "user",
                         "content": (
-                            f"The OpenCode permission request has been resolved (response: {response}). "
-                            "Call `opencode_get_messages()` to check the current session state, "
-                            "then continue toward the goal."
+                            f"The OpenCode permission request was resolved (user said: '{reply}' → '{response}'). "
+                            "The OpenCode session is still active — call `opencode_send_message` to "
+                            "continue toward the goal (the session remembers all previous work)."
                         ),
                     })
                 elif reply:
@@ -392,10 +395,12 @@ class CodingAgentExecutor:
                 metrics={"duration_seconds": total_elapsed, "session_file": session_file},
             )
 
-        # Paused for OpenCode permission — store permission_id for resume
+        # Paused for OpenCode permission — store permission_id + directory for resume
         if self._pending_permission:
             perm = self._pending_permission
-            task.config["opencode_pending_permission_id"] = perm.get("id")
+            perm_id = perm.get("requestID") or perm.get("id")
+            task.config["opencode_pending_permission_id"] = perm_id
+            task.config["opencode_pending_permission_directory"] = perm.get("directory", "")
             task.config["resume_from_task_id"] = task.id
             self._session_storage.update_status(task.id, "waiting_for_input")
             title = perm.get("title") or perm.get("type") or "permission required"
@@ -482,138 +487,79 @@ class CodingAgentExecutor:
         self, backend: Any, session_id: str, content: str
     ) -> dict:
         """
-        Send a message to OpenCode and poll until it finishes or raises a permission.
+        Fire send_message as a background task and poll GET /permission in parallel.
 
-        The SSE-based approach for permission detection was replaced by polling
-        list_permissions() every tick, because SSE events can fire before the
-        subscription is established (the race window between send_message and the
-        SSE connect is enough to miss a permission event).
+        Proven behaviour (see tests/test_hitl_capability_plan.py, CAP-3-1..4-2):
+          - OpenCode holds the HTTP connection open while waiting for permission
+          - GET /permission polling reliably detects pending permissions
+          - SSE (permission.asked) is unreliable — polling is the primary mechanism
+          - After cancel + respond_to_permission, the session stays alive and
+            accepts new messages (full suspend/resume works)
 
-        Polling is reliable: we check list_permissions on every iteration of the
-        completion loop.  If a pending permission is found, we surface it to HITL
-        immediately rather than waiting for the tool to complete.
+        Returns:
+          {"status": "completed",          "result": <assistant text>}
+          {"status": "permission_required", "permission_id": ..., "permission_directory": ...}
+          {"status": "timeout",             "result": "(timed out)"}
         """
-        return await self._send_and_wait_for_completion(backend, session_id, content)
+        send_result: dict | None = None
+        send_error: Exception | None = None
 
-    async def _send_and_wait_for_completion(
-        self, backend: Any, session_id: str, content: str
-    ) -> dict:
-        """
-        Fire send_message (HTTP POST returns immediately while tools run), then poll
-        get_messages until OpenCode has produced a new assistant response.
+        async def _send():
+            nonlocal send_result, send_error
+            try:
+                send_result = await backend.send_message(session_id, content)
+            except Exception as e:
+                send_error = e
+                self._log(f"send_message raised: {e}", "warning")
 
-        On every poll tick we also check list_permissions.  If a pending permission
-        is found we set self._pending_permission and return immediately so the main
-        loop can surface it to the HITL inbox.
+        send_task = asyncio.create_task(_send())
 
-        OpenCode messages use {"info": {"role": "..."}, "parts": [...]} structure.
-        We snapshot the assistant-message count before sending and wait until a new
-        assistant message appears with no parts still running.
-        """
-        # Snapshot assistant-message count before sending
-        try:
-            initial_msgs = await backend.get_messages(session_id)
-            initial_count = self._count_assistant_messages(initial_msgs)
-        except Exception:
-            initial_count = 0
-
-        await backend.send_message(session_id, content)
-
-        # Poll until completion or a pending permission is detected
-        result = await self._poll_for_completion(backend, session_id, initial_count)
-
-        if result.get("permission"):
-            perm = result["permission"]
-            title = perm.get("title") or perm.get("type") or "unknown"
-            return {
-                "status": "permission_required",
-                "message": f"OpenCode paused — permission required: {title}",
-                "permission_id": perm.get("id"),
-            }
-
-        msgs = result.get("messages", [])
-        last_assistant = next(
-            (m for m in reversed(msgs) if self._msg_role(m) == "assistant"),
-            None,
-        )
-        if last_assistant:
-            parts = last_assistant.get("parts", [])
-            text_parts = [p.get("text", "") for p in parts if p.get("type") == "text"]
-            response_text = "\n".join(text_parts) or last_assistant.get("content", "")
-        else:
-            response_text = "(no assistant response)"
-
-        return {"status": "completed", "result": response_text}
-
-    async def _poll_for_completion(
-        self, backend: Any, session_id: str, initial_assistant_count: int, timeout: float = 280.0
-    ) -> dict:
-        """
-        Poll get_messages + list_permissions every 3 s until:
-          - A new completed assistant message appears → {"messages": [...]}
-          - A pending permission is found → {"permission": perm_dict}
-          - Timeout expires → {"messages": [current snapshot]}
-
-        Polling list_permissions avoids the SSE race window where a permission
-        event fires before the SSE subscription is established.
-        """
-        deadline = asyncio.get_event_loop().time() + timeout
+        # Poll for permission or wait for send_task to complete naturally
+        deadline = asyncio.get_event_loop().time() + 280.0
         while asyncio.get_event_loop().time() < deadline:
+            if send_task.done():
+                break
+
             await asyncio.sleep(3)
 
-            # --- Check for pending permissions first ---
+            if send_task.done():
+                break
+
             try:
                 perms = await backend.list_permissions(session_id)
                 if perms:
                     perm = perms[0]
+                    perm_id = perm.get("requestID") or perm.get("id")
+                    title = perm.get("title") or perm.get("permission") or "unknown"
+                    self._log(f"Permission detected: {title} ({perm_id})")
                     self._pending_permission = perm
-                    self._log(
-                        f"Permission detected via polling: {perm.get('title') or perm.get('type')}"
-                    )
-                    return {"permission": perm}
+                    send_task.cancel()
+                    with suppress(Exception):
+                        await send_task
+                    return {
+                        "status": "permission_required",
+                        "message": f"OpenCode needs permission: {title}",
+                        "permission_id": perm_id,
+                        "permission_directory": perm.get("directory", ""),
+                    }
             except Exception as e:
-                self._log(f"list_permissions poll error: {e}", "warning")
+                self._log(f"list_permissions error: {e}", "warning")
 
-            # --- Check for new completed assistant response ---
-            try:
-                msgs = await backend.get_messages(session_id)
-                new_count = self._count_assistant_messages(msgs)
-                if new_count > initial_assistant_count and not self._has_running_parts(msgs):
-                    return {"messages": msgs}
-            except Exception as e:
-                self._log(f"get_messages poll error: {e}", "warning")
+        # Timed out without completing
+        if not send_task.done():
+            send_task.cancel()
+            with suppress(Exception):
+                await send_task
+            self._log("send_message timed out after 280s", "warning")
+            return {"status": "timeout", "result": "(timed out — no response from OpenCode)"}
 
-        # Timeout — return whatever is currently available
-        self._log(f"poll_for_completion: timeout after {timeout:.0f}s", "warning")
-        try:
-            return {"messages": await backend.get_messages(session_id)}
-        except Exception:
-            return {"messages": []}
+        if send_error is not None:
+            raise send_error
 
-    @staticmethod
-    def _msg_role(msg: dict) -> str:
-        """Extract role from an OpenCode message (supports both flat and nested formats)."""
-        # OpenCode: {"info": {"role": "assistant"}, "parts": [...]}
-        # Fallback: {"role": "assistant", ...}
-        return msg.get("info", {}).get("role") or msg.get("role", "")
-
-    @staticmethod
-    def _count_assistant_messages(messages: list[dict]) -> int:
-        """Count messages with role == 'assistant'."""
-        return sum(
-            1 for m in messages
-            if (m.get("info", {}).get("role") or m.get("role", "")) == "assistant"
-        )
-
-    @staticmethod
-    def _has_running_parts(messages: list[dict]) -> bool:
-        """Return True if any message has a part that is still being processed."""
-        for msg in messages:
-            for part in msg.get("parts", []):
-                state = part.get("state") or {}
-                if state.get("status") in ("running", "partial", "pending"):
-                    return True
-        return False
+        # Extract assistant text from the response
+        parts = (send_result or {}).get("parts", [])
+        text = "\n".join(p.get("text", "") for p in parts if p.get("type") == "text").strip()
+        return {"status": "completed", "result": text or "(no text response)"}
 
     # ------------------------------------------------------------------ #
     #  LLM call                                                            #

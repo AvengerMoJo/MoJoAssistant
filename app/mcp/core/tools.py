@@ -4946,6 +4946,19 @@ Agent resumes within seconds.
 
         # Normalise: MCP schema uses 'type' and 'agent_id'; internal methods use 'agent_type' and 'identifier'
         agent_type = args.get("agent_type") or args.get("type")
+
+        # For lifecycle actions that don't require knowing the type up-front,
+        # look it up from the registry so callers only need to pass agent_id.
+        if not agent_type and agent_id and action in ("stop", "restart", "destroy", "status"):
+            found = await self.agent_registry.find_manager_for_agent(agent_id)
+            if found:
+                agent_type = found[0]
+            else:
+                return {
+                    "status": "error",
+                    "message": f"No running agent found with id '{agent_id}'. Use agent(action='list') to see available agents.",
+                }
+
         normalised = {**args, "agent_type": agent_type, "identifier": agent_id}
 
         if action == "list_types":

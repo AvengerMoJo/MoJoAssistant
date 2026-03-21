@@ -8,7 +8,7 @@ File: app/mcp/agents/registry.py
 """
 
 import os
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from app.mcp.agents.base import BaseAgentManager
 
@@ -83,6 +83,37 @@ class AgentRegistry:
     def has_manager(self, agent_type: str) -> bool:
         """Check if an agent type is registered and available."""
         return agent_type in self._managers
+
+    async def find_manager_for_agent(
+        self, agent_id: str
+    ) -> Optional[Tuple[str, "BaseAgentManager"]]:
+        """Find which manager owns an agent by its identifier.
+
+        Searches across all registered managers so callers don't need to know
+        or pass the agent_type for lifecycle operations (stop/restart/destroy/status).
+
+        Matches against common identifier fields: git_url, name, identifier, id.
+
+        Returns:
+            (agent_type, manager) tuple if found, None otherwise.
+        """
+        for atype, manager in self._managers.items():
+            try:
+                result = await manager.list_projects()
+                projects = result.get("projects") or result.get("agents") or []
+                for p in projects:
+                    if not isinstance(p, dict):
+                        continue
+                    if agent_id in (
+                        p.get("git_url"),
+                        p.get("name"),
+                        p.get("identifier"),
+                        p.get("id"),
+                    ):
+                        return atype, manager
+            except Exception:
+                pass
+        return None
 
     @property
     def enabled_types(self) -> List[str]:
