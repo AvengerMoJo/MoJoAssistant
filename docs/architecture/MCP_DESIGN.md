@@ -1303,3 +1303,74 @@ stderr as interactive prompts — parsing these reliably is fragile.
 **When to revisit:** When `GUIAdapter` (tmux shim) is being built.
 Claude Code would be a natural first target — well-known output format,
 predictable permission prompt patterns.
+
+---
+
+## 19. Generic Coding Agent — v1.3 Backlog
+
+**Status:** Deferred from v1.2.2. Architecture is in place; items below are
+polish and extensibility work. Higher-priority features ship first.
+
+**What landed in v1.2.2:**
+- `AgentBackend` ABC + `BackendRegistry` with pluggable `backend_type`
+- `OpenCodeBackend` (HTTP REST, full HITL permission bridge, tested)
+- `ClaudeCodeBackend` (stdio subprocess, `--resume` session continuity, yolo mode)
+- `CodingAgentExecutor` renamed to generic terms (`agent_session_id`,
+  `agent_send_message`, `agent_get_messages`, etc.)
+- Config file renamed: `opencode-mcp-tool-servers.json` → `coding-agent-mcp-tool-servers.json`
+
+**v1.3 TODO — three gaps to close:**
+
+### 19.1 — `_auto_start_backend` should be backend-aware
+
+Currently always calls `OpenCodeManager.start_project(server_id)`.
+
+Fix: branch on `backend.backend_type`:
+- `opencode` → existing OpenCodeManager flow
+- `claude_code` → no-op (binary is always present; `health()` already validates)
+- unknown → log warning, skip
+
+### 19.2 — Rename `opencode_*` actions in `tools.py` to `backend_*`
+
+`_execute_opencode_backend_action()` and its actions (`opencode_servers`,
+`opencode_health`, `opencode_session_*`) work for all backends but are named
+OpenCode-specific. Rename to `backend_servers`, `backend_health`, etc.
+
+Breaking change — coordinate with any existing assistant prompts that use these names.
+
+### 19.3 — Claude Code HITL (permission bridge)
+
+Currently `--dangerously-skip-permissions` (yolo mode).
+
+For real HITL, Claude Code would need:
+- Run with `--permission-mode default` (no bypass)
+- Stream output via `--output-format stream-json --verbose`
+- Parse `type: "tool_use"` + permission prompt events from the stream
+- Surface via MoJo `waiting_for_input` inbox
+- Write user reply to process stdin (or restart with `--resume` + explicit allow)
+
+This requires the `input_bridge` translation defined in `AGENT_PROFILE.md §Claude Code`.
+Verify the stream-json format reliably surfaces permission requests before building.
+
+### 19.4 — User-facing backend registration
+
+Currently adding a new backend (e.g. a new OpenCode server, a Claude Code
+project, or a future "Crush" coding agent) requires manually editing
+`coding-agent-mcp-tool-servers.json`.
+
+Target UX: MoJo assistant can register a new backend via:
+```
+agent(action='add_backend', backend_type='claude_code', working_dir='/path/to/project', id='my-project')
+```
+
+Writes a new entry to the servers JSON and hot-reloads the registry.
+Also enables: `agent(action='add_backend', backend_type='opencode', url='http://...', id='...')`
+
+### 19.5 — Fix dead `backend_type` field in role JSON
+
+`popo.json` has `"backend_type": "opencode"` which `CodingAgentExecutor` never reads.
+Routing is purely via `server_id` → servers JSON entry → `backend_type` there.
+
+Options:
+- Remove `backend_type` from role JSON (clean)
+- Or read it in `_get_backend` as a validation hint (belt + suspenders)
