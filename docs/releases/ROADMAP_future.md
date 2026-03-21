@@ -47,24 +47,43 @@ Interactive coding agent integration (OpenCode + Claude Code) + per-source atten
   See "Per-Source Routing Rules" below.
 
 ## v1.2.3-beta
+Resource pool + tool registry catalog architecture.
+Agents should be able to use the right resource and discover the right tools
+without hardcoding either in role profiles or task configs.
+
+**Resource pool unification:**
+- Merge `llm_config.json` + `resource_pool_config.json` → single `resource_pool.json`
+- Two layers only: system default + `~/.memory/config/resource_pool.json` (user personal)
+- Roles declare `resource_requirements` (tier, context size) — not a specific resource ID
+- User adds accounts in personal layer; pool auto-discovers and selects best match
+
+**Tool registry catalog:**
+- `config/tool_catalog.json` (system pre-defined) + `~/.memory/config/tool_catalog.json` (user custom)
+- Pre-defined: `memory_search`, `web_search`, `bash`, file ops, MCP proxies
+- User drops a JSON entry to add custom scripts/tools — no code changes
+- Roles declare `tool_access` categories (`["memory", "web", "file", "custom"]`) — not tool names
+- `list_tools()` meta-tool always injected — agent discovers full catalog at runtime
+- `ask_user` always injected — agent escalates blockers without being told to in the prompt
+
+## v1.2.4-beta
 Data boundary enforcement + audit trail. Policy-backed protection for
 local-only data flows. Every external resource call logged with task_id,
 resource type, and token count.
 
-## v1.2.4-beta
+## v1.2.5-beta
 PII classification + sanitization layer. Pattern-based scanner flags
 sensitive data before it crosses a boundary. Configurable per role:
 redact, abstract, or summarise before external exposure.
 
-## v1.2.5-beta
+## v1.2.6-beta
 Infrastructure routing + Policy Enforcement Agent. High-priority events
 reach the user even when no MCP client is open. Policy Agent subscribes
 to the inbox event stream and can block operations before execution.
 
 ## v1.2.x → v1.3.0 graduation
-v1.3.0 releases when the base policy layer (data boundary + PII + policy
-enforcement) is solid enough to call "production-grade agentic safety".
-No version jump until the foundation is real.
+v1.3.0 releases when the catalog architecture (v1.2.3) and the base policy
+layer (data boundary + PII + policy enforcement) are solid enough to call
+"production-grade agentic safety". No version jump until the foundation is real.
 
 ---
 
@@ -281,11 +300,13 @@ text and loses its typed structure before dreaming can see it.
 |---------|---------|-------|
 | Coding agent HITL bridge (OpenCode, Claude Code) | Interactive external agents | v1.2.2 |
 | Per-source routing rules | Attention quality | v1.2.2 |
-| Data boundary enforcement | Data flows | v1.2.3 |
-| Audit trail | Accountability | v1.2.3 |
-| PII classification | Sensitive data leakage | v1.2.4 |
-| Sanitization layer | External exposure | v1.2.4 |
-| Infrastructure routing | Reachability | v1.2.5 |
-| Policy Enforcement Agent | Proactive blocking, context-aware safety | v1.2.5 |
+| Resource pool unification (two-layer catalog) | Agents find the right resource automatically | v1.2.3 |
+| Tool registry catalog + list_tools() discovery | Agents discover tools at runtime, users add custom tools | v1.2.3 |
+| Data boundary enforcement | Data flows | v1.2.4 |
+| Audit trail | Accountability | v1.2.4 |
+| PII classification | Sensitive data leakage | v1.2.5 |
+| Sanitization layer | External exposure | v1.2.5 |
+| Infrastructure routing | Reachability | v1.2.6 |
+| Policy Enforcement Agent | Proactive blocking, context-aware safety | v1.2.6 |
 | Inbox → Dreaming → Knowledge | Institutional memory, pattern learning | v1.2.x |
 | Message passing + containerization | Fault isolation, language agnosticism, scale | v2.x |

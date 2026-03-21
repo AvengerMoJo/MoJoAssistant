@@ -312,8 +312,11 @@ class TestCodingAgentExecutorRouting(unittest.IsolatedAsyncioTestCase):
 
 class TestCodingAgentSendPolling(unittest.IsolatedAsyncioTestCase):
     """
-    Verify that _send_with_permission_watch polls for completion after the
-    fire-and-forget send_message HTTP call returns.
+    Verify _send_with_permission_watch:
+    - runs send_message as a background task (blocking call)
+    - polls list_permissions every tick
+    - returns permission_required when permission detected
+    - returns completed when send_message finishes normally
     """
 
     def _make_executor(self):
@@ -324,84 +327,181 @@ class TestCodingAgentSendPolling(unittest.IsolatedAsyncioTestCase):
         ex._waiting_for_input_question = None
         return ex
 
-    async def test_polls_until_no_running_parts(self):
-        """
-        send_message returns immediately; polling waits for a new ASSISTANT message.
-        OpenCode messages use nested info.role, not top-level role.
-        """
-        from app.scheduler.coding_agent_executor import CodingAgentExecutor
-
+    async def test_send_completes_normally(self):
+        """send_message completes → status=completed, result extracted from parts."""
+        import asyncio
         ex = self._make_executor()
 
-        # OpenCode message format: info.role, not top-level role
-        user_msg = {"info": {"role": "user"}, "parts": [{"type": "text", "text": "do it"}]}
-        running_msg = {
-            "info": {"role": "assistant"},
-            "parts": [{"type": "tool-invocation", "state": {"status": "running"}}],
-        }
-        done_msg = {
-            "info": {"role": "assistant"},
-            "parts": [{"type": "text", "text": "Done."}],
-        }
-
         backend = AsyncMock()
-        backend.send_message = AsyncMock(return_value={"id": "m1"})
-        backend.list_permissions = AsyncMock(return_value=[])  # no permissions
-        backend.get_messages = AsyncMock(side_effect=[
-            [],                      # initial snapshot: 0 assistant messages
-            [user_msg],              # poll 1: user msg added, no assistant yet
-            [user_msg, running_msg], # poll 2: assistant started, still running
-            [user_msg, done_msg],    # poll 3: assistant complete
-        ])
+        backend.send_message = AsyncMock(
+            return_value={"parts": [{"type": "text", "text": "Done."}]}
+        )
+        backend.list_permissions = AsyncMock(return_value=[])
 
-        result = await ex._send_and_wait_for_completion(backend, "sess1", "do it")
+        _real_sleep = asyncio.sleep
+        async def _instant_sleep(*a, **k):
+            await _real_sleep(0)
+
+        with patch("asyncio.sleep", _instant_sleep):
+            result = await ex._send_with_permission_watch(backend, "sess1", "do it")
+
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["result"], "Done.")
-        self.assertEqual(backend.get_messages.call_count, 4)
+        self.assertIsNone(ex._pending_permission)
 
     async def test_permission_detected_via_list_permissions(self):
         """
         Permission is detected by polling list_permissions (not SSE).
-        This avoids the race where SSE events fire before the subscription connects.
+        send_message blocks; list_permissions returns a pending permission on first poll.
         """
-        from app.scheduler.coding_agent_executor import CodingAgentExecutor
-
+        import asyncio
         ex = self._make_executor()
 
         perm = {"id": "perm1", "type": "write_file", "title": "Write /tmp/permission_bridge_test.txt"}
+
+        # send_message blocks until cancelled
+        async def blocking_send(*a, **k):
+            await asyncio.Event().wait()  # blocks forever (cancelled by permission handler)
+
         backend = AsyncMock()
-        backend.send_message = AsyncMock(return_value={"id": "m1"})
-        backend.get_messages = AsyncMock(return_value=[])  # initial snapshot only
-        # First poll: permission found
+        backend.send_message = blocking_send
         backend.list_permissions = AsyncMock(return_value=[perm])
 
-        result = await ex._send_and_wait_for_completion(backend, "sess1", "do it")
+        _real_sleep = asyncio.sleep
+        async def _instant_sleep(*a, **k):
+            await _real_sleep(0)
+
+        with patch("asyncio.sleep", _instant_sleep):
+            result = await ex._send_with_permission_watch(backend, "sess1", "do it")
+
         self.assertEqual(result["status"], "permission_required")
         self.assertEqual(result["permission_id"], "perm1")
         self.assertIsNotNone(ex._pending_permission)
 
-    async def test_has_running_parts_detects_running_status(self):
-        from app.scheduler.coding_agent_executor import CodingAgentExecutor
 
-        msgs_running = [{"parts": [{"type": "tool-invocation", "state": {"status": "running"}}]}]
-        msgs_done = [{"parts": [{"type": "text", "state": {"status": "completed"}}]}]
-        msgs_no_state = [{"parts": [{"type": "text"}]}]
+# ---------------------------------------------------------------------------
+# SessionStore — coding-agent-mcp-tool session ownership
+# ---------------------------------------------------------------------------
 
-        self.assertTrue(CodingAgentExecutor._has_running_parts(msgs_running))
-        self.assertFalse(CodingAgentExecutor._has_running_parts(msgs_done))
-        self.assertFalse(CodingAgentExecutor._has_running_parts(msgs_no_state))
-        self.assertFalse(CodingAgentExecutor._has_running_parts([]))
+class TestSessionStore(unittest.TestCase):
+    """Verify SessionStore owns session + permission state, not MoJo TaskConfig."""
 
-    async def test_msg_role_handles_nested_and_flat(self):
-        from app.scheduler.coding_agent_executor import CodingAgentExecutor
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        self._tmp.close()
+        from coding_agent_mcp.session_store import SessionStore
+        self.store = SessionStore(path=Path(self._tmp.name))
 
-        nested = {"info": {"role": "assistant"}, "parts": []}
-        flat = {"role": "user", "content": "hi"}
-        no_role = {"parts": []}
+    def tearDown(self):
+        import os
+        os.unlink(self._tmp.name)
 
-        self.assertEqual(CodingAgentExecutor._msg_role(nested), "assistant")
-        self.assertEqual(CodingAgentExecutor._msg_role(flat), "user")
-        self.assertEqual(CodingAgentExecutor._msg_role(no_role), "")
+    def test_put_and_get_session(self):
+        self.store.put_session("popo", "kingsum2e", "ses_abc123", backend_type="opencode")
+        self.assertEqual(self.store.get_session_id("popo", "kingsum2e"), "ses_abc123")
+
+    def test_get_missing_returns_none(self):
+        self.assertIsNone(self.store.get_session_id("nobody", "nowhere"))
+
+    def test_overwrite_preserves_created_at(self):
+        self.store.put_session("popo", "kingsum2e", "ses_v1")
+        first = self.store._data["popo::kingsum2e"]["created_at"]
+        self.store.put_session("popo", "kingsum2e", "ses_v2")
+        self.assertEqual(self.store._data["popo::kingsum2e"]["created_at"], first)
+        self.assertEqual(self.store.get_session_id("popo", "kingsum2e"), "ses_v2")
+
+    def test_pending_permission_round_trip(self):
+        self.store.put_session("popo", "kingsum2e", "ses_abc")
+        perm = {"id": "perm1", "type": "write_file", "title": "Write /tmp/x"}
+        self.store.set_pending_permission("popo", "kingsum2e", perm)
+        popped = self.store.pop_pending_permission("popo", "kingsum2e")
+        self.assertEqual(popped["id"], "perm1")
+        # Cleared after pop
+        self.assertIsNone(self.store.pop_pending_permission("popo", "kingsum2e"))
+
+    def test_delete_removes_entry(self):
+        self.store.put_session("popo", "kingsum2e", "ses_abc")
+        self.store.delete("popo", "kingsum2e")
+        self.assertIsNone(self.store.get_session_id("popo", "kingsum2e"))
+
+    def test_persists_across_instances(self):
+        from pathlib import Path
+        from coding_agent_mcp.session_store import SessionStore
+        self.store.put_session("popo", "kingsum2e", "ses_persist")
+        store2 = SessionStore(path=Path(self._tmp.name))
+        self.assertEqual(store2.get_session_id("popo", "kingsum2e"), "ses_persist")
+
+
+class TestBackendRegistrySessionMethods(unittest.IsolatedAsyncioTestCase):
+    """Verify BackendRegistry.get_or_create_session resumes vs creates."""
+
+    def _make_registry(self, tmp_path):
+        from pathlib import Path
+        from coding_agent_mcp.backends import BackendRegistry
+        from coding_agent_mcp.session_store import SessionStore
+        reg = BackendRegistry.__new__(BackendRegistry)
+        reg._backends = {}
+        reg._default_id = None
+        reg._sessions = SessionStore(path=Path(tmp_path))
+        return reg
+
+    async def test_creates_session_when_none_exists(self):
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp.close()
+        try:
+            reg = self._make_registry(tmp.name)
+            mock_backend = AsyncMock()
+            mock_backend.create_session = AsyncMock(return_value={"id": "ses_new"})
+            mock_backend.backend_type = "opencode"
+            reg._backends["srv1"] = mock_backend
+            reg._default_id = "srv1"
+
+            sid = await reg.get_or_create_session("popo", "srv1")
+            self.assertEqual(sid, "ses_new")
+            mock_backend.create_session.assert_called_once()
+        finally:
+            os.unlink(tmp.name)
+
+    async def test_resumes_existing_session(self):
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp.close()
+        try:
+            reg = self._make_registry(tmp.name)
+            reg._sessions.put_session("popo", "srv1", "ses_existing")
+            mock_backend = AsyncMock()
+            mock_backend.backend_type = "opencode"
+            reg._backends["srv1"] = mock_backend
+
+            sid = await reg.get_or_create_session("popo", "srv1")
+            self.assertEqual(sid, "ses_existing")
+            mock_backend.create_session.assert_not_called()
+        finally:
+            os.unlink(tmp.name)
+
+    async def test_mojo_task_config_has_no_session_id(self):
+        """Scheduling a follow-up task should NOT require agent_session_id in config."""
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp.close()
+        try:
+            reg = self._make_registry(tmp.name)
+            reg._sessions.put_session("popo", "kingsum2e", "ses_popo_1")
+            mock_backend = AsyncMock()
+            mock_backend.backend_type = "opencode"
+            reg._backends["kingsum2e"] = mock_backend
+
+            # Simulates what CodingAgentExecutor now does — no session_id in task.config
+            task_config = {"goal": "write admin flutter plan", "role_id": "popo"}
+            self.assertNotIn("agent_session_id", task_config)
+
+            sid = await reg.get_or_create_session("popo", "kingsum2e")
+            self.assertEqual(sid, "ses_popo_1")
+        finally:
+            os.unlink(tmp.name)
 
 
 if __name__ == "__main__":

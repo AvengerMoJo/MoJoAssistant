@@ -1374,3 +1374,141 @@ Routing is purely via `server_id` → servers JSON entry → `backend_type` ther
 Options:
 - Remove `backend_type` from role JSON (clean)
 - Or read it in `_get_backend` as a validation hint (belt + suspenders)
+
+### 19.6 — Move session ownership to the coding-agent layer ⚠️ design boundary
+
+**Problem discovered 2026-03-21:**
+`agent_session_id` is stored in MoJo's `TaskConfig` so `CodingAgentExecutor` can
+resume an existing coding agent session. This is a design boundary violation.
+
+MoJo oversees many roles and agents simultaneously. It cannot carry per-agent
+ephemeral state (session tokens, resume handles, partial results) in its own
+scheduler config — that couples MoJo to implementation details of each backend.
+
+When we tried to schedule a follow-up Popo task, there was no way to pass the
+session ID through the MCP tool because it should not exist at that layer.
+
+**The boundary:**
+
+| MoJo's responsibility | Coding agent's responsibility |
+|---|---|
+| Deliver a goal + role to execute | Decide whether to resume or start fresh |
+| Route HITL questions to inbox | Manage session lifecycle (create/resume/close) |
+| Classify events by attention level | Track permission state, retry context |
+| Assign LLM resource | Translate goal → backend API calls |
+
+**Target design:**
+`coding-agent-mcp-tool` maintains its own session store, keyed by `(role_id, task_id)`
+or a stable goal hash. When `CodingAgentExecutor.execute(task)` is called, it asks
+the backend manager: "do you have an active session for this role + task?" The manager
+returns an existing session or creates a new one. MoJo never sees session IDs.
+
+**Scope of change (v1.3):**
+- `coding-agent-mcp-tool`: add `SessionStore` (file-backed dict: `role_id+task_id → session_id`)
+- `BackendRegistry` / `AgentBackend`: `get_or_create_session(role_id, task_id, working_dir)` → session_id
+- `CodingAgentExecutor`: remove `agent_session_id` from `task.config` reads/writes; call registry instead
+- `TaskConfig` (scheduler models): remove `agent_session_id` field
+- Same principle applies to `agent_pending_permission_id` / `agent_pending_permission_directory`
+  — permission state is agent-internal, not scheduler state
+
+**Note:** `agent_session_id` is currently stored in `task.config` at
+`coding_agent_executor.py:189–200`. That is the primary site to refactor.
+
+---
+
+## 20. Resource Pool and Tool Registry — Unified Catalog Architecture
+
+**Discovered 2026-03-22.** Both the resource pool and the tool registry have the same
+architectural problem: they are fragmented across multiple config files and partially
+hardcoded into role profiles. The right design treats both as **self-describing catalogs**
+with exactly two layers: system default + user personal.
+
+---
+
+### 20.1 — Resource Pool: two layers, no hardcoding in roles
+
+**Current problems:**
+- `llm_config.json` (project) + `resource_pool_config.json` (project) + `~/.memory/config/llm_config.json` (personal) — three config surfaces for the same concern
+- `preferred_resource_id` is hardcoded in role JSON (`popo.json`) — couples the role persona to a specific infrastructure account
+- The scheduler MCP tool has no `preferred_resource_id` parameter — users cannot specify a resource from the client at all; requests are silently dropped and fall through to dynamic selection
+
+**Target design:**
+```
+System default layer   config/resource_pool.json   — shipped defaults, no API keys
+User personal layer    ~/.memory/config/resource_pool.json   — user's accounts, keys, overrides
+```
+
+One file name, two layers merged by `load_layered_json_config`. Roles declare
+**capability requirements** (tier, speed class, context size), not a specific resource ID.
+The pool selects the best match from what the user has configured.
+
+```json
+// Role declares what it needs — not which account to use
+"resource_requirements": {
+  "tier": ["free_api", "free"],
+  "min_context_tokens": 32000
+}
+```
+
+The user's personal layer adds their own accounts (Gemini, OpenRouter, etc.) and the
+pool auto-discovers them. No role JSON changes needed when the user adds a new API key.
+
+**Migration:**
+- Merge `llm_config.json` and `resource_pool_config.json` into `resource_pool.json`
+- Remove `preferred_resource_id` from role JSON; replace with `resource_requirements`
+- Rename the runtime override to `~/.memory/config/resource_pool.json`
+- Keep backward compat: `llm_config.json` still loaded if `resource_pool.json` absent
+
+---
+
+### 20.2 — Tool Registry: pre-defined catalog + user custom tools
+
+**Current problems:**
+- Tools are loaded from `config.get("available_tools", ["memory_search"])` in the task config — every task must enumerate its tools or get the bare minimum
+- `ask_user` is force-injected by the executor but not documented in role profiles
+- Adding a new tool requires editing executor code or every task config that needs it
+- No way for an agent to discover what tools are available to it at runtime
+
+**Target design — same pattern as resource pool:**
+```
+System catalog    config/tool_catalog.json       — pre-defined tools (bash, web_search, memory_search, file ops, ...)
+User extensions   ~/.memory/config/tool_catalog.json  — user's custom scripts, MCP proxies, local APIs
+```
+
+Tool entries declare capability category (`system`, `web`, `file`, `memory`, `custom`),
+executor type (`builtin`, `shell`, `mcp_proxy`), and access level.
+
+Roles declare **tool access categories**, not individual tool names:
+```json
+"tool_access": ["memory", "web", "file"]
+```
+
+At task start, the executor builds the available tool set from the catalog filtered by
+the role's `tool_access`. A `list_tools()` meta-tool is always injected, letting the agent
+discover its full tool set at runtime without it being enumerated in the system prompt.
+
+```
+Agent start:  tools = [list_tools, ask_user]  +  role default category tools
+Agent calls:  list_tools()  →  {"available": ["web_search", "bash", "memory_search", ...]}
+Next iter:    executor expands tool list dynamically based on agent's discovery
+```
+
+User adds a custom tool by dropping a JSON entry in `~/.memory/config/tool_catalog.json`:
+```json
+{
+  "my_script": {
+    "category": "custom",
+    "executor": {"type": "shell", "command": "python3 ~/.memory/scripts/my_tool.py"},
+    "description": "Runs my local analysis script"
+  }
+}
+```
+
+No code changes, no prompt updates — the tool is immediately available to any role
+that has `"custom"` in its `tool_access`.
+
+**Migration path:**
+- `dynamic_tool_registry.py` becomes the runtime loader for the two-layer catalog
+- `available_tools` in task config remains as an explicit override (still works)
+- `ask_user` and `list_tools` are always present regardless of role config
+- Existing tool definitions migrate to `config/tool_catalog.json` entries

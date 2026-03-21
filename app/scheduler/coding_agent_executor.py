@@ -117,6 +117,7 @@ class CodingAgentExecutor:
         self._logger = logger
         self._memory_service = memory_service
         self._session_storage = SessionStorage()
+        self._registry: Any = None  # BackendRegistry — lazy-loaded and cached
 
     def _log(self, msg: str, level: str = "info") -> None:
         if self._logger:
@@ -133,10 +134,12 @@ class CodingAgentExecutor:
         Task config keys:
             goal (str): What the role should accomplish.
             role_id (str): Which role to load (must have executor="coding_agent").
-            agent_session_id (str, optional): Existing agent session to resume.
-            agent_pending_permission_id (str, optional): Permission ID awaiting response.
+            server_id (str, optional): Override the role's default server_id.
             resume_from_task_id (str, optional): Resume a previous LLM session.
             reply_to_question (str, optional): User reply injected after WAITING_FOR_INPUT.
+
+        Session and permission state are owned by BackendRegistry (coding-agent-mcp-tool).
+        MoJo never stores session IDs or permission handles in task.config.
         """
         self._waiting_for_input_question: str | None = None
         self._pending_permission: dict | None = None
@@ -154,7 +157,10 @@ class CodingAgentExecutor:
                 error_message=f"Role '{role_id}' not found or has no executor=coding_agent",
             )
 
-        # Load the coding agent backend
+        # Resolve server_id before loading backend so session key is stable.
+        server_id = config.get("server_id") or role.get("server_id")
+
+        # Load the coding agent backend (also initialises self._registry)
         backend = self._get_backend(role, config)
         if backend is None:
             return TaskResult(
@@ -164,7 +170,6 @@ class CodingAgentExecutor:
 
         # Health check — if unreachable, attempt auto-start then re-check.
         # Only escalate to waiting_for_input if auto-start fails.
-        server_id = config.get("server_id") or role.get("server_id")
         try:
             await backend.health()
         except Exception:
@@ -185,40 +190,35 @@ class CodingAgentExecutor:
                     ),
                 )
 
-        # Get or create an agent session
-        agent_session_id = config.get("agent_session_id")
-        if not agent_session_id:
-            try:
-                session_data = await backend.create_session()
-                agent_session_id = session_data.get("id") or session_data.get("sessionID")
-                if not agent_session_id:
-                    return TaskResult(
-                        success=False,
-                        error_message=f"Agent session create returned no ID: {session_data}",
-                    )
-                # Persist for resume
-                task.config["agent_session_id"] = agent_session_id
-            except Exception as e:
-                return TaskResult(
-                    success=False, error_message=f"Failed to create agent session: {e}"
-                )
+        # Session ownership lives in BackendRegistry (coding-agent-mcp-tool).
+        # MoJo never stores session IDs in task.config — the registry resumes
+        # the right session automatically based on role_id + server_id.
+        try:
+            agent_session_id = await self._registry.get_or_create_session(
+                role_id=role_id, server_id=server_id
+            )
+        except Exception as e:
+            return TaskResult(
+                success=False, error_message=f"Failed to get/create agent session: {e}"
+            )
 
         self._log(f"Task {task.id}: using agent session {agent_session_id}")
 
-        # If resuming after a permission was granted by the user
-        pending_perm_id = config.pop("agent_pending_permission_id", None)
+        # Permission resume — state lives in SessionStore, not TaskConfig.
         reply = config.pop("reply_to_question", None)
+        pending_perm = self._registry.pop_pending_permission(role_id, server_id)
 
-        if pending_perm_id and reply is not None:
+        if pending_perm and reply is not None:
+            perm_id = pending_perm.get("requestID") or pending_perm.get("id")
             response = self._map_reply_to_permission_response(reply)
-            directory = config.pop("agent_pending_permission_directory", "")
+            directory = pending_perm.get("directory", "")
             self._log(
-                f"Responding to permission {pending_perm_id} with '{response}' "
+                f"Responding to permission {perm_id} with '{response}' "
                 f"(user said: '{reply}', directory: '{directory}')"
             )
             try:
                 await backend.respond_to_permission(
-                    agent_session_id, pending_perm_id, response, directory=directory
+                    agent_session_id, perm_id, response, directory=directory
                 )
             except Exception as e:
                 self._log(f"respond_to_permission failed: {e}", "warning")
@@ -395,12 +395,11 @@ class CodingAgentExecutor:
                 metrics={"duration_seconds": total_elapsed, "session_file": session_file},
             )
 
-        # Paused for agent permission — store permission_id + directory for resume
+        # Paused for agent permission — store state in SessionStore (not TaskConfig).
+        # On resume, pop_pending_permission retrieves it automatically.
         if self._pending_permission:
             perm = self._pending_permission
-            perm_id = perm.get("requestID") or perm.get("id")
-            task.config["agent_pending_permission_id"] = perm_id
-            task.config["agent_pending_permission_directory"] = perm.get("directory", "")
+            self._registry.set_pending_permission(role_id, server_id, perm)
             task.config["resume_from_task_id"] = task.id
             self._session_storage.update_status(task.id, "waiting_for_input")
             title = perm.get("title") or perm.get("type") or "permission required"
@@ -534,7 +533,7 @@ class CodingAgentExecutor:
                     self._log(f"Permission detected: {title} ({perm_id})")
                     self._pending_permission = perm
                     send_task.cancel()
-                    with suppress(Exception):
+                    with suppress(Exception, asyncio.CancelledError):
                         await send_task
                     return {
                         "status": "permission_required",
@@ -548,7 +547,7 @@ class CodingAgentExecutor:
         # Timed out without completing
         if not send_task.done():
             send_task.cancel()
-            with suppress(Exception):
+            with suppress(Exception, asyncio.CancelledError):
                 await send_task
             self._log("send_message timed out after 280s", "warning")
             return {"status": "timeout", "result": "(timed out — no response from coding agent)"}
@@ -615,54 +614,79 @@ class CodingAgentExecutor:
         self, role: dict, config: dict, server_id: str | None
     ) -> Any | None:
         """
-        Attempt to auto-start the OpenCode server for *server_id*, then poll
-        until healthy.  Returns a healthy backend or None on failure.
+        Attempt to auto-start the backend for *server_id*, then poll until
+        healthy. Returns a healthy backend or None on failure.
+
+        Backend-type routing:
+        - opencode  → OpenCodeManager.start_project (HTTP server must be launched)
+        - claude_code → no-op (binary always present; health() validates working_dir)
+        - unknown   → log warning, skip
         """
         if not server_id:
             self._log("No server_id — cannot auto-start backend", "warning")
             return None
 
-        try:
-            from app.mcp.opencode.manager import OpenCodeManager
-            manager = OpenCodeManager()
-            result = await manager.start_project(server_id)
-            status = result.get("status", "")
-            self._log(f"Auto-start result for {server_id}: {status}")
-            if status not in ("success", "already_running", "running"):
-                self._log(f"Auto-start did not succeed: {result}", "warning")
+        backend = self._get_backend(role, config)
+        backend_type = getattr(backend, "backend_type", None) if backend else None
+
+        if backend_type == "claude_code":
+            # Claude Code is a local binary — no server to start.
+            # health() already validates the binary and working_dir.
+            self._log(f"claude_code backend ({server_id}): no auto-start needed")
+            return backend
+
+        if backend_type == "opencode":
+            try:
+                from app.mcp.opencode.manager import OpenCodeManager
+                manager = OpenCodeManager()
+                result = await manager.start_project(server_id)
+                status = result.get("status", "")
+                self._log(f"Auto-start result for {server_id}: {status}")
+                if status not in ("success", "already_running", "running"):
+                    self._log(f"Auto-start did not succeed: {result}", "warning")
+                    return None
+            except Exception as e:
+                self._log(f"Auto-start exception for {server_id}: {e}", "warning")
                 return None
-        except Exception as e:
-            self._log(f"Auto-start exception for {server_id}: {e}", "warning")
+
+            # Poll until healthy (up to 90 s, 6 s intervals)
+            deadline = asyncio.get_event_loop().time() + 90
+            while asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(6)
+                backend = self._get_backend(role, config)
+                if backend is not None:
+                    try:
+                        await backend.health()
+                        self._log(f"Backend {server_id} is healthy after auto-start")
+                        return backend
+                    except Exception:
+                        pass
+                self._log("Waiting for backend to become healthy…")
+
+            self._log(f"Backend {server_id} still unhealthy after 90 s", "warning")
             return None
 
-        # Poll until healthy (up to 90 s, 6 s intervals)
-        deadline = asyncio.get_event_loop().time() + 90
-        while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(6)
-            # Reload backend — base_url is now populated after start
-            backend = self._get_backend(role, config)
-            if backend is not None:
-                try:
-                    await backend.health()
-                    self._log(f"Backend {server_id} is healthy after auto-start")
-                    return backend
-                except Exception:
-                    pass
-            self._log("Waiting for backend to become healthy…")
-
-        self._log(f"Backend {server_id} still unhealthy after 90 s", "warning")
+        self._log(
+            f"Unknown backend_type {backend_type!r} for {server_id} — skipping auto-start",
+            "warning",
+        )
         return None
+
+    def _get_registry(self) -> Any:
+        """Return the cached BackendRegistry, loading config on first call."""
+        from coding_agent_mcp.backends import BackendRegistry
+        from coding_agent_mcp.config.loader import load_config
+
+        if self._registry is None:
+            cfg = load_config()
+            self._registry = BackendRegistry()
+            self._registry.reload(cfg.servers, cfg.default_server)
+        return self._registry
 
     def _get_backend(self, role: dict, config: dict) -> Any | None:
         server_id = config.get("server_id") or role.get("server_id")
         try:
-            from coding_agent_mcp.backends import BackendRegistry
-            from coding_agent_mcp.config.loader import load_config
-
-            cfg = load_config()
-            registry = BackendRegistry()
-            registry.reload(cfg.servers, cfg.default_server)
-            return registry.get(server_id)  # server_id=None → default
+            return self._get_registry().get(server_id)  # server_id=None → default
         except Exception as e:
             self._log(f"Failed to load coding agent backend (server_id={server_id}): {e}", "warning")
             return None
