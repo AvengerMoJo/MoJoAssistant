@@ -346,6 +346,7 @@ class TestCodingAgentSendPolling(unittest.IsolatedAsyncioTestCase):
 
         backend = AsyncMock()
         backend.send_message = AsyncMock(return_value={"id": "m1"})
+        backend.list_permissions = AsyncMock(return_value=[])  # no permissions
         backend.get_messages = AsyncMock(side_effect=[
             [],                      # initial snapshot: 0 assistant messages
             [user_msg],              # poll 1: user msg added, no assistant yet
@@ -357,6 +358,27 @@ class TestCodingAgentSendPolling(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["result"], "Done.")
         self.assertEqual(backend.get_messages.call_count, 4)
+
+    async def test_permission_detected_via_list_permissions(self):
+        """
+        Permission is detected by polling list_permissions (not SSE).
+        This avoids the race where SSE events fire before the subscription connects.
+        """
+        from app.scheduler.coding_agent_executor import CodingAgentExecutor
+
+        ex = self._make_executor()
+
+        perm = {"id": "perm1", "type": "write_file", "title": "Write /tmp/permission_bridge_test.txt"}
+        backend = AsyncMock()
+        backend.send_message = AsyncMock(return_value={"id": "m1"})
+        backend.get_messages = AsyncMock(return_value=[])  # initial snapshot only
+        # First poll: permission found
+        backend.list_permissions = AsyncMock(return_value=[perm])
+
+        result = await ex._send_and_wait_for_completion(backend, "sess1", "do it")
+        self.assertEqual(result["status"], "permission_required")
+        self.assertEqual(result["permission_id"], "perm1")
+        self.assertIsNotNone(ex._pending_permission)
 
     async def test_has_running_parts_detects_running_status(self):
         from app.scheduler.coding_agent_executor import CodingAgentExecutor
@@ -380,37 +402,6 @@ class TestCodingAgentSendPolling(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(CodingAgentExecutor._msg_role(nested), "assistant")
         self.assertEqual(CodingAgentExecutor._msg_role(flat), "user")
         self.assertEqual(CodingAgentExecutor._msg_role(no_role), "")
-
-    async def test_permission_wins_over_completion(self):
-        """Permission arriving concurrently with polling causes permission path."""
-        from app.scheduler.coding_agent_executor import CodingAgentExecutor
-
-        ex = self._make_executor()
-
-        done_msgs = [{"role": "assistant", "parts": [{"type": "text", "text": "Done."}]}]
-        backend = AsyncMock()
-        backend.send_message = AsyncMock(return_value={"id": "m1"})
-        # get_messages: initial snapshot + two fast polls returning done
-        backend.get_messages = AsyncMock(return_value=done_msgs)
-
-        perm_event = {"id": "perm1", "type": "tool", "title": "Write /tmp/file.txt"}
-
-        async def fake_subscribe(_session_id):
-            yield perm_event
-
-        backend.subscribe_permissions = fake_subscribe
-
-        # Patch _poll_for_completion to be slow so permission wins
-        async def slow_poll(*a, **k):
-            await asyncio.sleep(10)
-            return done_msgs
-
-        ex._poll_for_completion = slow_poll
-
-        result = await ex._send_with_permission_watch(backend, "sess1", "do it")
-        self.assertEqual(result["status"], "permission_required")
-        self.assertEqual(result["permission_id"], "perm1")
-        self.assertIsNotNone(ex._pending_permission)
 
 
 if __name__ == "__main__":
