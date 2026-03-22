@@ -214,7 +214,11 @@ class AgenticExecutor:
             task.resources.max_duration_seconds or 300,
         )
 
+        # Tier preference: task config > role resource_requirements > task resources > default
+        role_resource_requirements = role.get("resource_requirements") if role else None
         tier_pref_raw = config.get("tier_preference", task.resources.tier_preference)
+        if not tier_pref_raw and role_resource_requirements:
+            tier_pref_raw = role_resource_requirements.get("tier")
         if tier_pref_raw:
             # Normalise: a bare string like "free" should become ["free"], not ["f","r","e","e"]
             if isinstance(tier_pref_raw, str):
@@ -223,9 +227,15 @@ class AgenticExecutor:
         else:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
 
-        # Load tools from dynamic registry (fallback to builtins).
+        # Load tools: task config.available_tools > role tool_access/tools > default.
         # ask_user is always included — it's the HITL escape hatch for any blocker.
-        enabled_tool_names = config.get("available_tools", ["memory_search"])
+        explicit_tools = config.get("available_tools")
+        if explicit_tools is not None:
+            enabled_tool_names = list(explicit_tools)
+        elif role:
+            enabled_tool_names = self._resolve_tools_from_role(role)
+        else:
+            enabled_tool_names = ["memory_search"]
         if "ask_user" not in enabled_tool_names:
             enabled_tool_names = list(enabled_tool_names) + ["ask_user"]
         tool_defs = []
@@ -342,7 +352,13 @@ class AgenticExecutor:
                 config=config,
                 iteration_log=iteration_log,
             )
-            resource = self._rm.acquire(tier_preference=iter_tiers)
+            if role_resource_requirements:
+                resource = self._rm.acquire_by_requirements(role_resource_requirements)
+                if resource is None:
+                    # Fall back to tier-only acquire if requirements can't be fully satisfied
+                    resource = self._rm.acquire(tier_preference=iter_tiers)
+            else:
+                resource = self._rm.acquire(tier_preference=iter_tiers)
             if resource is None:
                 self._log(f"No resource available, waiting 30s (iteration {iteration})")
                 # Wait and retry once
@@ -837,6 +853,40 @@ class AgenticExecutor:
             # Tag opened but not closed — treat the rest as the answer
             return text[start:].strip()
         return text[start:end].strip()
+
+    def _resolve_tools_from_role(self, role: dict) -> List[str]:
+        """
+        Expand role.tool_access categories into tool names via tool_catalog.json.
+
+        Precedence:
+          1. role.tool_access (list of category names) — new catalog-based path
+          2. role.tools (list of explicit tool names) — legacy path
+          3. ["memory_search"] — default fallback
+        """
+        from app.config.config_loader import load_layered_json_config
+
+        tool_access = role.get("tool_access")
+        legacy_tools = role.get("tools")
+
+        if tool_access is not None:
+            try:
+                catalog = load_layered_json_config("config/tool_catalog.json")
+            except Exception:
+                catalog = {}
+            tool_entries = catalog.get("tools", {})
+            names = []
+            for tool_name, tool_meta in tool_entries.items():
+                if not isinstance(tool_meta, dict):
+                    continue
+                if tool_meta.get("always_injected"):
+                    continue  # injected separately (e.g. ask_user)
+                if tool_meta.get("category") in tool_access:
+                    names.append(tool_name)
+            return names
+        elif legacy_tools is not None:
+            return list(legacy_tools)
+        else:
+            return ["memory_search"]
 
     def _determine_tier_preference_for_iteration(
         self,

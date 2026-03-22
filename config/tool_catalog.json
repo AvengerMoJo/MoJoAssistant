@@ -1,0 +1,22 @@
+{
+  "comment": "System tool catalog — maps tool names to categories and metadata. User custom tools live in ~/.memory/config/tool_catalog.json. Roles declare tool_access by category.",
+  "categories": {
+    "memory":  { "description": "Memory and knowledge base access" },
+    "file":    { "description": "File read, write, and search operations" },
+    "web":     { "description": "Web search and HTTP requests" },
+    "exec":    { "description": "Shell commands and code execution" },
+    "comms":   { "description": "Communication with the user (HITL)" }
+  },
+  "tools": {
+    "memory_search":   { "category": "memory", "danger_level": "low" },
+    "add_conversation":{ "category": "memory", "danger_level": "low" },
+    "read_file":       { "category": "file",   "danger_level": "low" },
+    "write_file":      { "category": "file",   "danger_level": "medium" },
+    "list_files":      { "category": "file",   "danger_level": "low" },
+    "search_in_files": { "category": "file",   "danger_level": "low" },
+    "web_search":      { "category": "web",    "danger_level": "low" },
+    "bash_exec":       { "category": "exec",   "danger_level": "high", "requires_auth": true },
+    "run_tests":       { "category": "exec",   "danger_level": "medium" },
+    "ask_user":        { "category": "comms",  "danger_level": "low",  "always_injected": true }
+  }
+}
