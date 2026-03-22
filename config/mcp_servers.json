@@ -14,7 +14,7 @@
       "id": "tmux",
       "name": "tmux-mcp-rs",
       "transport": "stdio",
-      "command": "tmux-mcp-rs",
+      "command": "/home/alex/.cargo/bin/tmux-mcp-rs",
       "args": [
         "--shell-type", "bash",
         "--socket", "/tmp/mojo-agent.sock",

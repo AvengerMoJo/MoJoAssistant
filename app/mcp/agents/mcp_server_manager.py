@@ -131,7 +131,8 @@ class MCPServerManager(BaseAgentManager):
             })
         return {
             "status": "success",
-            "servers": servers,
+            "agents": servers,   # "agents" key for compatibility with agent(action="list") aggregator
+            "servers": servers,  # also kept for direct callers
             "count": len(servers),
         }
 
