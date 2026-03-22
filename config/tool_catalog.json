@@ -1,0 +1,71 @@
+{
+  "comment": "System tool catalog — maps tool names to categories and metadata. User custom tools live in ~/.memory/config/tool_catalog.json. Roles declare tool_access by category.",
+  "categories": {
+    "memory":   { "description": "Memory and knowledge base access" },
+    "file":     { "description": "File read, write, and search operations" },
+    "web":      { "description": "Web search and HTTP requests" },
+    "exec":     { "description": "Shell commands and code execution" },
+    "comms":    { "description": "Communication with the user (HITL)" },
+    "browser":  { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP)" },
+    "terminal": { "description": "Persistent terminal sessions via tmux — run commands, read output" }
+  },
+  "tools": {
+    "memory_search":   {
+      "category": "memory",
+      "danger_level": "low",
+      "description": "Search the user's personal memory — past conversations, archived knowledge, and synthesized insights. Use when the task requires context from prior interactions or stored knowledge."
+    },
+    "add_conversation": {
+      "category": "memory",
+      "danger_level": "low",
+      "description": "Store a new conversation or piece of information into long-term memory. Use after completing a task to preserve findings, decisions, or context for future recall."
+    },
+    "read_file":       {
+      "category": "file",
+      "danger_level": "low",
+      "description": "Read the contents of a file from the filesystem. Returns text with line numbers. Use before modifying any file — always read first."
+    },
+    "write_file":      {
+      "category": "file",
+      "danger_level": "medium",
+      "description": "Write or overwrite a file on the filesystem. Only allowed in approved sandbox paths. Prefer making targeted edits when possible; use for creating new files or full rewrites."
+    },
+    "list_files":      {
+      "category": "file",
+      "danger_level": "low",
+      "description": "List files and directories at a given path. Use to explore project structure before reading or writing."
+    },
+    "search_in_files": {
+      "category": "file",
+      "danger_level": "low",
+      "description": "Search for text patterns across multiple files using grep/ripgrep. Use to locate function definitions, variable references, or specific strings across a codebase."
+    },
+    "web_search":      {
+      "category": "web",
+      "danger_level": "low",
+      "description": "Search the web for current information, documentation, or external context. Use when the task requires up-to-date knowledge not available in memory or local files. Requires GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID."
+    },
+    "fetch_url":       {
+      "category": "web",
+      "danger_level": "low",
+      "description": "Fetch and read the full plain-text content of a web page. Use after web_search to read a specific result in depth. Strips HTML — returns readable text."
+    },
+    "bash_exec":       {
+      "category": "exec",
+      "danger_level": "high",
+      "requires_auth": true,
+      "description": "Execute a shell command. Restricted to a safe whitelist of approved commands. Requires explicit user authorization. Use for running builds, scripts, or system queries that cannot be done with other tools."
+    },
+    "run_tests":       {
+      "category": "exec",
+      "danger_level": "medium",
+      "description": "Run the project's test suite. Use after making code changes to verify correctness. Returns pass/fail output with details on any failures."
+    },
+    "ask_user":        {
+      "category": "comms",
+      "danger_level": "low",
+      "always_injected": true,
+      "description": "Pause the task and ask the user a question. Use when you are blocked and only the user can unblock you — missing credentials, ambiguous requirements, or a decision that requires human judgment. The task waits in HITL state until the user replies. Do not use this when another tool can answer the question."
+    }
+  }
+}

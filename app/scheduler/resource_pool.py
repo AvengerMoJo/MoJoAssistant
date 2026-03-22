@@ -61,6 +61,7 @@ class LLMResource:
     output_limit: int = 8192
     description: str = ""
     account_group: Optional[str] = None
+    capabilities: List[str] = field(default_factory=list)
     rate_limit: Optional[RateLimit] = None
     budget: Optional[Budget] = None
 
@@ -80,7 +81,7 @@ class ResourceManager:
     USAGE_FILE = Path(get_memory_subpath("resource_pool_usage.json"))
     META_FILE = Path(get_memory_subpath("resource_pool_meta.json"))
 
-    def __init__(self, config_path: str = "config/llm_config.json", logger=None):
+    def __init__(self, config_path: str = "config/resource_pool.json", logger=None):
         self._config_path = config_path
         self._logger = logger
         self._lock = threading.RLock()
@@ -157,14 +158,66 @@ class ResourceManager:
     def _load_config(self):
         from app.config.config_loader import load_layered_json_config, MEMORY_CONFIG_DIR
 
-        codebase_path = Path(self._config_path)
+        # Prefer resource_pool.json (flat format); fall back to llm_config.json (legacy format)
+        primary_path = "config/resource_pool.json"
+        fallback_path = "config/llm_config.json"
+        use_flat = Path(primary_path).exists()
+        resolved_path = primary_path if use_flat else fallback_path
+
+        # Update the tracked config path so mtime checks use the correct file
+        self._config_path = resolved_path
+
+        codebase_path = Path(resolved_path)
         runtime_path = Path(MEMORY_CONFIG_DIR) / codebase_path.name
 
-        data = load_layered_json_config(self._config_path)
+        data = load_layered_json_config(resolved_path)
 
         self._config_mtime_ns = codebase_path.stat().st_mtime_ns if codebase_path.exists() else None
         self._runtime_mtime_ns = runtime_path.stat().st_mtime_ns if runtime_path.exists() else None
 
+        if use_flat:
+            self._parse_flat_resources(data)
+            self._auto_sync_flat_servers(data)
+        else:
+            self._log("resource_pool.json not found, falling back to llm_config.json (legacy format)", "warning")
+            self._parse_legacy_resources(data)
+            self._auto_sync_local_servers(data)
+
+    def _parse_flat_resources(self, data: dict) -> None:
+        """Parse flat `resources` dict format (resource_pool.json)."""
+        with self._lock:
+            self._resources.clear()
+            for rid, rconf in data.get("resources", {}).items():
+                if not isinstance(rconf, dict):
+                    continue
+                rconf = dict(rconf)
+                rconf.setdefault(
+                    "type",
+                    "local" if rconf.get("base_url", "").startswith("http://localhost") else "api"
+                )
+                rconf.setdefault("provider", "openai")
+                resource = self._parse_resource(rid, rconf)
+                self._resources[rid] = resource
+                if rid not in self._usage:
+                    self._usage[rid] = UsageRecord()
+            self._tier_policy = data.get("tier_policy", {})
+            self._selection_strategy = data.get("selection_strategy", "priority_then_availability")
+            self._log(f"Loaded {len(self._resources)} resources (flat format)")
+
+    def _auto_sync_flat_servers(self, config_data: dict) -> None:
+        """Auto-expand flat resources with dynamic_discovery=True or model=None."""
+        for name, entry in config_data.get("resources", {}).items():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("dynamic_discovery") or entry.get("model") is None:
+                if entry.get("base_url", "").startswith("http://localhost"):
+                    try:
+                        self.sync_local_server_models(name)
+                    except Exception as e:
+                        self._log(f"Auto-sync failed for '{name}': {e}", "warning")
+
+    def _parse_legacy_resources(self, data: dict) -> None:
+        """Parse legacy llm_config.json format with local_models/api_models nesting."""
         with self._lock:
             self._resources.clear()
 
@@ -209,10 +262,7 @@ class ResourceManager:
 
             self._tier_policy = data.get("tier_policy", {})
             self._selection_strategy = data.get("selection_strategy", "priority_then_availability")
-            self._log(f"Loaded {len(self._resources)} resources")
-
-        # Auto-sync local servers that have dynamic_discovery enabled or model=null
-        self._auto_sync_local_servers(data)
+            self._log(f"Loaded {len(self._resources)} resources (legacy format)")
 
     def _auto_sync_local_servers(self, config_data: dict) -> None:
         """
@@ -311,6 +361,7 @@ class ResourceManager:
             output_limit=conf.get("output_limit", 8192),
             description=conf.get("description", ""),
             account_group=conf.get("account_group"),
+            capabilities=conf.get("capabilities", []),
             rate_limit=rate_limit,
             budget=budget,
         )
@@ -387,6 +438,75 @@ class ResourceManager:
             if self._compute_status(resource) == ResourceStatus.UNREACHABLE:
                 return None
             return resource
+
+    def acquire_by_requirements(
+        self,
+        requirements: Dict[str, Any],
+    ) -> Optional[LLMResource]:
+        """
+        Acquire the best available resource matching structured requirements.
+
+        requirements keys (all optional):
+            tier (str | list[str]):    e.g. "free" or ["free", "free_api"]
+            min_context (int):         minimum context_limit required
+            min_output (int):          minimum output_limit required
+            capabilities (list[str]): resource must declare all listed capabilities
+
+        Returns None if nothing satisfies the requirements.
+        """
+        tier_strs = requirements.get("tier", ["free", "free_api"])
+        if isinstance(tier_strs, str):
+            tier_strs = [tier_strs]
+        tier_preference = []
+        for t in tier_strs:
+            try:
+                tier_preference.append(ResourceTier(t))
+            except ValueError:
+                self._log(f"acquire_by_requirements: unknown tier '{t}', skipping", "warning")
+        if not tier_preference:
+            tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
+
+        min_context = requirements.get("min_context", 0)
+        min_output = requirements.get("min_output", 0)
+        required_caps = set(requirements.get("capabilities", []))
+
+        with self._lock:
+            self._maybe_reload_runtime_state()
+            candidates = []
+            for resource in self._resources.values():
+                if not resource.enabled:
+                    continue
+                if resource.tier not in tier_preference:
+                    continue
+                if resource.tier == ResourceTier.PAID and resource.id not in self._approved_paid:
+                    continue
+                if resource.context_limit < min_context:
+                    continue
+                if resource.output_limit < min_output:
+                    continue
+                if required_caps and not required_caps.issubset(set(resource.capabilities)):
+                    continue
+                if self._is_rate_limited(resource):
+                    continue
+                if not self._is_budget_available(resource):
+                    continue
+                if self._compute_status(resource) == ResourceStatus.UNREACHABLE:
+                    continue
+                candidates.append(resource)
+
+            if not candidates:
+                return None
+
+            candidates.sort(key=lambda r: r.priority)
+            best = candidates[0]
+            group = best.account_group
+            if group:
+                group_candidates = [c for c in candidates if c.account_group == group]
+                if len(group_candidates) > 1:
+                    idx = self._group_counters.get(group, 0) % len(group_candidates)
+                    best = group_candidates[idx]
+                    self._group_counters[group] = idx + 1
+            return best
 
     def record_usage(self, resource_id: str, tokens_used: int = 0, success: bool = True):
         """Record a completed LLM call."""

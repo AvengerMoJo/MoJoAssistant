@@ -237,7 +237,8 @@ class CodingAgentExecutor:
         )
 
         role_model_preference = role.get("model_preference")
-        preferred_resource_id = role.get("preferred_resource_id")
+        role_resource_requirements = role.get("resource_requirements")
+        preferred_resource_id = role.get("preferred_resource_id")  # legacy, still honored
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get("max_duration_seconds", task.resources.max_duration_seconds or 600)
 
@@ -293,19 +294,27 @@ class CodingAgentExecutor:
                 break
 
             resource = None
-            if preferred_resource_id:
+            if role_resource_requirements:
+                resource = self._rm.acquire_by_requirements(role_resource_requirements)
+                if resource is None:
+                    resource = self._rm.acquire(tier_preference=tier_preference)
+            elif preferred_resource_id:
                 resource = self._rm.acquire_by_id(preferred_resource_id)
                 if resource is None:
                     self._log(
                         f"Preferred resource '{preferred_resource_id}' unavailable, "
                         "falling back to tier selection"
                     )
-            if resource is None:
+                    resource = self._rm.acquire(tier_preference=tier_preference)
+            else:
                 resource = self._rm.acquire(tier_preference=tier_preference)
             if resource is None:
                 self._log(f"No resource available, retrying in 30s (iteration {iteration})")
                 await asyncio.sleep(30)
-                resource = self._rm.acquire_by_id(preferred_resource_id) if preferred_resource_id else None
+                if role_resource_requirements:
+                    resource = self._rm.acquire_by_requirements(role_resource_requirements)
+                elif preferred_resource_id:
+                    resource = self._rm.acquire_by_id(preferred_resource_id)
                 if resource is None:
                     resource = self._rm.acquire(tier_preference=tier_preference)
                 if resource is None:

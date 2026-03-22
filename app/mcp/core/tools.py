@@ -101,10 +101,16 @@ class ToolRegistry:
                 "on_change": None,
             },
             "resource_pool": {
-                "file": "config/llm_config.json",
-                "description": "LLM resource pool for agentic tasks — alias for 'llm' module. tier_policy, selection_strategy, and per-resource tier/priority/enabled fields live in api_models and local_models.",
-                "sensitive_keys": ["api_models.*.api_key", "api_models.*.*.api_key"],
+                "file": "config/resource_pool.json",
+                "description": "LLM resource pool — flat resources dict. Each entry: type, provider, base_url, api_key_env, model, tier, priority, context_limit. User personal accounts live in ~/.memory/config/resource_pool.json.",
+                "sensitive_keys": [],
                 "on_change": self._on_resource_pool_config_change,
+            },
+            "tool_catalog": {
+                "file": "config/tool_catalog.json",
+                "description": "Tool catalog — maps tool names to categories (memory, file, web, exec, comms). Roles declare tool_access by category. User custom tools live in ~/.memory/config/tool_catalog.json.",
+                "sensitive_keys": [],
+                "on_change": self._on_tool_catalog_change,
             },
             "agentic_tools": {
                 "file": "config/dynamic_tools.json",
@@ -1167,6 +1173,20 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
+                },
+            },
+            {
+                "name": "list_tools",
+                "description": "List all tools from the tool catalog, with category metadata. Use category filter to see tools for a specific access category (memory, file, web, exec, comms). Roles declare tool_access by category — e.g. tool_access: [\"memory\", \"web\"] grants all tools in those categories.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "description": "Filter by category: memory, file, web, exec, comms. Omit to list all tools.",
+                            "enum": ["memory", "file", "web", "exec", "comms"],
+                        }
+                    },
                 },
             },
             # Dreaming Tools
@@ -2279,6 +2299,8 @@ Agent resumes within seconds.
             return await self._execute_scheduler_daemon_status(args)
         elif name == "scheduler_list_assistant_tools":
             return await self._execute_scheduler_list_assistant_tools(args)
+        elif name == "list_tools":
+            return await self._execute_list_tools(args)
         # Dreaming Tools
         elif name == "dreaming_process":
             return await self._execute_dreaming_process(args)
@@ -3463,6 +3485,62 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    async def _execute_list_tools(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return tools from the catalog, optionally filtered by category."""
+        try:
+            from app.config.config_loader import load_layered_json_config
+            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+
+            catalog = load_layered_json_config("config/tool_catalog.json")
+            catalog_entries = catalog.get("tools", {})
+            categories_meta = catalog.get("categories", {})
+            category_filter = args.get("category")
+
+            registry = DynamicToolRegistry()
+            registry_tools = registry.list_tools()
+
+            result = []
+            # Tools from catalog (with category metadata)
+            for name, cat_entry in catalog_entries.items():
+                if not isinstance(cat_entry, dict):
+                    continue
+                category = cat_entry.get("category", "unknown")
+                if category_filter and category != category_filter:
+                    continue
+                registry_meta = registry_tools.get(name, {})
+                result.append({
+                    "name": name,
+                    "description": cat_entry.get("description") or registry_meta.get("description", ""),
+                    "danger_level": cat_entry.get("danger_level", registry_meta.get("danger_level", "low")),
+                    "category": category,
+                    "requires_auth": cat_entry.get("requires_auth", registry_meta.get("requires_auth", False)),
+                    "always_injected": cat_entry.get("always_injected", False),
+                })
+            # Tools in registry but not yet in catalog
+            if not category_filter:
+                cataloged = set(catalog_entries.keys())
+                for name, meta in registry_tools.items():
+                    if name not in cataloged:
+                        result.append({
+                            "name": name,
+                            "description": meta.get("description", ""),
+                            "danger_level": meta.get("danger_level", "low"),
+                            "category": "unknown",
+                            "requires_auth": meta.get("requires_auth", False),
+                            "always_injected": False,
+                        })
+            return {
+                "status": "success",
+                "tools": result,
+                "categories": categories_meta,
+                "usage": (
+                    "Roles declare tool_access by category (e.g. [\"memory\", \"file\"]). "
+                    "Pass explicit tool names in task config.available_tools to override."
+                ),
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     # ========================================================================
     # Dreaming Tool Executors
     # ========================================================================
@@ -4219,6 +4297,10 @@ Agent resumes within seconds.
                     executor._resource_manager.reload_config()
         except Exception:
             pass  # non-critical
+
+    def _on_tool_catalog_change(self) -> None:
+        """Hook called after tool_catalog config is modified — no in-memory state to reload."""
+        pass  # tool_catalog.json is read on each tool-resolution call; no cache to invalidate
 
     def _on_agentic_tools_change(self) -> None:
         """Hook called after agentic_tools config is modified — reloads tool registry."""

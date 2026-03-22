@@ -1512,3 +1512,575 @@ that has `"custom"` in its `tool_access`.
 - `available_tools` in task config remains as an explicit override (still works)
 - `ask_user` and `list_tools` are always present regardless of role config
 - Existing tool definitions migrate to `config/tool_catalog.json` entries
+
+
+---
+
+## 21. Character → Role → Goal: The Full Agent Protocol Stack
+
+> **Status**: Design — target v1.2.4+
+> **Problem**: Tasks are scheduled with inline system prompts, bypassing the role
+> system entirely. Characters, roles, and execution goals are conflated in a single
+> flat task config. There is no validation that a role_id is used, no urgency/importance
+> routing, and no structured way to derive agent behavior from NineChapter data.
+
+---
+
+### 21.1 The Three Layers
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: CHARACTER  (NineChapter)                       │
+│  Who the agent IS — personality, values, emotional style │
+│  Source: ~/.memory/roles/{id}.json → dimensions{}        │
+├─────────────────────────────────────────────────────────┤
+│  Layer 2: ROLE  (User Assignment)                        │
+│  What the agent DOES — intent, tools, resource class     │
+│  Source: ~/.memory/roles/{id}.json → tool_access,        │
+│           resource_requirements, behavior_rules          │
+├─────────────────────────────────────────────────────────┤
+│  Layer 3: GOAL  (MoJo Execution)                         │
+│  The specific task — resource selection, iteration       │
+│  budget, urgency/importance weighting, HITL conditions   │
+│  Source: scheduler task config                           │
+└─────────────────────────────────────────────────────────┘
+```
+
+Each layer has a single responsibility. A task scheduled with `role_id: "rebecca"`
+should need **only** `goal` + `role_id` — everything else resolves from the layers above.
+
+---
+
+### 21.2 Layer 1 — Character (NineChapter)
+
+NineChapter defines **who the agent is**. The five dimensions map directly to
+prompt sections that the executor assembles automatically:
+
+| Dimension | nine_chapter_score weight | Prompt section generated |
+|---|---|---|
+| `core_values` | 25% | `## Values` |
+| `emotional_reaction` | 20% | `## How you respond emotionally` |
+| `cognitive_style` | 25% | `## How you think` |
+| `social_orientation` | 15% | `## How you communicate` |
+| `adaptability` | 15% | `## How you handle change and uncertainty` |
+
+The `nine_chapter_score` is the **weighted average** of dimension scores using
+the weights above. It is not set manually — it is derived from the dimensions.
+
+**Validation rule**: If `nine_chapter_score` diverges from the weighted average
+by more than 5 points, `config doctor` flags it as a calibration warning.
+
+**Future**: `AgenticExecutor` assembles the character prompt from dimensions
+rather than using the raw `system_prompt` string. The `system_prompt` becomes
+an optional override for role-specific behavior (Layer 2) appended after the
+character prompt.
+
+---
+
+### 21.3 Layer 2 — Role (User Assignment)
+
+The role maps a character's intent to a concrete set of capabilities and
+operating rules. It answers: **given who this agent is, what are they here to do?**
+
+**Role schema additions (v1.2.4 target):**
+
+```json
+{
+  "id": "rebecca",
+  "name": "Rebecca",
+  "archetype": "empathetic_connector",
+  "nine_chapter_score": 95,
+  "dimensions": { ... },
+
+  "purpose": "Guide learners through thorough, evidence-based exploration...",
+
+  "tool_access": ["web", "memory"],
+  "resource_requirements": {
+    "tier": ["free_api", "free"],
+    "min_context": 65536
+  },
+
+  "behavior_rules": {
+    "exhausts_tools_before_asking": true,
+    "tool_failure_protocol": "surface_options",
+    "max_ask_user_per_task": 3,
+    "escalation_style": "concrete_options"
+  },
+
+  "hitl_conditions": {
+    "always_on_tool_failure": false,
+    "always_on_blocked": true,
+    "surface_partial_results": true
+  }
+}
+```
+
+**`behavior_rules`** encodes role-level operating policies:
+- `exhausts_tools_before_asking`: must try all available tools before surfacing
+  a question (researcher = true, assistant = false)
+- `tool_failure_protocol`: `"surface_options"` | `"skip_and_continue"` | `"fail"`
+- `escalation_style`: `"concrete_options"` = ask_user always presents choices
+
+**`hitl_conditions`** defines when the role raises to the inbox:
+- `always_on_blocked`: any tool failure that blocks progress → inbox
+- `surface_partial_results`: completed partial work is surfaced, not discarded
+
+---
+
+### 21.4 Layer 3 — Goal (MoJo Execution)
+
+The goal layer is pure execution context. It defines **this specific task**,
+not the agent's general capabilities.
+
+**Task config schema (v1.2.4 target):**
+
+```json
+{
+  "task_id": "rebecca_research_001",
+  "role_id": "rebecca",
+  "goal": "Research AutoResearch projects and analyze applicability to MoJo dreaming",
+
+  "urgency": 2,
+  "importance": 4,
+
+  "max_iterations": null,
+  "resume_on_fail": true,
+  "cron": null
+}
+```
+
+**`role_id` is required** for `task_type=assistant`. Inline `system_prompt` in
+task config is deprecated — character and behavior are resolved from the role.
+
+**`urgency`** (1–5): How time-sensitive is this task?
+- 1 = background, run when idle
+- 3 = normal, run within the hour
+- 5 = blocking, run immediately
+
+**`importance`** (1–5): How critical is the outcome?
+- 1 = nice to have
+- 3 = affects ongoing work
+- 5 = blocks a release or user action
+
+---
+
+### 21.5 Urgency × Importance → Resource and HITL Routing
+
+The scheduler resolves resources and attention level from the urgency/importance matrix:
+
+```
+importance →    1          2          3          4          5
+urgency ↓
+1             noise      noise     digest     digest     alert
+2             noise      digest    digest     alert      alert
+3             digest     digest    alert      alert     blocking
+4             digest     alert     alert     blocking   blocking
+5             alert      alert    blocking   blocking   blocking
+```
+
+**Resource tier escalation:**
+
+```
+urgency × importance score = U × I
+  ≤ 4   → free (local only)
+  5–9   → free_api (OpenRouter / Gemini free tier)
+ 10–16  → free_api preferred, paid allowed if unavailable
+ ≥ 20   → paid approved (requires prior resource_approve)
+```
+
+When `resource_requirements.tier` from the role conflicts with urgency×importance
+escalation, **escalation wins** — a high-urgency task can always use a better
+resource than the role's baseline.
+
+---
+
+### 21.6 Validation Protocol (config doctor + scheduler)
+
+**At `role_create` / `role_update`:**
+1. `nine_chapter_score` must be derivable from dimensions (±5 tolerance)
+2. `tool_access` categories must all exist in `tool_catalog.json`
+3. `resource_requirements.tier` must be valid tier strings
+4. `behavior_rules` fields validated against known keys
+
+**At `scheduler_add_task` (task_type=assistant):**
+1. `role_id` is **required** — reject tasks without it (warn with clear message)
+2. `role_id` must resolve to an existing role in `~/.memory/roles/`
+3. `urgency` and `importance` default to 3 if not provided
+4. Inline `system_prompt` in task config triggers a deprecation warning
+5. `available_tools` in task config still accepted as explicit override but logs
+   a notice that `tool_access` in the role is the preferred path
+
+**At execution time (AgenticExecutor):**
+1. Load role from `RoleManager().get(role_id)` — never from task config
+2. Assemble system prompt: character (from dimensions) + role behavior
+3. Resolve tools from `role.tool_access` → catalog → tool_defs
+4. Resolve resource from `role.resource_requirements` escalated by urgency×importance
+5. Apply `behavior_rules` to executor loop (e.g. `exhausts_tools_before_asking`)
+6. Apply `hitl_conditions` for inbox routing
+
+---
+
+### 21.7 Resume and Raise Conditions
+
+**Resume protocol:**
+- `resume_on_fail: true` → on task failure, create a new task with
+  `resume_from_task_id` pointing to the failed session
+- The resumed task inherits `role_id`, `goal`, and session history
+- Resumed tasks get the same urgency/importance as the original
+
+**Raise conditions (inbox escalation):**
+A task raises to the inbox (creates a `waiting_for_input` event) when:
+1. `ask_user` is called explicitly (always)
+2. A tool fails and `hitl_conditions.always_on_blocked = true`
+3. `max_iterations` is reached without `FINAL_ANSWER`
+4. Urgency×importance ≥ 12 and task is about to fail
+
+The inbox event includes: `role_id`, `goal` summary, what was tried,
+what blocked it, and concrete options for the user to choose from.
+
+---
+
+### 21.8 What This Fixes
+
+| Problem | Root cause | Fix |
+|---|---|---|
+| Rebecca ran with wrong tools | task scheduled without `role_id` | `role_id` required; inline prompt deprecated |
+| NineChapter score set arbitrarily | score not derived from dimensions | score = weighted average, doctor validates |
+| Resource not respecting role | `preferred_resource_id` hardcoded | urgency×importance matrix selects tier |
+| Tool failures silently looped | no `behavior_rules` | role declares `tool_failure_protocol` |
+| Character updates don't apply to running tasks | system_prompt baked in at schedule time | executor always loads from role file |
+| No urgency/importance concept | flat task priority only | `urgency` + `importance` fields + matrix |
+
+---
+
+## §22 Visual Agent Adaptor — Browser Use & Terminal Session Tools
+
+**Status:** Design (v1.3 target)  
+**Motivation:** `fetch_url` + `web_search` give agents plain text from the web.
+Real research tasks increasingly require JavaScript-rendered pages, interactive
+navigation, and terminal interaction. This section defines the architecture for
+visual/interactive tools that let agents see and act on the world the way a
+human operator would.
+
+---
+
+### 22.1 The Two Capabilities
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Tool Category: "browser"                                       │
+│                                                                 │
+│  browser_open(url)          → loads page, returns snapshot     │
+│  browser_action(action)     → click / type / scroll / submit   │
+│  browser_screenshot()       → base64 PNG of current viewport   │
+│  browser_get_text()         → rendered visible text (no HTML)  │
+│  browser_close()            → release session                  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Tool Category: "terminal"                                      │
+│                                                                 │
+│  terminal_exec(cmd)         → run command in persistent session │
+│  terminal_read()            → read current screen buffer        │
+│  terminal_send_keys(keys)   → send keystrokes (e.g. Ctrl+C)    │
+│  terminal_new_session(name) → create named tmux session        │
+│  terminal_close(name)       → destroy named session            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key difference from existing tools:**
+
+| | `fetch_url` / `bash_exec` | `browser_*` / `terminal_*` |
+|---|---|---|
+| Rendering | Raw HTTP / raw stdout | Fully rendered (JS, ANSI) |
+| State | Stateless per call | Persistent session across calls |
+| Output type | Text only | Text + optional screenshot |
+| Model requirement | Any | Vision-capable for screenshot path |
+
+---
+
+### 22.2 Tool Result Format — Visual Payload
+
+Tool results today are `Dict[str, Any]` — plain JSON. Visual tools extend this
+with an optional `visual` field:
+
+```json
+{
+  "success": true,
+  "text": "rendered visible text of the page or terminal buffer",
+  "visual": {
+    "type": "screenshot",
+    "format": "png",
+    "data": "<base64>",
+    "width": 1280,
+    "height": 720
+  },
+  "metadata": {
+    "url": "https://...",
+    "title": "Page title",
+    "session_id": "browser-abc123"
+  }
+}
+```
+
+The `visual` field is **optional and model-gated**: the executor checks whether
+the assigned LLM resource has `capabilities: ["vision"]` before including it.
+Non-vision models receive only the `text` field — graceful degradation.
+
+---
+
+### 22.3 Model Capability Gating
+
+Visual tool results must be routed to a vision-capable model. The executor
+applies capability gating at two points:
+
+**At tool-result assembly (AgenticExecutor):**
+```python
+def _format_tool_result(self, result: dict, resource: LLMResource) -> dict:
+    if "vision" not in resource.capabilities:
+        result = {k: v for k, v in result.items() if k != "visual"}
+    return result
+```
+
+**At resource acquisition (ResourceManager.acquire_by_requirements):**
+Roles that use `tool_access: ["browser"]` or `tool_access: ["terminal"]`
+automatically inherit `capabilities: ["vision"]` in their effective requirements:
+
+```json
+{
+  "resource_requirements": {
+    "tier": ["free_api", "paid"],
+    "min_context": 32768,
+    "capabilities": ["vision"]
+  },
+  "tool_access": ["browser", "memory"]
+}
+```
+
+If no vision-capable resource is available, the executor falls back to
+text-only mode and logs a notice. The agent still runs — it just won't see
+screenshots.
+
+---
+
+### 22.4 Browser Tool — Implementation Design
+
+**Backend:** [Playwright](https://playwright.dev/python/) (async, handles
+Chromium/Firefox/WebKit, first-class headless support).
+
+**Session model:** one Playwright `Browser` instance per scheduler worker,
+with per-task `BrowserContext` (isolated cookies/storage). Tasks share the
+browser process but not sessions.
+
+```
+Scheduler worker
+└── PlaywrightBrowserPool
+    ├── BrowserContext [task-abc]  → Page (current)
+    ├── BrowserContext [task-def]  → Page (current)
+    └── ...
+```
+
+**Tool executor registration:**
+```python
+# dynamic_tool_registry.py — new builtin block
+elif name == "browser_open":
+    return await self._browser_open(args)
+elif name == "browser_action":
+    return await self._browser_action(args)
+elif name == "browser_screenshot":
+    return await self._browser_screenshot(args)
+elif name == "browser_get_text":
+    return await self._browser_get_text(args)
+elif name == "browser_close":
+    return await self._browser_close(args)
+```
+
+**`browser_open` result (vision model):**
+```json
+{
+  "success": true,
+  "text": "OpenAI — ChatGPT ...",
+  "visual": { "type": "screenshot", "format": "png", "data": "...", ... },
+  "metadata": { "url": "https://openai.com", "title": "OpenAI", "session_id": "ctx-123" }
+}
+```
+
+**`browser_action` schema:**
+```json
+{
+  "action": "click | type | scroll | press | navigate | back | forward",
+  "selector": "CSS selector or text (for click/type)",
+  "text": "text to type (for type action)",
+  "key": "Enter | Escape | Tab | ... (for press action)",
+  "delta_y": 500
+}
+```
+
+---
+
+### 22.5 Terminal Tool — Implementation Design
+
+**Backend:** `asyncio` subprocess + `pexpect` or direct `pty` + tmux for
+named persistent sessions. Each task that calls `terminal_new_session(name)`
+gets a `tmux new-session -d -s <name>` instance. `terminal_exec` sends
+commands via `tmux send-keys` and reads back via `tmux capture-pane`.
+
+**ANSI rendering:** Terminal output contains ANSI escape sequences. Two output
+modes:
+1. **Raw ANSI** — passed as-is when the model receives `text` only (agents
+   can parse colour codes for signal)
+2. **Screenshot** (future) — render terminal to PNG via `ttyd` / `svg-term`
+   for vision models
+
+**Session lifecycle:**
+- Created on first `terminal_exec` if no session exists (implicit creation)
+- Named sessions persist across task iterations (state survives LLM turn)
+- Session is destroyed on task completion or explicit `terminal_close`
+
+**Security:** `terminal_exec` applies the same command whitelist as `bash_exec`
+for `danger_level: medium` calls. Unrestricted shell access requires
+`danger_level: high` + `requires_auth: true`.
+
+---
+
+### 22.6 Tool Catalog Additions
+
+```json
+{
+  "browser_open":       { "category": "browser", "danger_level": "low" },
+  "browser_action":     { "category": "browser", "danger_level": "medium" },
+  "browser_screenshot": { "category": "browser", "danger_level": "low" },
+  "browser_get_text":   { "category": "browser", "danger_level": "low" },
+  "browser_close":      { "category": "browser", "danger_level": "low" },
+  "terminal_exec":      { "category": "terminal", "danger_level": "medium" },
+  "terminal_read":      { "category": "terminal", "danger_level": "low" },
+  "terminal_send_keys": { "category": "terminal", "danger_level": "medium" },
+  "terminal_new_session":{ "category": "terminal", "danger_level": "low" },
+  "terminal_close":     { "category": "terminal", "danger_level": "low" }
+}
+```
+
+Categories in `tool_catalog.json`:
+```json
+"browser":  { "description": "Headless browser — render pages, interact, screenshot" },
+"terminal": { "description": "Persistent terminal sessions via tmux — run commands, read output" }
+```
+
+---
+
+### 22.7 Role Examples
+
+**Visual researcher role:**
+```json
+{
+  "id": "visual_researcher",
+  "tool_access": ["browser", "web", "memory"],
+  "resource_requirements": {
+    "tier": ["free_api", "paid"],
+    "min_context": 65536,
+    "capabilities": ["vision"]
+  }
+}
+```
+
+**DevOps agent role:**
+```json
+{
+  "id": "devops_agent",
+  "tool_access": ["terminal", "file", "memory"],
+  "resource_requirements": {
+    "tier": ["free_api", "paid"],
+    "min_context": 32768,
+    "capabilities": []
+  }
+}
+```
+
+**Full computer-use role (terminal + browser):**
+```json
+{
+  "id": "computer_use",
+  "tool_access": ["browser", "terminal", "file", "web", "memory"],
+  "resource_requirements": {
+    "tier": ["paid"],
+    "min_context": 65536,
+    "capabilities": ["vision"]
+  }
+}
+```
+
+---
+
+### 22.8 Degradation Tiers
+
+When the ideal resource is unavailable, the executor degrades gracefully:
+
+```
+Vision model available
+  → Send screenshot + text in tool results (full visual mode)
+
+No vision model, text model available
+  → Send text only; skip screenshot field (text degraded mode)
+  → Agent still works, loses visual context
+
+No model available
+  → Task waits for resource (existing resource pool retry logic)
+```
+
+The degradation tier is logged and surfaced in the task session metadata:
+`"visual_mode": "full" | "text_only" | "unavailable"`.
+
+---
+
+### 22.9 Dependency Requirements
+
+```
+# For browser tools:
+playwright>=1.40.0          # async browser automation
+# Run once after install:
+# playwright install chromium
+
+# For terminal tools:
+# tmux — system package (apt/brew install tmux)
+# No additional Python deps; uses asyncio subprocess
+```
+
+Both are **optional** — the registry gracefully skips tool registration if
+Playwright is not installed, and logs a clear startup notice:
+```
+[WARNING] browser tools disabled — install playwright: pip install playwright && playwright install chromium
+[WARNING] terminal tools disabled — tmux not found: apt install tmux
+```
+
+---
+
+### 22.10 Implementation Sequence (v1.3)
+
+1. **Add `browser` + `terminal` categories to `tool_catalog.json`**
+2. **Add `capabilities` field to `LLMResource`** ✓ (done in v1.2.3)
+3. **Implement `PlaywrightBrowserPool`** in `app/scheduler/browser_pool.py`
+4. **Implement `TerminalSessionPool`** in `app/scheduler/terminal_pool.py`
+5. **Register browser/terminal builtins** in `_register_builtins()` (with
+   graceful skip if deps missing)
+6. **Add `_format_tool_result` capability gating** in `AgenticExecutor`
+7. **Add `visual_mode` to task session metadata**
+8. **Update `acquire_by_requirements`** to auto-add `vision` capability
+   requirement when role uses `browser` tool_access
+9. **Create `visual_researcher` and `devops_agent` roles**
+10. **Update `config doctor`** to validate `capabilities` in resource pool
+
+---
+
+### 22.11 What This Unlocks
+
+| Before | After |
+|---|---|
+| Agent reads raw HTML (often broken JS sites) | Agent sees rendered page like a human |
+| Agent runs one-shot bash commands | Agent maintains a persistent shell session |
+| Research limited to Google snippets + raw text | Agent navigates GitHub, docs sites, SPAs |
+| No visual confirmation of tool actions | Agent can screenshot-verify its own actions |
+| Terminal-based tools require human to relay output | Agent reads tmux buffer directly |
+
+The browser + terminal adaptor is the foundation for **autonomous computer
+use** inside MoJo's agent framework — enabling roles that can self-direct
+multi-step workflows without human relay at each step.
