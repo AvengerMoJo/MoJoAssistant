@@ -100,6 +100,43 @@ every agent behavior enforceable, and every interaction remembered.
 - Dreaming LLM identifies patterns: "Ahman always needs subnet clarification"
   → becomes a role-level hint injected into future task prompts
 
+**4. Task session compaction — Long sessions become retrievable knowledge**
+
+Problem: Long-running agent tasks (coding agents, research tasks) accumulate raw
+session logs of 500K+ characters. Reading them raw is impractical; they are too
+large to pass to any LLM context and too unstructured for retrieval.
+
+Design:
+- After `task_completed` or `task_failed`, a background compaction job runs on the
+  raw session log (`~/.memory/task_sessions/<task_id>.json`)
+- Chunking pass: session log split into semantic chunks (by iteration boundary or
+  ~2K token windows)
+- Local LLM summarization: each chunk condensed to key facts; chunks merged into a
+  single structured `task_summary` record:
+  ```json
+  {
+    "type": "task_summary",
+    "task_id": "popo_kingsum_admin_flutter_plan_001",
+    "role": "popo",
+    "goal": "...",
+    "approach_summary": "...",
+    "key_decisions": [...],
+    "artifacts_created": ["KingSum2E/docs/FLUTTER_ADMIN_APP.md"],
+    "outcome": "completed",
+    "error": null,
+    "iterations": 3,
+    "compacted_at": "2026-03-22T..."
+  }
+  ```
+- Stored in archival memory — surfaces via `search_memory()`
+- `get_context(type="task_session")` returns the compacted summary by default;
+  `full=true` returns the raw session log for debugging
+- Raw session log kept on disk permanently (audit trail), never purged
+
+**Files:** New `app/dreaming/session_compactor.py`,
+`app/scheduler/core.py` (trigger compaction on task completion),
+`app/mcp/core/tools.py` (`task_session` read — summary vs full mode)
+
 ## v1.2.5-beta
 PII classification + sanitization layer. Pattern-based scanner flags
 sensitive data before it crosses a boundary. Configurable per role:
@@ -350,6 +387,7 @@ text and loses its typed structure before dreaming can see it.
 | Tool registry catalog + list_tools() discovery | Agents discover tools at runtime, users add custom tools | v1.2.3 |
 | Data boundary enforcement | Data flows | v1.2.4 |
 | Audit trail | Accountability | v1.2.4 |
+| Task session compaction (chunking + local LLM summary) | Long session retrievability | v1.2.4 |
 | PII classification | Sensitive data leakage | v1.2.5 |
 | Sanitization layer | External exposure | v1.2.5 |
 | Infrastructure routing | Reachability | v1.2.6 |

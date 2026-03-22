@@ -3956,10 +3956,18 @@ Agent resumes within seconds.
                 "created_at": e.get("timestamp"),
             }
 
-            # For waiting_for_input events, attach reply guidance
+            # For waiting_for_input events, attach reply guidance — but skip if
+            # the task is no longer actually waiting (completed/failed/cancelled).
             if event_type == "task_waiting_for_input":
                 task_id = data.get("task_id")
                 if task_id:
+                    try:
+                        from app.scheduler.models import TaskStatus
+                        task = self.scheduler.get_task(task_id)
+                        if task and task.status != TaskStatus.WAITING_FOR_INPUT:
+                            continue  # task resolved — drop stale blocking item
+                    except Exception:
+                        pass  # can't check status → show the item to be safe
                     item["reply_with"] = "reply_to_task"
                     item["task_id"] = task_id
                 question = data.get("question") or data.get("pending_question")
