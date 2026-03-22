@@ -5039,10 +5039,11 @@ Agent resumes within seconds.
         HELP = {
             "tool": "dream",
             "actions": {
-                "process": "Run dreaming pipeline — params: conversation_id, quality?",
-                "list":    "List dreaming archives",
-                "get":     "Retrieve archive — params: conversation_id, version?",
-                "upgrade": "Quality upgrade — params: conversation_id, target_quality",
+                "process":        "Run dreaming pipeline — params: conversation_id, quality?",
+                "list":           "List dreaming archives",
+                "get":            "Retrieve archive — params: conversation_id, version?",
+                "upgrade":        "Quality upgrade — params: conversation_id, target_quality",
+                "distill_inbox":  "Run inbox distillation for a date — params: date? (YYYY-MM-DD, default yesterday)",
             },
             "example": 'dream(action="list")',
         }
@@ -5076,8 +5077,36 @@ Agent resumes within seconds.
                 "conversation_id": args["conversation_id"],
                 "target_quality": args["target_quality"],
             })
+        elif action == "distill_inbox":
+            return await self._execute_dreaming_distill_inbox(args)
         else:
             return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_dreaming_distill_inbox(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run inbox distillation for a given date (default: yesterday)."""
+        from datetime import date, timedelta
+        try:
+            from app.dreaming.inbox_distillation import run_inbox_distillation
+            from app.scheduler.executor import TaskExecutor
+
+            date_str = args.get("date")
+            if date_str:
+                target_date = date.fromisoformat(date_str)
+            else:
+                target_date = date.today() - timedelta(days=1)
+
+            quality = args.get("quality", "basic")
+            executor = TaskExecutor()
+            pipeline = executor._get_dreaming_pipeline(quality)
+            result = await run_inbox_distillation(
+                target_date=target_date,
+                event_log=self._event_log,
+                pipeline=pipeline,
+                quality_level=quality,
+            )
+            return {"status": "success", "date": target_date.isoformat(), "result": result}
+        except Exception as e:
+            return {"status": "error", "message": f"Inbox distillation failed: {e}"}
 
     async def _execute_agent_hub(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Agent hub dispatcher."""

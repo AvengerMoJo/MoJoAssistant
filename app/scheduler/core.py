@@ -491,23 +491,32 @@ class Scheduler:
 
             dreaming_task_id = f"dreaming_agentic_{task.id}"
 
+            # Use session_compactor for better serialization and structured storage
+            try:
+                from app.dreaming.session_compactor import build_session_text
+                compacted_text = build_session_text(task.id)
+                if compacted_text:
+                    conversation_text = compacted_text
+            except Exception:
+                pass  # fall back to the naive serialization already in conversation_text
+
             dreaming_task = Task(
                 id=dreaming_task_id,
                 type=TaskType.DREAMING,
                 priority=TaskPriority.LOW,
                 config={
-                    "conversation_id": f"agentic_{task.id}",
+                    "conversation_id": f"sessions/session_{task.id}",
                     "conversation_text": conversation_text,
                     "quality_level": "basic",
                     "metadata": {
-                        "source": "agentic_task",
+                        "source": "session_compaction",
                         "original_task_id": task.id,
                         "goal": goal,
                         "final_answer": final_answer[:500] if final_answer else None,
                         "message_count": iterations,
                     },
                 },
-                description=f"Dreaming consolidation for agentic task {task.id}",
+                description=f"Session compaction for task {task.id}",
                 created_by="system",
             )
 
