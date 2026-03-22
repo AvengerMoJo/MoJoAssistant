@@ -3215,8 +3215,29 @@ Agent resumes within seconds.
             if schedule_str:
                 schedule = datetime.fromisoformat(schedule_str)
 
-            # Setup-time ceiling: validate available_tools against role policy
+            # §21 enforcement — role_id required for assistant tasks
             role_id = config.get("role_id") if isinstance(config, dict) else None
+            if task_type_str == "assistant":
+                inline_prompt = config.get("system_prompt") if isinstance(config, dict) else None
+                if inline_prompt:
+                    return {
+                        "status": "error",
+                        "message": (
+                            "§21 violation: inline system_prompt is not allowed for assistant tasks. "
+                            "Create a role with role_create and pass role_id instead. "
+                            "Use role_list to see existing roles."
+                        ),
+                    }
+                if not role_id:
+                    return {
+                        "status": "error",
+                        "message": (
+                            "§21 violation: role_id is required for assistant tasks. "
+                            "Use role_list to see available roles, or role_create to make a new one."
+                        ),
+                    }
+
+            # Setup-time ceiling: validate available_tools against role policy
             available_tools = config.get("available_tools", []) if isinstance(config, dict) else []
             if role_id and available_tools:
                 from app.roles.role_manager import RoleManager
