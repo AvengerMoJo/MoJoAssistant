@@ -65,10 +65,40 @@ without hardcoding either in role profiles or task configs.
 - `list_tools()` meta-tool always injected — agent discovers full catalog at runtime
 - `ask_user` always injected — agent escalates blockers without being told to in the prompt
 
-## v1.2.4-beta
-Data boundary enforcement + audit trail. Policy-backed protection for
-local-only data flows. Every external resource call logged with task_id,
-resource type, and token count.
+## v1.2.4-beta — LOCKED SCOPE
+**Theme: Trust Layer — Know Exactly What Your Agent Did**
+
+Capability is table stakes. The differentiator is trust. When a user can open
+an audit log and see exactly what crossed their local boundary — task by task,
+tool by tool — that's a guarantee no cloud-first agent can make by design.
+Their architecture requires the data to leave. Ours doesn't.
+
+This release makes MoJoAssistant *auditable*: every external call logged,
+every agent behavior enforceable, and every interaction remembered.
+
+**1. §21 enforcement — Role ID required, behavior_rules active**
+- `role_id` required at `scheduler_add_task` — inline `system_prompt` rejected
+- `behavior_rules.exhausts_tools_before_asking` enforced in `AgenticExecutor`
+  (fixes the Rebecca ask_user loop: agent must try all tools before surfacing a question)
+- `urgency` + `importance` fields on tasks, matrix drives attention level routing
+- `config doctor` validates `nine_chapter_score` derivation from dimensions
+
+**2. Audit trail — Every external boundary crossing logged**
+- Every call to a non-local resource (any `tier != "free"`) logged with:
+  `task_id`, `role_id`, `resource_id`, `resource_type`, timestamp, token count
+  (content never logged — metadata only)
+- New MCP tool `audit_get(task_id?)` — shows what external resources a task touched
+- Stored in `~/.memory/audit_log.jsonl` (append-only, never purged)
+- MCP client shows audit summary in `get_context(type="orientation")`
+
+**3. Inbox → Dreaming distillation — Interactions become institutional knowledge**
+- New dreaming pipeline stage runs nightly on the previous day's EventLog
+- Pairs `task_waiting_for_input` + `task_completed` events by `task_id`
+- Extracts: role, problem, context at time, resolution, outcome
+- Produces structured `resolved_interaction` memory units stored in archival memory
+- Surfaces automatically via `search_memory()` — agents learn from past resolutions
+- Dreaming LLM identifies patterns: "Ahman always needs subnet clarification"
+  → becomes a role-level hint injected into future task prompts
 
 ## v1.2.5-beta
 PII classification + sanitization layer. Pattern-based scanner flags
@@ -80,10 +110,26 @@ Infrastructure routing + Policy Enforcement Agent. High-priority events
 reach the user even when no MCP client is open. Policy Agent subscribes
 to the inbox event stream and can block operations before execution.
 
+## v1.2.5-beta
+Terminal tools + HttpAgentExecutor — complete the computer-use story and open
+the agent workforce.
+
+- **Terminal tools** — `terminal_exec`, `terminal_read` via persistent tmux sessions.
+  Agents can run commands, see live output, maintain shell state across iterations.
+- **HttpAgentExecutor** — drive ZeroClaw and other HTTP agents via MAP protocol (§17/§18).
+  Design is complete; code is ~300 lines. One config entry per agent in the fleet.
+- **Hybrid memory search** — BM25 + embedding for research roles. Rebecca finds
+  structural/domain connections that pure semantic similarity misses.
+
 ## v1.2.x → v1.3.0 graduation
-v1.3.0 releases when the catalog architecture (v1.2.3) and the base policy
-layer (data boundary + PII + policy enforcement) are solid enough to call
-"production-grade agentic safety". No version jump until the foundation is real.
+v1.3.0 releases when:
+1. **Trust layer is real** (v1.2.4): audit trail, §21 enforcement, inbox distillation
+2. **Computer-use is complete** (v1.2.5): browser + terminal + external agents
+3. **Safety foundation holds** (v1.2.6): PII classification, data boundary enforcement
+
+The graduation promise: a user can run MoJoAssistant with agents touching real
+data, point to the audit log, and say "here is exactly what left my device and
+when — and here is proof nothing else did."
 
 ---
 
