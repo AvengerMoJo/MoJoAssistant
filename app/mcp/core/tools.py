@@ -1411,7 +1411,7 @@ class ToolRegistry:
                 "name": "scheduler",
                 "description": (
                     "Scheduler management hub. Call with no action for help menu.\n\n"
-                    "action='add',    task_id, type, goal, ...   — schedule a task\n"
+                    "action='add',    task_id, type, goal, role_id?, available_tools?, ... — schedule a task\n"
                     "action='list',   status?, priority?, limit? — list tasks\n"
                     "action='get',    task_id                    — task detail\n"
                     "action='remove', task_id                    — remove a task\n"
@@ -1431,7 +1431,16 @@ class ToolRegistry:
                         "goal": {"type": "string", "description": "Task goal (add action)."},
                         "cron": {"type": "string", "description": "Cron expression (add action)."},
                         "priority": {"type": "string", "enum": ["low", "normal", "high"]},
-                        "role_id": {"type": "string", "description": "Role for assistant tasks."},
+                        "role_id": {"type": "string", "description": "Role for assistant tasks (add action)."},
+                        "available_tools": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Tools the assistant may use (add action, type='assistant'). Call action='list_tools' to see all available tool names. If omitted the assistant only has ask_user.",
+                        },
+                        "max_iterations": {
+                            "type": "integer",
+                            "description": "Max think-act iterations before the task fails (add action, default 10).",
+                        },
                         "status": {"type": "string", "description": "Filter by status (list action)."},
                         "limit": {"type": "integer"},
                         "before_date": {"type": "string", "description": "ISO date for purge cutoff."},
@@ -5039,6 +5048,10 @@ Agent resumes within seconds.
                 config["goal"] = add_args["goal"]
             if add_args.get("role_id") and "role_id" not in config:
                 config["role_id"] = add_args["role_id"]
+            if add_args.get("available_tools") and "available_tools" not in config:
+                config["available_tools"] = add_args["available_tools"]
+            if add_args.get("max_iterations") and "max_iterations" not in config:
+                config["max_iterations"] = add_args["max_iterations"]
             add_args["config"] = config
             return await self._execute_scheduler_add_task(add_args)
         elif action == "list":
