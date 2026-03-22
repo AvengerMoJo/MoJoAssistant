@@ -3296,6 +3296,10 @@ Agent resumes within seconds.
                     }
 
             # Create task
+            # max_iterations can come from config (hub shorthand) or resources dict
+            if isinstance(config, dict) and "max_iterations" in config:
+                resources_dict = dict(resources_dict) if isinstance(resources_dict, dict) else {}
+                resources_dict.setdefault("max_iterations", config["max_iterations"])
             resources = (
                 TaskResources.from_dict(resources_dict)
                 if isinstance(resources_dict, dict)
