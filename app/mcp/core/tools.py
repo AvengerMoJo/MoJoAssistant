@@ -208,6 +208,7 @@ class ToolRegistry:
             "resource_pool_approve",
             "resource_pool_revoke",
             "resource_pool_smoke_test",
+            "audit_get",
             "role_design_start",
             "role_design_answer",
             "role_create",
@@ -1774,6 +1775,25 @@ class ToolRegistry:
             },
             # Resource Pool Tools
             {
+                "name": "audit_get",
+                "description": "Show the audit trail of external LLM boundary crossings — every call to a non-local resource (free_api, paid) logged with task_id, role_id, resource_id, tier, model, and token counts. Content is never logged. Use task_id to filter to a specific task.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "Filter to a specific task. Omit to see all recent crossings.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max records to return (default 50).",
+                            "default": 50,
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
                 "name": "resource_pool_status",
                 "description": "Get the status of all LLM resources in the resource pool. Shows model, tier, priority, availability status, and usage statistics for each resource. Use this to monitor resource health and utilization for agentic tasks.",
                 "inputSchema": {
@@ -2329,6 +2349,9 @@ Agent resumes within seconds.
             return await self._execute_scheduler_resume_task(args)
         elif name == "reply_to_task":
             return await self._execute_reply_to_task(args)
+        # Audit Trail
+        elif name == "audit_get":
+            return await self._execute_audit_get(args)
         # Resource Pool Tools
         elif name == "resource_pool_status":
             return await self._execute_resource_pool_status(args)
@@ -2521,6 +2544,26 @@ Agent resumes within seconds.
                 response["task_sessions"] = sessions
         except Exception:
             pass  # never let task_sessions errors break context
+
+        # Audit summary — show recent external boundary crossings if any exist
+        try:
+            from app.mcp.adapters.audit_log import get as _audit_get
+            recent = _audit_get(limit=10)
+            if recent:
+                by_tier = {}
+                total_tokens = 0
+                for r in recent:
+                    t = r.get("tier", "unknown")
+                    by_tier[t] = by_tier.get(t, 0) + 1
+                    total_tokens += r.get("tokens_total", 0)
+                response["audit_summary"] = {
+                    "recent_external_calls": len(recent),
+                    "calls_by_tier": by_tier,
+                    "total_tokens": total_tokens,
+                    "note": "Call audit_get() for full details.",
+                }
+        except Exception:
+            pass  # never let audit errors break context
 
         return response
 
@@ -3192,8 +3235,29 @@ Agent resumes within seconds.
             if schedule_str:
                 schedule = datetime.fromisoformat(schedule_str)
 
-            # Setup-time ceiling: validate available_tools against role policy
+            # §21 enforcement — role_id required for assistant tasks
             role_id = config.get("role_id") if isinstance(config, dict) else None
+            if task_type_str == "assistant":
+                inline_prompt = config.get("system_prompt") if isinstance(config, dict) else None
+                if inline_prompt:
+                    return {
+                        "status": "error",
+                        "message": (
+                            "§21 violation: inline system_prompt is not allowed for assistant tasks. "
+                            "Create a role with role_create and pass role_id instead. "
+                            "Use role_list to see existing roles."
+                        ),
+                    }
+                if not role_id:
+                    return {
+                        "status": "error",
+                        "message": (
+                            "§21 violation: role_id is required for assistant tasks. "
+                            "Use role_list to see available roles, or role_create to make a new one."
+                        ),
+                    }
+
+            # Setup-time ceiling: validate available_tools against role policy
             available_tools = config.get("available_tools", []) if isinstance(config, dict) else []
             if role_id and available_tools:
                 from app.roles.role_manager import RoleManager
@@ -3956,10 +4020,18 @@ Agent resumes within seconds.
                 "created_at": e.get("timestamp"),
             }
 
-            # For waiting_for_input events, attach reply guidance
+            # For waiting_for_input events, attach reply guidance — but skip if
+            # the task is no longer actually waiting (completed/failed/cancelled).
             if event_type == "task_waiting_for_input":
                 task_id = data.get("task_id")
                 if task_id:
+                    try:
+                        from app.scheduler.models import TaskStatus
+                        task = self.scheduler.get_task(task_id)
+                        if task and task.status != TaskStatus.WAITING_FOR_INPUT:
+                            continue  # task resolved — drop stale blocking item
+                    except Exception:
+                        pass  # can't check status → show the item to be safe
                     item["reply_with"] = "reply_to_task"
                     item["task_id"] = task_id
                 question = data.get("question") or data.get("pending_question")
@@ -4012,6 +4084,32 @@ Agent resumes within seconds.
             return data
         except Exception as e:
             return {"status": "error", "message": f"Config doctor failed: {e}"}
+
+    async def _execute_audit_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return audit records of external boundary crossings."""
+        try:
+            from app.mcp.adapters.audit_log import get as _audit_get
+            task_id = args.get("task_id")
+            limit = int(args.get("limit", 50))
+            records = _audit_get(task_id=task_id, limit=limit)
+
+            # Summarise token totals
+            total_tokens = sum(r.get("tokens_total", 0) for r in records)
+            by_tier = {}
+            for r in records:
+                t = r.get("tier", "unknown")
+                by_tier[t] = by_tier.get(t, 0) + 1
+
+            return {
+                "status": "success",
+                "filter_task_id": task_id,
+                "record_count": len(records),
+                "total_tokens": total_tokens,
+                "calls_by_tier": by_tier,
+                "records": records,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"audit_get failed: {e}"}
 
     async def _execute_resource_pool_status(
         self, args: Dict[str, Any]
@@ -4961,10 +5059,11 @@ Agent resumes within seconds.
         HELP = {
             "tool": "dream",
             "actions": {
-                "process": "Run dreaming pipeline — params: conversation_id, quality?",
-                "list":    "List dreaming archives",
-                "get":     "Retrieve archive — params: conversation_id, version?",
-                "upgrade": "Quality upgrade — params: conversation_id, target_quality",
+                "process":        "Run dreaming pipeline — params: conversation_id, quality?",
+                "list":           "List dreaming archives",
+                "get":            "Retrieve archive — params: conversation_id, version?",
+                "upgrade":        "Quality upgrade — params: conversation_id, target_quality",
+                "distill_inbox":  "Run inbox distillation for a date — params: date? (YYYY-MM-DD, default yesterday)",
             },
             "example": 'dream(action="list")',
         }
@@ -4998,8 +5097,36 @@ Agent resumes within seconds.
                 "conversation_id": args["conversation_id"],
                 "target_quality": args["target_quality"],
             })
+        elif action == "distill_inbox":
+            return await self._execute_dreaming_distill_inbox(args)
         else:
             return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_dreaming_distill_inbox(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run inbox distillation for a given date (default: yesterday)."""
+        from datetime import date, timedelta
+        try:
+            from app.dreaming.inbox_distillation import run_inbox_distillation
+            from app.scheduler.executor import TaskExecutor
+
+            date_str = args.get("date")
+            if date_str:
+                target_date = date.fromisoformat(date_str)
+            else:
+                target_date = date.today() - timedelta(days=1)
+
+            quality = args.get("quality", "basic")
+            executor = TaskExecutor()
+            pipeline = executor._get_dreaming_pipeline(quality)
+            result = await run_inbox_distillation(
+                target_date=target_date,
+                event_log=self._event_log,
+                pipeline=pipeline,
+                quality_level=quality,
+            )
+            return {"status": "success", "date": target_date.isoformat(), "result": result}
+        except Exception as e:
+            return {"status": "error", "message": f"Inbox distillation failed: {e}"}
 
     async def _execute_agent_hub(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Agent hub dispatcher."""

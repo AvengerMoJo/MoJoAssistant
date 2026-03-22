@@ -152,6 +152,8 @@ class AgenticExecutor:
         """
         # Per-execution state for ask_user
         self._waiting_for_input_question: Optional[str] = None
+        self._tool_calls_made: int = 0          # non-ask_user tool calls this execution
+        self._exhausts_tools_before_asking: bool = False
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -166,6 +168,12 @@ class AgenticExecutor:
         role_id = config.get("role_id")
         from app.scheduler.policy_monitor import PolicyMonitor
         self._policy_monitor = PolicyMonitor(role_id=None, policy=None)
+        if not role_id:
+            self._log(
+                f"DEPRECATION: assistant task {task.id} has no role_id. "
+                "Assign a role via role_id — tasks without a role will be rejected in a future release.",
+                level="warning",
+            )
         if role_id:
             try:
                 from app.roles.role_manager import RoleManager
@@ -175,6 +183,10 @@ class AgenticExecutor:
                     role_model_preference = role.get("model_preference")
                     self._policy_monitor = PolicyMonitor.from_role(role_id, role)
                     self._log(f"Loaded role: {role.get('name')} (id={role_id})")
+                    behavior_rules = role.get("behavior_rules", {})
+                    self._exhausts_tools_before_asking = behavior_rules.get(
+                        "exhausts_tools_before_asking", False
+                    )
                 else:
                     self._log(f"Role '{role_id}' not found — continuing without role")
             except Exception as e:
@@ -201,6 +213,13 @@ class AgenticExecutor:
                 f"Using planning prompt: {planning_prompt_name} v{planning_prompt.version}"
             )
         else:
+            if config.get("system_prompt") and not role_id:
+                self._log(
+                    f"DEPRECATION: task {task.id} uses inline system_prompt without role_id. "
+                    "Create a role with role_create and pass role_id instead. "
+                    "Inline system_prompt will be rejected in a future release.",
+                    level="warning",
+                )
             workflow_prompt = config.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
             self._log(
                 f"Using default system prompt (no planning prompt found: {planning_prompt_name})"
@@ -254,6 +273,7 @@ class AgenticExecutor:
             enabled_tool_names = ["memory_search"]
         if "ask_user" not in enabled_tool_names:
             enabled_tool_names = list(enabled_tool_names) + ["ask_user"]
+        self._enabled_tool_names = enabled_tool_names  # available to _execute_tool_call
         tool_defs = []
 
         for tool_name in enabled_tool_names:
@@ -407,6 +427,24 @@ class AgenticExecutor:
                     model_override=role_model_preference,
                 )
                 self._rm.record_usage(resource.id, success=True)
+                # Audit trail — log every non-free external boundary crossing
+                if resource.tier.value != "free":
+                    try:
+                        from app.mcp.adapters.audit_log import append as _audit_append
+                        usage = response.get("usage") or {}
+                        _audit_append(
+                            task_id=task.id,
+                            role_id=role_id,
+                            resource_id=resource.id,
+                            resource_type=resource.type,
+                            tier=resource.tier.value,
+                            model=response.get("_selected_model", resource.model),
+                            tokens_in=usage.get("prompt_tokens", 0),
+                            tokens_out=usage.get("completion_tokens", 0),
+                            tokens_total=usage.get("total_tokens", 0),
+                        )
+                    except Exception:
+                        pass  # audit logging must never break task execution
             except Exception as e:
                 self._rm.record_usage(resource.id, success=False)
                 self._log(f"LLM call failed: {e}", "error")
@@ -825,6 +863,21 @@ class AgenticExecutor:
 
         # Handle ask_user: pause execution and wait for user reply
         if name == "ask_user":
+            # Enforce behavior_rules.exhausts_tools_before_asking — agent must
+            # attempt at least one other tool before escalating to the user.
+            if self._exhausts_tools_before_asking and self._tool_calls_made == 0:
+                available = [
+                    t for t in getattr(self, "_enabled_tool_names", [])
+                    if t != "ask_user"
+                ]
+                hint = f" Try one of: {available}." if available else ""
+                return {
+                    "error": (
+                        "behavior_rules.exhausts_tools_before_asking is active. "
+                        "You must attempt at least one other tool before asking the user."
+                        + hint
+                    )
+                }
             question = args.get("question", "")
             choices = args.get("choices")
             self._waiting_for_input_question = question
@@ -832,6 +885,9 @@ class AgenticExecutor:
             if choices:
                 result_msg += f" (choices: {choices})"
             return {"success": True, "message": result_msg}
+
+        # Count non-ask_user tool calls for behavior_rules enforcement
+        self._tool_calls_made += 1
 
         # Try dynamic registry first
         try:
