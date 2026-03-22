@@ -2545,6 +2545,26 @@ Agent resumes within seconds.
         except Exception:
             pass  # never let task_sessions errors break context
 
+        # Audit summary — show recent external boundary crossings if any exist
+        try:
+            from app.mcp.adapters.audit_log import get as _audit_get
+            recent = _audit_get(limit=10)
+            if recent:
+                by_tier = {}
+                total_tokens = 0
+                for r in recent:
+                    t = r.get("tier", "unknown")
+                    by_tier[t] = by_tier.get(t, 0) + 1
+                    total_tokens += r.get("tokens_total", 0)
+                response["audit_summary"] = {
+                    "recent_external_calls": len(recent),
+                    "calls_by_tier": by_tier,
+                    "total_tokens": total_tokens,
+                    "note": "Call audit_get() for full details.",
+                }
+        except Exception:
+            pass  # never let audit errors break context
+
         return response
 
     async def _execute_search_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:

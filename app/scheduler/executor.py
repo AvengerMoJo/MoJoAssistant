@@ -183,16 +183,38 @@ class TaskExecutor:
             if results.get("status") == "success":
                 archive = results["stages"]["D_archive"]
                 archive_path = archive.get("storage_location") or archive.get("path", "")
+                metrics = {
+                    "b_chunks_count": results["stages"]["B_chunks"]["count"],
+                    "c_clusters_count": results["stages"]["C_clusters"]["count"],
+                    "quality_level": quality_level,
+                    "archive_path": archive_path,
+                    "automatic": automatic,
+                }
+
+                # Optional inbox distillation pass after main pipeline
+                if task.config.get("distill_inbox", False):
+                    try:
+                        from datetime import date, timedelta
+                        from app.dreaming.inbox_distillation import run_inbox_distillation
+                        from app.mcp.adapters.event_log import EventLog
+                        target_date = date.today() - timedelta(days=1)
+                        event_log = EventLog()
+                        inbox_result = await run_inbox_distillation(
+                            target_date=target_date,
+                            event_log=event_log,
+                            pipeline=pipeline,
+                            quality_level=quality_level,
+                        )
+                        metrics["inbox_distillation"] = inbox_result.get("status", "unknown")
+                        self._log(f"Inbox distillation: {inbox_result.get('status')} for {target_date}")
+                    except Exception as e:
+                        self._log(f"Inbox distillation failed (non-fatal): {e}", "warning")
+                        metrics["inbox_distillation"] = "error"
+
                 return TaskResult(
                     success=True,
                     output_file=archive_path,
-                    metrics={
-                        "b_chunks_count": results["stages"]["B_chunks"]["count"],
-                        "c_clusters_count": results["stages"]["C_clusters"]["count"],
-                        "quality_level": quality_level,
-                        "archive_path": archive_path,
-                        "automatic": automatic,
-                    },
+                    metrics=metrics,
                 )
             else:
                 return TaskResult(

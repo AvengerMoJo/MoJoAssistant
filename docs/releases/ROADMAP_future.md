@@ -148,8 +148,8 @@ reach the user even when no MCP client is open. Policy Agent subscribes
 to the inbox event stream and can block operations before execution.
 
 ## v1.2.5-beta
-Terminal tools + HttpAgentExecutor — complete the computer-use story and open
-the agent workforce.
+Terminal tools + HttpAgentExecutor + config cleanup — complete the computer-use
+story and close the remaining trust-layer gaps.
 
 - **Terminal tools** — `terminal_exec`, `terminal_read` via persistent tmux sessions.
   Agents can run commands, see live output, maintain shell state across iterations.
@@ -157,6 +157,15 @@ the agent workforce.
   Design is complete; code is ~300 lines. One config entry per agent in the fleet.
 - **Hybrid memory search** — BM25 + embedding for research roles. Rebecca finds
   structural/domain connections that pure semantic similarity misses.
+- **Urgency + importance → attention routing** — task fields drive attention level
+  via urgency×importance matrix (deferred from v1.2.4).
+- **Config doctor NineChapter score validation** — validate `nine_chapter_score`
+  derivation from five dimensions (deferred from v1.2.4).
+- **Config tool coverage for `mcp_servers.json`** — add/remove external MCP servers
+  via the `config` MCP tool (currently requires manual file edit).
+- **`llm_config.json` → `resource_pool.json` migration** — make `executor.py`
+  dreaming pipeline pull LLM from `ResourceManager`; update installer to write
+  `resource_pool.json`. Eliminates split-brain config risk.
 
 ## v1.2.x → v1.3.0 graduation
 v1.3.0 releases when:

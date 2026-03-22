@@ -26,7 +26,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-_DEFAULT_PATH = Path.home() / ".memory" / "audit_log.jsonl"
+from app.config.paths import get_memory_subpath
+
+
+def _default_path() -> Path:
+    return Path(get_memory_subpath("audit_log.jsonl"))
 _lock = threading.Lock()
 
 
@@ -56,7 +60,7 @@ def append(
         "tokens_out": tokens_out,
         "tokens_total": tokens_total,
     }
-    log_path = path or _DEFAULT_PATH
+    log_path = path or _default_path()
     try:
         with _lock:
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +75,7 @@ def get(task_id: Optional[str] = None, limit: int = 100, path: Optional[Path] = 
     Read audit records, optionally filtered by task_id.
     Returns newest-first, capped at limit.
     """
-    log_path = path or _DEFAULT_PATH
+    log_path = path or _default_path()
     if not log_path.exists():
         return []
     records = []

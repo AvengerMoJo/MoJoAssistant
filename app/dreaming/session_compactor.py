@@ -18,18 +18,20 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from app.config.paths import get_memory_subpath
+
 if TYPE_CHECKING:
     from app.dreaming.pipeline import DreamingPipeline
 
 logger = logging.getLogger(__name__)
 
-_SESSIONS_DIR = Path.home() / ".memory" / "task_sessions"
+
+def _sessions_dir() -> Path:
+    return Path(get_memory_subpath("task_sessions"))
 MIN_MESSAGES = 8        # skip trivial sessions
 MAX_TOOL_RESULT_CHARS = 400  # truncate long tool payloads in the text
 
 
-def _sessions_path() -> Path:
-    return _SESSIONS_DIR
 
 
 def build_session_text(task_id: str, session_path: Optional[Path] = None) -> Optional[str]:
@@ -38,7 +40,7 @@ def build_session_text(task_id: str, session_path: Optional[Path] = None) -> Opt
 
     Returns None if the session is too short or can't be read.
     """
-    path = session_path or (_sessions_path() / f"{task_id}.json")
+    path = session_path or (_sessions_dir() / f"{task_id}.json")
     if not path.exists():
         return None
 
