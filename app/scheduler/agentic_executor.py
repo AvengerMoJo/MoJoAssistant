@@ -414,6 +414,24 @@ class AgenticExecutor:
                     model_override=role_model_preference,
                 )
                 self._rm.record_usage(resource.id, success=True)
+                # Audit trail — log every non-free external boundary crossing
+                if resource.tier.value != "free":
+                    try:
+                        from app.mcp.adapters.audit_log import append as _audit_append
+                        usage = response.get("usage") or {}
+                        _audit_append(
+                            task_id=task.id,
+                            role_id=role_id,
+                            resource_id=resource.id,
+                            resource_type=resource.type,
+                            tier=resource.tier.value,
+                            model=response.get("_selected_model", resource.model),
+                            tokens_in=usage.get("prompt_tokens", 0),
+                            tokens_out=usage.get("completion_tokens", 0),
+                            tokens_total=usage.get("total_tokens", 0),
+                        )
+                    except Exception:
+                        pass  # audit logging must never break task execution
             except Exception as e:
                 self._rm.record_usage(resource.id, success=False)
                 self._log(f"LLM call failed: {e}", "error")

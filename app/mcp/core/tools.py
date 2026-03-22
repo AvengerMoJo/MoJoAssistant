@@ -208,6 +208,7 @@ class ToolRegistry:
             "resource_pool_approve",
             "resource_pool_revoke",
             "resource_pool_smoke_test",
+            "audit_get",
             "role_design_start",
             "role_design_answer",
             "role_create",
@@ -1774,6 +1775,25 @@ class ToolRegistry:
             },
             # Resource Pool Tools
             {
+                "name": "audit_get",
+                "description": "Show the audit trail of external LLM boundary crossings — every call to a non-local resource (free_api, paid) logged with task_id, role_id, resource_id, tier, model, and token counts. Content is never logged. Use task_id to filter to a specific task.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "Filter to a specific task. Omit to see all recent crossings.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max records to return (default 50).",
+                            "default": 50,
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
                 "name": "resource_pool_status",
                 "description": "Get the status of all LLM resources in the resource pool. Shows model, tier, priority, availability status, and usage statistics for each resource. Use this to monitor resource health and utilization for agentic tasks.",
                 "inputSchema": {
@@ -2329,6 +2349,9 @@ Agent resumes within seconds.
             return await self._execute_scheduler_resume_task(args)
         elif name == "reply_to_task":
             return await self._execute_reply_to_task(args)
+        # Audit Trail
+        elif name == "audit_get":
+            return await self._execute_audit_get(args)
         # Resource Pool Tools
         elif name == "resource_pool_status":
             return await self._execute_resource_pool_status(args)
@@ -4020,6 +4043,32 @@ Agent resumes within seconds.
             return data
         except Exception as e:
             return {"status": "error", "message": f"Config doctor failed: {e}"}
+
+    async def _execute_audit_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return audit records of external boundary crossings."""
+        try:
+            from app.mcp.adapters.audit_log import get as _audit_get
+            task_id = args.get("task_id")
+            limit = int(args.get("limit", 50))
+            records = _audit_get(task_id=task_id, limit=limit)
+
+            # Summarise token totals
+            total_tokens = sum(r.get("tokens_total", 0) for r in records)
+            by_tier = {}
+            for r in records:
+                t = r.get("tier", "unknown")
+                by_tier[t] = by_tier.get(t, 0) + 1
+
+            return {
+                "status": "success",
+                "filter_task_id": task_id,
+                "record_count": len(records),
+                "total_tokens": total_tokens,
+                "calls_by_tier": by_tier,
+                "records": records,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"audit_get failed: {e}"}
 
     async def _execute_resource_pool_status(
         self, args: Dict[str, Any]
