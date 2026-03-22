@@ -9,19 +9,6 @@
       "args": ["@playwright/mcp@latest", "--headless"],
       "category": "browser",
       "enabled": true
-    },
-    {
-      "id": "tmux",
-      "name": "tmux-mcp-rs",
-      "transport": "stdio",
-      "command": "/home/alex/.cargo/bin/tmux-mcp-rs",
-      "args": [
-        "--shell-type", "bash",
-        "--socket", "/tmp/mojo-agent.sock",
-        "--config", "/home/alex/.memory/config/tmux-mcp.toml"
-      ],
-      "category": "terminal",
-      "enabled": true
     }
   ]
 }

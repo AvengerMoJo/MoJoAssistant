@@ -63,10 +63,22 @@ class MCPClientManager:
         self._load_config()
 
     def _load_config(self) -> None:
-        if not os.path.exists(self._config_path):
+        """Load system config then merge personal config (~/.memory/config/mcp_servers.json).
+        Personal entries override system entries with the same id."""
+        from app.config.paths import get_memory_subpath
+        personal_path = get_memory_subpath("config", "mcp_servers.json")
+        for path in [self._config_path, personal_path]:
+            self._load_config_file(path)
+
+    def _load_config_file(self, path: str) -> None:
+        if not os.path.exists(path):
             return
+
+        def _expand(s: str) -> str:
+            return os.path.expanduser(os.path.expandvars(s))
+
         try:
-            with open(self._config_path) as f:
+            with open(path) as f:
                 data = json.load(f)
             for srv in data.get("servers", []):
                 if not srv.get("enabled", True):
@@ -75,15 +87,15 @@ class MCPClientManager:
                     id=srv["id"],
                     name=srv.get("name", srv["id"]),
                     transport=srv.get("transport", "stdio"),
-                    command=srv["command"],
-                    args=srv.get("args", []),
+                    command=_expand(srv["command"]),
+                    args=[_expand(a) for a in srv.get("args", [])],
                     env=srv.get("env", {}),
                     category=srv.get("category", "external"),
                     enabled=True,
                 )
-                self._servers[s.id] = s
+                self._servers[s.id] = s  # personal layer overwrites system layer
         except Exception as e:
-            logger.warning(f"MCPClientManager: failed to load {self._config_path}: {e}")
+            logger.warning(f"MCPClientManager: failed to load {path}: {e}")
 
     def has_servers(self) -> bool:
         return bool(self._servers)
