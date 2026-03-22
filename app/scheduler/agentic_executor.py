@@ -102,7 +102,8 @@ class AgenticExecutor:
     """Executes agentic tasks via an autonomous LLM think-act loop."""
 
     def __init__(
-        self, resource_manager: ResourceManager, logger=None, memory_service=None
+        self, resource_manager: ResourceManager, logger=None, memory_service=None,
+        mcp_client_manager=None,
     ):
         self._rm = resource_manager
         self._logger = logger
@@ -112,7 +113,7 @@ class AgenticExecutor:
         self._tool_registry = DynamicToolRegistry()
         self._tool_registry.set_memory_service(memory_service)
         from app.scheduler.mcp_client_manager import MCPClientManager
-        self._mcp_client_manager = MCPClientManager()
+        self._mcp_client_manager = mcp_client_manager if mcp_client_manager is not None else MCPClientManager()
         self._tool_registry.set_mcp_client_manager(self._mcp_client_manager)
         self._mcp_tools_discovered = False
         self._policy = SafetyPolicy()

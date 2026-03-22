@@ -44,10 +44,16 @@ class ToolRegistry:
         # Initialize git service
         self.git_service = GitService()
 
+        # Initialize shared MCPClientManager — single instance for both tool
+        # dispatch (AgenticExecutor) and lifecycle management (AgentRegistry).
+        from app.scheduler.mcp_client_manager import MCPClientManager
+        self._mcp_client_manager = MCPClientManager()
+
         # Initialize unified Agent Registry (replaces separate manager init)
         from app.mcp.agents.registry import AgentRegistry
 
-        self.agent_registry = AgentRegistry(logger=logger)
+        self.agent_registry = AgentRegistry(logger=logger,
+                                            mcp_client_manager=self._mcp_client_manager)
 
         # Initialize persistent event log
         from app.mcp.adapters.event_log import EventLog
@@ -76,6 +82,7 @@ class ToolRegistry:
             logger=logger,
             memory_service=memory_service,
             sse_notifier=self._sse_notifier,
+            mcp_client_manager=self._mcp_client_manager,
         )
         self.scheduler_thread = None
 

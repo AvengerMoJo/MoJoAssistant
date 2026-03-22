@@ -29,7 +29,7 @@ class Scheduler:
 
     def __init__(self, storage_path: str = None, tick_interval: int = 60,
                  max_concurrent: int = 3, logger=None, memory_service=None,
-                 sse_notifier=None):
+                 sse_notifier=None, mcp_client_manager=None):
         """
         Initialize scheduler
 
@@ -40,10 +40,12 @@ class Scheduler:
             logger: Optional logger instance
             memory_service: Optional memory service for agentic tool use
             sse_notifier: Optional SSENotifier for real-time task events
+            mcp_client_manager: Shared MCPClientManager for tool dispatch + lifecycle mgmt
         """
         self.queue = TaskQueue(storage_path)
         self.memory_service = memory_service
-        self.executor = TaskExecutor(logger=logger, memory_service=memory_service)
+        self.executor = TaskExecutor(logger=logger, memory_service=memory_service,
+                                     mcp_client_manager=mcp_client_manager)
         self.tick_interval = tick_interval
         self.max_concurrent = max_concurrent
         self.logger = logger

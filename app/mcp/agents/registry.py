@@ -20,10 +20,19 @@ class AgentRegistry:
     Provides a single entry point for all agent lifecycle operations.
     """
 
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, mcp_client_manager=None):
         self._managers: Dict[str, BaseAgentManager] = {}
         self._init_errors: Dict[str, str] = {}
         self.logger = logger
+
+        # MCP server manager — always registered when a client manager is provided
+        if mcp_client_manager is not None:
+            try:
+                from app.mcp.agents.mcp_server_manager import MCPServerManager
+                self._managers["mcp_server"] = MCPServerManager(mcp_client_manager)
+            except Exception as e:
+                self._init_errors["mcp_server"] = str(e)
+                self._log(f"MCPServerManager failed to initialize: {e}", "warning")
 
         # Auto-register enabled managers
         if os.getenv("ENABLE_OPENCODE", "false").lower() in ("true", "1", "yes"):

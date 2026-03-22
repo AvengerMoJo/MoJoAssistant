@@ -30,7 +30,8 @@ class TaskExecutor:
     """
 
     def __init__(
-        self, logger=None, llm_config_path: Optional[str] = None, memory_service=None
+        self, logger=None, llm_config_path: Optional[str] = None, memory_service=None,
+        mcp_client_manager=None,
     ):
         """
         Initialize executor
@@ -39,10 +40,12 @@ class TaskExecutor:
             logger: Optional logger instance
             llm_config_path: Path to LLM configuration file for dreaming
             memory_service: Optional memory service for agentic tool use
+            mcp_client_manager: Shared MCPClientManager instance (created here if None)
         """
         self.logger = logger
         self.llm_config_path = llm_config_path or "config/llm_config.json"
         self._memory_service = memory_service
+        self._mcp_client_manager = mcp_client_manager
         self._dreaming_pipeline = None
         self._cached_quality_level = None
         self._resource_manager = None
@@ -851,6 +854,7 @@ class TaskExecutor:
                 resource_manager=self._get_resource_manager(),
                 logger=self.logger,
                 memory_service=self._memory_service,
+                mcp_client_manager=self._mcp_client_manager,
             )
         return self._agentic_executor
 
