@@ -318,6 +318,10 @@ class DynamicToolRegistry:
                     return await self._bash_exec(args)
                 elif name == "memory_search":
                     return await self._memory_search(args)
+                elif name == "web_search":
+                    return await self._web_search(args)
+                elif name == "fetch_url":
+                    return await self._fetch_url(args)
                 else:
                     return {
                         "success": False,
@@ -533,6 +537,116 @@ class DynamicToolRegistry:
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    async def _web_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Google Custom Search API — returns titles, snippets, and URLs."""
+        import urllib.request
+        import urllib.parse
+
+        query = args.get("query", "").strip()
+        if not query:
+            return {"success": False, "error": "query is required"}
+
+        limit = min(int(args.get("limit", 5)), 10)
+
+        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        cse_id = os.environ.get("GOOGLE_SEARCH_ENGINE_ID", "")
+        if not api_key or not cse_id:
+            return {
+                "success": False,
+                "error": (
+                    "web_search is not configured. "
+                    "Set GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID environment variables. "
+                    "Get a key at https://developers.google.com/custom-search/v1/overview "
+                    "and create a search engine at https://programmablesearchengine.google.com/"
+                ),
+            }
+
+        params = urllib.parse.urlencode({
+            "key": api_key,
+            "cx": cse_id,
+            "q": query,
+            "num": limit,
+        })
+        url = f"https://www.googleapis.com/customsearch/v1?{params}"
+
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            raw = await loop.run_in_executor(
+                None,
+                lambda: urllib.request.urlopen(url, timeout=15).read().decode("utf-8"),
+            )
+            import json as _json
+            data = _json.loads(raw)
+
+            results = []
+            for item in data.get("items", []):
+                results.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("link", ""),
+                    "snippet": item.get("snippet", ""),
+                })
+            return {
+                "success": True,
+                "query": query,
+                "results": results,
+                "count": len(results),
+            }
+        except Exception as e:
+            return {"success": False, "error": f"web_search failed: {e}"}
+
+    async def _fetch_url(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch the text content of a URL. Strips HTML tags, returns plain text."""
+        import urllib.request
+        import urllib.error
+
+        url = args.get("url", "").strip()
+        if not url:
+            return {"success": False, "error": "url is required"}
+
+        max_chars = int(args.get("max_chars", 8000))
+
+        try:
+            import asyncio
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "MoJoAssistant/1.0 (research agent)"},
+            )
+            loop = asyncio.get_event_loop()
+            raw = await loop.run_in_executor(
+                None,
+                lambda: urllib.request.urlopen(req, timeout=20).read(),
+            )
+
+            # Detect encoding
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("latin-1", errors="replace")
+
+            # Strip HTML tags with a simple regex
+            import re
+            text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"&[a-zA-Z]+;", " ", text)
+            text = re.sub(r"\s{3,}", "\n\n", text)
+            text = text.strip()
+
+            if len(text) > max_chars:
+                text = text[:max_chars] + f"\n\n[truncated — {len(text) - max_chars} chars remaining]"
+
+            return {
+                "success": True,
+                "url": url,
+                "content": text,
+                "length": len(text),
+            }
+        except urllib.error.HTTPError as e:
+            return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
+        except Exception as e:
+            return {"success": False, "error": f"fetch_url failed: {e}"}
 
     async def _run_shell_executor(self, tool: "ToolDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
         """

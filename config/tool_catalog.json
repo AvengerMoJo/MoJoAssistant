@@ -41,7 +41,12 @@
     "web_search":      {
       "category": "web",
       "danger_level": "low",
-      "description": "Search the web for current information, documentation, or external context. Use when the task requires up-to-date knowledge not available in memory or local files."
+      "description": "Search the web for current information, documentation, or external context. Use when the task requires up-to-date knowledge not available in memory or local files. Requires GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID."
+    },
+    "fetch_url":       {
+      "category": "web",
+      "danger_level": "low",
+      "description": "Fetch and read the full plain-text content of a web page. Use after web_search to read a specific result in depth. Strips HTML — returns readable text."
     },
     "bash_exec":       {
       "category": "exec",
