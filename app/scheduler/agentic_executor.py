@@ -168,6 +168,12 @@ class AgenticExecutor:
         role_id = config.get("role_id")
         from app.scheduler.policy_monitor import PolicyMonitor
         self._policy_monitor = PolicyMonitor(role_id=None, policy=None)
+        if not role_id:
+            self._log(
+                f"DEPRECATION: assistant task {task.id} has no role_id. "
+                "Assign a role via role_id — tasks without a role will be rejected in a future release.",
+                level="warning",
+            )
         if role_id:
             try:
                 from app.roles.role_manager import RoleManager
@@ -207,6 +213,13 @@ class AgenticExecutor:
                 f"Using planning prompt: {planning_prompt_name} v{planning_prompt.version}"
             )
         else:
+            if config.get("system_prompt") and not role_id:
+                self._log(
+                    f"DEPRECATION: task {task.id} uses inline system_prompt without role_id. "
+                    "Create a role with role_create and pass role_id instead. "
+                    "Inline system_prompt will be rejected in a future release.",
+                    level="warning",
+                )
             workflow_prompt = config.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
             self._log(
                 f"Using default system prompt (no planning prompt found: {planning_prompt_name})"
