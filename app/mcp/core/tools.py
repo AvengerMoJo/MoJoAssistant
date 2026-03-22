@@ -3510,7 +3510,7 @@ Agent resumes within seconds.
                 registry_meta = registry_tools.get(name, {})
                 result.append({
                     "name": name,
-                    "description": registry_meta.get("description", ""),
+                    "description": cat_entry.get("description") or registry_meta.get("description", ""),
                     "danger_level": cat_entry.get("danger_level", registry_meta.get("danger_level", "low")),
                     "category": category,
                     "requires_auth": cat_entry.get("requires_auth", registry_meta.get("requires_auth", False)),
