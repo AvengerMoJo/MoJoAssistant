@@ -137,6 +137,11 @@ class Scheduler:
         self.stats["started_at"] = datetime.now()
         self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
         self._seed_tasks_from_config()
+
+        # Eagerly connect external MCP servers so agent(action="list/status")
+        # shows live state immediately and tool discovery is ready for first task.
+        asyncio.create_task(self._connect_mcp_servers())
+
         await self._broadcast({
             "event_type": "system_notification",
             "severity": "info",
@@ -565,6 +570,18 @@ class Scheduler:
             self._log(f"Stored result of task {task.id} to memory")
         except Exception as e:
             self._log(f"Failed to store result to memory for task {task.id}: {e}", "error")
+
+    async def _connect_mcp_servers(self):
+        """Eagerly connect all configured external MCP servers at startup."""
+        try:
+            mgr = self.executor._mcp_client_manager
+            if mgr and mgr.has_servers():
+                results = await mgr.connect_all()
+                tool_registry = self.executor._get_agentic_executor()._tool_registry
+                await mgr.discover_and_register(tool_registry)
+                self._log(f"MCP servers connected at startup: {list(results.keys())}")
+        except Exception as e:
+            self._log(f"MCP server startup connect failed (non-fatal): {e}", "warning")
 
     def _seed_tasks_from_config(self):
         """
