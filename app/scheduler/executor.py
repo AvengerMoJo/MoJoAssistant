@@ -96,21 +96,37 @@ class TaskExecutor:
         self._cached_quality_level = None
 
     def _get_dreaming_pipeline(self, quality_level: str = "basic") -> DreamingPipeline:
-        """Get or initialize dreaming pipeline, rebuilding if quality_level changed"""
+        """Get or initialize dreaming pipeline, rebuilding if quality_level changed."""
         if (
             self._dreaming_pipeline is None
             or self._cached_quality_level != quality_level
         ):
-            # Initialize LLM interface
-            llm = LLMInterface(config_file=self.llm_config_path)
-
-            # Create pipeline
+            llm = self._build_dreaming_llm()
             self._dreaming_pipeline = DreamingPipeline(
                 llm_interface=llm, quality_level=quality_level, logger=self.logger
             )
             self._cached_quality_level = quality_level
-
         return self._dreaming_pipeline
+
+    def _build_dreaming_llm(self):
+        """
+        Build the LLM interface for the dreaming pipeline.
+
+        Prefers ResourceManager (resource_pool.json) so the dreaming LLM is
+        always in sync with the rest of the system. Falls back to LLMInterface
+        (llm_config.json) when ResourceManager has no usable resources.
+        """
+        try:
+            from app.scheduler.resource_pool import ResourceManager
+            from app.llm.resource_pool_interface import ResourcePoolLLMInterface
+            rm = self._get_resource_manager()
+            if rm and rm._resources:
+                return ResourcePoolLLMInterface(rm)
+        except Exception as e:
+            self._log(f"ResourcePool LLM unavailable, falling back to llm_config: {e}", "warning")
+
+        # Legacy fallback
+        return LLMInterface(config_file=self.llm_config_path)
 
     async def _execute_dreaming(self, task: Task) -> TaskResult:
         """
