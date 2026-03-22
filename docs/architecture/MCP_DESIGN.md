@@ -1750,3 +1750,337 @@ what blocked it, and concrete options for the user to choose from.
 | Tool failures silently looped | no `behavior_rules` | role declares `tool_failure_protocol` |
 | Character updates don't apply to running tasks | system_prompt baked in at schedule time | executor always loads from role file |
 | No urgency/importance concept | flat task priority only | `urgency` + `importance` fields + matrix |
+
+---
+
+## §22 Visual Agent Adaptor — Browser Use & Terminal Session Tools
+
+**Status:** Design (v1.3 target)  
+**Motivation:** `fetch_url` + `web_search` give agents plain text from the web.
+Real research tasks increasingly require JavaScript-rendered pages, interactive
+navigation, and terminal interaction. This section defines the architecture for
+visual/interactive tools that let agents see and act on the world the way a
+human operator would.
+
+---
+
+### 22.1 The Two Capabilities
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Tool Category: "browser"                                       │
+│                                                                 │
+│  browser_open(url)          → loads page, returns snapshot     │
+│  browser_action(action)     → click / type / scroll / submit   │
+│  browser_screenshot()       → base64 PNG of current viewport   │
+│  browser_get_text()         → rendered visible text (no HTML)  │
+│  browser_close()            → release session                  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Tool Category: "terminal"                                      │
+│                                                                 │
+│  terminal_exec(cmd)         → run command in persistent session │
+│  terminal_read()            → read current screen buffer        │
+│  terminal_send_keys(keys)   → send keystrokes (e.g. Ctrl+C)    │
+│  terminal_new_session(name) → create named tmux session        │
+│  terminal_close(name)       → destroy named session            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key difference from existing tools:**
+
+| | `fetch_url` / `bash_exec` | `browser_*` / `terminal_*` |
+|---|---|---|
+| Rendering | Raw HTTP / raw stdout | Fully rendered (JS, ANSI) |
+| State | Stateless per call | Persistent session across calls |
+| Output type | Text only | Text + optional screenshot |
+| Model requirement | Any | Vision-capable for screenshot path |
+
+---
+
+### 22.2 Tool Result Format — Visual Payload
+
+Tool results today are `Dict[str, Any]` — plain JSON. Visual tools extend this
+with an optional `visual` field:
+
+```json
+{
+  "success": true,
+  "text": "rendered visible text of the page or terminal buffer",
+  "visual": {
+    "type": "screenshot",
+    "format": "png",
+    "data": "<base64>",
+    "width": 1280,
+    "height": 720
+  },
+  "metadata": {
+    "url": "https://...",
+    "title": "Page title",
+    "session_id": "browser-abc123"
+  }
+}
+```
+
+The `visual` field is **optional and model-gated**: the executor checks whether
+the assigned LLM resource has `capabilities: ["vision"]` before including it.
+Non-vision models receive only the `text` field — graceful degradation.
+
+---
+
+### 22.3 Model Capability Gating
+
+Visual tool results must be routed to a vision-capable model. The executor
+applies capability gating at two points:
+
+**At tool-result assembly (AgenticExecutor):**
+```python
+def _format_tool_result(self, result: dict, resource: LLMResource) -> dict:
+    if "vision" not in resource.capabilities:
+        result = {k: v for k, v in result.items() if k != "visual"}
+    return result
+```
+
+**At resource acquisition (ResourceManager.acquire_by_requirements):**
+Roles that use `tool_access: ["browser"]` or `tool_access: ["terminal"]`
+automatically inherit `capabilities: ["vision"]` in their effective requirements:
+
+```json
+{
+  "resource_requirements": {
+    "tier": ["free_api", "paid"],
+    "min_context": 32768,
+    "capabilities": ["vision"]
+  },
+  "tool_access": ["browser", "memory"]
+}
+```
+
+If no vision-capable resource is available, the executor falls back to
+text-only mode and logs a notice. The agent still runs — it just won't see
+screenshots.
+
+---
+
+### 22.4 Browser Tool — Implementation Design
+
+**Backend:** [Playwright](https://playwright.dev/python/) (async, handles
+Chromium/Firefox/WebKit, first-class headless support).
+
+**Session model:** one Playwright `Browser` instance per scheduler worker,
+with per-task `BrowserContext` (isolated cookies/storage). Tasks share the
+browser process but not sessions.
+
+```
+Scheduler worker
+└── PlaywrightBrowserPool
+    ├── BrowserContext [task-abc]  → Page (current)
+    ├── BrowserContext [task-def]  → Page (current)
+    └── ...
+```
+
+**Tool executor registration:**
+```python
+# dynamic_tool_registry.py — new builtin block
+elif name == "browser_open":
+    return await self._browser_open(args)
+elif name == "browser_action":
+    return await self._browser_action(args)
+elif name == "browser_screenshot":
+    return await self._browser_screenshot(args)
+elif name == "browser_get_text":
+    return await self._browser_get_text(args)
+elif name == "browser_close":
+    return await self._browser_close(args)
+```
+
+**`browser_open` result (vision model):**
+```json
+{
+  "success": true,
+  "text": "OpenAI — ChatGPT ...",
+  "visual": { "type": "screenshot", "format": "png", "data": "...", ... },
+  "metadata": { "url": "https://openai.com", "title": "OpenAI", "session_id": "ctx-123" }
+}
+```
+
+**`browser_action` schema:**
+```json
+{
+  "action": "click | type | scroll | press | navigate | back | forward",
+  "selector": "CSS selector or text (for click/type)",
+  "text": "text to type (for type action)",
+  "key": "Enter | Escape | Tab | ... (for press action)",
+  "delta_y": 500
+}
+```
+
+---
+
+### 22.5 Terminal Tool — Implementation Design
+
+**Backend:** `asyncio` subprocess + `pexpect` or direct `pty` + tmux for
+named persistent sessions. Each task that calls `terminal_new_session(name)`
+gets a `tmux new-session -d -s <name>` instance. `terminal_exec` sends
+commands via `tmux send-keys` and reads back via `tmux capture-pane`.
+
+**ANSI rendering:** Terminal output contains ANSI escape sequences. Two output
+modes:
+1. **Raw ANSI** — passed as-is when the model receives `text` only (agents
+   can parse colour codes for signal)
+2. **Screenshot** (future) — render terminal to PNG via `ttyd` / `svg-term`
+   for vision models
+
+**Session lifecycle:**
+- Created on first `terminal_exec` if no session exists (implicit creation)
+- Named sessions persist across task iterations (state survives LLM turn)
+- Session is destroyed on task completion or explicit `terminal_close`
+
+**Security:** `terminal_exec` applies the same command whitelist as `bash_exec`
+for `danger_level: medium` calls. Unrestricted shell access requires
+`danger_level: high` + `requires_auth: true`.
+
+---
+
+### 22.6 Tool Catalog Additions
+
+```json
+{
+  "browser_open":       { "category": "browser", "danger_level": "low" },
+  "browser_action":     { "category": "browser", "danger_level": "medium" },
+  "browser_screenshot": { "category": "browser", "danger_level": "low" },
+  "browser_get_text":   { "category": "browser", "danger_level": "low" },
+  "browser_close":      { "category": "browser", "danger_level": "low" },
+  "terminal_exec":      { "category": "terminal", "danger_level": "medium" },
+  "terminal_read":      { "category": "terminal", "danger_level": "low" },
+  "terminal_send_keys": { "category": "terminal", "danger_level": "medium" },
+  "terminal_new_session":{ "category": "terminal", "danger_level": "low" },
+  "terminal_close":     { "category": "terminal", "danger_level": "low" }
+}
+```
+
+Categories in `tool_catalog.json`:
+```json
+"browser":  { "description": "Headless browser — render pages, interact, screenshot" },
+"terminal": { "description": "Persistent terminal sessions via tmux — run commands, read output" }
+```
+
+---
+
+### 22.7 Role Examples
+
+**Visual researcher role:**
+```json
+{
+  "id": "visual_researcher",
+  "tool_access": ["browser", "web", "memory"],
+  "resource_requirements": {
+    "tier": ["free_api", "paid"],
+    "min_context": 65536,
+    "capabilities": ["vision"]
+  }
+}
+```
+
+**DevOps agent role:**
+```json
+{
+  "id": "devops_agent",
+  "tool_access": ["terminal", "file", "memory"],
+  "resource_requirements": {
+    "tier": ["free_api", "paid"],
+    "min_context": 32768,
+    "capabilities": []
+  }
+}
+```
+
+**Full computer-use role (terminal + browser):**
+```json
+{
+  "id": "computer_use",
+  "tool_access": ["browser", "terminal", "file", "web", "memory"],
+  "resource_requirements": {
+    "tier": ["paid"],
+    "min_context": 65536,
+    "capabilities": ["vision"]
+  }
+}
+```
+
+---
+
+### 22.8 Degradation Tiers
+
+When the ideal resource is unavailable, the executor degrades gracefully:
+
+```
+Vision model available
+  → Send screenshot + text in tool results (full visual mode)
+
+No vision model, text model available
+  → Send text only; skip screenshot field (text degraded mode)
+  → Agent still works, loses visual context
+
+No model available
+  → Task waits for resource (existing resource pool retry logic)
+```
+
+The degradation tier is logged and surfaced in the task session metadata:
+`"visual_mode": "full" | "text_only" | "unavailable"`.
+
+---
+
+### 22.9 Dependency Requirements
+
+```
+# For browser tools:
+playwright>=1.40.0          # async browser automation
+# Run once after install:
+# playwright install chromium
+
+# For terminal tools:
+# tmux — system package (apt/brew install tmux)
+# No additional Python deps; uses asyncio subprocess
+```
+
+Both are **optional** — the registry gracefully skips tool registration if
+Playwright is not installed, and logs a clear startup notice:
+```
+[WARNING] browser tools disabled — install playwright: pip install playwright && playwright install chromium
+[WARNING] terminal tools disabled — tmux not found: apt install tmux
+```
+
+---
+
+### 22.10 Implementation Sequence (v1.3)
+
+1. **Add `browser` + `terminal` categories to `tool_catalog.json`**
+2. **Add `capabilities` field to `LLMResource`** ✓ (done in v1.2.3)
+3. **Implement `PlaywrightBrowserPool`** in `app/scheduler/browser_pool.py`
+4. **Implement `TerminalSessionPool`** in `app/scheduler/terminal_pool.py`
+5. **Register browser/terminal builtins** in `_register_builtins()` (with
+   graceful skip if deps missing)
+6. **Add `_format_tool_result` capability gating** in `AgenticExecutor`
+7. **Add `visual_mode` to task session metadata**
+8. **Update `acquire_by_requirements`** to auto-add `vision` capability
+   requirement when role uses `browser` tool_access
+9. **Create `visual_researcher` and `devops_agent` roles**
+10. **Update `config doctor`** to validate `capabilities` in resource pool
+
+---
+
+### 22.11 What This Unlocks
+
+| Before | After |
+|---|---|
+| Agent reads raw HTML (often broken JS sites) | Agent sees rendered page like a human |
+| Agent runs one-shot bash commands | Agent maintains a persistent shell session |
+| Research limited to Google snippets + raw text | Agent navigates GitHub, docs sites, SPAs |
+| No visual confirmation of tool actions | Agent can screenshot-verify its own actions |
+| Terminal-based tools require human to relay output | Agent reads tmux buffer directly |
+
+The browser + terminal adaptor is the foundation for **autonomous computer
+use** inside MoJo's agent framework — enabling roles that can self-direct
+multi-step workflows without human relay at each step.

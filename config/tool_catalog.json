@@ -1,11 +1,13 @@
 {
   "comment": "System tool catalog — maps tool names to categories and metadata. User custom tools live in ~/.memory/config/tool_catalog.json. Roles declare tool_access by category.",
   "categories": {
-    "memory":  { "description": "Memory and knowledge base access" },
-    "file":    { "description": "File read, write, and search operations" },
-    "web":     { "description": "Web search and HTTP requests" },
-    "exec":    { "description": "Shell commands and code execution" },
-    "comms":   { "description": "Communication with the user (HITL)" }
+    "memory":   { "description": "Memory and knowledge base access" },
+    "file":     { "description": "File read, write, and search operations" },
+    "web":      { "description": "Web search and HTTP requests" },
+    "exec":     { "description": "Shell commands and code execution" },
+    "comms":    { "description": "Communication with the user (HITL)" },
+    "browser":  { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP)" },
+    "terminal": { "description": "Persistent terminal sessions via tmux — run commands, read output" }
   },
   "tools": {
     "memory_search":   {

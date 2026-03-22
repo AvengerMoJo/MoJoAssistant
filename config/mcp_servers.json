@@ -1,0 +1,14 @@
+{
+  "comment": "External MCP servers — tools from each server are auto-registered into the agent tool pool. Roles declare tool_access by category (e.g. 'browser') to receive matching tools.",
+  "servers": [
+    {
+      "id": "playwright",
+      "name": "Playwright MCP",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--headless"],
+      "category": "browser",
+      "enabled": true
+    }
+  ]
+}

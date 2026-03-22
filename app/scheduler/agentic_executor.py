@@ -111,6 +111,10 @@ class AgenticExecutor:
         self._planning_manager = PlanningPromptManager()
         self._tool_registry = DynamicToolRegistry()
         self._tool_registry.set_memory_service(memory_service)
+        from app.scheduler.mcp_client_manager import MCPClientManager
+        self._mcp_client_manager = MCPClientManager()
+        self._tool_registry.set_mcp_client_manager(self._mcp_client_manager)
+        self._mcp_tools_discovered = False
         self._policy = SafetyPolicy()
         self._openrouter_model_cache: Dict[str, Dict[str, Any]] = {}
         self._openrouter_model_cache_ttl_seconds = 600
@@ -226,6 +230,18 @@ class AgenticExecutor:
             tier_preference = [ResourceTier(t) for t in tier_pref_raw]
         else:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
+
+        # Lazy-connect external MCP servers and register their tools on first use.
+        if not self._mcp_tools_discovered and self._mcp_client_manager.has_servers():
+            try:
+                import asyncio
+                count = await self._mcp_client_manager.discover_and_register(self._tool_registry)
+                self._mcp_tools_discovered = True
+                if count:
+                    self._log(f"Registered {count} tools from external MCP servers")
+            except Exception as e:
+                self._log(f"External MCP discovery failed (continuing): {e}", level="warning")
+                self._mcp_tools_discovered = True  # don't retry on every task
 
         # Load tools: task config.available_tools > role tool_access/tools > default.
         # ask_user is always included — it's the HITL escape hatch for any blocker.
@@ -875,13 +891,22 @@ class AgenticExecutor:
                 catalog = {}
             tool_entries = catalog.get("tools", {})
             names = []
+            seen = set()
+            # Catalog-defined tools
             for tool_name, tool_meta in tool_entries.items():
                 if not isinstance(tool_meta, dict):
                     continue
                 if tool_meta.get("always_injected"):
-                    continue  # injected separately (e.g. ask_user)
+                    continue
                 if tool_meta.get("category") in tool_access:
                     names.append(tool_name)
+                    seen.add(tool_name)
+            # Registry-defined tools (e.g. external MCP tools with a category field)
+            for t_name, t_def in self._tool_registry._tools.items():
+                if t_name in seen:
+                    continue
+                if t_def.category and t_def.category in tool_access:
+                    names.append(t_name)
             return names
         elif legacy_tools is not None:
             return list(legacy_tools)

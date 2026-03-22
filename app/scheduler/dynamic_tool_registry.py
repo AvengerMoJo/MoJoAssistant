@@ -71,6 +71,7 @@ class ToolDefinition:
         created_by: str = "system",
         parameters: Dict[str, Any] = None,
         executor: Dict[str, Any] = None,
+        category: str = "",
     ):
         self.name = name
         self.description = description
@@ -83,6 +84,8 @@ class ToolDefinition:
         self.parameters = parameters or {"type": "object", "properties": {}, "required": []}
         # How to run the tool — defaults to builtin (hardcoded handler lookup)
         self.executor: Dict[str, Any] = executor or {"type": "builtin"}
+        # Tool catalog category (memory, file, web, exec, comms, browser, terminal, ...)
+        self.category = category
 
     def to_openai_function(self) -> Dict[str, Any]:
         """Return the OpenAI-compatible function definition for LLM tool calling."""
@@ -96,7 +99,7 @@ class ToolDefinition:
         }
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "name": self.name,
             "description": self.description,
             "danger_level": self.danger_level,
@@ -107,6 +110,9 @@ class ToolDefinition:
             "parameters": self.parameters,
             "executor": self.executor,
         }
+        if self.category:
+            d["category"] = self.category
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ToolDefinition":
@@ -120,6 +126,7 @@ class ToolDefinition:
             created_by=data.get("created_by", "system"),
             parameters=data.get("parameters"),
             executor=data.get("executor"),
+            category=data.get("category", ""),
         )
 
 
@@ -135,6 +142,7 @@ class DynamicToolRegistry:
         self.sandbox = SandboxSecurity()
         self._memory_service = None
         self._mcp_registry = None
+        self._mcp_client_manager = None
         self._tools: Dict[str, ToolDefinition] = {}
         self._ensure_registry_seeded()
         self._load_registry()
@@ -186,6 +194,7 @@ class DynamicToolRegistry:
                 name="read_file",
                 description="Read file contents. Returns full text with line numbers.",
                 danger_level="low",
+                category="file",
                 parameters={"type": "object", "properties": {
                     "path": {"type": "string", "description": "Absolute or relative file path to read"},
                 }, "required": ["path"]},
@@ -194,6 +203,7 @@ class DynamicToolRegistry:
                 name="write_file",
                 description="Write content to file. Overwrites existing file. Only allowed in sandbox paths.",
                 danger_level="medium",
+                category="file",
                 parameters={"type": "object", "properties": {
                     "path": {"type": "string", "description": "File path to write"},
                     "content": {"type": "string", "description": "Content to write"},
@@ -203,6 +213,7 @@ class DynamicToolRegistry:
                 name="list_files",
                 description="List files and directories in a path.",
                 danger_level="low",
+                category="file",
                 parameters={"type": "object", "properties": {
                     "path": {"type": "string", "description": "Directory path to list"},
                 }, "required": ["path"]},
@@ -211,6 +222,7 @@ class DynamicToolRegistry:
                 name="search_in_files",
                 description="Search for text across files using grep/ripgrep.",
                 danger_level="low",
+                category="file",
                 parameters={"type": "object", "properties": {
                     "pattern": {"type": "string", "description": "Text or regex pattern to search for"},
                     "path": {"type": "string", "description": "Directory or file to search in"},
@@ -221,6 +233,7 @@ class DynamicToolRegistry:
                 description="Execute bash command. Only safe commands in whitelist allowed.",
                 danger_level="high",
                 requires_auth=True,
+                category="exec",
                 parameters={"type": "object", "properties": {
                     "command": {"type": "string", "description": "Bash command to execute"},
                 }, "required": ["command"]},
@@ -229,6 +242,7 @@ class DynamicToolRegistry:
                 name="memory_search",
                 description="Search user's memory (conversations, documents, knowledge base).",
                 danger_level="low",
+                category="memory",
                 parameters={"type": "object", "properties": {
                     "query": {"type": "string", "description": "Search query to find relevant context"},
                 }, "required": ["query"]},
@@ -242,6 +256,7 @@ class DynamicToolRegistry:
                     "Do not use this for information you can gather with other tools."
                 ),
                 danger_level="low",
+                category="comms",
                 parameters={"type": "object", "properties": {
                     "question": {"type": "string", "description": "The question to ask the user"},
                     "choices": {
@@ -250,6 +265,41 @@ class DynamicToolRegistry:
                         "description": "Optional list of suggested answer choices to present to the user",
                     },
                 }, "required": ["question"]},
+            ),
+            ToolDefinition(
+                name="web_search",
+                description=(
+                    "Search the web using Google Custom Search. "
+                    "Returns titles, snippets, and URLs. "
+                    "Requires GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID environment variables."
+                ),
+                danger_level="low",
+                category="web",
+                parameters={"type": "object", "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of results to return (max 10, default 5)",
+                        "default": 5,
+                    },
+                }, "required": ["query"]},
+            ),
+            ToolDefinition(
+                name="fetch_url",
+                description=(
+                    "Fetch and return the plain-text content of a web page. "
+                    "Strips HTML tags. Use after web_search to read the full content of a result URL."
+                ),
+                danger_level="low",
+                category="web",
+                parameters={"type": "object", "properties": {
+                    "url": {"type": "string", "description": "URL to fetch"},
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Maximum characters to return (default 8000)",
+                        "default": 8000,
+                    },
+                }, "required": ["url"]},
             ),
         ]
         for tool in builtins:
@@ -304,6 +354,8 @@ class DynamicToolRegistry:
                 return await self._run_python_executor(tool, args)
             elif executor_type == "mcp_proxy":
                 return await self._run_mcp_proxy_executor(tool, args)
+            elif executor_type == "external_mcp":
+                return await self._run_external_mcp_executor(tool, args)
             else:
                 # builtin: dispatch on tool name
                 if name == "read_file":
@@ -754,6 +806,21 @@ class DynamicToolRegistry:
         except Exception as e:
             return {"success": False, "error": f"MCP proxy '{mcp_tool_name}' failed: {e}"}
 
+    async def _run_external_mcp_executor(self, tool: "ToolDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        External MCP executor: forwards the call to a server managed by MCPClientManager.
+
+        Executor config:
+          {"type": "external_mcp", "server": "playwright", "tool": "browser_navigate"}
+        """
+        if self._mcp_client_manager is None:
+            return {"success": False, "error": "External MCP not available (MCPClientManager not set)"}
+        server_id = tool.executor.get("server", "")
+        tool_name = tool.executor.get("tool", "")
+        if not server_id or not tool_name:
+            return {"success": False, "error": "external_mcp executor missing 'server' or 'tool'"}
+        return await self._mcp_client_manager.call_tool(server_id, tool_name, args)
+
     def set_memory_service(self, memory_service):
         """Set memory service for memory_search tool."""
         self._memory_service = memory_service
@@ -761,3 +828,11 @@ class DynamicToolRegistry:
     def set_mcp_registry(self, mcp_registry) -> None:
         """Set the MCP ToolRegistry for mcp_proxy executor support."""
         self._mcp_registry = mcp_registry
+
+    def set_mcp_client_manager(self, manager) -> None:
+        """Set the MCPClientManager for external_mcp executor support."""
+        self._mcp_client_manager = manager
+
+    def get_tools_by_category(self, category: str) -> List[str]:
+        """Return all tool names whose category matches."""
+        return [name for name, tool in self._tools.items() if tool.category == category]
