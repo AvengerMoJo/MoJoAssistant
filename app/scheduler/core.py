@@ -576,10 +576,12 @@ class Scheduler:
         try:
             mgr = self.executor._mcp_client_manager
             if mgr and mgr.has_servers():
-                results = await mgr.connect_all()
                 tool_registry = self.executor._get_agentic_executor()._tool_registry
-                await mgr.discover_and_register(tool_registry)
-                self._log(f"MCP servers connected at startup: {list(results.keys())}")
+                # discover_and_register calls connect_all() internally — don't pre-call it
+                # or the second connect_all() inside sees already-connected servers and
+                # returns {} causing no tools to be registered.
+                count = await mgr.discover_and_register(tool_registry)
+                self._log(f"MCP startup: connected {list(mgr._sessions.keys())}, registered {count} tools")
         except Exception as e:
             self._log(f"MCP server startup connect failed (non-fatal): {e}", "warning")
 
