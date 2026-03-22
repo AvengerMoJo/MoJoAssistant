@@ -154,6 +154,11 @@ class Task:
     # Human-in-the-loop: question waiting for user reply
     pending_question: Optional[str] = None
 
+    # Urgency and importance (1–5 each). Drive attention routing via AttentionClassifier.
+    # High urgency × high importance → higher hitl_level floor on task events.
+    urgency: Optional[int] = None
+    importance: Optional[int] = None
+
     def is_due(self) -> bool:
         """Check if task is due to run"""
         if self.status != TaskStatus.PENDING:
@@ -209,6 +214,8 @@ class Task:
             "last_error": self.last_error,
             "last_failed_at": self.last_failed_at.isoformat() if self.last_failed_at else None,
             "pending_question": self.pending_question,
+            "urgency": self.urgency,
+            "importance": self.importance,
         }
         return data
 
@@ -237,5 +244,9 @@ class Task:
             data["resources"] = TaskResources.from_dict(data["resources"])
         if "result" in data and data["result"]:
             data["result"] = TaskResult.from_dict(data["result"])
+
+        # Tolerate dicts that predate urgency/importance fields
+        data.setdefault("urgency", None)
+        data.setdefault("importance", None)
 
         return cls(**data)

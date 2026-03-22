@@ -1039,6 +1039,18 @@ class ToolRegistry:
                             "type": "string",
                             "description": "Human-readable description of what this task does",
                         },
+                        "urgency": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "description": "How time-sensitive is this task? 1=can wait, 5=do it now. Combined with importance to set a minimum attention level on task events.",
+                        },
+                        "importance": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "description": "How much does this task matter? 1=nice-to-have, 5=critical outcome. Combined with urgency to set a minimum attention level on task events.",
+                        },
                     },
                     "required": ["task_id", "task_type"],
                 },
@@ -3225,6 +3237,8 @@ Agent resumes within seconds.
             config = args.get("config", {})
             description = args.get("description")
             resources_dict = args.get("resources", {})
+            urgency = args.get("urgency")
+            importance = args.get("importance")
 
             # Convert strings to enums
             task_type = TaskType(task_type_str)
@@ -3288,6 +3302,8 @@ Agent resumes within seconds.
                 resources=resources,
                 description=description,
                 created_by="user",
+                urgency=int(urgency) if urgency is not None else None,
+                importance=int(importance) if importance is not None else None,
             )
 
             # Add to scheduler

@@ -262,6 +262,15 @@ class Scheduler:
         async with self._semaphore:
             await self._execute_task(task)
 
+    def _task_routing_fields(self, task: "Task") -> dict:
+        """Return urgency/importance fields for broadcast events (omit when None)."""
+        out = {}
+        if task.urgency is not None:
+            out["urgency"] = task.urgency
+        if task.importance is not None:
+            out["importance"] = task.importance
+        return out
+
     async def _broadcast(self, event: dict):
         """Broadcast an SSE event if notifier is available."""
         if self._sse_notifier:
@@ -290,6 +299,7 @@ class Scheduler:
                 "task_type": task.type.value,
                 "severity": "info",
                 "title": f"Task {task.id} started",
+                **self._task_routing_fields(task),
             })
 
             # Execute via executor
@@ -315,6 +325,7 @@ class Scheduler:
                         "question": result.waiting_for_input,
                         "description": task.description,
                     },
+                    **self._task_routing_fields(task),
                 })
                 self._log(f"Task {task.id} is waiting for user input")
                 return
@@ -341,6 +352,7 @@ class Scheduler:
                     "severity": "info",
                     "title": title,
                     "notify_user": notify,
+                    **self._task_routing_fields(task),
                 })
 
                 # Auto-schedule dreaming for completed assistant tasks
@@ -382,6 +394,7 @@ class Scheduler:
                         "severity": "error",
                         "title": f"Task {task.id} failed",
                         "notify_user": True,
+                        **self._task_routing_fields(task),
                     })
 
                     # Cron tasks reschedule even after permanent failure
@@ -416,6 +429,7 @@ class Scheduler:
                 "severity": "error",
                 "title": f"Task {task.id} failed",
                 "notify_user": True,
+                **self._task_routing_fields(task),
             })
 
         finally:
