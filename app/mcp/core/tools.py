@@ -3263,6 +3263,21 @@ Agent resumes within seconds.
             urgency = args.get("urgency")
             importance = args.get("importance")
 
+            # Validate urgency / importance: must be int 1–5 if provided
+            def _validate_routing_field(name: str, value) -> Optional[int]:
+                if value is None:
+                    return None
+                try:
+                    v = int(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"'{name}' must be an integer, got {value!r}")
+                if not (1 <= v <= 5):
+                    raise ValueError(f"'{name}' must be between 1 and 5, got {v}")
+                return v
+
+            urgency = _validate_routing_field("urgency", urgency)
+            importance = _validate_routing_field("importance", importance)
+
             # Convert strings to enums
             task_type = TaskType(task_type_str)
             priority = TaskPriority(priority_str)
@@ -3329,8 +3344,8 @@ Agent resumes within seconds.
                 resources=resources,
                 description=description,
                 created_by="user",
-                urgency=int(urgency) if urgency is not None else None,
-                importance=int(importance) if importance is not None else None,
+                urgency=urgency,
+                importance=importance,
             )
 
             # Add to scheduler

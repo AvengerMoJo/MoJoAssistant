@@ -65,9 +65,12 @@ class ResourcePoolLLMInterface:
                     return future.result(timeout=120)
             else:
                 return loop.run_until_complete(self._generate(query))
-        except Exception as e:
+        except (TimeoutError, RuntimeError, OSError) as e:
             logger.error(f"ResourcePoolLLMInterface.generate_response failed: {e}")
             return ""
+        except Exception as e:
+            logger.exception(f"ResourcePoolLLMInterface.generate_response unexpected error: {e}")
+            raise
 
     async def _generate(self, query: str) -> str:
         from app.llm.unified_client import UnifiedLLMClient
@@ -106,7 +109,11 @@ class ResourcePoolLLMInterface:
             if not choices:
                 return ""
             return choices[0].get("message", {}).get("content", "") or ""
-        except Exception as e:
+        except (TimeoutError, ConnectionError, OSError) as e:
             self._rm.record_usage(resource.id, success=False)
             logger.error(f"ResourcePoolLLMInterface._generate failed: {e}")
             return ""
+        except Exception as e:
+            self._rm.record_usage(resource.id, success=False)
+            logger.exception(f"ResourcePoolLLMInterface._generate unexpected error: {e}")
+            raise

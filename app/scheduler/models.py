@@ -9,6 +9,11 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 from enum import Enum
 
+# Default tier drain order: exhaust free resources before touching paid ones.
+# Import this constant wherever a tier_preference default is needed so there
+# is a single source of truth.
+DEFAULT_TIER_PREFERENCE: List[str] = ["free", "free_api"]
+
 
 class TaskStatus(Enum):
     """Task execution status"""
@@ -48,7 +53,7 @@ class TaskResources:
     max_tokens: Optional[int] = None
     max_duration_seconds: Optional[int] = None
     requires_gpu: bool = False
-    tier_preference: Optional[List[str]] = field(default_factory=lambda: ["free", "free_api"])  # drain free tiers before paid
+    tier_preference: Optional[List[str]] = field(default_factory=lambda: list(DEFAULT_TIER_PREFERENCE))
     max_iterations: int = 10
 
     def to_dict(self) -> Dict[str, Any]:

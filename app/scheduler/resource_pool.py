@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 from app.config.paths import get_memory_subpath
+from app.scheduler.models import DEFAULT_TIER_PREFERENCE
 
 
 class ResourceTier(Enum):
@@ -454,7 +455,7 @@ class ResourceManager:
 
         Returns None if nothing satisfies the requirements.
         """
-        tier_strs = requirements.get("tier", ["free", "free_api"])
+        tier_strs = requirements.get("tier", DEFAULT_TIER_PREFERENCE)
         if isinstance(tier_strs, str):
             tier_strs = [tier_strs]
         tier_preference = []
