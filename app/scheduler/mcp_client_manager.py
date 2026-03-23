@@ -157,14 +157,23 @@ class MCPClientManager:
         from app.scheduler.dynamic_tool_registry import ToolDefinition
 
         server_tools = await self.connect_all()
+
+        # Drop stale cached entries for servers we successfully connected to,
+        # so renamed or removed tools don't linger across restarts.
+        for server_id in server_tools:
+            stale = [
+                name for name, td in list(tool_registry._tools.items())
+                if name.startswith(f"{server_id}__")
+                and getattr(td, "executor", {}).get("type") == "external_mcp"
+            ]
+            for name in stale:
+                del tool_registry._tools[name]
+
         count = 0
         for server_id, tools in server_tools.items():
             server = self._servers[server_id]
             for tool in tools:
                 registered_name = f"{server_id}__{tool.name}"
-                if tool_registry.get_tool(registered_name):
-                    continue  # already registered
-
                 schema = tool.inputSchema
                 if not isinstance(schema, dict):
                     schema = {"type": "object", "properties": {}}

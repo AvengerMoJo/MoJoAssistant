@@ -250,6 +250,12 @@ class HTTPAdapter(ProtocolAdapter):
             if self.logger:
                 self.logger.info("OAuth Authorization Server endpoints enabled")
 
+        # Dashboard — read-only monitoring UI at /dashboard
+        from app.dashboard.router import router as dashboard_router
+        app.include_router(dashboard_router)
+        if self.logger:
+            self.logger.info("Dashboard mounted at /dashboard")
+
         @app.get("/health")
         async def health_check():
             uptime = time.time() - self.engine.start_time

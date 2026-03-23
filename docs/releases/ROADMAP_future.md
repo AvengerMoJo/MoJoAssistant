@@ -153,6 +153,7 @@ to the inbox event stream and can block operations before execution.
 - 🟡 Missing input validation for urgency/importance routing fields — add bounds/type checking
 - 🟡 Non-atomic stop/reconnect in MCPServerManager — make it transactional or add rollback
 - 🟡 Duplicated `["free", "free_api"]` default tier preference — extract to a single shared constant
+- 🟡 Per-task tmux session isolation — generate a unique socket path per task so agents can't collide in a shared tmux server; today all agents share `/tmp/mojo-agent.sock`
 
 ## v1.3.0
 **Agent Type Classification + Pluggable Workflow Templates** (§25)
