@@ -256,6 +256,14 @@ class HTTPAdapter(ProtocolAdapter):
         if self.logger:
             self.logger.info("Dashboard mounted at /dashboard")
 
+        # HITL reply endpoint — used by ntfy action buttons, not the dashboard
+        from app.mcp.routers.hitl import router as hitl_router, set_scheduler as _hitl_set_scheduler
+        app.include_router(hitl_router)
+        if hasattr(self.engine, "tool_registry") and hasattr(self.engine.tool_registry, "scheduler"):
+            _hitl_set_scheduler(self.engine.tool_registry.scheduler)
+        if self.logger:
+            self.logger.info("HITL reply endpoint mounted at /api/hitl")
+
         @app.get("/health")
         async def health_check():
             uptime = time.time() - self.engine.start_time

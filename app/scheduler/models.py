@@ -100,7 +100,8 @@ class TaskResult:
     metrics: Dict[str, Any] = field(default_factory=dict)
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
-    waiting_for_input: Optional[str] = None  # question the agent asked the user
+    waiting_for_input: Optional[str] = None        # question the agent asked the user
+    waiting_for_input_choices: Optional[List[str]] = None  # optional choice labels
 
     def __post_init__(self):
         if self.created_at is None:

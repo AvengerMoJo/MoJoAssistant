@@ -160,8 +160,11 @@ class AgenticExecutor:
         """
         # Per-execution state for ask_user
         self._waiting_for_input_question: Optional[str] = None
+        self._waiting_for_input_choices: Optional[list] = None
         self._tool_calls_made: int = 0          # non-ask_user tool calls this execution
         self._exhausts_tools_before_asking: bool = False
+        # Task id stored so _execute_single_tool can inject per-task tmux socket
+        self._current_task_id: Optional[str] = task.id
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -617,6 +620,7 @@ class AgenticExecutor:
             return TaskResult(
                 success=False,
                 waiting_for_input=self._waiting_for_input_question,
+                waiting_for_input_choices=self._waiting_for_input_choices,
                 output_file=session_file,
                 metrics={
                     "iterations": len(iteration_log),
@@ -890,6 +894,7 @@ class AgenticExecutor:
             question = args.get("question", "")
             choices = args.get("choices")
             self._waiting_for_input_question = question
+            self._waiting_for_input_choices = choices if isinstance(choices, list) else None
             result_msg = f"Question submitted to user: {question}"
             if choices:
                 result_msg += f" (choices: {choices})"
@@ -897,6 +902,13 @@ class AgenticExecutor:
 
         # Count non-ask_user tool calls for behavior_rules enforcement
         self._tool_calls_made += 1
+
+        # Per-task tmux isolation: inject a unique socket path so each task runs
+        # against its own tmux daemon. tmux-mcp-rs accepts a per-call 'socket'
+        # override on every tool; omitting it uses the server's default socket
+        # which is shared and causes session collisions under concurrency.
+        if name.startswith("tmux__") and self._current_task_id and "socket" not in args:
+            args = {**args, "socket": f"/tmp/mojo-task-{self._current_task_id}.sock"}
 
         # Try dynamic registry first
         try:

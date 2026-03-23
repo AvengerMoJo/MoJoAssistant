@@ -54,6 +54,54 @@ class NtfyAdapter(PushAdapter):
         self._token = os.getenv(auth_var) if auth_var else None
         self._priority_map = config.get("priority_map", _DEFAULT_PRIORITY_MAP)
 
+    @staticmethod
+    def _build_hitl_actions(event: Dict[str, Any]) -> list:
+        """
+        Build ntfy action buttons for task_waiting_for_input events.
+
+        - One HTTP action per choice (up to 3 — ntfy limit).
+        - Always one "Reply" view action opening the minimal reply form.
+          Requires MOJO_BASE_URL env var; omitted when not set.
+        """
+        if event.get("event_type") != "task_waiting_for_input":
+            return []
+
+        from app.mcp.routers.hitl import make_reply_token
+
+        task_id = event.get("task_id", "")
+        if not task_id:
+            return []
+
+        base_url = os.getenv("MOJO_BASE_URL", "").rstrip("/")
+        token = make_reply_token(task_id)
+        actions = []
+
+        # Choice buttons — each fires a POST directly from the ntfy app
+        choices = event.get("choices") or []
+        for choice in choices[:3]:  # ntfy allows max 3 actions total
+            if base_url:
+                actions.append({
+                    "action": "http",
+                    "label": str(choice),
+                    "url": f"{base_url}/api/hitl/reply/{task_id}?token={token}",
+                    "method": "POST",
+                    "body": str(choice),
+                    "headers": {"Content-Type": "text/plain"},
+                    "clear": True,
+                })
+
+        # Reply form button — opens a browser form for free-form text
+        # Only add if we have room (3 actions max) and base_url is configured
+        if base_url and len(actions) < 3:
+            actions.append({
+                "action": "view",
+                "label": "Reply…",
+                "url": f"{base_url}/api/hitl/reply/{task_id}?token={token}",
+                "clear": False,
+            })
+
+        return actions
+
     async def dispatch(self, event: Dict[str, Any]) -> None:
         if not self._endpoint:
             logger.warning("[push/%s] no endpoint configured", self.adapter_id)
@@ -75,6 +123,11 @@ class NtfyAdapter(PushAdapter):
             "tags": [sev_tag, event_tag],
             "markdown": True,
         }
+
+        actions = self._build_hitl_actions(event)
+        if actions:
+            payload["actions"] = actions
+
         data = json.dumps(payload).encode("utf-8")
 
         # Derive base URL (everything before the topic path)

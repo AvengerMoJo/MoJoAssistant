@@ -20,6 +20,7 @@ Example config/mcp_servers.json entry:
   }
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -60,6 +61,9 @@ class MCPClientManager:
         self._sessions: Dict[str, Any] = {}   # server_id → ClientSession
         self._exit_stack = AsyncExitStack()
         self._connected = False
+        # Prevents concurrent connect_all() calls from double-connecting the same
+        # server (e.g. startup background task racing against first agentic task).
+        self._connect_lock = asyncio.Lock()
         self._load_config()
 
     def _load_config(self) -> None:
@@ -106,22 +110,25 @@ class MCPClientManager:
         """
         Connect to all configured servers. Returns {server_id: [MCPTool, ...]}.
         Safe to call multiple times — skips already-connected servers.
+        Serialized via _connect_lock to prevent concurrent callers from
+        double-connecting the same server.
         """
-        results: Dict[str, List[Any]] = {}
-        for server_id, server in self._servers.items():
-            if server_id in self._sessions:
-                continue
-            try:
-                tools = await self._connect_server(server)
-                results[server_id] = tools
-                logger.info(
-                    f"MCPClientManager: connected '{server_id}' "
-                    f"({len(tools)} tools: {[t.name for t in tools]})"
-                )
-            except Exception as e:
-                logger.warning(f"MCPClientManager: failed to connect '{server_id}': {e}")
-        self._connected = True
-        return results
+        async with self._connect_lock:
+            results: Dict[str, List[Any]] = {}
+            for server_id, server in self._servers.items():
+                if server_id in self._sessions:
+                    continue
+                try:
+                    tools = await self._connect_server(server)
+                    results[server_id] = tools
+                    logger.info(
+                        f"MCPClientManager: connected '{server_id}' "
+                        f"({len(tools)} tools: {[t.name for t in tools]})"
+                    )
+                except Exception as e:
+                    logger.warning(f"MCPClientManager: failed to connect '{server_id}': {e}")
+            self._connected = True
+            return results
 
     async def _connect_server(self, server: ExternalMCPServer) -> List[Any]:
         if server.transport != "stdio":
@@ -198,6 +205,11 @@ class MCPClientManager:
             logger.info(f"MCPClientManager: registered {count} external tools")
         return count
 
+    # Per-call timeout so a hung external process (e.g. frozen browser) cannot
+    # hold a semaphore slot forever. Browser navigation can be slow; 60 s is
+    # generous but still bounded. Override per-server in the future if needed.
+    CALL_TIMEOUT_SECONDS: float = 60.0
+
     async def call_tool(self, server_id: str, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Call a tool on a specific external MCP server."""
         if not self._connected:
@@ -208,7 +220,10 @@ class MCPClientManager:
             return {"success": False, "error": f"Server '{server_id}' not connected"}
 
         try:
-            result = await session.call_tool(tool_name, args)
+            result = await asyncio.wait_for(
+                session.call_tool(tool_name, args),
+                timeout=self.CALL_TIMEOUT_SECONDS,
+            )
             # MCP returns a list of content blocks (text, image, resource)
             parts = []
             for block in (result.content or []):
@@ -229,6 +244,12 @@ class MCPClientManager:
                 "success": not getattr(result, "isError", False),
                 "result": payload,
             }
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"MCPClientManager: '{server_id}/{tool_name}' timed out "
+                f"after {self.CALL_TIMEOUT_SECONDS}s"
+            )
+            return {"success": False, "error": f"Tool call timed out after {self.CALL_TIMEOUT_SECONDS}s"}
         except Exception as e:
             return {"success": False, "error": f"Tool call failed: {e}"}
 

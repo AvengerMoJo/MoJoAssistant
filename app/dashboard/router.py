@@ -1,9 +1,12 @@
 """
-MoJoAssistant Dashboard — read-only monitoring UI.
+MoJoAssistant Dashboard — READ-ONLY monitoring UI.
+
+This module intentionally has NO write operations. Observability only.
+HITL replies are handled via ntfy action buttons → /api/hitl/reply/{task_id}.
 
 Routes:
   GET  /dashboard/login     — login form
-  POST /dashboard/login     — authenticate
+  POST /dashboard/login     — authenticate (the only POST — session management)
   GET  /dashboard/logout    — clear session
   GET  /dashboard           — overview (queue stats + recent events)
   GET  /dashboard/tasks     — task list
@@ -12,6 +15,7 @@ Routes:
   GET  /dashboard/roles     — roles overview
 """
 
+import html
 import json
 import os
 from datetime import datetime
@@ -383,7 +387,7 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
 
     # Pending question (HITL)
     pq = task.get("pending_question", "")
-    pq_html = f'<h2>Waiting for Input</h2><div class="pre" style="border-color:#ffd700">{pq}</div>' if pq else ""
+    pq_html = f'<h2>Waiting for Input</h2><div class="pre" style="border-color:#ffd700">{html.escape(pq)}</div>' if pq else ""
 
     # Full session transcript
     session_path = _mem("task_sessions", f"{task_id}.json")
@@ -402,13 +406,13 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
                     if isinstance(block, dict):
                         btype = block.get("type", "")
                         if btype == "text":
-                            text = block.get("text", "")[:2000]
-                            turns.append(f'<div class="iter"><b style="color:#aaa">{role}</b><div class="pre" style="margin-top:6px">{text}</div></div>')
+                            text = html.escape(block.get("text", "")[:2000])
+                            turns.append(f'<div class="iter"><b style="color:#aaa">{html.escape(role)}</b><div class="pre" style="margin-top:6px">{text}</div></div>')
                         elif btype == "tool_use":
-                            inp = json.dumps(block.get("input", {}), indent=2)[:1000]
-                            turns.append(f'<div class="iter tool_use"><b style="color:#7ec8e3">tool_use: {block.get("name","")}</b><div class="pre" style="margin-top:6px">{inp}</div></div>')
+                            inp = html.escape(json.dumps(block.get("input", {}), indent=2)[:1000])
+                            turns.append(f'<div class="iter tool_use"><b style="color:#7ec8e3">tool_use: {html.escape(block.get("name",""))}</b><div class="pre" style="margin-top:6px">{inp}</div></div>')
             elif isinstance(content, str) and content.strip():
-                turns.append(f'<div class="iter"><b style="color:#aaa">{role}</b><div class="pre" style="margin-top:6px">{content[:2000]}</div></div>')
+                turns.append(f'<div class="iter"><b style="color:#aaa">{html.escape(role)}</b><div class="pre" style="margin-top:6px">{html.escape(content[:2000])}</div></div>')
         if turns:
             session_html = f"<h2>Session Transcript</h2>{''.join(turns)}"
 

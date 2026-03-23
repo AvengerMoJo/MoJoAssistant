@@ -96,6 +96,10 @@ class MCPServerManager(BaseAgentManager):
                 except Exception as e:
                     logger.warning(f"MCPServerManager: could not reconnect '{sid}' after stop: {e}")
 
+        # Restore the flag so call_tool() doesn't re-enter connect_all() for the
+        # servers we just reconnected above.
+        self._mgr._connected = True
+
         return {"status": "success", "message": f"MCP server '{identifier}' disconnected."}
 
     async def get_status(self, identifier: str) -> Dict[str, Any]:
