@@ -143,6 +143,7 @@ class DynamicToolRegistry:
         self._memory_service = None
         self._mcp_registry = None
         self._mcp_client_manager = None
+        self._scheduler = None
         self._tools: Dict[str, ToolDefinition] = {}
         self._ensure_registry_seeded()
         self._load_registry()
@@ -237,6 +238,28 @@ class DynamicToolRegistry:
                 parameters={"type": "object", "properties": {
                     "command": {"type": "string", "description": "Bash command to execute"},
                 }, "required": ["command"]},
+            ),
+            ToolDefinition(
+                name="scheduler_add_task",
+                description=(
+                    "Schedule a new task for another agent. Use this to hand off work to a "
+                    "specialist role after completing your own step — e.g. a provisioner queuing "
+                    "a reviewer, or an executor queuing Carl for a code review. "
+                    "The new task runs asynchronously; this tool returns immediately."
+                ),
+                danger_level="medium",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "task_id":    {"type": "string", "description": "Unique task identifier (snake_case)"},
+                    "role_id":    {"type": "string", "description": "Role to run the task as (e.g. 'carl', 'ahman')"},
+                    "goal":       {"type": "string", "description": "Full goal/instructions for the new task"},
+                    "available_tools": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Tools the new task may use. Defaults to role's tool_access."
+                    },
+                    "max_iterations": {"type": "integer", "description": "Max iterations (default 10)"},
+                    "priority":   {"type": "string", "enum": ["low", "normal", "high"], "description": "Task priority"},
+                }, "required": ["task_id", "role_id", "goal"]},
             ),
             ToolDefinition(
                 name="memory_search",
@@ -368,6 +391,8 @@ class DynamicToolRegistry:
                     return await self._search_in_files(args)
                 elif name == "bash_exec":
                     return await self._bash_exec(args)
+                elif name == "scheduler_add_task":
+                    return await self._scheduler_add_task(args)
                 elif name == "memory_search":
                     return await self._memory_search(args)
                 elif name == "web_search":
@@ -506,6 +531,52 @@ class DynamicToolRegistry:
             return {"success": False, "error": "ripgrep (rg) not installed"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    async def _scheduler_add_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Schedule a new task for another agent role."""
+        if not self._scheduler:
+            return {"success": False, "error": "Scheduler not available in this context"}
+
+        from app.scheduler.models import Task, TaskResources
+        import uuid
+
+        task_id = args.get("task_id") or f"agent_task_{uuid.uuid4().hex[:8]}"
+        role_id = args.get("role_id")
+        goal = args.get("goal")
+
+        if not role_id or not goal:
+            return {"success": False, "error": "role_id and goal are required"}
+
+        config: Dict[str, Any] = {"goal": goal, "role_id": role_id}
+        if args.get("available_tools"):
+            config["available_tools"] = args["available_tools"]
+
+        resources = TaskResources(
+            max_iterations=int(args.get("max_iterations", 10))
+        )
+
+        from app.scheduler.models import TaskPriority, TaskType
+        priority_str = args.get("priority", "normal")
+        # Map "normal" → "medium" for backwards compat; convert string → enum
+        priority_str = "medium" if priority_str == "normal" else priority_str
+        try:
+            priority_enum = TaskPriority(priority_str.lower())
+        except ValueError:
+            priority_enum = TaskPriority.MEDIUM
+
+        task = Task(
+            id=task_id,
+            type=TaskType.ASSISTANT,
+            priority=priority_enum,
+            config=config,
+            resources=resources,
+            created_by="agent",
+        )
+
+        success = self._scheduler.add_task(task)
+        if success:
+            return {"success": True, "task_id": task_id, "message": f"Task '{task_id}' scheduled for role '{role_id}'"}
+        return {"success": False, "error": f"Failed to schedule task '{task_id}' — may already exist"}
 
     async def _bash_exec(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute bash command with safety limits."""
@@ -832,6 +903,10 @@ class DynamicToolRegistry:
     def set_mcp_client_manager(self, manager) -> None:
         """Set the MCPClientManager for external_mcp executor support."""
         self._mcp_client_manager = manager
+
+    def set_scheduler(self, scheduler) -> None:
+        """Set the Scheduler for scheduler_add_task tool support."""
+        self._scheduler = scheduler
 
     def get_tools_by_category(self, category: str) -> List[str]:
         """Return all tool names whose category matches."""

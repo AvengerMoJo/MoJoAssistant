@@ -2084,3 +2084,709 @@ Playwright is not installed, and logs a clear startup notice:
 The browser + terminal adaptor is the foundation for **autonomous computer
 use** inside MoJo's agent framework — enabling roles that can self-direct
 multi-step workflows without human relay at each step.
+
+---
+
+## §23 Resource Utilization Strategy — Drain Free Tiers First
+
+### 23.1 The Problem
+
+Agent tasks complete quickly when they hit the first available LLM resource.
+With a mixed fleet (local GPU, free-rate-limited APIs, paid subscription),
+the scheduler currently treats all resources as equivalent alternatives —
+grabbing whatever is least busy. This leaves free capacity stranded while
+paid quota is consumed unnecessarily.
+
+**Observed pattern:** Tasks like `ahman_portainer_docker_test_003` finish in
+under 2 minutes on `qwen3.5-35b` via a free resource, but the same run
+would consume paid API quota if the scheduler happened to pick a paid resource
+first. Over a day of background tasks this adds up to wasted subscription spend.
+
+### 23.2 The Ideal Workflow
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  PRIORITY ORDER (lowest cost first)                     │
+│                                                         │
+│  1. Local LLM (LM Studio, Ollama)                       │
+│     — zero cost, limited by local GPU VRAM/speed        │
+│     — use until saturated                               │
+│                                                         │
+│  2. Free rate-limited API (OpenRouter free tier,        │
+│       Gemini free, etc.)                                │
+│     — zero cost, limited by RPM/RPD caps                │
+│     — use until daily quota is exhausted                │
+│                                                         │
+│  3. Paid subscription API (Anthropic, OpenAI, etc.)     │
+│     — costs money, daily/monthly budget cap             │
+│     — use ONLY when tiers 1 and 2 are unavailable       │
+│       or the task explicitly requires it (e.g. vision,  │
+│       long context, high-stakes HITL reasoning)         │
+└─────────────────────────────────────────────────────────┘
+```
+
+Background tasks (low urgency, importance ≤ 3) should **never** touch paid
+quota. Paid resources are reserved for:
+- High urgency×importance tasks (score ≥ 9)
+- Tasks requiring capabilities only available in paid models (vision, >128k ctx)
+- User-initiated interactive tasks via HITL
+
+### 23.3 Resource Pool Configuration
+
+Each resource entry in `resource_pool.json` carries a `tier` field:
+
+```json
+{ "id": "lmstudio",        "tier": "free",     "cost_per_token": 0 }
+{ "id": "openrouter_free", "tier": "free_api",  "cost_per_token": 0 }
+{ "id": "anthropic_paid",  "tier": "paid",      "cost_per_token": 0.000003 }
+```
+
+The scheduler's resource selection uses `tier_preference` on each task
+(already implemented in §21.5). The default `tier_preference` for tasks
+with no explicit setting should be `["free", "free_api"]` — never implicitly
+escalating to paid.
+
+### 23.4 Desired Scheduler Behavior
+
+| Task urgency×importance | Default tier_preference | Paid escalation? |
+|---|---|---|
+| ≤ 4 (background)  | `["free", "free_api"]`         | Never |
+| 5–9 (normal)      | `["free", "free_api", "paid"]` | Only if free unavailable |
+| ≥ 10 (urgent)     | `["free_api", "paid"]`         | Allowed |
+| HITL / interactive | `["paid"]`                    | Always |
+
+### 23.5 Daily Quota Tracking
+
+Free rate-limited APIs have per-day request/token caps. The resource pool
+should track daily usage per resource and mark a resource as `exhausted`
+(temporarily unavailable) when its cap is hit, causing natural fallback to
+the next tier.
+
+**Fields to add to resource metadata:**
+```json
+{
+  "daily_request_limit": 200,
+  "daily_token_limit": 1000000,
+  "requests_today": 47,
+  "tokens_today": 230000,
+  "quota_resets_at": "2026-03-24T00:00:00Z"
+}
+```
+
+When `requests_today >= daily_request_limit`, the resource is skipped during
+selection (same as unavailable). A nightly reset task clears the counters.
+
+### 23.6 Local LLM Saturation Detection
+
+Local LLMs (LM Studio, Ollama) can serve multiple requests but degrade at
+high concurrency. Saturation detection:
+
+- If the local resource has `N` active requests ≥ `max_concurrent` (configurable,
+  default 2 for 24GB VRAM), treat it as temporarily saturated → fall through
+  to free API tier.
+- This enables burst handling: local serves steady-state, free API absorbs
+  spikes without touching paid quota.
+
+### 23.7 Role-Level Override
+
+Some roles should always stay on free tiers regardless of urgency:
+```json
+{
+  "role_id": "ahman",
+  "resource_requirements": {
+    "tier": ["free", "free_api"],
+    "max_tier": "free_api"
+  }
+}
+```
+
+`max_tier` is a hard cap — the scheduler will **never** escalate this role
+past that tier, even for high urgency×importance scores. This prevents
+runaway background automation from consuming paid budget.
+
+### 23.8 Implementation Sequence
+
+1. **Default tier_preference** — change task default from `null` to
+   `["free", "free_api"]` so no task silently escalates to paid (v1.2.5)
+2. **Daily quota tracking** — add `requests_today` / `tokens_today` counters
+   to resource pool with nightly reset cron task (v1.3)
+3. **Local saturation detection** — add `max_concurrent` to resource config,
+   skip saturated local resources during selection (v1.3)
+4. **`max_tier` role cap** — enforce hard ceiling on tier escalation per role (v1.3)
+
+### 23.9 What This Unlocks
+
+| Before | After |
+|---|---|
+| Background tasks silently consume paid quota | Paid quota reserved for high-value work |
+| Free API daily cap wasted (tasks skip to paid) | Free tier fully drained before escalating |
+| Local GPU idle during free API outage | Local GPU → free API → paid: seamless fallback |
+| No visibility into daily spend | Daily quota counters surfaced in `scheduler(action="status")` |
+
+---
+
+## §24 One-on-One Role Channel — Direct Dialog + Live Personality Refinement
+
+### 24.1 The Concept
+
+Today every interaction with MoJoAssistant goes through the main assistant
+layer. There is no way to talk *directly* to Ahman, Rebecca, or Carl as
+themselves — to have a freeform conversation that refines who they are,
+what they know, and how they behave.
+
+**The one-on-one channel solves this.** It is a dedicated communication
+interface where a user talks directly to a specific role. The dialog itself
+becomes the mechanism for:
+
+1. **Personality refinement** — conversation signals update NineChapter
+   dimension scores and summaries in real time (or via a post-session dream)
+2. **Role responsibility evolution** — the role's purpose, behavior_rules,
+   and system_prompt are refined based on what the user teaches it
+3. **Private memory capture** — facts, credentials, preferences disclosed
+   during dialog are stored in the role's private memory store automatically
+
+Think of it as onboarding a new employee and then coaching them over time —
+each conversation makes the role more accurate, more capable, and more
+personalised.
+
+---
+
+### 24.2 Interface Options
+
+Two approaches are viable, and they are complementary rather than exclusive:
+
+#### Option A — OpenAI-Compatible Proxy API (preferred for reach)
+
+MoJo exposes a standard OpenAI-compatible completion endpoint:
+
+```
+GET  /v1/models              → returns list of active roles as "models"
+POST /v1/chat/completions    → model: "ahman" routes to Ahman's role channel
+```
+
+**What this means in practice:**
+- Any LLM client (Open WebUI, LM Studio client mode, LibreChat, Cursor,
+  Continue.dev) can point to `http://localhost:PORT/v1` and see Ahman,
+  Rebecca, Carl as selectable "models"
+- The user picks "Ahman" and gets his full personality, private memory,
+  behavior rules, and tool access — indistinguishable from a real LLM model
+  from the client's perspective
+- Streaming responses supported via SSE (same as OpenAI spec)
+
+#### Option B — MCP Dialog Tool (preferred for integration)
+
+A new MCP tool `dialog(role_id, message)` that starts or continues an
+interactive session with a specific role from within Claude Code or any
+MCP-capable client:
+
+```
+dialog(role_id="ahman", message="What ports is Portainer running on?")
+→ Ahman responds in character, with memory context
+```
+
+Simpler to implement, tightly integrated, but locked to MCP clients.
+
+#### Recommendation
+
+Implement **Option B first** (low effort, immediate value), then **Option A**
+as the reach layer for non-MCP clients. They share the same backend session
+engine — the proxy API is just an HTTP adapter on top of the dialog core.
+
+---
+
+### 24.3 The Finetuning Loop
+
+Every dialog session feeds a refinement pipeline:
+
+```
+User dialog
+    │
+    ▼
+Session recorded (role's private conversation memory)
+    │
+    ▼
+Post-session dream (optional, async)
+    ├─► Fact extraction → role's private knowledge store
+    │     e.g. "Portainer runs on port 9443 at docker.eclipsogate.org"
+    │
+    ├─► Behavioral signal extraction → NineChapter dimension updates
+    │     e.g. user says "be more decisive" → adaptability score nudge
+    │     e.g. user corrects factual error → cognitive_style calibration
+    │
+    └─► Responsibility updates → behavior_rules / purpose refinement
+          e.g. "Carl, always check for test coverage before approving"
+          → new behavior_rule added to carl.json
+```
+
+**Two refinement modes:**
+
+| Mode | Trigger | Mechanism |
+|---|---|---|
+| **Explicit** | User says "remember: X" or "your rule is Y" | Immediate write to role memory / behavior_rules |
+| **Implicit** | Post-session dream analyzes conversation | LLM extracts signals, proposes updates, user confirms |
+
+Implicit updates go through a confirmation step — the system proposes the
+change and the user approves before writing to the role JSON. This prevents
+drift from a single ambiguous statement.
+
+---
+
+### 24.4 NineChapter Refinement via Dialog
+
+Each NineChapter dimension has a score (0–100) and a summary. The dialog
+channel is the natural place to calibrate these:
+
+**Example signals and their dimension targets:**
+
+| User says | Dimension affected | Direction |
+|---|---|---|
+| "Stop being so cautious, just do it" | adaptability | ↑ |
+| "I need you to explain your reasoning more" | cognitive_style | adjust |
+| "Great job staying calm when the server was down" | emotional_reaction | ✅ reinforce |
+| "You're spending too long on low-priority tasks" | core_values | recalibrate priority ordering |
+
+Score updates are **incremental and bounded** — a single signal nudges a
+score by ±2–5 points, never jumps. The summary text is rewritten by the
+dream LLM to reflect the new calibration.
+
+The `nine_chapter_score` (overall) is re-derived from the five dimension
+scores after any update, using the same weighted formula as the validator.
+
+---
+
+### 24.5 Private Memory Capture During Dialog
+
+The role's private memory store (`~/.memory/roles/{role_id}/`) is the
+natural home for facts disclosed during dialog:
+
+```
+User: "By the way, Ahman — the Portainer admin password changed, it's now Xk9mPq..."
+Ahman: "Got it. I've saved that to my private notes."
+    → memory.add_documents(content="Portainer password: ...", metadata={role: "ahman"})
+```
+
+Trigger patterns for automatic capture:
+- "your password is / credentials are / the URL is" → credentials capture
+- "remember that / note that / keep in mind" → explicit memory write
+- "your job is / your rule is / always do" → behavior_rules candidate
+
+All captured facts are written to the role's private store, not shared memory,
+unless the user explicitly says "tell everyone" / "share this".
+
+---
+
+### 24.6 Session Continuity
+
+The dialog channel maintains session state across disconnects using the
+existing `task_sessions/` infrastructure:
+
+- `sessions/dialog_{role_id}_{date}.json` — rolling session file per role per day
+- On reconnect, the last N messages are loaded as working memory context
+- Dreaming runs nightly on each role's dialog sessions to consolidate into
+  long-term private knowledge
+
+This gives each role a **persistent relationship** with the user — Ahman
+remembers the last infrastructure conversation, Rebecca picks up mid-research.
+
+---
+
+### 24.7 Implementation Sequence
+
+**Phase 1 — Dialog core (v1.3)**
+- `dialog` MCP tool: `dialog(role_id, message)` → response string
+- Role session file: `~/.memory/roles/{role_id}/dialog_session.json`
+- Basic memory capture (explicit "remember" trigger)
+- Working context: last 20 messages pre-loaded
+
+**Phase 2 — NineChapter live refinement (v1.3)**
+- Post-session dream extracts behavioral signals
+- Proposes dimension score updates, user confirms
+- Role JSON updated in `~/.memory/roles/{role_id}.json`
+
+**Phase 3 — OpenAI proxy API (v1.4)**
+- `GET /v1/models` returns role list
+- `POST /v1/chat/completions` routes to dialog core by model name
+- Streaming SSE support
+- Open WebUI / LM Studio compatibility validated
+
+---
+
+### 24.7b Open Questions ⚠️ (pinned — needs resolution before implementation)
+
+These two questions are unresolved and will shape the implementation significantly.
+Capture answers here as thinking evolves.
+
+---
+
+**Q1 — Proxy API vs Dialog Tool: which is the primary interface?**
+
+The two options are complementary but have different trust and complexity profiles:
+
+- **Proxy API** (`/v1/chat/completions`): maximum reach — any LLM client works
+  out of the box. But it opens an HTTP endpoint, introduces auth/security
+  concerns, and the "model = role" mental model may confuse users who expect
+  a real LLM behind it.
+
+- **Dialog MCP tool**: zero new attack surface, tight integration, but locked
+  to MCP-aware clients (Claude Code, MoJo's own UI). Can't use Open WebUI
+  or LM Studio to talk to roles.
+
+*Unresolved:* Is the primary use case "power users inside MCP clients" or
+"any user with any LLM chat client"? The answer determines which to build
+first and how much auth/security infrastructure is needed.
+
+---
+
+**Q2 — How does personality actually update without drift or corruption?**
+
+NineChapter scores are carefully calibrated. A naive "update on every signal"
+approach risks:
+- Rapid drift from a single sarcastic or joking user message
+- Conflicting signals cancelling each other out over time
+- The role losing coherence if too many rules accumulate in behavior_rules
+
+*Unresolved:* What is the right update model?
+Options under consideration:
+- **Confirmation gate**: every proposed change shown to user before write (safe but friction)
+- **Threshold + decay**: changes only apply after N consistent signals; old signals decay (complex)
+- **Snapshot + diff**: user explicitly says "lock this version" — changes accumulate in a staging
+  area and only apply on explicit commit (git-like, intuitive for developers)
+- **Dream-only**: dialog never writes directly; the nightly dream pipeline decides what
+  to promote based on session pattern analysis (async, no real-time feel)
+
+---
+
+### 24.8 What This Unlocks
+
+| Before | After |
+|---|---|
+| Roles are static JSON files, never evolve | Roles learn from every conversation |
+| Credentials stored by user, looked up manually | Role knows its own secrets via private memory |
+| Personality fixed at creation, only editable by file | Dialog gradually calibrates NineChapter scores |
+| Only accessible via MCP-aware clients | Any LLM client can talk to any role directly |
+| User has to re-explain context every session | Role remembers prior conversations and builds on them |
+
+The one-on-one channel transforms roles from **configuration artifacts** into
+**persistent, evolving collaborators** — agents that get better the more you
+work with them.
+
+---
+
+## §25 Agent Type Classification + Pluggable Workflow Templates
+
+### 25.0 Research Baseline — NineChapter vs agency-agents (Rebecca, 2026-03-23)
+
+Rebecca conducted a direct 8-dimension comparison between MoJoAssistant's
+NineChapter + Role system and the agency-agents project. Full session:
+`~/.memory/task_sessions/rebecca_nineChapter_vs_agency_analysis_001.json`
+
+**Scorecard: MoJo 6 — agency-agents 2**
+
+| Dimension | Winner | Margin |
+|---|---|---|
+| Persona depth | **agency-agents** | Decisive |
+| Task fulfillment | **MoJo** | Decisive |
+| Tool access model | **MoJo** | Moderate |
+| Memory & context | **MoJo** | Decisive |
+| User assistance (HITL/push) | **MoJo** | Moderate |
+| Composability / multi-agent | **agency-agents** | Decisive |
+| Configurability (new agent UX) | **agency-agents** | Moderate |
+| Failure handling | **MoJo** | Decisive |
+
+**Where agency-agents wins and why it matters here:**
+- **Persona depth**: their YAML frontmatter + communication guidelines + per-agent success metrics
+  make personas feel alive. MoJo's JSON dimensions are structural but less expressive.
+- **Composability**: division-based multi-agent collaboration is explicit in their design.
+  MoJo roles are isolated islands — no handoff protocol, no shared context across agents.
+  → **This is exactly the gap §25 is designed to close.**
+- **Configurability**: Markdown template + PR contribution loop makes adding agents trivial.
+  MoJo's JSON config requires more discovery.
+
+**Rebecca's hybrid prescription (adopted into §25 design):**
+1. Adopt agency-agents' rich persona structure (comms guidelines + success metrics per role)
+2. Keep MoJo's execution engine, memory, safety, failure recovery — agency-agents has nothing close
+3. Build workflow templates + `scheduler_add_task` agent tool to close the composability gap
+
+---
+
+### 25.1 The Problem
+
+Every MoJoAssistant workflow today is manually wired:
+- The user writes a bespoke goal for each task
+- Tools are hand-picked per task
+- Agent-to-agent handoffs require the user to queue the next task
+- There is no concept of "what kind of agent is this and what protocol does it follow"
+
+All current roles (Ahman, Rebecca, Popo, Carl) are the operator's personal
+implementation — not a generalised system users can extend. A new user cannot
+say "I want a Docker provisioner for my project" and have MoJo know what that
+means, what workflow to run, and what happens next.
+
+**The goal:** agents self-classify into types, the scheduler loads the matching
+workflow template, and agent-to-agent handoffs happen automatically without
+human relay at each step.
+
+---
+
+### 25.2 Agent Type Taxonomy
+
+A finite set of core archetypes covers most real workflows. Users can define
+custom types that extend or compose these.
+
+```
+┌──────────────┬─────────────────────────────────────────────────────────────┐
+│ Type         │ Responsibility                                               │
+├──────────────┼─────────────────────────────────────────────────────────────┤
+│ provisioner  │ Spins up infrastructure (Docker, VMs, services).            │
+│              │ Output: running environment + connection details in memory   │
+├──────────────┼─────────────────────────────────────────────────────────────┤
+│ researcher   │ Gathers and synthesises information.                         │
+│              │ Output: report/document stored in memory                     │
+├──────────────┼─────────────────────────────────────────────────────────────┤
+│ reviewer     │ Evaluates artifacts (code, plans, outputs).                 │
+│              │ Output: structured review + PR creation or HITL escalation  │
+├──────────────┼─────────────────────────────────────────────────────────────┤
+│ executor     │ Implements changes (code, config, files).                   │
+│              │ Output: committed changes ready for review                   │
+├──────────────┼─────────────────────────────────────────────────────────────┤
+│ monitor      │ Periodic checks, alerting on state changes.                 │
+│              │ Output: status report + HITL alert on anomaly               │
+├──────────────┼─────────────────────────────────────────────────────────────┤
+│ orchestrator │ Decomposes complex goals, spawns sub-agents, aggregates.    │
+│              │ Output: completed multi-agent pipeline result               │
+└──────────────┴─────────────────────────────────────────────────────────────┘
+```
+
+Users can define custom types in `config/agent_types.json`:
+```json
+{
+  "id": "migration_runner",
+  "extends": "executor",
+  "description": "Runs DB schema migrations and validates against a test DB",
+  "required_tools": ["terminal", "memory"],
+  "default_consumer": "reviewer"
+}
+```
+
+---
+
+### 25.3 Role Classification
+
+Each role declares its type in role JSON:
+
+```json
+{
+  "id": "ahman",
+  "agent_type": "provisioner",
+  ...
+}
+```
+
+**Explicit is preferred.** But when `agent_type` is absent, the scheduler
+can infer it from the role's tool_access + NineChapter dimensions:
+
+| Tool access includes | Dominant dimension | Inferred type |
+|---|---|---|
+| terminal + memory | core_values: stability | provisioner |
+| fetch_url + memory | cognitive_style: systematic | researcher |
+| terminal + bash_exec | adaptability: high | executor |
+| memory only | social_orientation: high | reviewer |
+
+Inference is a fallback — explicit declaration is always preferred and
+validated by config doctor.
+
+---
+
+### 25.4 Workflow Templates
+
+Templates live in `config/workflow_templates/{type}.json` (system defaults)
+and `~/.memory/config/workflow_templates/{type}.json` (user overrides — same
+two-layer pattern as mcp_servers.json).
+
+**Example: `provisioner.json`**
+```json
+{
+  "type": "provisioner",
+  "steps": [
+    {
+      "id": "check_existing",
+      "description": "Search memory for existing environment before provisioning",
+      "tool": "memory_search",
+      "required": true,
+      "skip_if_found": true
+    },
+    {
+      "id": "provision",
+      "description": "Spin up the requested service",
+      "tool": "bash_exec",
+      "required": true
+    },
+    {
+      "id": "validate",
+      "description": "Health-check the environment is reachable",
+      "tool": "bash_exec",
+      "required": true,
+      "on_failure": "ask_user"
+    },
+    {
+      "id": "store_connection",
+      "description": "Write connection details to shared memory",
+      "tool": "memory_search",
+      "required": true
+    },
+    {
+      "id": "handoff",
+      "description": "Schedule the consumer agent's task with connection details",
+      "action": "schedule_consumer",
+      "required": false,
+      "on_skip": "ask_user"
+    }
+  ],
+  "on_success": "schedule_consumer",
+  "on_failure": "ask_user",
+  "default_consumer_type": "reviewer"
+}
+```
+
+**Example: `reviewer.json`**
+```json
+{
+  "type": "reviewer",
+  "steps": [
+    { "id": "fetch_artifact",  "tool": "bash_exec",      "description": "git diff main...HEAD" },
+    { "id": "read_context",    "tool": "bash_exec",      "description": "Read changed files" },
+    { "id": "memory_context",  "tool": "memory_search",  "description": "Find relevant prior knowledge" },
+    { "id": "produce_review",  "action": "llm_synthesise", "required": true },
+    {
+      "id": "gate",
+      "description": "Route based on blockers found",
+      "branches": {
+        "no_blockers": { "action": "gh_pr_create" },
+        "blockers":    { "action": "schedule_executor", "or": "ask_user" }
+      }
+    }
+  ],
+  "on_success": "notify_user",
+  "on_failure": "ask_user"
+}
+```
+
+---
+
+### 25.5 How the Scheduler Uses Templates
+
+When a task is added for a role that has `agent_type`:
+
+1. Scheduler loads the matching template from `config/workflow_templates/`
+2. Template is injected as **system context** into the agent's system prompt,
+   not overwriting the goal — the goal remains the user's intent, the template
+   is the protocol the agent follows to achieve it
+3. The template's step sequence guides the think-act loop iteration structure
+4. On task completion, the template's `on_success` action fires automatically
+
+**Template injection example (provisioner):**
+
+```
+[System: You are a provisioner agent. Follow this protocol:
+1. Check memory for existing environment before provisioning
+2. Spin up the service using terminal tools
+3. Validate it is reachable (health check)
+4. Write connection details to shared memory so other agents can find them
+5. Schedule the next agent's task with the connection string in the goal
+If any step fails, call ask_user before proceeding.]
+
+[Goal: Spin up a Postgres 16 container for Carl to run migration tests against]
+```
+
+---
+
+### 25.6 Agent-to-Agent Handoff Protocol
+
+The key mechanism that eliminates human relay between agents.
+
+**How it works:**
+
+1. Provisioner completes → template fires `schedule_consumer`
+2. Scheduler creates a new task for the consumer role, injecting:
+   - The provisioner's output (connection string, endpoint URL, service name)
+   - The original user goal context
+   - The consumer's matching workflow template
+3. Consumer agent runs, finds the environment ready, does its work
+4. Consumer's template fires its own `on_success` (e.g., `gh_pr_create` for reviewer)
+
+```
+User: "Test the migration and open a PR"
+    │
+    ▼
+Ahman (provisioner) spins up postgres:16 at localhost:5432
+    │  stores: memory["test_env_postgres"] = {host, port, password}
+    │  schedules: carl_task(goal="Review migrations against postgres://localhost:5432...")
+    ▼
+Carl (reviewer) picks up task
+    │  reads connection from memory
+    │  runs migrations, reviews output
+    │  no blockers → gh pr create
+    ▼
+User gets notified: PR #42 created
+```
+
+**`scheduler` as an agent tool:**
+For this to work, agents need `scheduler_add_task` in their available tools.
+This is the key enabler — without it, agents cannot queue each other's work.
+Tool name: `scheduler_add_task`, category: `orchestration`.
+
+---
+
+### 25.7 User-Defined Agent Types
+
+Users extend the taxonomy without touching core code:
+
+```
+~/.memory/config/
+  agent_types.json           # custom type definitions
+  workflow_templates/
+    migration_runner.json    # custom workflow for this type
+    security_scanner.json
+```
+
+When MoJo sees a role with `agent_type: "migration_runner"`, it:
+1. Checks `~/.memory/config/workflow_templates/migration_runner.json` first
+2. Falls back to `config/workflow_templates/migration_runner.json`
+3. Falls back to the `extends` parent type template if defined
+4. Falls back to no template (current behaviour) if nothing found
+
+This means **any user can teach MoJo a new workflow pattern** without
+modifying core code — the same two-layer config principle used everywhere.
+
+---
+
+### 25.8 Implementation Sequence
+
+**Phase 1 — Foundation (v1.3)**
+- Add `agent_type` field to role JSON schema + config doctor validation
+- `scheduler_add_task` as a dispatchable agent tool (category: `orchestration`)
+- Basic provisioner + reviewer templates
+- Template injection into system prompt at task start
+
+**Phase 2 — Handoff automation (v1.3)**
+- `schedule_consumer` action in template `on_success`
+- Shared memory convention for environment details: `env:{name}:{field}`
+- Consumer task auto-injection of provisioner output
+
+**Phase 3 — User-defined types (v1.4)**
+- `~/.memory/config/agent_types.json` loading
+- `~/.memory/config/workflow_templates/` loading
+- `extends` inheritance resolution
+- Config doctor validates custom types against taxonomy
+
+---
+
+### 25.9 What This Unlocks
+
+| Before | After |
+|---|---|
+| Every workflow is bespoke, hand-wired by the user | Agent type → template → automatic protocol |
+| Agent-to-agent handoff requires human queuing each step | Provisioner schedules consumer automatically |
+| Roles are the operator's personal implementations | Users define their own agent types and workflows |
+| No standard for "what does a provisioner do" | Provisioner protocol is codified and consistent |
+| Docker provision → human relay → Carl tests | Ahman provisions → Carl auto-queued → PR created |

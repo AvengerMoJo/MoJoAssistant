@@ -31,7 +31,7 @@ class TaskExecutor:
 
     def __init__(
         self, logger=None, llm_config_path: Optional[str] = None, memory_service=None,
-        mcp_client_manager=None,
+        mcp_client_manager=None, scheduler=None,
     ):
         """
         Initialize executor
@@ -46,6 +46,7 @@ class TaskExecutor:
         self.llm_config_path = llm_config_path or "config/llm_config.json"
         self._memory_service = memory_service
         self._mcp_client_manager = mcp_client_manager
+        self._scheduler = scheduler
         self._dreaming_pipeline = None
         self._cached_quality_level = None
         self._resource_manager = None
@@ -111,7 +112,7 @@ class TaskExecutor:
             self._cached_quality_level = quality_level
         return self._dreaming_pipeline
 
-    def _build_dreaming_llm(self):
+    def _build_dreaming_llm(self) -> Any:
         """
         Build the LLM interface for the dreaming pipeline.
 
@@ -855,10 +856,11 @@ class TaskExecutor:
                 logger=self.logger,
                 memory_service=self._memory_service,
                 mcp_client_manager=self._mcp_client_manager,
+                scheduler=self._scheduler,
             )
         return self._agentic_executor
 
-    def _get_coding_agent_executor(self):
+    def _get_coding_agent_executor(self) -> Any:
         """Lazy-initialize the CodingAgentExecutor."""
         if not hasattr(self, "_coding_agent_executor") or self._coding_agent_executor is None:
             from app.scheduler.coding_agent_executor import CodingAgentExecutor

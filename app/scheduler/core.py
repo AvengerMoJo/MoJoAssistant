@@ -45,7 +45,7 @@ class Scheduler:
         self.queue = TaskQueue(storage_path)
         self.memory_service = memory_service
         self.executor = TaskExecutor(logger=logger, memory_service=memory_service,
-                                     mcp_client_manager=mcp_client_manager)
+                                     mcp_client_manager=mcp_client_manager, scheduler=self)
         self.tick_interval = tick_interval
         self.max_concurrent = max_concurrent
         self.logger = logger
@@ -269,7 +269,7 @@ class Scheduler:
         async with self._semaphore:
             await self._execute_task(task)
 
-    def _task_routing_fields(self, task: "Task") -> dict:
+    def _task_routing_fields(self, task: "Task") -> Dict[str, int]:
         """Return urgency/importance fields for broadcast events (omit when None)."""
         out = {}
         if task.urgency is not None:

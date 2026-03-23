@@ -73,6 +73,7 @@ _SOURCE_RULES: Optional[Dict[str, Dict[str, int]]] = None
 
 
 def _get_source_rules() -> Dict[str, Dict[str, int]]:
+    """Return cached source rules, loading from config on first access."""
     global _SOURCE_RULES
     if _SOURCE_RULES is None:
         _SOURCE_RULES = _load_source_rules()

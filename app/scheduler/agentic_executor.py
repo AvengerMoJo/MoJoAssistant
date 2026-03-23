@@ -102,9 +102,13 @@ class AgenticExecutor:
     """Executes agentic tasks via an autonomous LLM think-act loop."""
 
     def __init__(
-        self, resource_manager: ResourceManager, logger=None, memory_service=None,
-        mcp_client_manager=None,
-    ):
+        self,
+        resource_manager: ResourceManager,
+        logger: Optional[Any] = None,
+        memory_service: Optional[Any] = None,
+        mcp_client_manager: Optional[Any] = None,
+        scheduler: Optional[Any] = None,
+    ) -> None:
         self._rm = resource_manager
         self._logger = logger
         self._memory_service = memory_service
@@ -115,16 +119,19 @@ class AgenticExecutor:
         from app.scheduler.mcp_client_manager import MCPClientManager
         self._mcp_client_manager = mcp_client_manager if mcp_client_manager is not None else MCPClientManager()
         self._tool_registry.set_mcp_client_manager(self._mcp_client_manager)
+        if scheduler is not None:
+            self._tool_registry.set_scheduler(scheduler)
         self._mcp_tools_discovered = False
         self._policy = SafetyPolicy()
         self._openrouter_model_cache: Dict[str, Dict[str, Any]] = {}
         self._openrouter_model_cache_ttl_seconds = 600
+        self._role_id: Optional[str] = None
 
     def _log(self, message: str, level: str = "info"):
         if self._logger:
             getattr(self._logger, level)(f"[AgenticExecutor] {message}")
 
-    def _record(self, task_id: str, role: str, content: str, iteration: int, **kwargs):
+    def _record(self, task_id: str, role: str, content: str, iteration: int, **kwargs: Any) -> None:
         """Append a message to the session log."""
         self._session_storage.append_message(
             task_id,
@@ -167,6 +174,7 @@ class AgenticExecutor:
         role_prefix = ""
         role_model_preference = None
         role_id = config.get("role_id")
+        self._role_id = role_id  # make role_id available to tool dispatch
         from app.scheduler.policy_monitor import PolicyMonitor
         self._policy_monitor = PolicyMonitor(role_id=None, policy=None)
         if not role_id:
@@ -906,8 +914,8 @@ class AgenticExecutor:
         # Fallback to built-in tools
         if name == "memory_search" and self._memory_service:
             query = args.get("query", "")
-            results = await self._memory_service.get_context_for_query_async(
-                query, max_items=5
+            results = await self._memory_service._search_knowledge_base_async(
+                query, max_items=5, role_id=self._role_id
             )
             return {"query": query, "results": results, "count": len(results)}
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.scheduler.resource_pool import ResourceManager
@@ -36,14 +36,20 @@ class ResourcePoolLLMInterface:
     def __init__(
         self,
         resource_manager: "ResourceManager",
-        tier_preference: Optional[list] = None,
+        tier_preference: Optional[List] = None,
         max_tokens: int = 4096,
-    ):
+    ) -> None:
+        """
+        Args:
+            resource_manager: Shared ResourceManager instance to acquire LLM resources from.
+            tier_preference: Ordered list of ResourceTier values; None uses ResourceManager default.
+            max_tokens: Hard cap on output tokens per call.
+        """
         self._rm = resource_manager
         self._tier_preference = tier_preference  # None = ResourceManager default
         self._max_tokens = max_tokens
 
-    def generate_response(self, query: str, context=None) -> str:
+    def generate_response(self, query: str, context: Optional[str] = None) -> str:
         """
         Synchronous wrapper around async _generate so the dreaming pipeline
         (which calls us synchronously) works without modification.

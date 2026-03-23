@@ -545,6 +545,10 @@ class ToolRegistry:
                             "minimum": 1,
                             "maximum": 20,
                         },
+                        "role_id": {
+                            "type": "string",
+                            "description": "Search this role's private memory in addition to shared memory (e.g. 'ahman', 'rebecca').",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -2608,6 +2612,7 @@ Agent resumes within seconds.
         query = args.get("query", "")
         requested_types = args.get("types")  # None = all
         limit_per_type = min(int(args.get("limit_per_type", 5)), 20)
+        role_id = args.get("role_id")  # optional: search role-private store
 
         if not query:
             return {"status": "error", "message": "query is required"}
@@ -2644,7 +2649,7 @@ Agent resumes within seconds.
         if "documents" in search_types:
             try:
                 docs = await self.memory_service._search_knowledge_base_async(
-                    query, limit_per_type
+                    query, limit_per_type, role_id=role_id
                 )
                 results["documents"] = docs[:limit_per_type]
             except Exception as e:
@@ -2703,9 +2708,11 @@ Agent resumes within seconds.
                     result = await self._process_code_metadata(content, metadata)
                     results.append(result)
                 else:
-                    # Regular document processing
-                    self.memory_service.add_to_knowledge_base(content, metadata)
-                    results.append({"status": "success", "message": "Document added"})
+                    # Regular document processing — route to role store if metadata.role is set
+                    role_id = metadata.get("role")
+                    self.memory_service.add_to_knowledge_base(content, metadata, role_id=role_id)
+                    scope = f"role:{role_id}" if role_id else "shared"
+                    results.append({"status": "success", "message": f"Document added [{scope}]"})
 
             except Exception as e:
                 results.append({"status": "error", "message": str(e)})

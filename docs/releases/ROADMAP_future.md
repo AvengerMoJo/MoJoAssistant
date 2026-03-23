@@ -147,6 +147,29 @@ Infrastructure routing + Policy Enforcement Agent. High-priority events
 reach the user even when no MCP client is open. Policy Agent subscribes
 to the inbox event stream and can block operations before execution.
 
+**Technical debt from v1.2.5 (Carl review — no blockers, tracked here):**
+- 🟡 Race condition in MCPServerManager eager connection — add readiness check before first tool call
+- 🟡 Overly broad `except Exception` in ResourcePoolLLMInterface — tighten to specific error types
+- 🟡 Missing input validation for urgency/importance routing fields — add bounds/type checking
+- 🟡 Non-atomic stop/reconnect in MCPServerManager — make it transactional or add rollback
+- 🟡 Duplicated `["free", "free_api"]` default tier preference — extract to a single shared constant
+
+## v1.3.0
+**Agent Type Classification + Pluggable Workflow Templates** (§25)
+- `agent_type` field in role JSON (provisioner, researcher, reviewer, executor, monitor, orchestrator)
+- `scheduler_add_task` as a dispatchable agent tool — agents queue each other's work without human relay
+- Workflow templates in `config/workflow_templates/{type}.json` (two-layer: system + user override)
+- Template auto-injected into system prompt at task start
+- `schedule_consumer` handoff: provisioner completion auto-queues the consumer agent
+- User-defined custom agent types via `~/.memory/config/agent_types.json`
+
+**One-on-One Role Channel + Role Evolution** (§24)
+- `dialog(role_id, message)` MCP tool — talk directly to any role
+- Role-scoped session continuity across disconnects
+- Explicit memory capture ("remember: X") writes to role private store
+- Post-dialog NineChapter dimension refinement via dream pipeline
+- OpenAI-compatible proxy API (`/v1/models`, `/v1/chat/completions`) — any LLM client talks to any role directly
+
 ## v1.2.5-beta
 Terminal tools + HttpAgentExecutor + config cleanup — complete the computer-use
 story and close the remaining trust-layer gaps.

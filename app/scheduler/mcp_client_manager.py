@@ -71,6 +71,7 @@ class MCPClientManager:
             self._load_config_file(path)
 
     def _load_config_file(self, path: str) -> None:
+        """Parse a single mcp_servers.json file and merge its entries into _servers."""
         if not os.path.exists(path):
             return
 
@@ -98,6 +99,7 @@ class MCPClientManager:
             logger.warning(f"MCPClientManager: failed to load {path}: {e}")
 
     def has_servers(self) -> bool:
+        """Return True if at least one enabled MCP server is configured."""
         return bool(self._servers)
 
     async def connect_all(self) -> Dict[str, List[Any]]:

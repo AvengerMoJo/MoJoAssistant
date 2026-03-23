@@ -148,12 +148,14 @@ class MCPServerManager(BaseAgentManager):
         return await self.stop_project(identifier)
 
     def get_supported_actions(self) -> List[Dict[str, Any]]:
+        """Return the list of custom actions supported by this manager."""
         return [
             {"action": "list_servers", "params": [], "description": "List all MCP servers and their state"},
             {"action": "reconnect_all", "params": [], "description": "Reconnect all configured MCP servers"},
         ]
 
     async def execute_action(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatch a custom action (list_servers, reconnect_all)."""
         if action == "list_servers":
             return await self.list_projects()
         if action == "reconnect_all":

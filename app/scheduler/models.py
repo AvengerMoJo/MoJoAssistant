@@ -48,7 +48,7 @@ class TaskResources:
     max_tokens: Optional[int] = None
     max_duration_seconds: Optional[int] = None
     requires_gpu: bool = False
-    tier_preference: Optional[List[str]] = None  # e.g. ["free", "free_api"]
+    tier_preference: Optional[List[str]] = field(default_factory=lambda: ["free", "free_api"])  # drain free tiers before paid
     max_iterations: int = 10
 
     def to_dict(self) -> Dict[str, Any]:
@@ -115,7 +115,11 @@ class TaskResult:
 
 @dataclass
 class Task:
-    """Scheduled task with metadata and execution state"""
+    """Scheduled task with metadata and execution state.
+
+    urgency and importance (1–5 each) are optional routing hints; their product
+    drives the attention-level floor via AttentionClassifier.
+    """
 
     # Required fields
     id: str

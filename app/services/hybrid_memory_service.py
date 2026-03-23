@@ -20,6 +20,9 @@ class HybridMemoryService(MemoryService):
     Falls back to single-model behavior when multi-model disabled
     """
 
+    # Per-role private knowledge stores: role_id → MultiModelEmbeddingStorage
+    _role_storages: Dict[str, "MultiModelEmbeddingStorage"]
+
     def __init__(
         self,
         data_dir: Optional[str] = None,
@@ -49,6 +52,7 @@ class HybridMemoryService(MemoryService):
 
         self.multi_model_storage = None
         self.embedding_models: Dict[str, SimpleEmbedding] = {}
+        self._role_storages: Dict[str, MultiModelEmbeddingStorage] = {}
 
         if self.multi_model_enabled:
             self._setup_multi_model()
@@ -177,31 +181,41 @@ class HybridMemoryService(MemoryService):
         else:
             super().add_assistant_message(message)
 
+    def _get_role_storage(self, role_id: str) -> "MultiModelEmbeddingStorage":
+        """Lazy-init per-role private storage at ~/.memory/roles/{role_id}/"""
+        if role_id not in self._role_storages:
+            role_dir = os.path.join(get_memory_path(), "roles", role_id)
+            os.makedirs(role_dir, exist_ok=True)
+            self._role_storages[role_id] = MultiModelEmbeddingStorage(data_dir=role_dir)
+        return self._role_storages[role_id]
+
     def add_to_knowledge_base(
-        self, document: str, metadata: Dict[str, Any] | None = None
+        self, document: str, metadata: Dict[str, Any] | None = None,
+        role_id: Optional[str] = None,
     ) -> None:
-        """Add document - uses multi-model if enabled"""
+        """Add document — routes to role-private store when role_id is provided."""
         if metadata is None:
             metadata = {}
 
-        if (
-            self.multi_model_enabled
-            and self.multi_model_storage
-            and self.embedding_models
-        ):
-            try:
-                doc_id = self.multi_model_storage.store_document(
-                    content=document,
-                    metadata=metadata,
-                    embedding_models=self.embedding_models,
-                )
-                self.logger.debug(f"Stored document with multi-model: {doc_id}")
-            except Exception as e:
-                self.logger.warning(
-                    f"Multi-model storage failed, falling back to single-model: {e}"
-                )
-                super().add_to_knowledge_base(document, metadata)
-        else:
+        if not (self.multi_model_enabled and self.embedding_models):
+            super().add_to_knowledge_base(document, metadata)
+            return
+
+        target = self._get_role_storage(role_id) if role_id else self.multi_model_storage
+        if target is None:
+            super().add_to_knowledge_base(document, metadata)
+            return
+
+        try:
+            doc_id = target.store_document(
+                content=document,
+                metadata=metadata,
+                embedding_models=self.embedding_models,
+            )
+            scope = f"role:{role_id}" if role_id else "shared"
+            self.logger.debug(f"Stored document [{scope}]: {doc_id}")
+        except Exception as e:
+            self.logger.warning(f"Multi-model storage failed, falling back: {e}")
             super().add_to_knowledge_base(document, metadata)
 
     def get_context_for_query(
@@ -542,3 +556,52 @@ class HybridMemoryService(MemoryService):
         else:
             # Use base MemoryService implementation for non-multi-model mode
             return super().remove_document(document_id)
+
+    async def _search_knowledge_base_async(
+        self, query: str, max_items: int, role_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Search knowledge base — role-private store + shared store when multi-model enabled."""
+        if not (self.multi_model_enabled and self.multi_model_storage and self.embedding_models):
+            return await super()._search_knowledge_base_async(query, max_items)
+
+        model_priority = ["bge-m3:1024", "gemma:768", "gemma:256"]
+
+        def search_docs():
+            for model_key in model_priority:
+                if model_key not in self.embedding_models:
+                    continue
+                try:
+                    embedding_service = self.embedding_models[model_key]
+                    query_embedding = embedding_service.get_text_embedding(query)
+                    if query_embedding is None:
+                        continue
+
+                    hits = []
+                    # Role-private store first (higher priority)
+                    if role_id:
+                        role_store = self._get_role_storage(role_id)
+                        hits.extend(role_store.search_documents(
+                            query_embedding, model_key, max_results=max_items
+                        ))
+                    # Shared user store
+                    hits.extend(self.multi_model_storage.search_documents(
+                        query_embedding, model_key, max_results=max_items
+                    ))
+
+                    if hits:
+                        hits.sort(key=lambda x: x["similarity_score"], reverse=True)
+                        return [
+                            {
+                                "source": "knowledge_base",
+                                "content": r["text_content"],
+                                "relevance": r["similarity_score"],
+                            }
+                            for r in hits[:max_items]
+                        ]
+                except Exception as e:
+                    self.logger.warning(f"_search_knowledge_base_async {model_key} failed: {e}")
+            return []
+
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            return await loop.run_in_executor(executor, search_docs)
