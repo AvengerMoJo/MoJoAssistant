@@ -68,9 +68,6 @@ class ResourcePoolLLMInterface:
         except (TimeoutError, RuntimeError, OSError) as e:
             logger.error(f"ResourcePoolLLMInterface.generate_response failed: {e}")
             return ""
-        except Exception as e:
-            logger.exception(f"ResourcePoolLLMInterface.generate_response unexpected error: {e}")
-            raise
 
     async def _generate(self, query: str) -> str:
         from app.llm.unified_client import UnifiedLLMClient
@@ -88,32 +85,29 @@ class ResourcePoolLLMInterface:
             logger.warning("ResourcePoolLLMInterface: no resource available")
             return ""
 
+        resource_config = {
+            "base_url": resource.base_url,
+            "model": resource.model,
+            "api_key": resource.api_key,
+            "output_limit": min(resource.output_limit or 4096, self._max_tokens),
+            "message_format": "openai",
+            "provider": resource.provider,
+        }
+        client = UnifiedLLMClient()
+        messages = [{"role": "user", "content": query}]
         try:
-            resource_config = {
-                "base_url": resource.base_url,
-                "model": resource.model,
-                "api_key": resource.api_key,
-                "output_limit": min(resource.output_limit or 4096, self._max_tokens),
-                "message_format": "openai",
-                "provider": resource.provider,
-            }
-            client = UnifiedLLMClient()
-            messages = [{"role": "user", "content": query}]
             data = await client.call_async(
                 messages=messages,
                 resource_config=resource_config,
                 model_override=resource.model,
             )
-            self._rm.record_usage(resource.id, success=True)
-            choices = data.get("choices", [])
-            if not choices:
-                return ""
-            return choices[0].get("message", {}).get("content", "") or ""
         except (TimeoutError, ConnectionError, OSError) as e:
             self._rm.record_usage(resource.id, success=False)
             logger.error(f"ResourcePoolLLMInterface._generate failed: {e}")
             return ""
-        except Exception as e:
-            self._rm.record_usage(resource.id, success=False)
-            logger.exception(f"ResourcePoolLLMInterface._generate unexpected error: {e}")
-            raise
+
+        self._rm.record_usage(resource.id, success=True)
+        choices = data.get("choices", [])
+        if not choices:
+            return ""
+        return choices[0].get("message", {}).get("content", "") or ""

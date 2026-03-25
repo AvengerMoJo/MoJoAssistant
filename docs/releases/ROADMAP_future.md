@@ -166,13 +166,15 @@ all the same blocking/auditing outcomes.
 - Bidirectional ntfy HITL reply flow
 
 **Gaps that remain open (deferred to v1.2.7 or later):**
-- `"local_only": true` task/role flag — replaced by `data_boundary.allowed_tiers`
-  but the simple one-liner flag was never added; add in v1.2.7 as syntactic sugar
-  over the existing tier enforcement.
+- ✅ `"local_only": true` task/role flag — shipped in v1.2.6; syntactic sugar over
+  `data_boundary: {allow_external_mcp: false, allowed_tiers: ["free"]}`.
+  Explicit `data_boundary` values take precedence over `local_only` defaults.
+- ✅ Automated tests for all policy checkers — 32 unit tests in
+  `tests/unit/test_policy_checkers.py` cover `StaticPolicyChecker`,
+  `ContentAwarePolicyChecker`, `DataBoundaryChecker`, `ContextAwarePolicyChecker`,
+  `PolicyMonitor` pipeline, and `local_only` shorthand.
 - Inbox-subscribing `PolicyAgent` (separate process) — still valuable for
   cross-agent policy enforcement and audit reasoning; target v1.3.x.
-- No automated tests for `DataBoundaryChecker`, `ContextAwarePolicyChecker`,
-  `requires_tool_use`, or tmux socket isolation; add in v1.2.7.
 
 **Infrastructure routing — superseded (2026-03-24):**
 The original goal ("high-priority events reach user when no MCP client is open")
@@ -187,7 +189,7 @@ good-to-have in v1.3.x if urgency demands it.
 - ✅ Missing input validation for urgency/importance routing fields — bounds/type checking added
 - ✅ Duplicated `["free", "free_api"]` default tier preference — extracted to `DEFAULT_TIER_PREFERENCE` constant
 - ✅ Per-task tmux session isolation — unique `/tmp/mojo-task-{id}.sock` per task
-- 🟡 Overly broad `except Exception` in ResourcePoolLLMInterface — current code logs + re-raises (acceptable); tighten error types in v1.2.7
+- ✅ Overly broad `except Exception` in ResourcePoolLLMInterface — removed; transport errors caught by name, unexpected errors propagate naturally
 - 🟡 Non-atomic stop/reconnect in MCPServerManager — still open; add rollback in v1.2.7
 
 ## v1.3.0
@@ -461,6 +463,6 @@ text and loses its typed structure before dreaming can see it.
 | Infrastructure routing | Reachability | ~~v1.2.6~~ superseded — ntfy + dashboard + get_content cover this |
 | Policy checker pipeline (inline) | Pre-execution blocking, data boundary, violation audit | ✅ v1.2.6 |
 | Policy Enforcement Agent (inbox-based) | Cross-agent proactive blocking with reasoning | v1.3.x |
-| `local_only` task flag | Syntactic sugar over allowed_tiers | v1.2.7 |
+| `local_only` task flag | Syntactic sugar over allowed_tiers | ✅ v1.2.6 |
 | Inbox → Dreaming → Knowledge | Institutional memory, pattern learning | v1.2.x |
 | Message passing + containerization | Fault isolation, language agnosticism, scale | v2.x |
