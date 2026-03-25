@@ -18,6 +18,8 @@ Extending:
 from app.scheduler.policy.base import PolicyChecker, PolicyDecision
 from app.scheduler.policy.static import StaticPolicyChecker
 from app.scheduler.policy.content import ContentAwarePolicyChecker
+from app.scheduler.policy.data_boundary_checker import DataBoundaryChecker
+from app.scheduler.policy.context import ContextAwarePolicyChecker
 from app.scheduler.policy.monitor import PolicyMonitor
 
 __all__ = [
@@ -25,5 +27,7 @@ __all__ = [
     "PolicyDecision",
     "StaticPolicyChecker",
     "ContentAwarePolicyChecker",
+    "DataBoundaryChecker",
+    "ContextAwarePolicyChecker",
     "PolicyMonitor",
 ]

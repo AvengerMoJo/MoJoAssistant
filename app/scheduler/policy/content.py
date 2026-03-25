@@ -5,8 +5,10 @@ Loads regex patterns from config/policy_patterns.json (system layer) and
 ~/.memory/config/policy_patterns.json (personal overlay, merged at startup).
 
 Pattern severity:
-  "block" — reject the tool call, emit audit event
-  "warn"  — allow but log a warning
+  "block" — reject the tool call and notify the user
+  "warn"  — also rejected; any match is treated as a block.
+            The 'warn' level only affects the notification severity
+            (warning vs error) — the tool call never proceeds.
 
 This checker is intentionally simple and fast — pure regex, no LLM.
 It is the foundation; a future LLMPolicyChecker or MCPPolicyChecker can
@@ -105,13 +107,17 @@ class ContentAwarePolicyChecker(PolicyChecker):
                     f"[{pattern['name']}] {description} — "
                     f"matched in '{tool_name}' args: {snippet!r}"
                 )
-                if severity == "block":
-                    return PolicyDecision.block(
-                        reason=msg,
-                        checker=self.name,
-                        metadata={"pattern": pattern["name"], "tool": tool_name},
-                    )
-                else:  # warn
-                    return PolicyDecision.allow(reason=msg, warn=True, checker=self.name)
+                # Any match — regardless of pattern severity — is a block.
+                # 'warn'-tagged patterns use severity="warning" in violation events;
+                # 'block'-tagged patterns use severity="error". Both halt the call.
+                return PolicyDecision.block(
+                    reason=msg,
+                    checker=self.name,
+                    metadata={
+                        "pattern": pattern["name"],
+                        "tool": tool_name,
+                        "pattern_severity": severity,
+                    },
+                )
 
         return PolicyDecision.allow(checker=self.name)

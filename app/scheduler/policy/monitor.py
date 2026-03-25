@@ -39,6 +39,8 @@ from typing import Any, Dict, List, Optional, Type
 from app.scheduler.policy.base import PolicyChecker, PolicyDecision
 from app.scheduler.policy.static import StaticPolicyChecker
 from app.scheduler.policy.content import ContentAwarePolicyChecker
+from app.scheduler.policy.data_boundary_checker import DataBoundaryChecker
+from app.scheduler.policy.context import ContextAwarePolicyChecker
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,8 @@ logger = logging.getLogger(__name__)
 _CHECKER_REGISTRY: Dict[str, Type[PolicyChecker]] = {
     "static": StaticPolicyChecker,
     "content": ContentAwarePolicyChecker,
+    "data_boundary": DataBoundaryChecker,
+    "context": ContextAwarePolicyChecker,
 }
 
 
@@ -65,14 +69,20 @@ class PolicyMonitor:
         role_id: Optional[str],
         policy: Optional[Dict[str, Any]],
         checkers: Optional[List[PolicyChecker]] = None,
+        data_boundary: Optional[Dict[str, Any]] = None,
+        task_id: Optional[str] = None,
     ) -> None:
         self.role_id = role_id
         self._policy = policy or {}
         self._checkers: List[PolicyChecker] = checkers or []
+        self._violation_total: int = 0  # cumulative blocks across all calls this task
         self._context: Dict[str, Any] = {
             "role_id": role_id,
+            "task_id": task_id,
             "policy": self._policy,
+            "data_boundary": data_boundary or {},
             "call_counts": {},
+            "violation_total": 0,
         }
         for checker in self._checkers:
             checker.configure(self._context)
@@ -87,6 +97,7 @@ class PolicyMonitor:
         cls,
         role_id: Optional[str],
         role: Optional[Dict[str, Any]],
+        task_id: Optional[str] = None,
     ) -> "PolicyMonitor":
         """
         Build a PolicyMonitor from a loaded role dict.
@@ -94,14 +105,24 @@ class PolicyMonitor:
         The role's policy block may specify a 'checkers' list to control which
         checkers run and in what order. Defaults to ["static", "content"].
 
+        data_boundary is read from role["data_boundary"] and passed into
+        checker context so DataBoundaryChecker can enforce it.
+
+        ContextAwarePolicyChecker should always be last — it reads
+        violation_total accumulated by earlier checkers in the same task.
+
         Example:
             "policy": {
-                "checkers": ["static", "content"],   # default
-                "denied_tools": ["bash_exec"],
-                "content_check": true
+                "checkers": ["static", "content", "data_boundary", "context"],
+                "context_rules": { "max_violations_before_halt": 3 }
+            }
+            "data_boundary": {
+                "allow_external_mcp": false,
+                "allowed_tiers": ["free"]
             }
         """
         policy = (role.get("policy") if role else None) or {}
+        data_boundary = (role.get("data_boundary") if role else None) or {}
         checker_names: List[str] = policy.get("checkers", ["static", "content"])
 
         checkers: List[PolicyChecker] = []
@@ -112,7 +133,13 @@ class PolicyMonitor:
                 continue
             checkers.append(klass())
 
-        return cls(role_id=role_id, policy=policy, checkers=checkers)
+        return cls(
+            role_id=role_id,
+            policy=policy,
+            checkers=checkers,
+            data_boundary=data_boundary,
+            task_id=task_id,
+        )
 
     # ------------------------------------------------------------------
     # Public interface (unchanged from old PolicyMonitor)
@@ -122,10 +149,18 @@ class PolicyMonitor:
         """
         Run all checkers. First BLOCK decision wins.
         Returns PolicyDecision(allowed=True) if all checkers pass.
+
+        violation_total in context is updated before each call so
+        ContextAwarePolicyChecker (if last) can enforce a halt ceiling.
         """
+        # Expose accumulated violation count to checkers (read by ContextAwarePolicyChecker)
+        self._context["violation_total"] = self._violation_total
+
         for checker in self._checkers:
             decision = checker.check(tool_name, args, self._context)
             if not decision.allowed:
+                self._violation_total += 1
+                self._context["violation_total"] = self._violation_total
                 logger.warning(
                     "PolicyMonitor [%s]: BLOCK '%s' — %s",
                     checker.name, tool_name, decision.reason,
