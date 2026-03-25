@@ -3252,7 +3252,10 @@ Agent resumes within seconds.
         from datetime import datetime
 
         try:
-            task_id = args.get("task_id")
+            task_id = args.get("task_id") or args.get("id")
+            if not task_id:
+                import uuid as _uuid
+                task_id = str(_uuid.uuid4())[:8]
             task_type_str = args.get("task_type")
             schedule_str = args.get("schedule")
             cron_expression = args.get("cron_expression")
@@ -3264,7 +3267,7 @@ Agent resumes within seconds.
             importance = args.get("importance")
 
             # Validate urgency / importance: must be int 1–5 if provided
-            def _validate_routing_field(name: str, value) -> Optional[int]:
+            def _validate_routing_field(name: str, value):
                 if value is None:
                     return None
                 try:

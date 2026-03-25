@@ -143,9 +143,16 @@ sensitive data before it crosses a boundary. Configurable per role:
 redact, abstract, or summarise before external exposure.
 
 ## v1.2.6-beta
-Infrastructure routing + Policy Enforcement Agent. High-priority events
-reach the user even when no MCP client is open. Policy Agent subscribes
+Policy Enforcement Agent + agentic executor hardening. Policy Agent subscribes
 to the inbox event stream and can block operations before execution.
+
+**Infrastructure routing — superseded (2026-03-24):**
+The original goal ("high-priority events reach user when no MCP client is open")
+is now fully covered by three independent channels: ntfy push (phone/desktop,
+works without any client), the read-only dashboard (browser), and MCP
+`get_content` polling. A dedicated file/terminal adapter adds nothing a user
+would reach for. Bidirectional ntfy (reply from notification) is tracked as a
+good-to-have in v1.3.x if urgency demands it.
 
 **Technical debt from v1.2.5 (Carl review — no blockers, tracked here):**
 - 🟡 Race condition in MCPServerManager eager connection — add readiness check before first tool call
@@ -423,7 +430,7 @@ text and loses its typed structure before dreaming can see it.
 | Task session compaction (chunking + local LLM summary) | Long session retrievability | v1.2.4 |
 | PII classification | Sensitive data leakage | v1.2.5 |
 | Sanitization layer | External exposure | v1.2.5 |
-| Infrastructure routing | Reachability | v1.2.6 |
+| Infrastructure routing | Reachability | ~~v1.2.6~~ superseded — ntfy + dashboard + get_content cover this |
 | Policy Enforcement Agent | Proactive blocking, context-aware safety | v1.2.6 |
 | Inbox → Dreaming → Knowledge | Institutional memory, pattern learning | v1.2.x |
 | Message passing + containerization | Fault isolation, language agnosticism, scale | v2.x |

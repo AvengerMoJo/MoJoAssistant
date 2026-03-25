@@ -5,9 +5,9 @@ Circular buffer that persists SSE events to disk so non-WebSocket clients
 can poll for recent activity via the get_recent_events MCP tool.
 """
 
-import asyncio
 import json
 import os
+import threading
 import uuid
 from collections import deque
 from datetime import datetime
@@ -22,16 +22,39 @@ class EventLog:
 
     - In-memory deque capped at MAX_EVENTS (oldest dropped when full).
     - Persisted atomically to PATH after every append.
-    - Thread-safe via asyncio lock.
+    - Process-level singleton: EventLog() always returns the same instance
+      so the MCP server and the agentic executor (running in a separate
+      daemon thread with its own event loop) share one consistent view
+      and never overwrite each other's writes.
+    - Thread-safe via threading.Lock (works across different event loops /
+      threads; asyncio.Lock binds to one event loop and breaks cross-thread use).
     """
 
     MAX_EVENTS = 500
     PATH = get_memory_subpath("events.json")
 
+    _instance: "Optional[EventLog]" = None
+    _instance_lock: threading.Lock = threading.Lock()
+    _instance_initialized: bool = False
+    # Class-level write lock used by append/purge — always a threading.Lock so
+    # it is safe to acquire from any thread or event loop, not just the one that
+    # first created the instance (asyncio.Lock would bind to one event loop).
+    _write_lock: threading.Lock = threading.Lock()
+
+    def __new__(cls, path: str = None, max_events: int = None):
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self, path: str = None, max_events: int = None):
+        with self.__class__._instance_lock:
+            if self._instance_initialized:
+                return
+            self.__class__._instance_initialized = True
         self._path = path or self.PATH
         self._max = max_events or self.MAX_EVENTS
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
         self._events: deque[Dict[str, Any]] = deque(maxlen=self._max)
         self._load()
 
@@ -54,7 +77,7 @@ class EventLog:
             event = dict(event)
             event["hitl_level"] = AttentionClassifier.classify(event)
 
-        async with self._lock:
+        with self.__class__._write_lock:
             self._events.append(event)
             self._persist()
 
@@ -91,7 +114,7 @@ class EventLog:
 
     async def purge_before(self, timestamp: str) -> int:
         """Remove events older than timestamp. Returns count removed."""
-        async with self._lock:
+        with self.__class__._write_lock:
             before = len(self._events)
             kept = [e for e in self._events if e.get("timestamp", "") >= timestamp]
             self._events = deque(kept, maxlen=self._max)
