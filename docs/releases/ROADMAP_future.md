@@ -240,6 +240,83 @@ when — and here is proof nothing else did."
 
 ---
 
+## v1.0 Public Release — dropping beta
+
+This is a separate gate from v1.3.0 graduation. v1.3.0 is a feature milestone;
+v1.0 is a quality and trust milestone. Beta comes off when a stranger can install
+MoJoAssistant on a clean machine, run one command, and get a working system with
+a clear, honest picture of what it does and doesn't do.
+
+### Non-negotiable before publish
+
+**1. Audit trail + §21 enforcement (v1.2.4 core)**
+The privacy claim — "here is exactly what left your device" — is unverifiable
+without the append-only audit log and `audit_get(task_id)`. Until §21 enforcement
+makes `role_id` mandatory at `scheduler_add_task` and rejects inline
+`system_prompt`, the entire policy layer can be bypassed by omission. These two
+items are the linchpin. Everything else is polish on top of a promise that isn't
+yet provable.
+
+**2. Tool-calling reliability on the supported path**
+The Qwen/LMStudio execution path is currently too unreliable to present as
+dependable agent execution. Before publish, one model+provider combination must
+be designated the supported path and must pass the smoke suite consistently.
+Everything else is explicitly experimental.
+
+**3. Dependency resilience**
+Integration tests must not fail because an optional package (e.g.
+`sentence_transformers`) is absent — unless that absence is explicitly documented
+as unsupported and the test is marked accordingly. Failing CI on a clean install
+due to an undeclared optional dependency is a broken install story, not a test
+gap.
+
+**4. Release definition — one documented supported path**
+One document (README or INSTALL.md) that specifies:
+- Supported OS + Python version
+- Required env vars (`.env.example` is necessary but not sufficient — document
+  which vars are actually required vs optional and what breaks without them)
+- Required models: which provider, which model, what context size
+- What works out of the box vs what requires additional configuration
+- What is explicitly marked experimental
+
+**5. Smoke suite — one command, clean machine**
+A single command (e.g. `make smoke` or `pytest tests/smoke/`) that:
+- Passes on a clean install with only required dependencies
+- Exercises: scheduler tick, memory read/write, MCP tool surface, policy check,
+  and at least one end-to-end agent loop (task queued → executed → result logged)
+- Produces a clear PASS/FAIL with no ambiguous skips
+- Does not require external API keys (uses local/free tier only)
+
+**6. Scope cut — stable surface vs experimental**
+At publish time, explicitly label:
+- **Stable**: scheduler, HITL inbox, policy checker pipeline, memory search,
+  MCP tool surface, data boundary enforcement, ntfy push, role system
+- **Experimental**: Qwen/LMStudio agent execution, HttpAgentExecutor,
+  coding agent integration, ZeroClaw/OpenClaw integration, PII classification
+Users should know what they're getting, not discover the edges themselves.
+
+**7. Test health**
+No known test failures in CI on the supported path. Tests that exercise
+unsupported/optional paths must be marked `@pytest.mark.optional` or similar
+and skipped by default. The 15 currently pre-existing failures must be resolved
+or explicitly skipped with a documented reason before publish.
+
+### What can ship post-v1.0
+
+- PII classification (v1.2.5) — defense-in-depth; data boundary enforcement
+  already covers the core privacy promise
+- HttpAgentExecutor / external agent integrations — compelling, not foundational
+- Inbox distillation / task session compaction — polish
+- Message passing / containerization — v2.x
+
+### The publish bar in one sentence
+
+A technical user can install MoJoAssistant, run the smoke suite, read the
+release definition, and trust that what it says it does, it actually does —
+and that what it doesn't mention, it doesn't quietly attempt.
+
+---
+
 ## Future Releases
 
 ### Data Boundary Enforcement
