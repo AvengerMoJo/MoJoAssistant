@@ -231,13 +231,27 @@ class DynamicToolRegistry:
             ),
             ToolDefinition(
                 name="bash_exec",
-                description="Execute bash command. Only safe commands in whitelist allowed.",
+                description=(
+                    "Run shell commands on this machine. Accepts a single command string "
+                    "or a list of commands to execute sequentially. Destructive and "
+                    "privileged commands remain blocked by the sandbox policy."
+                ),
                 danger_level="high",
                 requires_auth=True,
                 category="exec",
                 parameters={"type": "object", "properties": {
-                    "command": {"type": "string", "description": "Bash command to execute"},
-                }, "required": ["command"]},
+                    "commands": {
+                        "description": "Shell command or list of shell commands to run sequentially",
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Backward-compatible alias for a single shell command",
+                    },
+                }, "required": []},
             ),
             ToolDefinition(
                 name="scheduler_add_task",
@@ -579,10 +593,24 @@ class DynamicToolRegistry:
         return {"success": False, "error": f"Failed to schedule task '{task_id}' — may already exist"}
 
     async def _bash_exec(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute bash command with safety limits."""
-        command = args.get("command")
-        if not command:
-            return {"success": False, "error": "Missing 'command' parameter"}
+        """Execute shell command(s) with safety limits."""
+        raw_commands = args.get("commands", args.get("command"))
+        if raw_commands is None:
+            return {"success": False, "error": "Missing 'commands' parameter"}
+
+        if isinstance(raw_commands, str):
+            commands = [raw_commands]
+        elif isinstance(raw_commands, list) and all(isinstance(cmd, str) for cmd in raw_commands):
+            commands = raw_commands
+        else:
+            return {
+                "success": False,
+                "error": "'commands' must be a string or list of strings",
+            }
+
+        commands = [cmd.strip() for cmd in commands if cmd and cmd.strip()]
+        if not commands:
+            return {"success": False, "error": "No shell commands provided"}
 
         # Block destructive commands — everything else is allowed.
         # Rule: read/observe/query = OK; modify/delete/overwrite = blocked.
@@ -611,34 +639,74 @@ class DynamicToolRegistry:
             "mv", "cp", "tee", "truncate",
         }
 
-        cmd_parts = command.split()
-        base_cmd = cmd_parts[0]
+        results = []
+        for command in commands:
+            cmd_parts = command.split()
+            if not cmd_parts:
+                continue
+            base_cmd = cmd_parts[0]
 
-        if base_cmd in BLOCKED_COMMANDS:
-            return {
-                "success": False,
-                "error": f"Command '{base_cmd}' is blocked — destructive or privileged commands are not permitted.",
-            }
+            if base_cmd in BLOCKED_COMMANDS:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Command '{base_cmd}' is blocked — destructive or privileged "
+                        "commands are not permitted."
+                    ),
+                    "results": results,
+                }
 
-        try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=60,
-                cwd=os.getcwd(),
-            )
-            return {
-                "success": result.returncode == 0,
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=os.getcwd(),
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "success": False,
+                    "error": f"Command timed out (60s limit): {command}",
+                    "results": results,
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "results": results,
+                }
+
+            command_result = {
+                "command": command,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "returncode": result.returncode,
+                "success": result.returncode == 0,
             }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Command timed out (60s limit)"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+            results.append(command_result)
+
+            if result.returncode != 0:
+                return {
+                    "success": False,
+                    "results": results,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "returncode": result.returncode,
+                    "error": f"Command failed: {command}",
+                }
+
+        combined_stdout = "".join(item["stdout"] for item in results)
+        combined_stderr = "".join(item["stderr"] for item in results)
+        return {
+            "success": True,
+            "results": results,
+            "stdout": combined_stdout,
+            "stderr": combined_stderr,
+            "returncode": 0,
+            "executed": len(results),
+        }
 
     async def _memory_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Search memory using memory service."""

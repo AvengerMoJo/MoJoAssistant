@@ -55,7 +55,7 @@
       "category": "exec",
       "danger_level": "high",
       "requires_auth": true,
-      "description": "Execute a shell command. Restricted to a safe whitelist of approved commands. Requires explicit user authorization. Use for running builds, scripts, or system queries that cannot be done with other tools."
+      "description": "Run one shell command or a short list of shell commands sequentially. Restricted by a destructive-command blocklist and explicit authorization. Use for builds, scripts, or system queries that cannot be done with other tools."
     },
     "run_tests":       {
       "category": "exec",
