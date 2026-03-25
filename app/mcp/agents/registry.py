@@ -20,10 +20,24 @@ class AgentRegistry:
     Provides a single entry point for all agent lifecycle operations.
     """
 
-    def __init__(self, logger=None):
+    def __init__(self, logger: Optional[Any] = None, mcp_client_manager: Optional[Any] = None) -> None:
+        """
+        Args:
+            logger: Optional logger instance for diagnostic messages.
+            mcp_client_manager: If provided, an MCPServerManager is registered automatically.
+        """
         self._managers: Dict[str, BaseAgentManager] = {}
         self._init_errors: Dict[str, str] = {}
         self.logger = logger
+
+        # MCP server manager — always registered when a client manager is provided
+        if mcp_client_manager is not None:
+            try:
+                from app.mcp.agents.mcp_server_manager import MCPServerManager
+                self._managers["mcp_server"] = MCPServerManager(mcp_client_manager)
+            except Exception as e:
+                self._init_errors["mcp_server"] = str(e)
+                self._log(f"MCPServerManager failed to initialize: {e}", "warning")
 
         # Auto-register enabled managers
         if os.getenv("ENABLE_OPENCODE", "false").lower() in ("true", "1", "yes"):
@@ -42,7 +56,7 @@ class AgentRegistry:
                 self._init_errors["claude_code"] = str(e)
                 self._log(f"Claude Code Manager failed to initialize: {e}", "warning")
 
-    def _log(self, message: str, level: str = "info"):
+    def _log(self, message: str, level: str = "info") -> None:
         if self.logger:
             getattr(self.logger, level, self.logger.info)(
                 f"[AgentRegistry] {message}"

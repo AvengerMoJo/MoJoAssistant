@@ -9,6 +9,11 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 from enum import Enum
 
+# Default tier drain order: exhaust free resources before touching paid ones.
+# Import this constant wherever a tier_preference default is needed so there
+# is a single source of truth.
+DEFAULT_TIER_PREFERENCE: List[str] = ["free", "free_api"]
+
 
 class TaskStatus(Enum):
     """Task execution status"""
@@ -48,7 +53,7 @@ class TaskResources:
     max_tokens: Optional[int] = None
     max_duration_seconds: Optional[int] = None
     requires_gpu: bool = False
-    tier_preference: Optional[List[str]] = None  # e.g. ["free", "free_api"]
+    tier_preference: Optional[List[str]] = field(default_factory=lambda: list(DEFAULT_TIER_PREFERENCE))
     max_iterations: int = 10
 
     def to_dict(self) -> Dict[str, Any]:
@@ -95,7 +100,8 @@ class TaskResult:
     metrics: Dict[str, Any] = field(default_factory=dict)
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
-    waiting_for_input: Optional[str] = None  # question the agent asked the user
+    waiting_for_input: Optional[str] = None        # question the agent asked the user
+    waiting_for_input_choices: Optional[List[str]] = None  # optional choice labels
 
     def __post_init__(self):
         if self.created_at is None:
@@ -115,7 +121,11 @@ class TaskResult:
 
 @dataclass
 class Task:
-    """Scheduled task with metadata and execution state"""
+    """Scheduled task with metadata and execution state.
+
+    urgency and importance (1–5 each) are optional routing hints; their product
+    drives the attention-level floor via AttentionClassifier.
+    """
 
     # Required fields
     id: str
@@ -153,6 +163,11 @@ class Task:
 
     # Human-in-the-loop: question waiting for user reply
     pending_question: Optional[str] = None
+
+    # Urgency and importance (1–5 each). Drive attention routing via AttentionClassifier.
+    # High urgency × high importance → higher hitl_level floor on task events.
+    urgency: Optional[int] = None
+    importance: Optional[int] = None
 
     def is_due(self) -> bool:
         """Check if task is due to run"""
@@ -209,6 +224,8 @@ class Task:
             "last_error": self.last_error,
             "last_failed_at": self.last_failed_at.isoformat() if self.last_failed_at else None,
             "pending_question": self.pending_question,
+            "urgency": self.urgency,
+            "importance": self.importance,
         }
         return data
 
@@ -237,5 +254,9 @@ class Task:
             data["resources"] = TaskResources.from_dict(data["resources"])
         if "result" in data and data["result"]:
             data["result"] = TaskResult.from_dict(data["result"])
+
+        # Tolerate dicts that predate urgency/importance fields
+        data.setdefault("urgency", None)
+        data.setdefault("importance", None)
 
         return cls(**data)

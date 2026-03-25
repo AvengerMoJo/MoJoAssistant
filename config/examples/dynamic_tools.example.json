@@ -39,7 +39,7 @@
     },
     {
       "name": "bash_exec",
-      "description": "Execute bash command. Only safe commands in whitelist allowed.",
+      "description": "Run shell commands on this machine. Accepts a single command string or a list of commands to execute sequentially. Destructive and privileged commands remain blocked by the sandbox policy.",
       "danger_level": "high",
       "version": "1.0.0",
       "requires_auth": true,

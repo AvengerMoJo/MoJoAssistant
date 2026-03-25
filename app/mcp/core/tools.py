@@ -44,10 +44,16 @@ class ToolRegistry:
         # Initialize git service
         self.git_service = GitService()
 
+        # Initialize shared MCPClientManager — single instance for both tool
+        # dispatch (AgenticExecutor) and lifecycle management (AgentRegistry).
+        from app.scheduler.mcp_client_manager import MCPClientManager
+        self._mcp_client_manager = MCPClientManager()
+
         # Initialize unified Agent Registry (replaces separate manager init)
         from app.mcp.agents.registry import AgentRegistry
 
-        self.agent_registry = AgentRegistry(logger=logger)
+        self.agent_registry = AgentRegistry(logger=logger,
+                                            mcp_client_manager=self._mcp_client_manager)
 
         # Initialize persistent event log
         from app.mcp.adapters.event_log import EventLog
@@ -76,6 +82,7 @@ class ToolRegistry:
             logger=logger,
             memory_service=memory_service,
             sse_notifier=self._sse_notifier,
+            mcp_client_manager=self._mcp_client_manager,
         )
         self.scheduler_thread = None
 
@@ -537,6 +544,10 @@ class ToolRegistry:
                             "default": 5,
                             "minimum": 1,
                             "maximum": 20,
+                        },
+                        "role_id": {
+                            "type": "string",
+                            "description": "Search this role's private memory in addition to shared memory (e.g. 'ahman', 'rebecca').",
                         },
                     },
                     "required": ["query"],
@@ -1039,6 +1050,18 @@ class ToolRegistry:
                             "type": "string",
                             "description": "Human-readable description of what this task does",
                         },
+                        "urgency": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "description": "How time-sensitive is this task? 1=can wait, 5=do it now. Combined with importance to set a minimum attention level on task events.",
+                        },
+                        "importance": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "description": "How much does this task matter? 1=nice-to-have, 5=critical outcome. Combined with urgency to set a minimum attention level on task events.",
+                        },
                     },
                     "required": ["task_id", "task_type"],
                 },
@@ -1399,7 +1422,7 @@ class ToolRegistry:
                 "name": "scheduler",
                 "description": (
                     "Scheduler management hub. Call with no action for help menu.\n\n"
-                    "action='add',    task_id, type, goal, ...   — schedule a task\n"
+                    "action='add',    task_id, type, goal, role_id?, available_tools?, ... — schedule a task\n"
                     "action='list',   status?, priority?, limit? — list tasks\n"
                     "action='get',    task_id                    — task detail\n"
                     "action='remove', task_id                    — remove a task\n"
@@ -1419,7 +1442,16 @@ class ToolRegistry:
                         "goal": {"type": "string", "description": "Task goal (add action)."},
                         "cron": {"type": "string", "description": "Cron expression (add action)."},
                         "priority": {"type": "string", "enum": ["low", "normal", "high"]},
-                        "role_id": {"type": "string", "description": "Role for assistant tasks."},
+                        "role_id": {"type": "string", "description": "Role for assistant tasks (add action)."},
+                        "available_tools": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Tools the assistant may use (add action, type='assistant'). Call action='list_tools' to see all available tool names. If omitted the assistant only has ask_user.",
+                        },
+                        "max_iterations": {
+                            "type": "integer",
+                            "description": "Max think-act iterations before the task fails (add action, default 10).",
+                        },
                         "status": {"type": "string", "description": "Filter by status (list action)."},
                         "limit": {"type": "integer"},
                         "before_date": {"type": "string", "description": "ISO date for purge cutoff."},
@@ -2580,6 +2612,7 @@ Agent resumes within seconds.
         query = args.get("query", "")
         requested_types = args.get("types")  # None = all
         limit_per_type = min(int(args.get("limit_per_type", 5)), 20)
+        role_id = args.get("role_id")  # optional: search role-private store
 
         if not query:
             return {"status": "error", "message": "query is required"}
@@ -2616,7 +2649,7 @@ Agent resumes within seconds.
         if "documents" in search_types:
             try:
                 docs = await self.memory_service._search_knowledge_base_async(
-                    query, limit_per_type
+                    query, limit_per_type, role_id=role_id
                 )
                 results["documents"] = docs[:limit_per_type]
             except Exception as e:
@@ -2675,9 +2708,11 @@ Agent resumes within seconds.
                     result = await self._process_code_metadata(content, metadata)
                     results.append(result)
                 else:
-                    # Regular document processing
-                    self.memory_service.add_to_knowledge_base(content, metadata)
-                    results.append({"status": "success", "message": "Document added"})
+                    # Regular document processing — route to role store if metadata.role is set
+                    role_id = metadata.get("role")
+                    self.memory_service.add_to_knowledge_base(content, metadata, role_id=role_id)
+                    scope = f"role:{role_id}" if role_id else "shared"
+                    results.append({"status": "success", "message": f"Document added [{scope}]"})
 
             except Exception as e:
                 results.append({"status": "error", "message": str(e)})
@@ -3217,7 +3252,10 @@ Agent resumes within seconds.
         from datetime import datetime
 
         try:
-            task_id = args.get("task_id")
+            task_id = args.get("task_id") or args.get("id")
+            if not task_id:
+                import uuid as _uuid
+                task_id = str(_uuid.uuid4())[:8]
             task_type_str = args.get("task_type")
             schedule_str = args.get("schedule")
             cron_expression = args.get("cron_expression")
@@ -3225,6 +3263,23 @@ Agent resumes within seconds.
             config = args.get("config", {})
             description = args.get("description")
             resources_dict = args.get("resources", {})
+            urgency = args.get("urgency")
+            importance = args.get("importance")
+
+            # Validate urgency / importance: must be int 1–5 if provided
+            def _validate_routing_field(name: str, value):
+                if value is None:
+                    return None
+                try:
+                    v = int(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"'{name}' must be an integer, got {value!r}")
+                if not (1 <= v <= 5):
+                    raise ValueError(f"'{name}' must be between 1 and 5, got {v}")
+                return v
+
+            urgency = _validate_routing_field("urgency", urgency)
+            importance = _validate_routing_field("importance", importance)
 
             # Convert strings to enums
             task_type = TaskType(task_type_str)
@@ -3273,6 +3328,10 @@ Agent resumes within seconds.
                     }
 
             # Create task
+            # max_iterations can come from config (hub shorthand) or resources dict
+            if isinstance(config, dict) and "max_iterations" in config:
+                resources_dict = dict(resources_dict) if isinstance(resources_dict, dict) else {}
+                resources_dict.setdefault("max_iterations", config["max_iterations"])
             resources = (
                 TaskResources.from_dict(resources_dict)
                 if isinstance(resources_dict, dict)
@@ -3288,6 +3347,8 @@ Agent resumes within seconds.
                 resources=resources,
                 description=description,
                 created_by="user",
+                urgency=urgency,
+                importance=importance,
             )
 
             # Add to scheduler
@@ -5023,6 +5084,10 @@ Agent resumes within seconds.
                 config["goal"] = add_args["goal"]
             if add_args.get("role_id") and "role_id" not in config:
                 config["role_id"] = add_args["role_id"]
+            if add_args.get("available_tools") and "available_tools" not in config:
+                config["available_tools"] = add_args["available_tools"]
+            if add_args.get("max_iterations") and "max_iterations" not in config:
+                config["max_iterations"] = add_args["max_iterations"]
             add_args["config"] = config
             return await self._execute_scheduler_add_task(add_args)
         elif action == "list":

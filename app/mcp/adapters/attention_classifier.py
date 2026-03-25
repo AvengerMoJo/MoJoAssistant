@@ -20,6 +20,13 @@ Per-source rules add min/max caps on top of the base level:
   - dreaming   → max_level 1  (never interrupt for memory consolidation)
   - agent      → min_level 2  (external coding agent events always notable)
   - scheduled  → max_level 2  (cron tasks are quiet unless they ask to notify)
+
+Urgency × importance matrix (applied before per-source caps):
+  score = urgency * importance  (each 1–5, so score range 1–25)
+  score >= 16  →  floor 4   (e.g. Ahman urgent+critical research)
+  score >= 9   →  floor 3   (e.g. scheduled important task)
+  score >= 4   →  floor 2   (e.g. medium-weight task)
+  score >= 2   →  floor 1   (low urgency or low importance)
 """
 
 import json
@@ -66,6 +73,7 @@ _SOURCE_RULES: Optional[Dict[str, Dict[str, int]]] = None
 
 
 def _get_source_rules() -> Dict[str, Dict[str, int]]:
+    """Return cached source rules, loading from config on first access."""
     global _SOURCE_RULES
     if _SOURCE_RULES is None:
         _SOURCE_RULES = _load_source_rules()
@@ -122,6 +130,29 @@ class AttentionClassifier:
         # Level 0 — background noise (heartbeats, ticks, dreaming, etc.)
         else:
             level = 0
+
+        # --- Urgency × importance floor ---
+        # When a task carries both fields, the product drives a minimum level.
+        # Matrix (score = urgency × importance, each 1–5):
+        #   score >= 16  (e.g. 4×4)  →  floor 4
+        #   score >= 9   (e.g. 3×3)  →  floor 3
+        #   score >= 4   (e.g. 2×2)  →  floor 2
+        #   score >= 2   (e.g. 1×2)  →  floor 1
+        urgency = event.get("urgency")
+        importance = event.get("importance")
+        if urgency and importance:
+            score = int(urgency) * int(importance)
+            if score >= 16:
+                ui_floor = 4
+            elif score >= 9:
+                ui_floor = 3
+            elif score >= 4:
+                ui_floor = 2
+            elif score >= 2:
+                ui_floor = 1
+            else:
+                ui_floor = 0
+            level = max(level, ui_floor)
 
         # --- Per-source adjustments ---
         # task_type maps directly to the source_rules keys.

@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 
+import pytest
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -16,6 +18,7 @@ from app.mcp.core.tools import ToolRegistry
 from app.services.hybrid_memory_service import HybridMemoryService
 
 
+@pytest.mark.asyncio
 async def test_scheduler_mcp_tools():
     """Test scheduler MCP tools"""
     print("=" * 70)
@@ -30,10 +33,10 @@ async def test_scheduler_mcp_tools():
     registry = ToolRegistry(memory_service)
 
     print("   ✅ Tool registry initialized")
-    print(f"   Total tools: {len(registry.list_tools())}")
+    print(f"   Total tools: {len(registry.get_tools())}")
 
     # Check scheduler tools are registered
-    all_tools = [tool['name'] for tool in registry.list_tools()]
+    all_tools = [tool['name'] for tool in registry.get_tools()]
     scheduler_tools = [tool for tool in all_tools if tool.startswith('scheduler_')]
 
     print(f"\n   Scheduler tools registered: {len(scheduler_tools)}")
@@ -44,7 +47,7 @@ async def test_scheduler_mcp_tools():
     print("-" * 70)
 
     # Add a test task
-    result = await registry.execute_tool(
+    result = await registry.execute(
         "scheduler_add_task",
         {
             "task_id": "test_mcp_task_1",
@@ -65,7 +68,7 @@ async def test_scheduler_mcp_tools():
 
     # Add a scheduled task
     schedule_time = (datetime.now() + timedelta(hours=2)).isoformat()
-    result2 = await registry.execute_tool(
+    result2 = await registry.execute(
         "scheduler_add_task",
         {
             "task_id": "test_scheduled_task",
@@ -81,7 +84,7 @@ async def test_scheduler_mcp_tools():
     print("\n3️⃣ Testing scheduler_list_tasks")
     print("-" * 70)
 
-    result = await registry.execute_tool("scheduler_list_tasks", {})
+    result = await registry.execute("scheduler_list_tasks", {})
 
     print(f"   Status: {result.get('status')}")
     print(f"   Total tasks: {result.get('total')}")
@@ -98,7 +101,7 @@ async def test_scheduler_mcp_tools():
     print("\n4️⃣ Testing scheduler_get_task")
     print("-" * 70)
 
-    result = await registry.execute_tool(
+    result = await registry.execute(
         "scheduler_get_task",
         {"task_id": "test_mcp_task_1"}
     )
@@ -115,7 +118,7 @@ async def test_scheduler_mcp_tools():
     print("\n5️⃣ Testing scheduler_get_status")
     print("-" * 70)
 
-    result = await registry.execute_tool("scheduler_get_status", {})
+    result = await registry.execute("scheduler_get_status", {})
 
     print(f"   Status: {result.get('status')}")
     if result['status'] == 'success':
@@ -132,7 +135,7 @@ async def test_scheduler_mcp_tools():
     print("\n6️⃣ Testing scheduler_remove_task")
     print("-" * 70)
 
-    result = await registry.execute_tool(
+    result = await registry.execute(
         "scheduler_remove_task",
         {"task_id": "test_mcp_task_1"}
     )
@@ -141,7 +144,7 @@ async def test_scheduler_mcp_tools():
     print(f"   Message: {result.get('message')}")
 
     # Verify it's removed
-    result2 = await registry.execute_tool(
+    result2 = await registry.execute(
         "scheduler_get_task",
         {"task_id": "test_mcp_task_1"}
     )
@@ -151,7 +154,7 @@ async def test_scheduler_mcp_tools():
     print("\n7️⃣ Testing with cron expression")
     print("-" * 70)
 
-    result = await registry.execute_tool(
+    result = await registry.execute(
         "scheduler_add_task",
         {
             "task_id": "daily_dreaming_task",

@@ -6,6 +6,7 @@ using resources from the ResourceManager.
 """
 
 import json
+import re
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -102,8 +103,13 @@ class AgenticExecutor:
     """Executes agentic tasks via an autonomous LLM think-act loop."""
 
     def __init__(
-        self, resource_manager: ResourceManager, logger=None, memory_service=None
-    ):
+        self,
+        resource_manager: ResourceManager,
+        logger: Optional[Any] = None,
+        memory_service: Optional[Any] = None,
+        mcp_client_manager: Optional[Any] = None,
+        scheduler: Optional[Any] = None,
+    ) -> None:
         self._rm = resource_manager
         self._logger = logger
         self._memory_service = memory_service
@@ -112,18 +118,21 @@ class AgenticExecutor:
         self._tool_registry = DynamicToolRegistry()
         self._tool_registry.set_memory_service(memory_service)
         from app.scheduler.mcp_client_manager import MCPClientManager
-        self._mcp_client_manager = MCPClientManager()
+        self._mcp_client_manager = mcp_client_manager if mcp_client_manager is not None else MCPClientManager()
         self._tool_registry.set_mcp_client_manager(self._mcp_client_manager)
+        if scheduler is not None:
+            self._tool_registry.set_scheduler(scheduler)
         self._mcp_tools_discovered = False
         self._policy = SafetyPolicy()
         self._openrouter_model_cache: Dict[str, Dict[str, Any]] = {}
         self._openrouter_model_cache_ttl_seconds = 600
+        self._role_id: Optional[str] = None
 
     def _log(self, message: str, level: str = "info"):
         if self._logger:
             getattr(self._logger, level)(f"[AgenticExecutor] {message}")
 
-    def _record(self, task_id: str, role: str, content: str, iteration: int, **kwargs):
+    def _record(self, task_id: str, role: str, content: str, iteration: int, **kwargs: Any) -> None:
         """Append a message to the session log."""
         self._session_storage.append_message(
             task_id,
@@ -152,8 +161,12 @@ class AgenticExecutor:
         """
         # Per-execution state for ask_user
         self._waiting_for_input_question: Optional[str] = None
+        self._waiting_for_input_choices: Optional[list] = None
         self._tool_calls_made: int = 0          # non-ask_user tool calls this execution
         self._exhausts_tools_before_asking: bool = False
+        self._requires_tool_use: bool = False   # reject final answer if no tools called yet
+        # Task id stored so _execute_single_tool can inject per-task tmux socket
+        self._current_task_id: Optional[str] = task.id
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -166,6 +179,7 @@ class AgenticExecutor:
         role_prefix = ""
         role_model_preference = None
         role_id = config.get("role_id")
+        self._role_id = role_id  # make role_id available to tool dispatch
         from app.scheduler.policy_monitor import PolicyMonitor
         self._policy_monitor = PolicyMonitor(role_id=None, policy=None)
         if not role_id:
@@ -174,6 +188,7 @@ class AgenticExecutor:
                 "Assign a role via role_id — tasks without a role will be rejected in a future release.",
                 level="warning",
             )
+        self._data_boundary: dict = {}  # role-level data boundary constraints
         if role_id:
             try:
                 from app.roles.role_manager import RoleManager
@@ -181,12 +196,17 @@ class AgenticExecutor:
                 if role:
                     role_prefix = role.get("system_prompt", "")
                     role_model_preference = role.get("model_preference")
-                    self._policy_monitor = PolicyMonitor.from_role(role_id, role)
+                    self._policy_monitor = PolicyMonitor.from_role(role_id, role, task_id=task.id)
                     self._log(f"Loaded role: {role.get('name')} (id={role_id})")
                     behavior_rules = role.get("behavior_rules", {})
                     self._exhausts_tools_before_asking = behavior_rules.get(
                         "exhausts_tools_before_asking", False
                     )
+                    self._requires_tool_use = behavior_rules.get(
+                        "requires_tool_use", False
+                    )
+                    # Pull expanded data_boundary from monitor (local_only expansion applied)
+                    self._data_boundary = self._policy_monitor.data_boundary
                 else:
                     self._log(f"Role '{role_id}' not found — continuing without role")
             except Exception as e:
@@ -415,6 +435,30 @@ class AgenticExecutor:
                     )
                     break
 
+            # Data boundary: enforce allowed_tiers constraint from role
+            allowed_tiers = self._data_boundary.get("allowed_tiers")
+            if allowed_tiers and resource.tier.value not in allowed_tiers:
+                await self._emit_policy_violation(
+                    task_id=task.id,
+                    tool_name="<llm_resource>",
+                    layer="data_boundary",
+                    checker="data_boundary",
+                    decision="block",
+                    reason=(
+                        f"Resource tier '{resource.tier.value}' is not permitted by this role "
+                        f"(data_boundary.allowed_tiers={allowed_tiers})."
+                    ),
+                    severity="error",
+                    metadata={"resource_tier": resource.tier.value, "allowed_tiers": allowed_tiers},
+                )
+                return TaskResult(
+                    success=False,
+                    error_message=(
+                        f"Data boundary violation: resource tier '{resource.tier.value}' "
+                        f"not in role's allowed_tiers {allowed_tiers}."
+                    ),
+                )
+
             # Call LLM
             effective_model = role_model_preference or resource.model
             self._log(
@@ -466,6 +510,9 @@ class AgenticExecutor:
             # Thinking models (e.g. Qwen3) return reasoning in reasoning_content
             # with content empty. Fall back so the executor can see the response.
             response_text = message.get("content", "") or message.get("reasoning_content", "") or ""
+            # Strip <think>...</think> blocks in case llama.cpp didn't separate them
+            # (older builds or non-jinja mode leak think tokens into content).
+            response_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
             tool_calls = message.get("tool_calls")
 
             # Handle tool calls if present
@@ -539,6 +586,36 @@ class AgenticExecutor:
             candidate_final_answer = self._parse_final_answer(response_text)
             final_validation_error = None
             final_answer = None
+
+            # behavior_rules.requires_tool_use: if the agent tries to submit a
+            # final answer without having called any tools yet, reject it and
+            # inject a targeted forcing message so the next iteration acts.
+            if (
+                candidate_final_answer is not None
+                and self._requires_tool_use
+                and self._tool_calls_made == 0
+            ):
+                forcing_msg = (
+                    "Your plan is noted but you have not called any tools yet. "
+                    "Do not write a final answer until you have used at least one tool. "
+                    "Call a tool now to execute your plan."
+                )
+                messages.append({"role": "user", "content": forcing_msg})
+                self._record(task.id, "user", forcing_msg, iteration=abs_iteration)
+                self._log(f"Task {task.id}: requires_tool_use — forcing tool call at iteration {iteration}")
+                iteration_log.append({
+                    "iteration": iteration,
+                    "resource": resource.id,
+                    "model": used_model,
+                    "tier_preference": [t.value for t in iter_tiers],
+                    "selection_reason": selection_reason,
+                    "status": "forced_tool_use",
+                    "response_length": len(response_text),
+                    "validation_error": None,
+                    "elapsed_s": round(time.time() - iter_start, 1),
+                })
+                continue
+
             if candidate_final_answer is not None:
                 is_valid, validation_error = self._validate_final_answer(
                     final_answer=candidate_final_answer,
@@ -608,6 +685,7 @@ class AgenticExecutor:
             return TaskResult(
                 success=False,
                 waiting_for_input=self._waiting_for_input_question,
+                waiting_for_input_choices=self._waiting_for_input_choices,
                 output_file=session_file,
                 metrics={
                     "iterations": len(iteration_log),
@@ -850,12 +928,37 @@ class AgenticExecutor:
                     success=False,
                     reason=policy_check["reason"],
                 )
+                await self._emit_policy_violation(
+                    task_id=self._current_task_id,
+                    tool_name=name,
+                    layer="safety",
+                    checker="safety",
+                    decision="block",
+                    reason=policy_check["reason"],
+                    severity="error",
+                )
                 return {"error": f"Policy violation: {policy_check['reason']}"}
 
         # Check role policy (allowed_tools ceiling, denied_tools, per-task limits)
         role_decision = self._policy_monitor.check(name, args)
         if not role_decision.allowed:
             self._log(f"Tool '{name}' blocked by role policy: {role_decision.reason}", "warning")
+            # Severity: content/data_boundary matches are "warning"; static/context blocks are "error"
+            violation_severity = (
+                "warning"
+                if role_decision.metadata.get("pattern_severity") == "warn"
+                else "error"
+            )
+            await self._emit_policy_violation(
+                task_id=self._current_task_id,
+                tool_name=name,
+                layer="role",
+                checker=role_decision.checker,
+                decision="block",
+                reason=role_decision.reason,
+                severity=violation_severity,
+                metadata=role_decision.metadata,
+            )
             return {"error": f"Role policy blocked: {role_decision.reason}"}
         if role_decision.warn:
             self._log(f"Role policy warning for '{name}': {role_decision.reason}", "warning")
@@ -881,6 +984,7 @@ class AgenticExecutor:
             question = args.get("question", "")
             choices = args.get("choices")
             self._waiting_for_input_question = question
+            self._waiting_for_input_choices = choices if isinstance(choices, list) else None
             result_msg = f"Question submitted to user: {question}"
             if choices:
                 result_msg += f" (choices: {choices})"
@@ -888,6 +992,13 @@ class AgenticExecutor:
 
         # Count non-ask_user tool calls for behavior_rules enforcement
         self._tool_calls_made += 1
+
+        # Per-task tmux isolation: inject a unique socket path so each task runs
+        # against its own tmux daemon. tmux-mcp-rs accepts a per-call 'socket'
+        # override on every tool; omitting it uses the server's default socket
+        # which is shared and causes session collisions under concurrency.
+        if name.startswith("tmux__") and self._current_task_id and "socket" not in args:
+            args = {**args, "socket": f"/tmp/mojo-task-{self._current_task_id}.sock"}
 
         # Try dynamic registry first
         try:
@@ -905,12 +1016,50 @@ class AgenticExecutor:
         # Fallback to built-in tools
         if name == "memory_search" and self._memory_service:
             query = args.get("query", "")
-            results = await self._memory_service.get_context_for_query_async(
-                query, max_items=5
+            results = await self._memory_service._search_knowledge_base_async(
+                query, max_items=5, role_id=self._role_id
             )
             return {"query": query, "results": results, "count": len(results)}
 
         return {"error": f"Unknown or unavailable tool: {name}"}
+
+    async def _emit_policy_violation(
+        self,
+        task_id: Optional[str],
+        tool_name: str,
+        layer: str,
+        checker: str,
+        decision: str,
+        reason: str,
+        severity: str,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """
+        Emit a policy_violation event to the EventLog.
+
+        This makes every block/warn visible via ntfy, dashboard, and
+        get_content — no violations are silent. Never raises.
+        """
+        try:
+            from app.mcp.adapters.event_log import EventLog
+            event_log = EventLog()
+            await event_log.append({
+                "event_type": "policy_violation",
+                "severity": severity,
+                "task_type": "policy",
+                "notify_user": True,
+                "title": f"Policy blocked: {tool_name}",
+                "task_id": task_id,
+                "role_id": self._role_id,
+                "layer": layer,
+                "checker": checker,
+                "tool_name": tool_name,
+                "decision": decision,
+                "reason": reason,
+                "metadata": metadata or {},
+            })
+        except Exception:
+            pass  # violation logging must never break task execution
 
     def _parse_final_answer(self, text: str) -> Optional[str]:
         """Extract content between <FINAL_ANSWER> tags, if present."""

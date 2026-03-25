@@ -7,20 +7,25 @@
 
     {
       "_comment": "=== ntfy — push notifications to Android / iOS / desktop / web ===",
+      "_comment_setup": "--- PRIVATE TOPIC SETUP (recommended) ---",
       "_comment2": "Step 1: Create a free account at https://ntfy.sh",
-      "_comment3": "Step 2: Go to Account → Access Tokens → Generate token → copy it to .env as NTFY_TOKEN",
-      "_comment4": "Step 3: Install the ntfy app on your phone, tap Subscribe, enter YOUR_TOPIC_NAME",
-      "_comment5": "Step 4: Set enabled=true below and replace YOUR_TOPIC_NAME",
+      "_comment3": "Step 2: Account → Access Tokens → Generate token → save to .env as NTFY_TOKEN=tk_xxx",
+      "_comment4": "Step 3: Reserve the topic: Account → Reserved Topics → Add → YOUR_TOPIC_NAME",
+      "_comment5": "Step 4: Set ACL on the reserved topic: your user = read+write, Everyone = deny",
+      "_comment6": "        (This blocks strangers from subscribing or publishing to your topic)",
+      "_comment7": "Step 5: Phone app: Settings → Account → Log in with your ntfy.sh credentials",
+      "_comment8": "        Then subscribe to YOUR_TOPIC_NAME — the app will use your account for auth",
+      "_comment9": "Step 6: Set enabled=true below, replace YOUR_TOPIC_NAME, set MOJO_BASE_URL in .env",
 
       "id": "ntfy_push",
       "type": "ntfy",
       "enabled": false,
 
       "endpoint": "https://ntfy.sh/YOUR_TOPIC_NAME",
-      "_endpoint_note": "Topic name is whatever you choose — must match what you subscribed to in the ntfy app",
+      "_endpoint_note": "Topic name must match what you reserved and subscribed to in the ntfy app",
 
       "auth_var": "NTFY_TOKEN",
-      "_auth_note": "Name of the env var holding your ntfy access token. Remove this line entirely for public (no-auth) topics.",
+      "_auth_note": "Env var holding your ntfy Bearer token. Required for protected topics. Remove for public topics.",
 
       "poll_interval": 30,
       "_poll_note": "How often (seconds) to check for new events. Lower = faster notifications. Use 5 for testing.",

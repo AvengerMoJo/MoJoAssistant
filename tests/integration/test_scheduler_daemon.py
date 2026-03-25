@@ -10,10 +10,13 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 
+@pytest.mark.asyncio
 async def test_scheduler_daemon():
     """Test scheduler daemon lifecycle"""
     print("=" * 70)

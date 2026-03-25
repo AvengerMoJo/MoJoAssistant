@@ -143,9 +143,70 @@ sensitive data before it crosses a boundary. Configurable per role:
 redact, abstract, or summarise before external exposure.
 
 ## v1.2.6-beta
-Infrastructure routing + Policy Enforcement Agent. High-priority events
-reach the user even when no MCP client is open. Policy Agent subscribes
-to the inbox event stream and can block operations before execution.
+Policy enforcement + agentic executor hardening.
+
+**What was originally planned vs what was built:**
+
+The original spec called for a separate `PolicyAgent` process subscribing to
+the inbox event stream and blocking operations pre-execution. After design
+review, an inline `PolicyMonitor` checker pipeline was chosen instead. The
+architectural reasons: synchronous inline checks have zero message-passing
+latency, no separate process to crash/stall, and are composable without an
+event-stream dependency. The inbox-based PolicyAgent is a valid future
+enhancement but is not a prerequisite for safety — inline checkers cover
+all the same blocking/auditing outcomes.
+
+**What was actually shipped:**
+- `app/scheduler/policy/` package: `StaticPolicyChecker`, `ContentAwarePolicyChecker`,
+  `DataBoundaryChecker`, `ContextAwarePolicyChecker` — pluggable ordered pipeline
+- Role-level `data_boundary` config: `allow_external_mcp`, `allowed_tiers`
+- `_emit_policy_violation` in executor → EventLog → ntfy + dashboard on every block
+- Per-task tmux socket isolation (`/tmp/mojo-task-{id}.sock`)
+- MCPClientManager race-condition fixes (connect lock, stale flag reset, wait_for timeout)
+- Bidirectional ntfy HITL reply flow
+
+**Gaps that remain open (deferred to v1.2.7 or later):**
+- ✅ `"local_only": true` task/role flag — shipped in v1.2.6; syntactic sugar over
+  `data_boundary: {allow_external_mcp: false, allowed_tiers: ["free"]}`.
+  Explicit `data_boundary` values take precedence over `local_only` defaults.
+- ✅ Automated tests for all policy checkers — 32 unit tests in
+  `tests/unit/test_policy_checkers.py` cover `StaticPolicyChecker`,
+  `ContentAwarePolicyChecker`, `DataBoundaryChecker`, `ContextAwarePolicyChecker`,
+  `PolicyMonitor` pipeline, and `local_only` shorthand.
+- Inbox-subscribing `PolicyAgent` (separate process) — still valuable for
+  cross-agent policy enforcement and audit reasoning; target v1.3.x.
+
+**Infrastructure routing — superseded (2026-03-24):**
+The original goal ("high-priority events reach user when no MCP client is open")
+is now fully covered by three independent channels: ntfy push (phone/desktop,
+works without any client), the read-only dashboard (browser), and MCP
+`get_content` polling. A dedicated file/terminal adapter adds nothing a user
+would reach for. Bidirectional ntfy (reply from notification) is tracked as a
+good-to-have in v1.3.x if urgency demands it.
+
+**Technical debt from v1.2.5 (Carl review):**
+- ✅ Race condition in MCPClientManager eager connection — fixed (connect lock, stale flag reset, wait_for timeout)
+- ✅ Missing input validation for urgency/importance routing fields — bounds/type checking added
+- ✅ Duplicated `["free", "free_api"]` default tier preference — extracted to `DEFAULT_TIER_PREFERENCE` constant
+- ✅ Per-task tmux session isolation — unique `/tmp/mojo-task-{id}.sock` per task
+- ✅ Overly broad `except Exception` in ResourcePoolLLMInterface — removed; transport errors caught by name, unexpected errors propagate naturally
+- 🟡 Non-atomic stop/reconnect in MCPServerManager — still open; add rollback in v1.2.7
+
+## v1.3.0
+**Agent Type Classification + Pluggable Workflow Templates** (§25)
+- `agent_type` field in role JSON (provisioner, researcher, reviewer, executor, monitor, orchestrator)
+- `scheduler_add_task` as a dispatchable agent tool — agents queue each other's work without human relay
+- Workflow templates in `config/workflow_templates/{type}.json` (two-layer: system + user override)
+- Template auto-injected into system prompt at task start
+- `schedule_consumer` handoff: provisioner completion auto-queues the consumer agent
+- User-defined custom agent types via `~/.memory/config/agent_types.json`
+
+**One-on-One Role Channel + Role Evolution** (§24)
+- `dialog(role_id, message)` MCP tool — talk directly to any role
+- Role-scoped session continuity across disconnects
+- Explicit memory capture ("remember: X") writes to role private store
+- Post-dialog NineChapter dimension refinement via dream pipeline
+- OpenAI-compatible proxy API (`/v1/models`, `/v1/chat/completions`) — any LLM client talks to any role directly
 
 ## v1.2.5-beta
 Terminal tools + HttpAgentExecutor + config cleanup — complete the computer-use
@@ -176,6 +237,83 @@ v1.3.0 releases when:
 The graduation promise: a user can run MoJoAssistant with agents touching real
 data, point to the audit log, and say "here is exactly what left my device and
 when — and here is proof nothing else did."
+
+---
+
+## v1.0 Public Release — dropping beta
+
+This is a separate gate from v1.3.0 graduation. v1.3.0 is a feature milestone;
+v1.0 is a quality and trust milestone. Beta comes off when a stranger can install
+MoJoAssistant on a clean machine, run one command, and get a working system with
+a clear, honest picture of what it does and doesn't do.
+
+### Non-negotiable before publish
+
+**1. Audit trail + §21 enforcement (v1.2.4 core)**
+The privacy claim — "here is exactly what left your device" — is unverifiable
+without the append-only audit log and `audit_get(task_id)`. Until §21 enforcement
+makes `role_id` mandatory at `scheduler_add_task` and rejects inline
+`system_prompt`, the entire policy layer can be bypassed by omission. These two
+items are the linchpin. Everything else is polish on top of a promise that isn't
+yet provable.
+
+**2. Tool-calling reliability on the supported path**
+The Qwen/LMStudio execution path is currently too unreliable to present as
+dependable agent execution. Before publish, one model+provider combination must
+be designated the supported path and must pass the smoke suite consistently.
+Everything else is explicitly experimental.
+
+**3. Dependency resilience**
+Integration tests must not fail because an optional package (e.g.
+`sentence_transformers`) is absent — unless that absence is explicitly documented
+as unsupported and the test is marked accordingly. Failing CI on a clean install
+due to an undeclared optional dependency is a broken install story, not a test
+gap.
+
+**4. Release definition — one documented supported path**
+One document (README or INSTALL.md) that specifies:
+- Supported OS + Python version
+- Required env vars (`.env.example` is necessary but not sufficient — document
+  which vars are actually required vs optional and what breaks without them)
+- Required models: which provider, which model, what context size
+- What works out of the box vs what requires additional configuration
+- What is explicitly marked experimental
+
+**5. Smoke suite — one command, clean machine**
+A single command (e.g. `make smoke` or `pytest tests/smoke/`) that:
+- Passes on a clean install with only required dependencies
+- Exercises: scheduler tick, memory read/write, MCP tool surface, policy check,
+  and at least one end-to-end agent loop (task queued → executed → result logged)
+- Produces a clear PASS/FAIL with no ambiguous skips
+- Does not require external API keys (uses local/free tier only)
+
+**6. Scope cut — stable surface vs experimental**
+At publish time, explicitly label:
+- **Stable**: scheduler, HITL inbox, policy checker pipeline, memory search,
+  MCP tool surface, data boundary enforcement, ntfy push, role system
+- **Experimental**: Qwen/LMStudio agent execution, HttpAgentExecutor,
+  coding agent integration, ZeroClaw/OpenClaw integration, PII classification
+Users should know what they're getting, not discover the edges themselves.
+
+**7. Test health**
+No known test failures in CI on the supported path. Tests that exercise
+unsupported/optional paths must be marked `@pytest.mark.optional` or similar
+and skipped by default. The 15 currently pre-existing failures must be resolved
+or explicitly skipped with a documented reason before publish.
+
+### What can ship post-v1.0
+
+- PII classification (v1.2.5) — defense-in-depth; data boundary enforcement
+  already covers the core privacy promise
+- HttpAgentExecutor / external agent integrations — compelling, not foundational
+- Inbox distillation / task session compaction — polish
+- Message passing / containerization — v2.x
+
+### The publish bar in one sentence
+
+A technical user can install MoJoAssistant, run the smoke suite, read the
+release definition, and trust that what it says it does, it actually does —
+and that what it doesn't mention, it doesn't quietly attempt.
 
 ---
 
@@ -399,7 +537,9 @@ text and loses its typed structure before dreaming can see it.
 | Task session compaction (chunking + local LLM summary) | Long session retrievability | v1.2.4 |
 | PII classification | Sensitive data leakage | v1.2.5 |
 | Sanitization layer | External exposure | v1.2.5 |
-| Infrastructure routing | Reachability | v1.2.6 |
-| Policy Enforcement Agent | Proactive blocking, context-aware safety | v1.2.6 |
+| Infrastructure routing | Reachability | ~~v1.2.6~~ superseded — ntfy + dashboard + get_content cover this |
+| Policy checker pipeline (inline) | Pre-execution blocking, data boundary, violation audit | ✅ v1.2.6 |
+| Policy Enforcement Agent (inbox-based) | Cross-agent proactive blocking with reasoning | v1.3.x |
+| `local_only` task flag | Syntactic sugar over allowed_tiers | ✅ v1.2.6 |
 | Inbox → Dreaming → Knowledge | Institutional memory, pattern learning | v1.2.x |
 | Message passing + containerization | Fault isolation, language agnosticism, scale | v2.x |

@@ -143,6 +143,7 @@ class DynamicToolRegistry:
         self._memory_service = None
         self._mcp_registry = None
         self._mcp_client_manager = None
+        self._scheduler = None
         self._tools: Dict[str, ToolDefinition] = {}
         self._ensure_registry_seeded()
         self._load_registry()
@@ -230,13 +231,49 @@ class DynamicToolRegistry:
             ),
             ToolDefinition(
                 name="bash_exec",
-                description="Execute bash command. Only safe commands in whitelist allowed.",
+                description=(
+                    "Run shell commands on this machine. Accepts a single command string "
+                    "or a list of commands to execute sequentially. Destructive and "
+                    "privileged commands remain blocked by the sandbox policy."
+                ),
                 danger_level="high",
                 requires_auth=True,
                 category="exec",
                 parameters={"type": "object", "properties": {
-                    "command": {"type": "string", "description": "Bash command to execute"},
-                }, "required": ["command"]},
+                    "commands": {
+                        "description": "Shell command or list of shell commands to run sequentially",
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Backward-compatible alias for a single shell command",
+                    },
+                }, "required": []},
+            ),
+            ToolDefinition(
+                name="scheduler_add_task",
+                description=(
+                    "Schedule a new task for another agent. Use this to hand off work to a "
+                    "specialist role after completing your own step — e.g. a provisioner queuing "
+                    "a reviewer, or an executor queuing Carl for a code review. "
+                    "The new task runs asynchronously; this tool returns immediately."
+                ),
+                danger_level="medium",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "task_id":    {"type": "string", "description": "Unique task identifier (snake_case)"},
+                    "role_id":    {"type": "string", "description": "Role to run the task as (e.g. 'carl', 'ahman')"},
+                    "goal":       {"type": "string", "description": "Full goal/instructions for the new task"},
+                    "available_tools": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Tools the new task may use. Defaults to role's tool_access."
+                    },
+                    "max_iterations": {"type": "integer", "description": "Max iterations (default 10)"},
+                    "priority":   {"type": "string", "enum": ["low", "normal", "high"], "description": "Task priority"},
+                }, "required": ["task_id", "role_id", "goal"]},
             ),
             ToolDefinition(
                 name="memory_search",
@@ -368,6 +405,8 @@ class DynamicToolRegistry:
                     return await self._search_in_files(args)
                 elif name == "bash_exec":
                     return await self._bash_exec(args)
+                elif name == "scheduler_add_task":
+                    return await self._scheduler_add_task(args)
                 elif name == "memory_search":
                     return await self._memory_search(args)
                 elif name == "web_search":
@@ -507,11 +546,71 @@ class DynamicToolRegistry:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def _scheduler_add_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Schedule a new task for another agent role."""
+        if not self._scheduler:
+            return {"success": False, "error": "Scheduler not available in this context"}
+
+        from app.scheduler.models import Task, TaskResources
+        import uuid
+
+        task_id = args.get("task_id") or f"agent_task_{uuid.uuid4().hex[:8]}"
+        role_id = args.get("role_id")
+        goal = args.get("goal")
+
+        if not role_id or not goal:
+            return {"success": False, "error": "role_id and goal are required"}
+
+        config: Dict[str, Any] = {"goal": goal, "role_id": role_id}
+        if args.get("available_tools"):
+            config["available_tools"] = args["available_tools"]
+
+        resources = TaskResources(
+            max_iterations=int(args.get("max_iterations", 10))
+        )
+
+        from app.scheduler.models import TaskPriority, TaskType
+        priority_str = args.get("priority", "normal")
+        # Map "normal" → "medium" for backwards compat; convert string → enum
+        priority_str = "medium" if priority_str == "normal" else priority_str
+        try:
+            priority_enum = TaskPriority(priority_str.lower())
+        except ValueError:
+            priority_enum = TaskPriority.MEDIUM
+
+        task = Task(
+            id=task_id,
+            type=TaskType.ASSISTANT,
+            priority=priority_enum,
+            config=config,
+            resources=resources,
+            created_by="agent",
+        )
+
+        success = self._scheduler.add_task(task)
+        if success:
+            return {"success": True, "task_id": task_id, "message": f"Task '{task_id}' scheduled for role '{role_id}'"}
+        return {"success": False, "error": f"Failed to schedule task '{task_id}' — may already exist"}
+
     async def _bash_exec(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute bash command with safety limits."""
-        command = args.get("command")
-        if not command:
-            return {"success": False, "error": "Missing 'command' parameter"}
+        """Execute shell command(s) with safety limits."""
+        raw_commands = args.get("commands", args.get("command"))
+        if raw_commands is None:
+            return {"success": False, "error": "Missing 'commands' parameter"}
+
+        if isinstance(raw_commands, str):
+            commands = [raw_commands]
+        elif isinstance(raw_commands, list) and all(isinstance(cmd, str) for cmd in raw_commands):
+            commands = raw_commands
+        else:
+            return {
+                "success": False,
+                "error": "'commands' must be a string or list of strings",
+            }
+
+        commands = [cmd.strip() for cmd in commands if cmd and cmd.strip()]
+        if not commands:
+            return {"success": False, "error": "No shell commands provided"}
 
         # Block destructive commands — everything else is allowed.
         # Rule: read/observe/query = OK; modify/delete/overwrite = blocked.
@@ -540,34 +639,74 @@ class DynamicToolRegistry:
             "mv", "cp", "tee", "truncate",
         }
 
-        cmd_parts = command.split()
-        base_cmd = cmd_parts[0]
+        results = []
+        for command in commands:
+            cmd_parts = command.split()
+            if not cmd_parts:
+                continue
+            base_cmd = cmd_parts[0]
 
-        if base_cmd in BLOCKED_COMMANDS:
-            return {
-                "success": False,
-                "error": f"Command '{base_cmd}' is blocked — destructive or privileged commands are not permitted.",
-            }
+            if base_cmd in BLOCKED_COMMANDS:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Command '{base_cmd}' is blocked — destructive or privileged "
+                        "commands are not permitted."
+                    ),
+                    "results": results,
+                }
 
-        try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=60,
-                cwd=os.getcwd(),
-            )
-            return {
-                "success": result.returncode == 0,
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=os.getcwd(),
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "success": False,
+                    "error": f"Command timed out (60s limit): {command}",
+                    "results": results,
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "results": results,
+                }
+
+            command_result = {
+                "command": command,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "returncode": result.returncode,
+                "success": result.returncode == 0,
             }
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Command timed out (60s limit)"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+            results.append(command_result)
+
+            if result.returncode != 0:
+                return {
+                    "success": False,
+                    "results": results,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "returncode": result.returncode,
+                    "error": f"Command failed: {command}",
+                }
+
+        combined_stdout = "".join(item["stdout"] for item in results)
+        combined_stderr = "".join(item["stderr"] for item in results)
+        return {
+            "success": True,
+            "results": results,
+            "stdout": combined_stdout,
+            "stderr": combined_stderr,
+            "returncode": 0,
+            "executed": len(results),
+        }
 
     async def _memory_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Search memory using memory service."""
@@ -832,6 +971,10 @@ class DynamicToolRegistry:
     def set_mcp_client_manager(self, manager) -> None:
         """Set the MCPClientManager for external_mcp executor support."""
         self._mcp_client_manager = manager
+
+    def set_scheduler(self, scheduler) -> None:
+        """Set the Scheduler for scheduler_add_task tool support."""
+        self._scheduler = scheduler
 
     def get_tools_by_category(self, category: str) -> List[str]:
         """Return all tool names whose category matches."""

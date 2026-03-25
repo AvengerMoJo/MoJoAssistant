@@ -14,7 +14,10 @@ import math
 import random
 import importlib
 import numpy as np
-from sentence_transformers import SentenceTransformer
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None  # type: ignore[assignment,misc]
 from app.config.logging_config import get_logger
 
 class SimpleEmbedding:

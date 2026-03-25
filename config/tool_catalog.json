@@ -6,8 +6,9 @@
     "web":      { "description": "Web search and HTTP requests" },
     "exec":     { "description": "Shell commands and code execution" },
     "comms":    { "description": "Communication with the user (HITL)" },
-    "browser":  { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP)" },
-    "terminal": { "description": "Persistent terminal sessions via tmux — run commands, read output" }
+    "browser":       { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP)" },
+    "terminal":      { "description": "Persistent terminal sessions via tmux — run commands, read output" },
+    "orchestration": { "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" }
   },
   "tools": {
     "memory_search":   {
@@ -54,12 +55,17 @@
       "category": "exec",
       "danger_level": "high",
       "requires_auth": true,
-      "description": "Execute a shell command. Restricted to a safe whitelist of approved commands. Requires explicit user authorization. Use for running builds, scripts, or system queries that cannot be done with other tools."
+      "description": "Run one shell command or a short list of shell commands sequentially. Restricted by a destructive-command blocklist and explicit authorization. Use for builds, scripts, or system queries that cannot be done with other tools."
     },
     "run_tests":       {
       "category": "exec",
       "danger_level": "medium",
       "description": "Run the project's test suite. Use after making code changes to verify correctness. Returns pass/fail output with details on any failures."
+    },
+    "scheduler_add_task": {
+      "category": "orchestration",
+      "danger_level": "medium",
+      "description": "Schedule a new task for another agent role. Use to hand off work after completing your own step — a provisioner queuing a reviewer, an executor queuing Carl for code review. The new task runs asynchronously."
     },
     "ask_user":        {
       "category": "comms",

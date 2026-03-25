@@ -20,6 +20,7 @@ Example config/mcp_servers.json entry:
   }
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -60,13 +61,29 @@ class MCPClientManager:
         self._sessions: Dict[str, Any] = {}   # server_id → ClientSession
         self._exit_stack = AsyncExitStack()
         self._connected = False
+        # Prevents concurrent connect_all() calls from double-connecting the same
+        # server (e.g. startup background task racing against first agentic task).
+        self._connect_lock = asyncio.Lock()
         self._load_config()
 
     def _load_config(self) -> None:
-        if not os.path.exists(self._config_path):
+        """Load system config then merge personal config (~/.memory/config/mcp_servers.json).
+        Personal entries override system entries with the same id."""
+        from app.config.paths import get_memory_subpath
+        personal_path = get_memory_subpath("config", "mcp_servers.json")
+        for path in [self._config_path, personal_path]:
+            self._load_config_file(path)
+
+    def _load_config_file(self, path: str) -> None:
+        """Parse a single mcp_servers.json file and merge its entries into _servers."""
+        if not os.path.exists(path):
             return
+
+        def _expand(s: str) -> str:
+            return os.path.expanduser(os.path.expandvars(s))
+
         try:
-            with open(self._config_path) as f:
+            with open(path) as f:
                 data = json.load(f)
             for srv in data.get("servers", []):
                 if not srv.get("enabled", True):
@@ -75,39 +92,43 @@ class MCPClientManager:
                     id=srv["id"],
                     name=srv.get("name", srv["id"]),
                     transport=srv.get("transport", "stdio"),
-                    command=srv["command"],
-                    args=srv.get("args", []),
+                    command=_expand(srv["command"]),
+                    args=[_expand(a) for a in srv.get("args", [])],
                     env=srv.get("env", {}),
                     category=srv.get("category", "external"),
                     enabled=True,
                 )
-                self._servers[s.id] = s
+                self._servers[s.id] = s  # personal layer overwrites system layer
         except Exception as e:
-            logger.warning(f"MCPClientManager: failed to load {self._config_path}: {e}")
+            logger.warning(f"MCPClientManager: failed to load {path}: {e}")
 
     def has_servers(self) -> bool:
+        """Return True if at least one enabled MCP server is configured."""
         return bool(self._servers)
 
     async def connect_all(self) -> Dict[str, List[Any]]:
         """
         Connect to all configured servers. Returns {server_id: [MCPTool, ...]}.
         Safe to call multiple times — skips already-connected servers.
+        Serialized via _connect_lock to prevent concurrent callers from
+        double-connecting the same server.
         """
-        results: Dict[str, List[Any]] = {}
-        for server_id, server in self._servers.items():
-            if server_id in self._sessions:
-                continue
-            try:
-                tools = await self._connect_server(server)
-                results[server_id] = tools
-                logger.info(
-                    f"MCPClientManager: connected '{server_id}' "
-                    f"({len(tools)} tools: {[t.name for t in tools]})"
-                )
-            except Exception as e:
-                logger.warning(f"MCPClientManager: failed to connect '{server_id}': {e}")
-        self._connected = True
-        return results
+        async with self._connect_lock:
+            results: Dict[str, List[Any]] = {}
+            for server_id, server in self._servers.items():
+                if server_id in self._sessions:
+                    continue
+                try:
+                    tools = await self._connect_server(server)
+                    results[server_id] = tools
+                    logger.info(
+                        f"MCPClientManager: connected '{server_id}' "
+                        f"({len(tools)} tools: {[t.name for t in tools]})"
+                    )
+                except Exception as e:
+                    logger.warning(f"MCPClientManager: failed to connect '{server_id}': {e}")
+            self._connected = True
+            return results
 
     async def _connect_server(self, server: ExternalMCPServer) -> List[Any]:
         if server.transport != "stdio":
@@ -143,14 +164,23 @@ class MCPClientManager:
         from app.scheduler.dynamic_tool_registry import ToolDefinition
 
         server_tools = await self.connect_all()
+
+        # Drop stale cached entries for servers we successfully connected to,
+        # so renamed or removed tools don't linger across restarts.
+        for server_id in server_tools:
+            stale = [
+                name for name, td in list(tool_registry._tools.items())
+                if name.startswith(f"{server_id}__")
+                and getattr(td, "executor", {}).get("type") == "external_mcp"
+            ]
+            for name in stale:
+                del tool_registry._tools[name]
+
         count = 0
         for server_id, tools in server_tools.items():
             server = self._servers[server_id]
             for tool in tools:
                 registered_name = f"{server_id}__{tool.name}"
-                if tool_registry.get_tool(registered_name):
-                    continue  # already registered
-
                 schema = tool.inputSchema
                 if not isinstance(schema, dict):
                     schema = {"type": "object", "properties": {}}
@@ -175,6 +205,11 @@ class MCPClientManager:
             logger.info(f"MCPClientManager: registered {count} external tools")
         return count
 
+    # Per-call timeout so a hung external process (e.g. frozen browser) cannot
+    # hold a semaphore slot forever. Browser navigation can be slow; 60 s is
+    # generous but still bounded. Override per-server in the future if needed.
+    CALL_TIMEOUT_SECONDS: float = 60.0
+
     async def call_tool(self, server_id: str, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Call a tool on a specific external MCP server."""
         if not self._connected:
@@ -185,7 +220,10 @@ class MCPClientManager:
             return {"success": False, "error": f"Server '{server_id}' not connected"}
 
         try:
-            result = await session.call_tool(tool_name, args)
+            result = await asyncio.wait_for(
+                session.call_tool(tool_name, args),
+                timeout=self.CALL_TIMEOUT_SECONDS,
+            )
             # MCP returns a list of content blocks (text, image, resource)
             parts = []
             for block in (result.content or []):
@@ -206,6 +244,12 @@ class MCPClientManager:
                 "success": not getattr(result, "isError", False),
                 "result": payload,
             }
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"MCPClientManager: '{server_id}/{tool_name}' timed out "
+                f"after {self.CALL_TIMEOUT_SECONDS}s"
+            )
+            return {"success": False, "error": f"Tool call timed out after {self.CALL_TIMEOUT_SECONDS}s"}
         except Exception as e:
             return {"success": False, "error": f"Tool call failed: {e}"}
 

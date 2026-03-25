@@ -29,7 +29,7 @@ class Scheduler:
 
     def __init__(self, storage_path: str = None, tick_interval: int = 60,
                  max_concurrent: int = 3, logger=None, memory_service=None,
-                 sse_notifier=None):
+                 sse_notifier=None, mcp_client_manager=None):
         """
         Initialize scheduler
 
@@ -40,10 +40,12 @@ class Scheduler:
             logger: Optional logger instance
             memory_service: Optional memory service for agentic tool use
             sse_notifier: Optional SSENotifier for real-time task events
+            mcp_client_manager: Shared MCPClientManager for tool dispatch + lifecycle mgmt
         """
         self.queue = TaskQueue(storage_path)
         self.memory_service = memory_service
-        self.executor = TaskExecutor(logger=logger, memory_service=memory_service)
+        self.executor = TaskExecutor(logger=logger, memory_service=memory_service,
+                                     mcp_client_manager=mcp_client_manager, scheduler=self)
         self.tick_interval = tick_interval
         self.max_concurrent = max_concurrent
         self.logger = logger
@@ -135,6 +137,11 @@ class Scheduler:
         self.stats["started_at"] = datetime.now()
         self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
         self._seed_tasks_from_config()
+
+        # Eagerly connect external MCP servers so agent(action="list/status")
+        # shows live state immediately and tool discovery is ready for first task.
+        asyncio.create_task(self._connect_mcp_servers())
+
         await self._broadcast({
             "event_type": "system_notification",
             "severity": "info",
@@ -262,6 +269,15 @@ class Scheduler:
         async with self._semaphore:
             await self._execute_task(task)
 
+    def _task_routing_fields(self, task: "Task") -> Dict[str, int]:
+        """Return urgency/importance fields for broadcast events (omit when None)."""
+        out = {}
+        if task.urgency is not None:
+            out["urgency"] = task.urgency
+        if task.importance is not None:
+            out["importance"] = task.importance
+        return out
+
     async def _broadcast(self, event: dict):
         """Broadcast an SSE event if notifier is available."""
         if self._sse_notifier:
@@ -290,6 +306,7 @@ class Scheduler:
                 "task_type": task.type.value,
                 "severity": "info",
                 "title": f"Task {task.id} started",
+                **self._task_routing_fields(task),
             })
 
             # Execute via executor
@@ -307,14 +324,17 @@ class Scheduler:
                     "task_id": task.id,
                     "task_type": task.type.value,
                     "question": result.waiting_for_input,
+                    "choices": result.waiting_for_input_choices,
                     "severity": "warning",
                     "title": f"Agent is waiting for your input on task {task.id}",
                     "notify_user": notify,
                     "data": {
                         "task_id": task.id,
                         "question": result.waiting_for_input,
+                        "choices": result.waiting_for_input_choices,
                         "description": task.description,
                     },
+                    **self._task_routing_fields(task),
                 })
                 self._log(f"Task {task.id} is waiting for user input")
                 return
@@ -341,6 +361,7 @@ class Scheduler:
                     "severity": "info",
                     "title": title,
                     "notify_user": notify,
+                    **self._task_routing_fields(task),
                 })
 
                 # Auto-schedule dreaming for completed assistant tasks
@@ -382,6 +403,7 @@ class Scheduler:
                         "severity": "error",
                         "title": f"Task {task.id} failed",
                         "notify_user": True,
+                        **self._task_routing_fields(task),
                     })
 
                     # Cron tasks reschedule even after permanent failure
@@ -416,6 +438,7 @@ class Scheduler:
                 "severity": "error",
                 "title": f"Task {task.id} failed",
                 "notify_user": True,
+                **self._task_routing_fields(task),
             })
 
         finally:
@@ -549,6 +572,20 @@ class Scheduler:
             self._log(f"Stored result of task {task.id} to memory")
         except Exception as e:
             self._log(f"Failed to store result to memory for task {task.id}: {e}", "error")
+
+    async def _connect_mcp_servers(self):
+        """Eagerly connect all configured external MCP servers at startup."""
+        try:
+            mgr = self.executor._mcp_client_manager
+            if mgr and mgr.has_servers():
+                tool_registry = self.executor._get_agentic_executor()._tool_registry
+                # discover_and_register calls connect_all() internally — don't pre-call it
+                # or the second connect_all() inside sees already-connected servers and
+                # returns {} causing no tools to be registered.
+                count = await mgr.discover_and_register(tool_registry)
+                self._log(f"MCP startup: connected {list(mgr._sessions.keys())}, registered {count} tools")
+        except Exception as e:
+            self._log(f"MCP server startup connect failed (non-fatal): {e}", "warning")
 
     def _seed_tasks_from_config(self):
         """

@@ -1,0 +1,59 @@
+{
+  "comment": "System-level content patterns for ContentAwarePolicyChecker. Personal patterns live in ~/.memory/config/policy_patterns.json — entries with the same 'name' override system entries.",
+  "patterns": [
+    {
+      "name": "openai_api_key",
+      "regex": "sk-[A-Za-z0-9]{32,}",
+      "severity": "block",
+      "description": "OpenAI-style API key detected in tool args"
+    },
+    {
+      "name": "anthropic_api_key",
+      "regex": "sk-ant-[A-Za-z0-9\\-]{32,}",
+      "severity": "block",
+      "description": "Anthropic API key detected in tool args"
+    },
+    {
+      "name": "aws_access_key",
+      "regex": "AKIA[0-9A-Z]{16}",
+      "severity": "block",
+      "description": "AWS access key ID detected in tool args"
+    },
+    {
+      "name": "aws_secret_key",
+      "regex": "[A-Za-z0-9/+]{40}",
+      "severity": "warn",
+      "description": "Possible AWS secret key (40-char base64) in tool args"
+    },
+    {
+      "name": "generic_bearer_token",
+      "regex": "Bearer\\s+[A-Za-z0-9\\-_\\.]{32,}",
+      "severity": "warn",
+      "description": "Bearer token detected in tool args"
+    },
+    {
+      "name": "private_key_block",
+      "regex": "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----",
+      "severity": "block",
+      "description": "Private key material detected in tool args"
+    },
+    {
+      "name": "password_cli_flag",
+      "regex": "(?i)--password[=\\s]+\\S+",
+      "severity": "warn",
+      "description": "Password passed as CLI flag in tool args"
+    },
+    {
+      "name": "curl_pipe_sh",
+      "regex": "curl[^|]*\\|[^|]*(bash|sh)\\b",
+      "severity": "block",
+      "description": "curl-pipe-shell pattern detected (supply chain risk)"
+    },
+    {
+      "name": "wget_pipe_sh",
+      "regex": "wget[^|]*\\|[^|]*(bash|sh)\\b",
+      "severity": "block",
+      "description": "wget-pipe-shell pattern detected (supply chain risk)"
+    }
+  ]
+}
