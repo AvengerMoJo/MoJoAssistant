@@ -33,28 +33,34 @@ class EventLog:
     MAX_EVENTS = 500
     PATH = get_memory_subpath("events.json")
 
-    _instance: "Optional[EventLog]" = None
-    _instance_lock: threading.Lock = threading.Lock()
-    _instance_initialized: bool = False
-    # Class-level write lock used by append/purge — always a threading.Lock so
-    # it is safe to acquire from any thread or event loop, not just the one that
-    # first created the instance (asyncio.Lock would bind to one event loop).
+    # Class-level write lock — threading.Lock so it is safe to acquire from any
+    # thread or event loop (asyncio.Lock binds to one event loop and raises
+    # RuntimeError when acquired from a different one, e.g. the scheduler
+    # daemon thread vs the MCP server's main loop).
     _write_lock: threading.Lock = threading.Lock()
 
+    # Process-level singleton for the default path only.  Custom-path instances
+    # (e.g. isolated test instances) bypass the singleton so tests stay isolated.
+    _default_instance: "Optional[EventLog]" = None
+    _singleton_lock: threading.Lock = threading.Lock()
+
     def __new__(cls, path: str = None, max_events: int = None):
-        with cls._instance_lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-        return cls._instance
+        # Only apply the singleton pattern when using the default path.
+        if path is not None:
+            return super().__new__(cls)
+        with cls._singleton_lock:
+            if cls._default_instance is None:
+                cls._default_instance = super().__new__(cls)
+                cls._default_instance._initialized = False
+        return cls._default_instance
 
     def __init__(self, path: str = None, max_events: int = None):
-        with self.__class__._instance_lock:
-            if self._instance_initialized:
-                return
-            self.__class__._instance_initialized = True
+        # Skip re-initialisation for the default singleton.
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
         self._path = path or self.PATH
         self._max = max_events or self.MAX_EVENTS
-        self._lock = threading.Lock()
         self._events: deque[Dict[str, Any]] = deque(maxlen=self._max)
         self._load()
 

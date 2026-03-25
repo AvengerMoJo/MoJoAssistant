@@ -143,8 +143,36 @@ sensitive data before it crosses a boundary. Configurable per role:
 redact, abstract, or summarise before external exposure.
 
 ## v1.2.6-beta
-Policy Enforcement Agent + agentic executor hardening. Policy Agent subscribes
-to the inbox event stream and can block operations before execution.
+Policy enforcement + agentic executor hardening.
+
+**What was originally planned vs what was built:**
+
+The original spec called for a separate `PolicyAgent` process subscribing to
+the inbox event stream and blocking operations pre-execution. After design
+review, an inline `PolicyMonitor` checker pipeline was chosen instead. The
+architectural reasons: synchronous inline checks have zero message-passing
+latency, no separate process to crash/stall, and are composable without an
+event-stream dependency. The inbox-based PolicyAgent is a valid future
+enhancement but is not a prerequisite for safety — inline checkers cover
+all the same blocking/auditing outcomes.
+
+**What was actually shipped:**
+- `app/scheduler/policy/` package: `StaticPolicyChecker`, `ContentAwarePolicyChecker`,
+  `DataBoundaryChecker`, `ContextAwarePolicyChecker` — pluggable ordered pipeline
+- Role-level `data_boundary` config: `allow_external_mcp`, `allowed_tiers`
+- `_emit_policy_violation` in executor → EventLog → ntfy + dashboard on every block
+- Per-task tmux socket isolation (`/tmp/mojo-task-{id}.sock`)
+- MCPClientManager race-condition fixes (connect lock, stale flag reset, wait_for timeout)
+- Bidirectional ntfy HITL reply flow
+
+**Gaps that remain open (deferred to v1.2.7 or later):**
+- `"local_only": true` task/role flag — replaced by `data_boundary.allowed_tiers`
+  but the simple one-liner flag was never added; add in v1.2.7 as syntactic sugar
+  over the existing tier enforcement.
+- Inbox-subscribing `PolicyAgent` (separate process) — still valuable for
+  cross-agent policy enforcement and audit reasoning; target v1.3.x.
+- No automated tests for `DataBoundaryChecker`, `ContextAwarePolicyChecker`,
+  `requires_tool_use`, or tmux socket isolation; add in v1.2.7.
 
 **Infrastructure routing — superseded (2026-03-24):**
 The original goal ("high-priority events reach user when no MCP client is open")
@@ -154,13 +182,13 @@ works without any client), the read-only dashboard (browser), and MCP
 would reach for. Bidirectional ntfy (reply from notification) is tracked as a
 good-to-have in v1.3.x if urgency demands it.
 
-**Technical debt from v1.2.5 (Carl review — no blockers, tracked here):**
-- 🟡 Race condition in MCPServerManager eager connection — add readiness check before first tool call
-- 🟡 Overly broad `except Exception` in ResourcePoolLLMInterface — tighten to specific error types
-- 🟡 Missing input validation for urgency/importance routing fields — add bounds/type checking
-- 🟡 Non-atomic stop/reconnect in MCPServerManager — make it transactional or add rollback
-- 🟡 Duplicated `["free", "free_api"]` default tier preference — extract to a single shared constant
-- 🟡 Per-task tmux session isolation — generate a unique socket path per task so agents can't collide in a shared tmux server; today all agents share `/tmp/mojo-agent.sock`
+**Technical debt from v1.2.5 (Carl review):**
+- ✅ Race condition in MCPClientManager eager connection — fixed (connect lock, stale flag reset, wait_for timeout)
+- ✅ Missing input validation for urgency/importance routing fields — bounds/type checking added
+- ✅ Duplicated `["free", "free_api"]` default tier preference — extracted to `DEFAULT_TIER_PREFERENCE` constant
+- ✅ Per-task tmux session isolation — unique `/tmp/mojo-task-{id}.sock` per task
+- 🟡 Overly broad `except Exception` in ResourcePoolLLMInterface — current code logs + re-raises (acceptable); tighten error types in v1.2.7
+- 🟡 Non-atomic stop/reconnect in MCPServerManager — still open; add rollback in v1.2.7
 
 ## v1.3.0
 **Agent Type Classification + Pluggable Workflow Templates** (§25)
@@ -431,6 +459,8 @@ text and loses its typed structure before dreaming can see it.
 | PII classification | Sensitive data leakage | v1.2.5 |
 | Sanitization layer | External exposure | v1.2.5 |
 | Infrastructure routing | Reachability | ~~v1.2.6~~ superseded — ntfy + dashboard + get_content cover this |
-| Policy Enforcement Agent | Proactive blocking, context-aware safety | v1.2.6 |
+| Policy checker pipeline (inline) | Pre-execution blocking, data boundary, violation audit | ✅ v1.2.6 |
+| Policy Enforcement Agent (inbox-based) | Cross-agent proactive blocking with reasoning | v1.3.x |
+| `local_only` task flag | Syntactic sugar over allowed_tiers | v1.2.7 |
 | Inbox → Dreaming → Knowledge | Institutional memory, pattern learning | v1.2.x |
 | Message passing + containerization | Fault isolation, language agnosticism, scale | v2.x |
