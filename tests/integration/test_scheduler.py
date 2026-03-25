@@ -9,6 +9,8 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -17,6 +19,7 @@ from app.scheduler.models import Task, TaskType, TaskPriority, TaskStatus
 from app.scheduler.triggers import create_daily_trigger, parse_cron_expression
 
 
+@pytest.mark.asyncio
 async def test_basic_scheduler():
     """Test basic scheduler operations"""
     print("=" * 70)

@@ -8,10 +8,13 @@ import sys
 import asyncio
 import os
 
+import pytest
+
 # Add current directory to path
 sys.path.insert(0, ".")
 
 
+@pytest.mark.asyncio
 async def test_setup_wizard_basic():
     """Test basic setup wizard functionality"""
     print("Testing AI Setup Wizard Integration")
