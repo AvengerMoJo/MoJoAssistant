@@ -76,6 +76,7 @@ class PolicyMonitor:
         self._policy = policy or {}
         self._checkers: List[PolicyChecker] = checkers or []
         self._violation_total: int = 0  # cumulative blocks across all calls this task
+        self._data_boundary: Dict[str, Any] = data_boundary or {}
         self._context: Dict[str, Any] = {
             "role_id": role_id,
             "task_id": task_id,
@@ -120,9 +121,21 @@ class PolicyMonitor:
                 "allow_external_mcp": false,
                 "allowed_tiers": ["free"]
             }
+
+        local_only shorthand:
+            "local_only": true
+            Equivalent to data_boundary: {allow_external_mcp: false, allowed_tiers: ["free"]}.
+            Explicit data_boundary values take precedence over local_only defaults.
         """
         policy = (role.get("policy") if role else None) or {}
-        data_boundary = (role.get("data_boundary") if role else None) or {}
+        data_boundary = dict((role.get("data_boundary") if role else None) or {})
+
+        # local_only: true is syntactic sugar for the most restrictive data_boundary.
+        # Explicit data_boundary values take precedence over local_only defaults.
+        if role and role.get("local_only"):
+            data_boundary.setdefault("allow_external_mcp", False)
+            data_boundary.setdefault("allowed_tiers", ["free"])
+
         checker_names: List[str] = policy.get("checkers", ["static", "content"])
 
         checkers: List[PolicyChecker] = []
@@ -186,6 +199,11 @@ class PolicyMonitor:
         for checker in self._checkers:
             violations.extend(checker.validate_available_tools(available_tools))
         return violations
+
+    @property
+    def data_boundary(self) -> Dict[str, Any]:
+        """The resolved data_boundary config (after local_only expansion)."""
+        return self._data_boundary
 
     def is_empty(self) -> bool:
         """True if no checkers are configured."""

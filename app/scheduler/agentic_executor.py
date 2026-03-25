@@ -205,7 +205,8 @@ class AgenticExecutor:
                     self._requires_tool_use = behavior_rules.get(
                         "requires_tool_use", False
                     )
-                    self._data_boundary = role.get("data_boundary") or {}
+                    # Pull expanded data_boundary from monitor (local_only expansion applied)
+                    self._data_boundary = self._policy_monitor.data_boundary
                 else:
                     self._log(f"Role '{role_id}' not found — continuing without role")
             except Exception as e:
