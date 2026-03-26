@@ -192,7 +192,90 @@ good-to-have in v1.3.x if urgency demands it.
 - ✅ Overly broad `except Exception` in ResourcePoolLLMInterface — removed; transport errors caught by name, unexpected errors propagate naturally
 - 🟡 Non-atomic stop/reconnect in MCPServerManager — still open; add rollback in v1.2.7
 
-## v1.3.0
+## v1.2.7
+Tech debt + Security Sentinel foundation.
+
+- **MCPServerManager rollback** — non-atomic stop/reconnect; add rollback on failed reconnect
+- **Security Sentinel role** — `~/.memory/roles/security_sentinel.json`; nightly cross-session
+  behavioral analysis using EventLog; local-only, no external calls; outputs security digest
+- **`behavioral_patterns.json`** — credential path patterns, exfiltration indicators, C2 signatures;
+  consumed by ContentAwarePolicyChecker as a behavioral pattern category
+- **Research result → knowledge breakdown workflow** — structured pipeline to convert long
+  task session outputs (Rebecca research, etc.) into knowledge base entries rather than
+  leaving them as raw session text
+- **ABCD dream summarization pre-pass** — progressive summarization before raw text ingestion
+  in dreaming pipeline to avoid wasting tokens on 60KB+ session logs
+
+---
+
+## v1.3.0 — Behavioral Security Layer
+
+**Theme: Trusted-but-Compromised — Catching What Policy Rules Miss**
+
+Inline policy checkers (v1.2.6) protect against known bad. This release adds a
+parallel behavioral layer that catches agents behaving outside their declared scope
+— the Trivy attack class, and the dominant AI supply chain attack surface going
+forward.
+
+Design doc: `docs/architecture/SECURITY_BEHAVIORAL_MONITOR.md`
+
+### Layer 2: BehavioralMonitor (parallel, silent observer)
+
+Runs alongside every `AgenticExecutor` session without blocking or modifying
+execution. The agent has no awareness of it.
+
+- Maintains per-role behavioral baseline (typical tools, call counts, credential
+  access rate, external network rate) updated via exponential moving average
+- Scores each tool call against baseline: credential path access, scope drift,
+  exfiltration chains, volume anomalies, timing anomalies, C2 pattern matches
+- Accumulates session-level suspicion score, signals ContainmentEngine at thresholds
+
+### Layer 3: ContainmentEngine (three-tier response)
+
+| Suspicion | Response | Agent Awareness |
+|-----------|----------|-----------------|
+| LOW (30–60) | Silent ntfy push to user, session flagged | None |
+| MEDIUM (60–85) | Redirect to **SandboxRuntime** — honeypot containment | None |
+| HIGH (85+) | Hard halt + HITL level 5 alert | Yes — task stops |
+
+### SandboxRuntime (honeypot)
+
+When MEDIUM threshold is crossed, `AgenticExecutor` transparently swaps its
+execution backend. The agent continues running and receives plausible responses —
+but nothing touches real resources:
+
+- `bash_exec` → isolated container (Docker/bubblewrap), ephemeral filesystem, monitored network
+- File writes → fake filesystem overlay at `/tmp/mojo-sandbox-{task_id}/`
+- Network calls → transparent monitoring proxy, calls logged + optionally blocked
+- MCP writes → silently no-op with plausible success responses
+
+While sandboxed, the ContainmentEngine records the full attack sequence: credential
+paths targeted, network destinations, data assembled, encryption attempted. Written
+to `~/.memory/security/containment_{task_id}.json` — forensic intelligence for
+future pattern updates.
+
+**Why honeypot over immediate block:** Blocking reveals detection. Silent containment
+lets the attack complete in a controlled environment, gives full forensic visibility,
+and allows the user to decide on response with complete information.
+
+### Security Sentinel role (nightly cross-session analysis)
+
+Scheduled role running after dreaming (04:00). Reads EventLogs and behavioral
+profiles. Catches what per-session scoring misses: slow baseline drift over weeks,
+patterns innocuous individually but suspicious collectively, emerging attack
+signatures. Outputs security digest to EventLog. Local-only, no external calls,
+no bash — cannot be compromised by supply chain attack on external dependencies.
+
+### New files
+- `app/scheduler/security/behavioral_monitor.py`
+- `app/scheduler/security/containment_engine.py`
+- `app/scheduler/security/sandbox_runtime.py`
+- `app/scheduler/security/forensics.py`
+- `config/behavioral_patterns.json`
+
+---
+
+## v1.3.1
 **Agent Type Classification + Pluggable Workflow Templates** (§25)
 - `agent_type` field in role JSON (provisioner, researcher, reviewer, executor, monitor, orchestrator)
 - `scheduler_add_task` as a dispatchable agent tool — agents queue each other's work without human relay
@@ -227,6 +310,34 @@ story and close the remaining trust-layer gaps.
 - **`llm_config.json` → `resource_pool.json` migration** — make `executor.py`
   dreaming pipeline pull LLM from `ResourceManager`; update installer to write
   `resource_pool.json`. Eliminates split-brain config risk.
+
+## Priority Matrix — Urgent / Important
+
+| Item | Urgent | Important | Target | Why |
+|------|--------|-----------|--------|-----|
+| Audit trail + §21 enforcement | 🔴 High | 🔴 High | v1.2.4 | Linchpin for v1.0 gate — privacy promise unverifiable without it |
+| Smoke suite + supported path definition | 🔴 High | 🔴 High | v1.0 gate | Blocks public release — can't ship without it |
+| Tool-calling reliability (Qwen/LMStudio) | 🔴 High | 🔴 High | v1.0 gate | Blocks public release — current path too shaky to present |
+| First-run experience / installer | 🟡 Medium | 🔴 High | v1.0 gate | Blocks public release — strangers can't onboard today |
+| MCPServerManager rollback | 🟡 Medium | 🟡 Medium | v1.2.7 | Known tech debt, low blast radius |
+| Security Sentinel role + behavioral_patterns.json | 🟡 Medium | 🔴 High | v1.2.7 | Foundation for v1.3.0 behavioral layer; low effort, high value |
+| Research result → knowledge breakdown workflow | 🟡 Medium | 🟡 Medium | v1.2.7 | Tokens wasted, knowledge lost on every research task |
+| ABCD dream pre-pass (token efficiency) | 🟡 Medium | 🟡 Medium | v1.2.7 | Dreaming pipeline wastes tokens on raw 60KB+ session logs |
+| BehavioralMonitor + ContainmentEngine | 🟢 Low | 🔴 High | v1.3.0 | Critical for autonomous AI world; not urgent until pre-public |
+| PII classification + sanitization | 🟢 Low | 🟡 Medium | post-v1.0 | Defense-in-depth; data boundary enforcement covers core promise |
+| HttpAgentExecutor / external agent integrations | 🟢 Low | 🟡 Medium | post-v1.0 | Compelling, not foundational |
+| Agent type classification + workflow templates | 🟢 Low | 🟡 Medium | v1.3.1 | Feature expansion, not safety-critical |
+| One-on-one role channel + OpenAI-compat proxy | 🟢 Low | 🟡 Medium | v1.3.1 | UX polish, post-v1.0 |
+| Inbox → Dreaming → Knowledge | 🟢 Low | 🟡 Medium | v1.3.x | Institutional memory; valuable but not blocking |
+| Message passing + containerization | 🟢 Low | 🟢 Low | v2.x | Architecture evolution, long horizon |
+
+**Reading the matrix:**
+- 🔴🔴 = do next, blocks v1.0 or is the linchpin
+- 🟡🔴 = important, schedule soon after linchpin items
+- 🟢🔴 = high value but not time-pressured; design now, build at right milestone
+- anything 🟢🟢 = genuine backlog
+
+---
 
 ## v1.2.x → v1.3.0 graduation
 v1.3.0 releases when:
