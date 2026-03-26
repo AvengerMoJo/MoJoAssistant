@@ -275,7 +275,75 @@ no bash — cannot be compromised by supply chain attack on external dependencie
 
 ---
 
-## v1.3.1
+## v1.3.1 — Agent Learning Loop
+
+**Theme: Agents That Learn From Their Own Mistakes**
+
+Design doc: `docs/architecture/AGENT_LEARNING_LOOP.md`
+
+The current model requires a human to be the learning loop: agent fails → human
+notices → human fixes code or config → agent tries again. This release closes
+that loop so common failure patterns are resolved by the agents themselves.
+Human attention is reserved for genuinely new problems.
+
+### Per-agent silo memory
+
+Each role gets a private memory store at `~/.memory/roles/{role_id}/`:
+- `task_history/` — structured failure/success records written by executor after every task
+- `lessons/` — synthesized lesson knowledge units produced by the role's dream pass
+- `capabilities/` — what this role knows it can and cannot do
+
+### Failure → lesson pipeline
+
+On task incomplete or failed, `AgenticExecutor` writes a structured `task_lesson`
+record: what was tried, what failed, root cause, what would unblock, suggested
+alternatives. Failure taxonomy tags each record (missing resource, wrong tool for
+platform, missing permission, ambiguous goal, external unavailability, knowledge gap).
+
+The role's nightly dream pass reads `task_history/`, synthesizes durable
+`agent_lesson` units into `lessons/`. Lessons have confidence scores that
+strengthen with repeated reinforcement.
+
+### Memory context injection at task start
+
+Before the first iteration, the executor queries the role's lesson memory for
+entries relevant to the current task goal. Relevant lessons are prepended to
+context as "Memory notes" — the agent already knows what failed last time and
+tries the alternative approach without being told.
+
+### Cross-agent memory reference
+
+Any agent can query another agent's lesson memory:
+```
+search_memory(query="git clone codebase access", role_id="ahman")
+```
+Agents discover what other agents know without hardcoding role capabilities.
+Write access to a role's private memory is restricted to that role and the system.
+
+### Sub-agent dispatch (foundational piece)
+
+`scheduler_add_task` becomes available as a tool for assistant roles — not just
+humans via MCP. An agent that hits a wall it can't solve alone can dispatch a
+sub-task to the right role and wait for the result:
+- Rebecca needs codebase access → dispatches to Ahman → Ahman clones → Rebecca reads report
+- Sub-tasks inherit parent data_boundary policy
+- Sub-task depth limited to 2 levels (prevent runaway recursion)
+- All dispatched sub-tasks visible in EventLog with parent linkage
+
+### Priority matrix update
+
+| Item | Urgent | Important |
+|------|--------|-----------|
+| Failure → task_lesson write (executor) | 🟡 | 🔴 |
+| Memory context injection at task start | 🟡 | 🔴 |
+| Per-role dream pass on private memory | 🟡 | 🔴 |
+| Cross-agent search_memory(role_id) | 🟢 | 🔴 |
+| scheduler_add_task as agent tool | 🟢 | 🔴 |
+| list_agent_capabilities() discovery tool | 🟢 | 🟡 |
+
+---
+
+## v1.3.2
 **Agent Type Classification + Pluggable Workflow Templates** (§25)
 - `agent_type` field in role JSON (provisioner, researcher, reviewer, executor, monitor, orchestrator)
 - `scheduler_add_task` as a dispatchable agent tool — agents queue each other's work without human relay
@@ -324,6 +392,9 @@ story and close the remaining trust-layer gaps.
 | Research result → knowledge breakdown workflow | 🟡 Medium | 🟡 Medium | v1.2.7 | Tokens wasted, knowledge lost on every research task |
 | ABCD dream pre-pass (token efficiency) | 🟡 Medium | 🟡 Medium | v1.2.7 | Dreaming pipeline wastes tokens on raw 60KB+ session logs |
 | BehavioralMonitor + ContainmentEngine | 🟢 Low | 🔴 High | v1.3.0 | Critical for autonomous AI world; not urgent until pre-public |
+| Agent learning loop (failure→lesson→injection) | 🟢 Low | 🔴 High | v1.3.1 | Fundamental: agents learn from mistakes without human intervention |
+| Per-agent silo memory + cross-agent queries | 🟢 Low | 🔴 High | v1.3.1 | Each agent accumulates its own knowledge; agents can reference each other |
+| Sub-agent dispatch (scheduler_add_task as agent tool) | 🟢 Low | 🔴 High | v1.3.1 | Agents orchestrate each other; Rebecca → Ahman → Carl pipeline |
 | PII classification + sanitization | 🟢 Low | 🟡 Medium | post-v1.0 | Defense-in-depth; data boundary enforcement covers core promise |
 | HttpAgentExecutor / external agent integrations | 🟢 Low | 🟡 Medium | post-v1.0 | Compelling, not foundational |
 | Agent type classification + workflow templates | 🟢 Low | 🟡 Medium | v1.3.1 | Feature expansion, not safety-critical |
