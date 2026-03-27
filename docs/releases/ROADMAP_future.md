@@ -190,24 +190,37 @@ good-to-have in v1.3.x if urgency demands it.
 - ✅ Duplicated `["free", "free_api"]` default tier preference — extracted to `DEFAULT_TIER_PREFERENCE` constant
 - ✅ Per-task tmux session isolation — unique `/tmp/mojo-task-{id}.sock` per task
 - ✅ Overly broad `except Exception` in ResourcePoolLLMInterface — removed; transport errors caught by name, unexpected errors propagate naturally
-- 🟡 Non-atomic stop/reconnect in MCPServerManager — still open; add rollback in v1.2.7
+- ✅ Non-atomic stop/reconnect in MCPServerManager — fixed in v1.2.7; rollback retry on failed
+  reconnect; honest `"partial"` status when sibling server can't be recovered.
 
-## v1.2.7
+## v1.2.7 ✅ shipped 2026-03-27/28
 Tech debt + Security Sentinel foundation + Role Chat Interface.
 
-- **MCPServerManager rollback** — non-atomic stop/reconnect; add rollback on failed reconnect
-- **Security Sentinel role** — `~/.memory/roles/security_sentinel.json`; nightly cross-session
-  behavioral analysis using EventLog; local-only, no external calls; outputs security digest
-- **`behavioral_patterns.json`** — credential path patterns, exfiltration indicators, C2 signatures;
-  consumed by ContentAwarePolicyChecker as a behavioral pattern category
+- ✅ **MCPServerManager rollback** — `stop_project()` closes all sessions atomically (AsyncExitStack
+  limitation), reconnects siblings, retries each failed reconnect once, returns `"partial"` status
+  with `failed` list rather than lying with `"success"`. `restart_project()` surfaces rollback
+  warnings and `failed_siblings` from stop phase.
+- ✅ **Security Sentinel role** — `~/.memory/roles/security_sentinel.json`; nightly cross-session
+  behavioral analysis using EventLog; `local_only: true`, no external calls; outputs structured
+  security digest to memory at key `security/digest_YYYY-MM-DD`. Scheduled nightly 03:00 via
+  `config/scheduler_config.json` (`security_sentinel_nightly` task).
+- ✅ **`behavioral_patterns.json`** — 23 behavioral security patterns in four categories:
+  credential file access (ssh, .aws, .gnupg, .netrc, kubeconfig), C2/reverse-shell (/dev/tcp,
+  netcat -e, python/perl socket shells, mkfifo, socat EXEC), exfiltration (base64 large payload,
+  curl/wget POST to external, scp/rsync outbound), privilege escalation (SUID chmod, crontab -ei,
+  LD_PRELOAD injection). `ContentAwarePolicyChecker._load_patterns()` merges policy + behavioral
+  layers (system + personal overlay each); total 32 patterns at startup.
 - ✅ **Atomic fact extraction (document dreaming path)** — `process_document()` pipeline converts
   research reports into `KnowledgeUnit` records (atomic propositions + source quotes + inter-unit
   links). Auto-triggered after agent task if `final_answer ≥ 500 chars`. KUs stored in
   `~/.memory/roles/{role_id}/knowledge_units/`. See `docs/architecture/ROLE_CHAT_INTERFACE.md`.
-- **Role Chat Interface** — `dialog(role_id, message, session_id?)` MCP tool; talk directly
+- ✅ **Role Chat Interface** — `dialog(role_id, message, session_id?)` MCP tool; talk directly
   to any assistant in conversational mode (not agentic executor). Role's personality + private
-  KU memory as context. No task acceptance. Session history in
-  `~/.memory/roles/{role_id}/chat_history/`. Dashboard "Chat" tab.
+  KU memory + recent task activity as context. Mini agentic loop (max 5 iterations) with
+  `memory_search` and `task_search` tools. Session history persisted at
+  `~/.memory/roles/{role_id}/chat_history/{session_id}.json`. Dashboard "Chat" tab with session
+  sidebar, "+ New Chat" button, and bubble-style history. Uses LMStudio local server with
+  dynamic model discovery (`/v1/models` probe when `model=None`); falls back to FREE_API tier.
   Design doc: `docs/architecture/ROLE_CHAT_INTERFACE.md`
 
 ---
