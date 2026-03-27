@@ -1481,6 +1481,41 @@ class ToolRegistry:
                     "required": [],
                 },
             },
+            # Dialog — direct conversation with a role
+            {
+                "name": "dialog",
+                "description": (
+                    "Talk directly to an assistant role in conversational mode.\n\n"
+                    "The role responds with its full personality and knowledge from "
+                    "its private research memory. This is NOT a task — the role will "
+                    "NOT accept new task assignments here. Use scheduler to assign work.\n\n"
+                    "action='chat',    role_id, message, session_id? — send a message\n"
+                    "action='history', role_id, session_id?          — view session history\n"
+                    "action='sessions',role_id                       — list all sessions for a role"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "description": "Operation: 'chat' (default), 'history', or 'sessions'.",
+                        },
+                        "role_id": {
+                            "type": "string",
+                            "description": "Which role to talk to (e.g. 'rebecca').",
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Your message to the role (chat action).",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for continuity. Omit to start a new session.",
+                        },
+                    },
+                    "required": [],
+                },
+            },
             # Agent Hub
             {
                 "name": "agent",
@@ -2413,6 +2448,8 @@ Agent resumes within seconds.
             return await self._execute_scheduler_hub(args)
         elif name == "dream":
             return await self._execute_dream(args)
+        elif name == "dialog":
+            return await self._execute_dialog(args)
         elif name == "agent":
             return await self._execute_agent_hub(args)
         elif name == "external_agent":
@@ -5164,6 +5201,76 @@ Agent resumes within seconds.
             })
         elif action == "distill_inbox":
             return await self._execute_dreaming_distill_inbox(args)
+        else:
+            return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_dialog(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Dialog hub — direct conversational access to a role."""
+        from app.scheduler.role_chat import RoleChatSession, list_chat_sessions
+
+        action = args.get("action", "chat")
+        role_id = args.get("role_id", "")
+
+        HELP = {
+            "tool": "dialog",
+            "actions": {
+                "chat":     "Talk to a role — params: role_id, message, session_id?",
+                "history":  "View session history — params: role_id, session_id?",
+                "sessions": "List all sessions for a role — params: role_id",
+            },
+            "example": 'dialog(action="chat", role_id="rebecca", message="What did you find about Trivy?")',
+            "note": "The role will NOT accept new task assignments in chat mode. Use scheduler for that.",
+        }
+
+        if not action or action == "help":
+            return HELP
+
+        if not role_id:
+            return {"status": "error", "message": "Parameter 'role_id' is required."}
+
+        if action == "chat":
+            message = args.get("message", "")
+            if not message:
+                return {"status": "error", "message": "Parameter 'message' is required for chat action."}
+
+            session = RoleChatSession(
+                role_id=role_id,
+                session_id=args.get("session_id"),
+            )
+
+            # Pass ResourceManager if available via scheduler executor
+            rm = None
+            try:
+                executor = getattr(self.scheduler, "executor", None)
+                if executor is not None:
+                    rm = executor._get_resource_manager()
+            except Exception:
+                pass
+
+            result = await session.exchange(message=message, resource_manager=rm)
+            return result
+
+        elif action == "history":
+            session_id = args.get("session_id")
+            session = RoleChatSession(role_id=role_id, session_id=session_id)
+            data = session._load_session()
+            return {
+                "session_id": data.get("session_id"),
+                "role_id": role_id,
+                "started_at": data.get("started_at"),
+                "last_active": data.get("last_active"),
+                "exchanges": data.get("exchanges", []),
+                "turn_count": len(data.get("exchanges", [])),
+            }
+
+        elif action == "sessions":
+            sessions = list_chat_sessions(role_id)
+            return {
+                "role_id": role_id,
+                "sessions": sessions,
+                "count": len(sessions),
+            }
+
         else:
             return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
 

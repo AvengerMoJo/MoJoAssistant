@@ -169,6 +169,10 @@ class Task:
     urgency: Optional[int] = None
     importance: Optional[int] = None
 
+    # Sub-agent dispatch — parent linkage and recursion guard
+    parent_task_id: Optional[str] = None  # Task that spawned this one (None = top-level)
+    dispatch_depth: int = 0               # 0 = top-level; max enforced at dispatch time
+
     def is_due(self) -> bool:
         """Check if task is due to run"""
         if self.status != TaskStatus.PENDING:
@@ -226,6 +230,8 @@ class Task:
             "pending_question": self.pending_question,
             "urgency": self.urgency,
             "importance": self.importance,
+            "parent_task_id": self.parent_task_id,
+            "dispatch_depth": self.dispatch_depth,
         }
         return data
 
@@ -255,8 +261,10 @@ class Task:
         if "result" in data and data["result"]:
             data["result"] = TaskResult.from_dict(data["result"])
 
-        # Tolerate dicts that predate urgency/importance fields
+        # Tolerate dicts that predate these fields
         data.setdefault("urgency", None)
         data.setdefault("importance", None)
+        data.setdefault("parent_task_id", None)
+        data.setdefault("dispatch_depth", 0)
 
         return cls(**data)

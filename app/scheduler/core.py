@@ -548,6 +548,34 @@ class Scheduler:
             else:
                 self._log(f"Dreaming task {dreaming_task_id} already exists", "debug")
 
+            # Queue atomic fact extraction if the final answer is a substantial report
+            MIN_REPORT_LENGTH = 500  # chars — skip trivial or empty outputs
+            role_id = (task.config or {}).get("role_id", "unknown")
+            if final_answer and len(final_answer) >= MIN_REPORT_LENGTH:
+                doc_task_id = f"dreaming_doc_{task.id}"
+                doc_task = Task(
+                    id=doc_task_id,
+                    type=TaskType.DREAMING,
+                    priority=TaskPriority.LOW,
+                    config={
+                        "mode": "document",
+                        "doc_id": f"reports/{role_id}/report_{task.id}",
+                        "conversation_text": final_answer,
+                        "quality_level": "basic",
+                        "role_id": role_id,
+                        "metadata": {
+                            "source": "report_extraction",
+                            "original_task_id": task.id,
+                            "goal": goal,
+                            "role_id": role_id,
+                        },
+                    },
+                    description=f"Atomic fact extraction for task {task.id} report",
+                    created_by="system",
+                )
+                if self.queue.add(doc_task):
+                    self._log(f"Scheduled document dreaming task {doc_task_id} for task {task.id}")
+
         except Exception as e:
             self._log(f"Failed to schedule dreaming for task {task.id}: {e}", "error")
 

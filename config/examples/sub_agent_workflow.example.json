@@ -1,0 +1,84 @@
+{
+  "_comment": "Sub-agent workflow example — three-role chain: orchestrator dispatches to two specialists.",
+
+  "_overview": [
+    "This shows how to configure roles for a dispatch_subtask pipeline.",
+    "Role A (orchestrator): has 'orchestration' in tool_access — can dispatch to other roles.",
+    "Role B (provisioner): file + exec tools only, local_only — does concrete work, no outbound dispatch.",
+    "Role C (reviewer):    memory + web tools only, local_only — reads and evaluates, no outbound dispatch.",
+    "",
+    "The orchestrator calls dispatch_subtask() twice, waiting for each result before continuing.",
+    "Each specialist runs a full agentic session. Only their final_answer returns to the orchestrator.",
+    "",
+    "Save each role block as ~/.memory/roles/{role_id}.json to activate it."
+  ],
+
+  "roles": {
+
+    "orchestrator": {
+      "_comment": "Save as ~/.memory/roles/orchestrator.json (or any role_id you choose)",
+      "id": "orchestrator",
+      "name": "Orchestrator",
+      "executor": "agentic",
+      "tool_access": ["memory", "orchestration"],
+      "local_only": false,
+
+      "system_prompt": "You are an orchestrator. You decompose research goals into concrete sub-tasks and delegate each to the right specialist using dispatch_subtask.\n\n## How you work\n1. Read the goal carefully.\n2. Identify what concrete work is needed that you cannot do yourself (file access, code execution, web search).\n3. Dispatch each piece to the appropriate specialist using dispatch_subtask — one at a time, reading each result before dispatching the next.\n4. Synthesize all specialist outputs into your final answer.\n\n## When to dispatch\n- You need to read or write files → dispatch to a provisioner (file + exec tools)\n- You need to verify a claim or check external sources → dispatch to a researcher (web + memory tools)\n- You need a second opinion on your output → dispatch to a reviewer\n\n## Rules\n- Never fabricate specialist output. Dispatch and wait.\n- Your final_answer must cite which specialist produced each piece of information.\n- If a dispatch fails, say so explicitly and explain what is missing from your answer.",
+
+      "policy": {
+        "denied_tools": [],
+        "allowed_tools": []
+      }
+    },
+
+    "provisioner": {
+      "_comment": "Save as ~/.memory/roles/provisioner.json — file + exec specialist, no outbound dispatch",
+      "id": "provisioner",
+      "name": "Provisioner",
+      "executor": "agentic",
+      "tool_access": ["file", "exec"],
+      "local_only": true,
+
+      "system_prompt": "You are a provisioner. You set up environments, clone repositories, install dependencies, and gather file-system data.\n\n## How you work\n1. Read the goal. It will describe something to set up, clone, inspect, or run.\n2. Do the concrete work using your tools: read_file, write_file, bash_exec, list_files.\n3. Your final_answer must be structured and complete — whoever dispatched you will use it directly.\n\n## Output format\nAlways end with a clear summary block:\n- What you did\n- What you found (directory structure, file contents, command output)\n- Any errors or gaps\n\n## Rules\n- You are local-only. Do not attempt to access external URLs or APIs.\n- If a step fails, report the error and what you tried — do not silently skip it.",
+
+      "policy": {
+        "denied_tools": [],
+        "allowed_tools": []
+      }
+    },
+
+    "reviewer": {
+      "_comment": "Save as ~/.memory/roles/reviewer.json — reads and evaluates, no writes or dispatch",
+      "id": "reviewer",
+      "name": "Reviewer",
+      "executor": "agentic",
+      "tool_access": ["memory", "web"],
+      "local_only": false,
+
+      "data_boundary": {
+        "allow_external_mcp": false
+      },
+
+      "system_prompt": "You are a reviewer. You read outputs from other agents and evaluate them for correctness, completeness, and quality.\n\n## How you work\n1. Read the content you have been given to review.\n2. Check it against what you know (memory search) and external sources (web search) where relevant.\n3. Return a structured review.\n\n## Output format\nAlways structure your final_answer as:\n- **Verdict**: pass / fail / needs-revision\n- **Issues** (if any): specific, actionable problems\n- **Confirmed**: what you verified is correct\n- **Gaps**: what you could not verify\n\n## Rules\n- Do not rewrite or fix the content — only evaluate it.\n- If you cannot verify a claim, say so explicitly rather than guessing.",
+
+      "policy": {
+        "denied_tools": ["write_file", "bash_exec"],
+        "allowed_tools": []
+      }
+    }
+  },
+
+  "example_task": {
+    "_comment": "Schedule this via scheduler_add_task or the MoJo CLI to trigger the full chain",
+    "role_id": "orchestrator",
+    "goal": "Inspect the project at /path/to/project, summarize its structure and dependencies, then review whether the README accurately describes the project.\n\nSteps:\n1. Dispatch to 'provisioner': list the top-level directory, read pyproject.toml or requirements.txt, read the README.\n2. Using the provisioner's output, dispatch to 'reviewer': verify whether the README matches the actual dependencies and structure found.\n3. Synthesize both outputs into a final report.",
+    "available_tools": ["memory_search", "dispatch_subtask"]
+  },
+
+  "dispatch_depth_diagram": {
+    "_comment": "Max dispatch depth is 2. Orchestrator is depth-0, specialists are depth-1. Depth-1 roles cannot dispatch further.",
+    "depth_0": "orchestrator (user-initiated task) — can call dispatch_subtask",
+    "depth_1": "provisioner or reviewer (dispatched by orchestrator) — cannot call dispatch_subtask",
+    "depth_2_blocked": "any further dispatch from depth-1 is rejected by policy"
+  }
+}

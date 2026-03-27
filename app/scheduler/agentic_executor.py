@@ -167,6 +167,8 @@ class AgenticExecutor:
         self._requires_tool_use: bool = False   # reject final answer if no tools called yet
         # Task id stored so _execute_single_tool can inject per-task tmux socket
         self._current_task_id: Optional[str] = task.id
+        # Propagate task context to registry for sub-agent dispatch linkage
+        self._tool_registry.set_task_context(task.id, task.dispatch_depth)
 
         config = task.config or {}
         goal = config.get("goal", "")

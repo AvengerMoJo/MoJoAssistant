@@ -68,4 +68,16 @@ class DataBoundaryChecker(PolicyChecker):
                 metadata={"tool": tool_name},
             )
 
+        # Dispatch tools send work to other roles — same isolation boundary as external MCP
+        if tool_name in ("dispatch_subtask", "scheduler_add_task"):
+            return PolicyDecision.block(
+                reason=(
+                    f"Tool '{tool_name}' dispatches work to another role. "
+                    "This role's data_boundary disallows outbound dispatch "
+                    "(data_boundary.allow_external_mcp=false)."
+                ),
+                checker=self.name,
+                metadata={"tool": tool_name},
+            )
+
         return PolicyDecision.allow(checker=self.name)
