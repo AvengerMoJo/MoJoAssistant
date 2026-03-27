@@ -69,14 +69,20 @@ class MCPServerManager(BaseAgentManager):
             return {"status": "error", "message": f"Failed to connect '{identifier}': {e}"}
 
     async def stop_project(self, identifier: str) -> Dict[str, Any]:
-        """Disconnect a specific MCP server (others keep running)."""
+        """Disconnect a specific MCP server (others keep running).
+
+        AsyncExitStack doesn't support partial close, so we close all sessions
+        and reconnect the remaining ones.  If any reconnect fails we attempt
+        a single rollback retry; if that also fails we report partial success
+        rather than lying with a clean "success" response.
+        """
         if identifier not in self._mgr._servers:
             return {"status": "error", "message": f"Unknown MCP server '{identifier}'"}
 
         if identifier not in self._mgr._sessions:
             return {"status": "ok", "message": f"MCP server '{identifier}' was not connected."}
 
-        # AsyncExitStack doesn't support partial close — drop all, reconnect rest
+        # Close all sessions atomically
         session_ids = list(self._mgr._sessions.keys())
         try:
             await self._mgr._exit_stack.aclose()
@@ -86,19 +92,48 @@ class MCPServerManager(BaseAgentManager):
         self._mgr._exit_stack.__init__()
         self._mgr._connected = False
 
-        # Reconnect the others
+        # Reconnect every server except the one being stopped
         others = [sid for sid in session_ids if sid != identifier]
+        reconnected: List[str] = []
+        failed: List[str] = []
+
         for sid in others:
             srv = self._mgr._servers.get(sid)
             if srv:
                 try:
                     await self._mgr._connect_server(srv)
+                    reconnected.append(sid)
                 except Exception as e:
                     logger.warning(f"MCPServerManager: could not reconnect '{sid}' after stop: {e}")
+                    failed.append(sid)
 
-        # Restore the flag so call_tool() doesn't re-enter connect_all() for the
-        # servers we just reconnected above.
+        # Rollback: retry each failed server once before giving up
+        still_failed: List[str] = []
+        for sid in failed:
+            srv = self._mgr._servers.get(sid)
+            if srv:
+                try:
+                    await self._mgr._connect_server(srv)
+                    reconnected.append(sid)
+                    logger.info(f"MCPServerManager: rollback reconnect succeeded for '{sid}'")
+                except Exception as e:
+                    logger.error(f"MCPServerManager: rollback failed for '{sid}': {e}")
+                    still_failed.append(sid)
+
+        # Mark connected regardless — at least some servers may be up.
+        # call_tool() will surface errors for any dead sessions naturally.
         self._mgr._connected = True
+
+        if still_failed:
+            return {
+                "status": "partial",
+                "message": (
+                    f"MCP server '{identifier}' disconnected, but {len(still_failed)} "
+                    f"server(s) could not be reconnected after rollback: {still_failed}"
+                ),
+                "reconnected": reconnected,
+                "failed": still_failed,
+            }
 
         return {"status": "success", "message": f"MCP server '{identifier}' disconnected."}
 
@@ -145,7 +180,12 @@ class MCPServerManager(BaseAgentManager):
         stop_result = await self.stop_project(identifier)
         if stop_result.get("status") == "error":
             return stop_result
-        return await self.start_project(identifier)
+        start_result = await self.start_project(identifier)
+        # Surface rollback warnings from stop alongside the start result
+        if stop_result.get("status") == "partial":
+            start_result["warning"] = stop_result.get("message", "")
+            start_result["failed_siblings"] = stop_result.get("failed", [])
+        return start_result
 
     async def destroy_project(self, identifier: str) -> Dict[str, Any]:
         """Same as stop for MCP servers (no persistent state to clean up)."""

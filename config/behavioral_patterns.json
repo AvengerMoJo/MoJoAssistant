@@ -1,0 +1,144 @@
+{
+  "comment": "Behavioral security patterns for ContentAwarePolicyChecker. Covers credential file access, exfiltration indicators, and C2/reverse-shell signatures. Personal overrides live in ~/.memory/config/behavioral_patterns.json.",
+
+  "patterns": [
+    {
+      "name": "ssh_private_key_path",
+      "regex": "\\.ssh/(id_rsa|id_ed25519|id_ecdsa|id_dsa|identity)(?:[^a-z]|$)",
+      "severity": "block",
+      "description": "SSH private key file path in tool args"
+    },
+    {
+      "name": "etc_shadow",
+      "regex": "/etc/shadow(?:[^a-z]|$)",
+      "severity": "block",
+      "description": "Attempt to access /etc/shadow (password hashes)"
+    },
+    {
+      "name": "etc_passwd_write",
+      "regex": "/etc/passwd",
+      "severity": "warn",
+      "description": "Reference to /etc/passwd in tool args"
+    },
+    {
+      "name": "aws_credentials_file",
+      "regex": "\\.aws/(credentials|config)(?:[^a-z]|$)",
+      "severity": "block",
+      "description": "AWS credentials file path in tool args"
+    },
+    {
+      "name": "gcloud_credentials",
+      "regex": "\\.config/gcloud/(?:credentials|application_default_credentials)\\.json",
+      "severity": "block",
+      "description": "GCloud credentials file path in tool args"
+    },
+    {
+      "name": "docker_config_auth",
+      "regex": "\\.docker/config\\.json",
+      "severity": "warn",
+      "description": "Docker config (may contain registry auth tokens) in tool args"
+    },
+    {
+      "name": "gpg_private_key",
+      "regex": "\\.gnupg/(secring|private-keys-v1)",
+      "severity": "block",
+      "description": "GPG private key store path in tool args"
+    },
+    {
+      "name": "netrc_file",
+      "regex": "(?:^|[\\s\"/'])(?:~|/home/[^/]+)/?\\.netrc(?:[^a-z]|$)",
+      "severity": "block",
+      "description": ".netrc file (stores plaintext credentials) in tool args"
+    },
+    {
+      "name": "kubeconfig",
+      "regex": "\\.kube/config(?:[^a-z]|$)",
+      "severity": "warn",
+      "description": "Kubernetes config file (contains cluster credentials) in tool args"
+    },
+    {
+      "name": "dev_tcp_redirect",
+      "regex": "/dev/tcp/",
+      "severity": "block",
+      "description": "Bash /dev/tcp reverse shell pattern detected"
+    },
+    {
+      "name": "netcat_exec",
+      "regex": "(?:nc|ncat|netcat)\\s+.*-e\\s+(?:/bin/|/usr/bin/)?(?:sh|bash|zsh)",
+      "severity": "block",
+      "description": "Netcat reverse shell (-e /bin/sh) pattern detected"
+    },
+    {
+      "name": "python_reverse_shell",
+      "regex": "socket\\.connect\\(.*\\).*(?:os\\.dup2|subprocess\\.call).*(?:sh|bash)",
+      "severity": "block",
+      "description": "Python reverse shell pattern detected"
+    },
+    {
+      "name": "perl_reverse_shell",
+      "regex": "perl\\s+-e.*(?:socket|INET).*(?:exec|system).*(?:sh|bash)",
+      "severity": "block",
+      "description": "Perl reverse shell pattern detected"
+    },
+    {
+      "name": "mkfifo_pipe_shell",
+      "regex": "mkfifo\\s+.*(?:nc|ncat|netcat|bash).*<",
+      "severity": "block",
+      "description": "mkfifo named-pipe reverse shell pattern detected"
+    },
+    {
+      "name": "socat_exec",
+      "regex": "socat\\s+.*EXEC:(?:/bin/)?(?:sh|bash)",
+      "severity": "block",
+      "description": "Socat EXEC shell pattern detected"
+    },
+    {
+      "name": "base64_large_payload",
+      "regex": "(?:[A-Za-z0-9+/]{76,}={0,2})",
+      "severity": "warn",
+      "description": "Large base64-encoded payload (possible data exfiltration) in tool args"
+    },
+    {
+      "name": "curl_data_to_external",
+      "regex": "curl\\s+.*(?:-d|--data|--data-binary)\\s+.*https?://(?!localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\])",
+      "severity": "warn",
+      "description": "curl sending data payload to external URL"
+    },
+    {
+      "name": "wget_post_external",
+      "regex": "wget\\s+.*--post-(?:data|file)\\s+.*https?://(?!localhost|127\\.0\\.0\\.1)",
+      "severity": "warn",
+      "description": "wget sending POST data to external URL"
+    },
+    {
+      "name": "scp_outbound",
+      "regex": "scp\\s+.*@.*:(?:/|~)",
+      "severity": "warn",
+      "description": "scp outbound file transfer pattern detected"
+    },
+    {
+      "name": "rsync_outbound",
+      "regex": "rsync\\s+.*[^-]@[^\\s]+:",
+      "severity": "warn",
+      "description": "rsync outbound transfer to remote host"
+    },
+    {
+      "name": "sudo_chmod_suid",
+      "regex": "chmod\\s+(?:[ugo+]*s|[0-9]*[46][0-9]{2})\\s+",
+      "severity": "warn",
+      "description": "Setting SUID/SGID bit via chmod"
+    },
+    {
+      "name": "crontab_modification",
+      "regex": "crontab\\s+-[ei]",
+      "severity": "warn",
+      "description": "Crontab modification detected"
+    },
+    {
+      "name": "ld_preload_injection",
+      "regex": "LD_PRELOAD\\s*=",
+      "severity": "block",
+      "description": "LD_PRELOAD library injection pattern detected"
+    }
+  ]
+}

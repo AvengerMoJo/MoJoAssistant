@@ -1,8 +1,12 @@
 """
-ContentAwarePolicyChecker — scans tool arguments for secrets and PII patterns.
+ContentAwarePolicyChecker — scans tool arguments for secrets, PII, and
+behavioral threat patterns.
 
-Loads regex patterns from config/policy_patterns.json (system layer) and
-~/.memory/config/policy_patterns.json (personal overlay, merged at startup).
+Loads regex patterns from three sources (in order, later entries override):
+  1. config/policy_patterns.json       — secrets / API keys / PII (system)
+  2. config/behavioral_patterns.json  — C2, exfiltration, privilege escalation (system)
+  3. ~/.memory/config/policy_patterns.json     — personal overlay for policy patterns
+  4. ~/.memory/config/behavioral_patterns.json — personal overlay for behavioral patterns
 
 Pattern severity:
   "block" — reject the tool call and notify the user
@@ -25,13 +29,13 @@ from app.scheduler.policy.base import PolicyChecker, PolicyDecision
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PATTERNS_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "config", "policy_patterns.json"
-)
+_CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config")
+_SYSTEM_PATTERNS_PATH = os.path.join(_CONFIG_DIR, "policy_patterns.json")
+_BEHAVIORAL_PATTERNS_PATH = os.path.join(_CONFIG_DIR, "behavioral_patterns.json")
 
 
 def _load_patterns() -> List[Dict]:
-    """Load and merge system + personal pattern files."""
+    """Load and merge system + behavioral + personal pattern files."""
     patterns: Dict[str, Dict] = {}
 
     def _merge(path: str) -> None:
@@ -41,15 +45,17 @@ def _load_patterns() -> List[Dict]:
             with open(path) as f:
                 data = json.load(f)
             for p in data.get("patterns", []):
-                patterns[p["name"]] = p  # personal overlay overwrites system
+                patterns[p["name"]] = p  # later files overwrite earlier ones
         except Exception as e:
             logger.warning("ContentAwarePolicyChecker: failed to load %s: %s", path, e)
 
     _merge(_SYSTEM_PATTERNS_PATH)
+    _merge(_BEHAVIORAL_PATTERNS_PATH)
 
     try:
         from app.config.paths import get_memory_subpath
         _merge(get_memory_subpath("config", "policy_patterns.json"))
+        _merge(get_memory_subpath("config", "behavioral_patterns.json"))
     except Exception:
         pass
 
