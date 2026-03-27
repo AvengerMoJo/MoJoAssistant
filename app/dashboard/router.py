@@ -630,23 +630,21 @@ async def chat_view(
     # Load session list
     sessions = list_chat_sessions(role_id)
 
-    # Determine active session
-    active_session_id = session_id
+    # Determine active session.
+    # No session_id in URL = new chat (blank slate, form submits to a fresh session).
+    # Explicit session_id in URL = load that session's history.
+    active_session_id = session_id  # None when "+ New Chat" or first visit
     exchanges: list = []
 
     if active_session_id:
         session_file = _mem("roles", role_id, "chat_history", f"{active_session_id}.json")
         session_data = _load_json(session_file, {})
         exchanges = session_data.get("exchanges", [])
-    elif sessions:
-        # Default to most recent
-        active_session_id = sessions[0]["session_id"]
-        session_file = _mem("roles", role_id, "chat_history", f"{active_session_id}.json")
-        session_data = _load_json(session_file, {})
-        exchanges = session_data.get("exchanges", [])
+    # No else — no session_id means new chat; exchanges stays empty, form_session stays ""
 
     # Sidebar: session list
-    sidebar_html = f'<h2>Sessions</h2><a href="/dashboard/chat/{html.escape(role_id)}" class="new-chat-btn">+ New Chat</a>'
+    new_chat_active = " active" if active_session_id is None else ""
+    sidebar_html = f'<h2>Sessions</h2><a href="/dashboard/chat/{html.escape(role_id)}" class="new-chat-btn{new_chat_active}">+ New Chat</a>'
     for s in sessions:
         sid = s.get("session_id", "")
         turns = s.get("turn_count", 0)
@@ -676,9 +674,12 @@ async def chat_view(
 </div>"""
 
     if not bubbles_html:
-        bubbles_html = f'<div class="empty-chat">No messages yet. Say something to {html.escape(role_name)}.</div>'
+        if active_session_id:
+            bubbles_html = f'<div class="empty-chat">No messages in this session yet. Say something to {html.escape(role_name)}.</div>'
+        else:
+            bubbles_html = f'<div class="empty-chat">New conversation with {html.escape(role_name)}. Your first message starts the session.</div>'
 
-    # Session id for form (empty = new session)
+    # Session id for form: empty string = new session (auto-generated on first POST)
     form_session = active_session_id or ""
 
     return _page(f"Chat — {role_name}", f"""
