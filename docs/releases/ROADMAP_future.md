@@ -20,19 +20,21 @@ User / External World
 
 | Version | Theme | Status | Key Deliverables |
 |---------|-------|--------|-----------------|
-| v1.2.0–v1.2.4 | Foundation → Trust Layer | ✅ Shipped | Role safety, HITL, audit trail, §21 enforcement, policy pipeline |
+| v1.2.0–v1.2.4 | Foundation → Trust Layer | ✅ Shipped | Role safety, HITL, audit trail, §21 enforcement, policy pipeline, task session compaction |
 | v1.2.5 | PII + Computer-Use groundwork | ✅ Shipped | PII scanner, attention routing, tmux isolation, MCPClientManager fixes |
 | v1.2.6 | Policy enforcement + agentic hardening | ✅ Shipped | PolicyMonitor pipeline, data boundary, behavioral_patterns, local_only |
 | v1.2.7 | Security depth + Role Chat + Sub-agents | ✅ Shipped | Security Sentinel, Role Chat interface, dispatch_subtask, HITL budget, MEMORY_PATH fixes |
 | **v1.2.8** | **Bug hardening + ConfigDoctor** | 🔄 In progress | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
-| v1.2.9 | v2.0.0 gate prep — quality & onboarding | 📋 Planned | Smoke suite (`tests/smoke/`), dependency resilience audit, INSTALL.md supported-path doc |
-| v1.2.10 | First-run experience | 📋 Planned | Setup wizard polish, 4 bundled demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view |
+| v1.2.9 | Quality gates + coding agent bridge | 📋 Planned | Smoke suite (`tests/smoke/`), dependency resilience audit, INSTALL.md, coding agent HITL bridge (OpenCode/Claude Code → inbox), per-source attention routing rules |
+| v1.2.10 | First-run experience + catalog architecture | 📋 Planned | Setup wizard polish, 4 bundled demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view, resource pool unification, tool registry catalog + `list_tools()` discovery |
+| v1.2.11 | Computer-use + config completeness | 📋 Planned | Terminal tools (`terminal_exec`, `terminal_read`), HttpAgentExecutor (ZeroClaw/MAP protocol), `mcp_servers.json` config tool coverage, ConfigDoctor NineChapter score validation |
 | v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
 | v1.3.1 | Agent Learning Loop | 📋 Planned | Failure→lesson pipeline, memory context injection, per-role silo memory, cross-agent queries |
 | v1.3.2 | Agent Orchestration + Role Chat Full | 📋 Planned | Agent type classification, workflow templates, OpenAI-compat proxy, cross-role referral |
-| v1.3.x | Hybrid Memory + Institutional Knowledge | 📋 Planned | BM25 + embedding reranking, inbox→dreaming→knowledge distillation |
+| v1.3.3 | Advanced Security + PII Sanitization | 📋 Planned | Policy Enforcement Agent (inbox-based), PII classification + sanitization layer, hybrid memory search (BM25 + embedding) |
+| v1.3.x | Institutional Knowledge | 📋 Planned | Inbox→dreaming→knowledge distillation, resolved-interaction memory units |
 | **v2.0.0** | **Public release — dropping beta** | 🎯 Target | All quality gates passed; clean install story; stable vs experimental surface documented |
-| v2.x | Architecture evolution | 💭 Future | Message passing, containerization, multi-node |
+| v2.x | Architecture evolution | 💭 Future | Message passing, containerization, multi-node, language-agnostic agents |
 
 ---
 
