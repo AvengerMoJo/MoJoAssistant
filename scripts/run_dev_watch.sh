@@ -3,8 +3,8 @@
 # Usage: ./run_dev_watch.sh
 
 # Activate venv if it exists
-if [ -f "./venv/bin/activate" ]; then
-    source ./venv/bin/activate
+if [ -f "$(dirname "$0")/../venv/bin/activate" ]; then
+    source "$(dirname "$0")/../venv/bin/activate"
 fi
 
 # Check if watchfiles is installed
@@ -22,5 +22,5 @@ echo ""
 
 # Use watchfiles to watch for changes and restart server
 watchfiles --filter python \
-  'python3 unified_mcp_server.py --mode http --port 8000' \
+  'python3 "$(dirname "$0")/../unified_mcp_server.py" --mode http --port 8000' \
   app/
