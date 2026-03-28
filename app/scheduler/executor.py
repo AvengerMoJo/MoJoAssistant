@@ -107,7 +107,10 @@ class TaskExecutor:
         ):
             llm = self._build_dreaming_llm()
             self._dreaming_pipeline = DreamingPipeline(
-                llm_interface=llm, quality_level=quality_level, logger=self.logger
+                llm_interface=llm,
+                quality_level=quality_level,
+                logger=self.logger,
+                storage_path=Path(get_memory_subpath("dreams")),
             )
             self._cached_quality_level = quality_level
         return self._dreaming_pipeline
