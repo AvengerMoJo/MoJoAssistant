@@ -148,7 +148,10 @@ class TaskExecutor:
 
         try:
             # Extract configuration
-            conversation_id = task.config.get("conversation_id")
+            mode = task.config.get("mode", "conversation")
+            conversation_id = task.config.get("conversation_id") or (
+                task.config.get("doc_id") if mode == "document" else None
+            )
             conversation_text = task.config.get("conversation_text")
             quality_level = task.config.get("quality_level", "basic")
             automatic = bool(task.config.get("automatic", False))
@@ -193,7 +196,6 @@ class TaskExecutor:
                     error_message="Missing conversation_id or conversation_text in task config",
                 )
 
-            mode = task.config.get("mode", "conversation")
             metadata = {**task.config.get("metadata", {}), **auto_metadata}
 
             if mode == "document":
