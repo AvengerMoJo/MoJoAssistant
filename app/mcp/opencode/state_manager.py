@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from app.config.paths import get_memory_path
 from typing import Dict, Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 from app.mcp.opencode.models import ProjectState, GlobalMCPToolInfo, ProcessStatus
 
 
@@ -134,7 +134,7 @@ class StateManager:
         """
         project = self.get_project(git_url)
         if project:
-            project.last_health_check = datetime.utcnow().isoformat()
+            project.last_health_check = datetime.now(timezone.utc).isoformat()
             self.save_project(project)
 
     def update_process_status(
@@ -176,7 +176,7 @@ class StateManager:
         if error is not None:
             process_info.last_error = error
         if status == "running":
-            process_info.started_at = datetime.utcnow().isoformat()
+            process_info.started_at = datetime.now(timezone.utc).isoformat()
 
         self.save_project(project)
 

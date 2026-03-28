@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from app.config.paths import get_memory_path
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class ConfigManager:
@@ -103,7 +103,7 @@ class ConfigManager:
             "url": f"http://127.0.0.1:{port}",
             "password": password,
             "status": "active",
-            "added_at": datetime.utcnow().isoformat() + "Z",
+            "added_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
 
         # Add optional metadata

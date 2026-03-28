@@ -13,7 +13,12 @@ import requests
 import math
 import random
 import importlib
-import numpy as np
+try:
+    import numpy as np
+    _numpy_available = True
+except ImportError:
+    np = None  # type: ignore[assignment]
+    _numpy_available = False
 try:
     from sentence_transformers import SentenceTransformer
 except ImportError:
@@ -136,17 +141,20 @@ class SimpleEmbedding:
         if not vec_a or not vec_b or len(vec_a) != len(vec_b):
             return 0.0
         
-        # Convert to numpy arrays for proper computation
-        vec_a_np = np.array(vec_a, dtype=np.float32)
-        vec_b_np = np.array(vec_b, dtype=np.float32)
-        
-        dot_product = np.dot(vec_a_np, vec_b_np)
-        norm_a = np.linalg.norm(vec_a_np)
-        norm_b = np.linalg.norm(vec_b_np)
-        
+        if _numpy_available:
+            vec_a_np = np.array(vec_a, dtype=np.float32)
+            vec_b_np = np.array(vec_b, dtype=np.float32)
+            dot_product = float(np.dot(vec_a_np, vec_b_np))
+            norm_a = float(np.linalg.norm(vec_a_np))
+            norm_b = float(np.linalg.norm(vec_b_np))
+        else:
+            dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+            norm_a = math.sqrt(sum(x * x for x in vec_a))
+            norm_b = math.sqrt(sum(x * x for x in vec_b))
+
         if norm_a == 0 or norm_b == 0:
             return 0.0
-            
+
         return float(dot_product / (norm_a * norm_b))
     
     def get_text_embedding(self, text: str, prompt_name: str = 'passage') -> List[float]:
@@ -208,7 +216,7 @@ class SimpleEmbedding:
                 embedding = self.model.encode(text)
             
             # Convert to list of floats with proper type handling
-            if isinstance(embedding, np.ndarray):
+            if _numpy_available and isinstance(embedding, np.ndarray):
                 return embedding.astype(np.float32).tolist()
             return [float(x) for x in embedding]
             
@@ -282,10 +290,10 @@ class SimpleEmbedding:
                 return [self._get_random_embedding(text) for text in texts]
                 
             # Generate embeddings from model
-            embeddings: Union[np.ndarray[Any, Any], List[List[float]]] = self.model.encode(texts)
-            
+            embeddings = self.model.encode(texts)
+
             # Convert to list of lists with proper type handling
-            if isinstance(embeddings, np.ndarray):
+            if _numpy_available and isinstance(embeddings, np.ndarray):
                 return embeddings.astype(np.float32).tolist()
             return [list(emb) for emb in embeddings]
             
@@ -546,7 +554,7 @@ class SimpleEmbedding:
         random.seed(seed)
         
         # Generate a random vector
-        vector = np.random.normal(0, 1, embedding_dim).tolist()
+        vector = [random.gauss(0, 1) for _ in range(embedding_dim)]
         
         # Normalize to unit length (cosine similarity space)
         magnitude = math.sqrt(sum(x * x for x in vector))

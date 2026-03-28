@@ -8,7 +8,7 @@ import asyncio
 import json
 import uuid
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.scheduler.models import Task, TaskType, TaskResult
@@ -546,7 +546,7 @@ class TaskExecutor:
                     "PRODID:-//MoJoAssistant//Scheduler//EN",
                     "BEGIN:VEVENT",
                     f"UID:{event_id}",
-                    f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
+                    f"DTSTAMP:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
                     f"DTSTART:{start_at.strftime('%Y%m%dT%H%M%S')}",
                     f"DTEND:{end_at.strftime('%Y%m%dT%H%M%S')}",
                     f"SUMMARY:{title}",

@@ -6,7 +6,7 @@ File: app/mcp/claude_code/models.py
 
 from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -37,7 +37,7 @@ class SessionState:
 
     def __post_init__(self):
         if not self.created_at:
-            self.created_at = datetime.utcnow().isoformat()
+            self.created_at = datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> Dict[str, Any]:
         return {

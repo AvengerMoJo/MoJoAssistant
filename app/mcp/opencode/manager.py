@@ -11,7 +11,7 @@ import os
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.mcp.opencode.models import ProjectState, ProcessStatus
 from app.mcp.opencode.env_manager import EnvManager
@@ -766,7 +766,7 @@ class OpenCodeManager(BaseAgentManager):
                 self.state_manager.update_global_mcp_tool_status(
                     status=ProcessStatus.RUNNING,
                     error=None,
-                    last_health_check=datetime.utcnow().isoformat(),
+                    last_health_check=datetime.now(timezone.utc).isoformat(),
                 )
 
             return True
@@ -820,7 +820,7 @@ class OpenCodeManager(BaseAgentManager):
             pid=pid,
             port=port,
             status=ProcessStatus.STARTING,
-            started_at=datetime.utcnow().isoformat(),
+            started_at=datetime.now(timezone.utc).isoformat(),
         )
 
         # Wait for process to start (not wait for health check)
@@ -839,7 +839,7 @@ class OpenCodeManager(BaseAgentManager):
         # Mark as running (health check happens lazily later)
         self.state_manager.update_global_mcp_tool_status(
             status=ProcessStatus.RUNNING,
-            last_health_check=datetime.utcnow().isoformat(),
+            last_health_check=datetime.now(timezone.utc).isoformat(),
         )
 
         self._log(f"Global MCP tool started successfully on port {port}")

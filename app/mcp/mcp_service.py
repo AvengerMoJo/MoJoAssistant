@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, Union, cast
 import asyncio
 from contextlib import asynccontextmanager
@@ -226,7 +226,7 @@ def create_error_response(code: str, message: str, details: Optional[Dict[str, A
                 "message": message,
                 "details": details or {}
             },
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "request_id": generate_request_id()
         }
     )
@@ -240,7 +240,7 @@ async def health_check(api_key: Optional[str] = Depends(verify_api_key)):
     return HealthResponse(
         status="healthy",
         version="1.0.0",
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         components={
             "memory_service": "healthy" if memory_service else "unhealthy",
             "embedding_service": "healthy",
@@ -296,7 +296,7 @@ async def get_memory_context(
                 content=item.get("content", ""),
                 source=item.get("source", "unknown"),
                 relevance_score=item.get("relevance_score", 0.0),
-                timestamp=item.get("timestamp", datetime.utcnow().isoformat() + "Z"),
+                timestamp=item.get("timestamp", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")),
                 metadata=item.get("metadata", {})
             ))
         
@@ -474,7 +474,7 @@ async def add_conversation_message(
                         content=item.get("content", ""),
                         source=item.get("source", "unknown"),
                         relevance_score=item.get("relevance_score", 0.0),
-                        timestamp=item.get("timestamp", datetime.utcnow().isoformat() + "Z"),
+                        timestamp=item.get("timestamp", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")),
                         metadata=item.get("metadata", {})
                     ) for item in context_raw
                 ]
@@ -517,7 +517,7 @@ async def end_conversation(api_key: Optional[str] = Depends(verify_api_key)):
         return {
             "status": "success",
             "message": "Conversation ended and archived to memory",
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
         
     except Exception as e:
@@ -545,7 +545,7 @@ async def get_current_conversation(api_key: Optional[str] = Depends(verify_api_k
                 } for msg in messages
             ],
             "total_messages": len(messages),
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
         
     except Exception as e:
