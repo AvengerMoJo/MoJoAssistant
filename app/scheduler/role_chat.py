@@ -97,6 +97,13 @@ _TOOL_DEFS: Dict[str, Dict] = {
     },
 }
 
+_FINAL_TOOL_LOOP_PROMPT = (
+    "You have reached the tool-call limit for this chat turn. "
+    "Do not call any more tools. "
+    "Using only the conversation and tool results already available, "
+    "answer the user directly now."
+)
+
 
 class RoleChatSession:
     """
@@ -548,6 +555,7 @@ class RoleChatSession:
 
         try:
             if resource_manager is not None:
+                msg: Dict[str, Any] = {}
                 for _iteration in range(MAX_CHAT_ITERATIONS):
                     data = await self._call_raw(
                         messages, resource_manager,
@@ -583,8 +591,22 @@ class RoleChatSession:
                         })
                         total_tool_calls += 1
                 else:
-                    # Hit iteration limit — extract whatever content the last response had
-                    response = msg.get("content") or "(No response after tool loop)"
+                    # Tool loops consumed the full budget. Force one final text-only answer.
+                    messages.append({
+                        "role": "system",
+                        "content": _FINAL_TOOL_LOOP_PROMPT,
+                    })
+                    final_data = await self._call_raw(
+                        messages,
+                        resource_manager,
+                        tools=None,
+                    )
+                    final_msg = (final_data.get("choices") or [{}])[0].get("message") or {}
+                    content = final_msg.get("content") or msg.get("content") or ""
+                    if "<think>" in content and "</think>" in content:
+                        after = content.split("</think>", 1)[-1].strip()
+                        content = after if after else content
+                    response = content or "(No response after tool loop)"
             else:
                 response = await self._call_via_llm_interface(messages)
 

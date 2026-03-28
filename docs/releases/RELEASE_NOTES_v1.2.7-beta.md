@@ -175,15 +175,54 @@ Fixed: the fallback is only added when no explicit path is provided in config.
 
 ---
 
-## 8. Test Coverage
+## 8. Tool-Call Reliability Hardening (`agentic_executor.py`)
+
+Two failure modes in the agentic executor's tool-call loop were silent and
+unrecoverable:
+
+### Malformed JSON arguments
+
+When a model emits a tool call with invalid JSON in the `arguments` field the
+executor previously fell back silently to `{}` and ran the tool anyway. The
+model received a response as if the call succeeded — no feedback, no chance
+to retry.
+
+**Fix**: parse failure now returns a structured error back to the model:
+
+```json
+{
+  "error": "Your tool call arguments for 'memory_search' were not valid JSON (…). Please call the tool again with properly formatted JSON arguments."
+}
+```
+
+The model can self-correct on the next iteration. `_execute_single_tool` is not
+called at all for the malformed entry.
+
+### Consecutive no-tool drift
+
+When a model responds with prose (no tool calls, no final answer) for two
+consecutive iterations while tools are available, the executor now injects a
+forcing message listing the available tool names:
+
+> "You have responded 2 times without calling any tools. You have the following
+> tools available: ['memory_search', …]. Call a tool now to make progress, or
+> provide your <FINAL_ANSWER> if the task is complete."
+
+The counter resets after the nudge and whenever the model does call a tool.
+This prevents long loops where the model keeps planning without acting.
+
+---
+
+## 9. Test Coverage
 
 | File | Tests | What's covered |
 |------|-------|----------------|
 | `tests/unit/test_v1_2_7_features.py` | 39 | `dispatch_subtask` depth + error paths, `dialog` tool actions, `RoleChatSession` load/save/history/search, `MCPServerManager` stop/restart rollback, `list_chat_sessions` |
 | `tests/unit/test_dreaming_parsing.py` | Updated | Chunker/synthesizer graceful fallback (was: fail-fast RuntimeError) |
+| `tests/unit/test_tool_call_reliability.py` | 8 | Malformed JSON arg → error to model; consecutive no-tool counter; forcing message content; mixed valid/invalid batch |
 | Various integration tests | Fixed | `@pytest.mark.asyncio` added; `asyncio.run()` replaces deprecated `get_event_loop()` |
 
-**Suite totals: 342 passed, 2 skipped, 0 failures.**
+**Suite totals: 350 passed, 2 skipped, 0 failures.**
 
 ---
 

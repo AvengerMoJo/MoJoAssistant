@@ -525,6 +525,53 @@ class TestRoleChatSessionAsync(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", result)
         self.assertIn("nonexistent_role", result["error"])
 
+    async def test_exchange_forces_final_answer_after_tool_loop_limit(self):
+        """If tool calls consume the whole loop budget, exchange() must force a final text response."""
+        from app.scheduler import role_chat as rc
+
+        session = self._make_session()
+        mock_role = {"system_prompt": "You are helpful.", "tool_access": ["memory"]}
+        call_count = {"n": 0}
+
+        async def fake_call_raw(messages, rm, tools=None):
+            call_count["n"] += 1
+            # First MAX_CHAT_ITERATIONS calls keep requesting tools.
+            if call_count["n"] <= rc.MAX_CHAT_ITERATIONS:
+                return {
+                    "choices": [{
+                        "message": {
+                            "content": "",
+                            "tool_calls": [{
+                                "id": f"tc_{call_count['n']}",
+                                "function": {
+                                    "name": "memory_search",
+                                    "arguments": "{\"query\":\"status\"}",
+                                },
+                            }],
+                        }
+                    }]
+                }
+
+            # Final synthesis call must be text-only.
+            self.assertIsNone(tools)
+            self.assertEqual(messages[-1]["role"], "system")
+            self.assertIn("Do not call any more tools", messages[-1]["content"])
+            return {"choices": [{"message": {"content": "Final answer after tool loop.", "tool_calls": None}}]}
+
+        async def fake_execute_tool(name, args):
+            return json.dumps({"success": True, "results": [{"snippet": "ok"}]})
+
+        with patch("app.scheduler.role_chat.RoleManager") as MockRM:
+            MockRM.return_value.get.return_value = mock_role
+            session._call_raw = fake_call_raw
+            session._execute_tool = fake_execute_tool
+            session._load_ku_context = MagicMock(return_value="")
+            session._load_recent_activity = MagicMock(return_value="")
+            result = await session.exchange("hi", resource_manager=MagicMock())
+
+        self.assertEqual(result["response"], "Final answer after tool loop.")
+        self.assertEqual(result["context_used"]["tool_calls"], rc.MAX_CHAT_ITERATIONS)
+
 
 # ===========================================================================
 # MCPServerManager rollback

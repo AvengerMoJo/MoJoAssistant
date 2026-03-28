@@ -163,6 +163,7 @@ class AgenticExecutor:
         self._waiting_for_input_question: Optional[str] = None
         self._waiting_for_input_choices: Optional[list] = None
         self._tool_calls_made: int = 0          # non-ask_user tool calls this execution
+        self._consecutive_no_tool: int = 0      # iterations with tools available but unused
         self._exhausts_tools_before_asking: bool = False
         self._requires_tool_use: bool = False   # reject final answer if no tools called yet
         # Task id stored so _execute_single_tool can inject per-task tmux socket
@@ -519,6 +520,7 @@ class AgenticExecutor:
 
             # Handle tool calls if present
             if tool_calls:
+                self._consecutive_no_tool = 0  # reset drift counter on actual tool use
                 # Append assistant message with tool calls
                 messages.append(message)
                 self._record(
@@ -664,8 +666,25 @@ class AgenticExecutor:
                 self._record(task.id, "user", correction_prompt, iteration=abs_iteration)
                 continue
 
-            # Append continue prompt for next iteration (budget-aware)
-            if iteration >= max_iterations - 1:
+            # Track consecutive iterations where tools were available but unused.
+            # After 2 such iterations inject a brief forcing nudge so the model
+            # doesn't keep drifting in prose land when it should be acting.
+            if tool_defs:
+                self._consecutive_no_tool += 1
+            else:
+                self._consecutive_no_tool = 0
+
+            if tool_defs and self._consecutive_no_tool >= 2:
+                available_names = [t["function"]["name"] for t in tool_defs]
+                next_msg = (
+                    f"You have responded {self._consecutive_no_tool} times without "
+                    "calling any tools. You have the following tools available: "
+                    f"{available_names}. "
+                    "Call a tool now to make progress, or provide your "
+                    "<FINAL_ANSWER> if the task is complete."
+                )
+                self._consecutive_no_tool = 0  # reset after nudge
+            elif iteration >= max_iterations - 1:
                 remaining = max_iterations - iteration
                 next_msg = NEAR_LIMIT_PROMPT.format(
                     current=iteration, max=max_iterations, remaining=remaining
@@ -913,10 +932,24 @@ class AgenticExecutor:
         results = []
         for tc in tool_calls:
             fn_name = tc["function"]["name"]
+            raw_args = tc.get("function", {}).get("arguments", "")
             try:
-                fn_args = json.loads(tc["function"]["arguments"])
-            except (json.JSONDecodeError, KeyError):
-                fn_args = {}
+                fn_args = json.loads(raw_args) if raw_args else {}
+            except (json.JSONDecodeError, ValueError) as parse_err:
+                # Return a clear error so the model can self-correct its JSON
+                self._log(
+                    f"Tool {fn_name}: argument JSON parse failed — {parse_err}", "warning"
+                )
+                results.append(
+                    json.dumps({
+                        "error": (
+                            f"Your tool call arguments for '{fn_name}' were not valid JSON "
+                            f"({parse_err}). Please call the tool again with properly "
+                            "formatted JSON arguments."
+                        )
+                    })
+                )
+                continue
 
             try:
                 result = await self._execute_single_tool(fn_name, fn_args)
