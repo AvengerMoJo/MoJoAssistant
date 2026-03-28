@@ -190,21 +190,38 @@ good-to-have in v1.3.x if urgency demands it.
 - ✅ Duplicated `["free", "free_api"]` default tier preference — extracted to `DEFAULT_TIER_PREFERENCE` constant
 - ✅ Per-task tmux session isolation — unique `/tmp/mojo-task-{id}.sock` per task
 - ✅ Overly broad `except Exception` in ResourcePoolLLMInterface — removed; transport errors caught by name, unexpected errors propagate naturally
-- 🟡 Non-atomic stop/reconnect in MCPServerManager — still open; add rollback in v1.2.7
+- ✅ Non-atomic stop/reconnect in MCPServerManager — fixed in v1.2.7; rollback retry on failed
+  reconnect; honest `"partial"` status when sibling server can't be recovered.
 
-## v1.2.7
-Tech debt + Security Sentinel foundation.
+## v1.2.7 ✅ shipped 2026-03-27/28
+Tech debt + Security Sentinel foundation + Role Chat Interface.
 
-- **MCPServerManager rollback** — non-atomic stop/reconnect; add rollback on failed reconnect
-- **Security Sentinel role** — `~/.memory/roles/security_sentinel.json`; nightly cross-session
-  behavioral analysis using EventLog; local-only, no external calls; outputs security digest
-- **`behavioral_patterns.json`** — credential path patterns, exfiltration indicators, C2 signatures;
-  consumed by ContentAwarePolicyChecker as a behavioral pattern category
-- **Research result → knowledge breakdown workflow** — structured pipeline to convert long
-  task session outputs (Rebecca research, etc.) into knowledge base entries rather than
-  leaving them as raw session text
-- **ABCD dream summarization pre-pass** — progressive summarization before raw text ingestion
-  in dreaming pipeline to avoid wasting tokens on 60KB+ session logs
+- ✅ **MCPServerManager rollback** — `stop_project()` closes all sessions atomically (AsyncExitStack
+  limitation), reconnects siblings, retries each failed reconnect once, returns `"partial"` status
+  with `failed` list rather than lying with `"success"`. `restart_project()` surfaces rollback
+  warnings and `failed_siblings` from stop phase.
+- ✅ **Security Sentinel role** — `~/.memory/roles/security_sentinel.json`; nightly cross-session
+  behavioral analysis using EventLog; `local_only: true`, no external calls; outputs structured
+  security digest to memory at key `security/digest_YYYY-MM-DD`. Scheduled nightly 03:00 via
+  `config/scheduler_config.json` (`security_sentinel_nightly` task).
+- ✅ **`behavioral_patterns.json`** — 23 behavioral security patterns in four categories:
+  credential file access (ssh, .aws, .gnupg, .netrc, kubeconfig), C2/reverse-shell (/dev/tcp,
+  netcat -e, python/perl socket shells, mkfifo, socat EXEC), exfiltration (base64 large payload,
+  curl/wget POST to external, scp/rsync outbound), privilege escalation (SUID chmod, crontab -ei,
+  LD_PRELOAD injection). `ContentAwarePolicyChecker._load_patterns()` merges policy + behavioral
+  layers (system + personal overlay each); total 32 patterns at startup.
+- ✅ **Atomic fact extraction (document dreaming path)** — `process_document()` pipeline converts
+  research reports into `KnowledgeUnit` records (atomic propositions + source quotes + inter-unit
+  links). Auto-triggered after agent task if `final_answer ≥ 500 chars`. KUs stored in
+  `~/.memory/roles/{role_id}/knowledge_units/`. See `docs/architecture/ROLE_CHAT_INTERFACE.md`.
+- ✅ **Role Chat Interface** — `dialog(role_id, message, session_id?)` MCP tool; talk directly
+  to any assistant in conversational mode (not agentic executor). Role's personality + private
+  KU memory + recent task activity as context. Mini agentic loop (max 5 iterations) with
+  `memory_search` and `task_search` tools. Session history persisted at
+  `~/.memory/roles/{role_id}/chat_history/{session_id}.json`. Dashboard "Chat" tab with session
+  sidebar, "+ New Chat" button, and bubble-style history. Uses LMStudio local server with
+  dynamic model discovery (`/v1/models` probe when `model=None`); falls back to FREE_API tier.
+  Design doc: `docs/architecture/ROLE_CHAT_INTERFACE.md`
 
 ---
 
@@ -352,12 +369,11 @@ sub-task to the right role and wait for the result:
 - `schedule_consumer` handoff: provisioner completion auto-queues the consumer agent
 - User-defined custom agent types via `~/.memory/config/agent_types.json`
 
-**One-on-One Role Channel + Role Evolution** (§24)
-- `dialog(role_id, message)` MCP tool — talk directly to any role
-- Role-scoped session continuity across disconnects
-- Explicit memory capture ("remember: X") writes to role private store
-- Post-dialog NineChapter dimension refinement via dream pipeline
-- OpenAI-compatible proxy API (`/v1/models`, `/v1/chat/completions`) — any LLM client talks to any role directly
+**Role Chat — Full Version** (§24, builds on v1.2.7 foundation)
+- OpenAI-compatible proxy API (`/v1/models`, `/v1/chat/completions`) — any LLM client (OpenWebUI, Cursor) talks to any role directly
+- Explicit memory capture ("remember: X") writes to role private lesson store from chat
+- Post-dialog NineChapter dimension refinement via dream pipeline — personality evolves from extended conversations
+- Cross-role referral — "Ahman would know more about this" hands off chat context to another role
 
 ## v1.2.5-beta
 Terminal tools + HttpAgentExecutor + config cleanup — complete the computer-use
@@ -389,8 +405,8 @@ story and close the remaining trust-layer gaps.
 | First-run experience / installer | 🟡 Medium | 🔴 High | v1.0 gate | Blocks public release — strangers can't onboard today |
 | MCPServerManager rollback | 🟡 Medium | 🟡 Medium | v1.2.7 | Known tech debt, low blast radius |
 | Security Sentinel role + behavioral_patterns.json | 🟡 Medium | 🔴 High | v1.2.7 | Foundation for v1.3.0 behavioral layer; low effort, high value |
-| Research result → knowledge breakdown workflow | 🟡 Medium | 🟡 Medium | v1.2.7 | Tokens wasted, knowledge lost on every research task |
-| ABCD dream pre-pass (token efficiency) | 🟡 Medium | 🟡 Medium | v1.2.7 | Dreaming pipeline wastes tokens on raw 60KB+ session logs |
+| ✅ Atomic fact extraction (KnowledgeUnit pipeline) | 🟡 Medium | 🟡 Medium | v1.2.7 | Research outputs now produce structured searchable knowledge |
+| Role Chat Interface (dialog tool + dashboard) | 🔴 High | 🔴 High | v1.2.7 | Natural way to debrief assistants; no task conflicts; unblocks Rebecca knowledge retrieval |
 | BehavioralMonitor + ContainmentEngine | 🟢 Low | 🔴 High | v1.3.0 | Critical for autonomous AI world; not urgent until pre-public |
 | Agent learning loop (failure→lesson→injection) | 🟢 Low | 🔴 High | v1.3.1 | Fundamental: agents learn from mistakes without human intervention |
 | Per-agent silo memory + cross-agent queries | 🟢 Low | 🔴 High | v1.3.1 | Each agent accumulates its own knowledge; agents can reference each other |

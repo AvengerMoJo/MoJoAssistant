@@ -144,6 +144,8 @@ class DynamicToolRegistry:
         self._mcp_registry = None
         self._mcp_client_manager = None
         self._scheduler = None
+        self._current_task_id: Optional[str] = None
+        self._current_dispatch_depth: int = 0
         self._tools: Dict[str, ToolDefinition] = {}
         self._ensure_registry_seeded()
         self._load_registry()
@@ -258,14 +260,14 @@ class DynamicToolRegistry:
                 description=(
                     "Schedule a new task for another agent. Use this to hand off work to a "
                     "specialist role after completing your own step — e.g. a provisioner queuing "
-                    "a reviewer, or an executor queuing Carl for a code review. "
+                    "a reviewer, or a researcher queuing a code reviewer. "
                     "The new task runs asynchronously; this tool returns immediately."
                 ),
                 danger_level="medium",
                 category="orchestration",
                 parameters={"type": "object", "properties": {
                     "task_id":    {"type": "string", "description": "Unique task identifier (snake_case)"},
-                    "role_id":    {"type": "string", "description": "Role to run the task as (e.g. 'carl', 'ahman')"},
+                    "role_id":    {"type": "string", "description": "Role to run the task as (e.g. 'researcher', 'reviewer')"},
                     "goal":       {"type": "string", "description": "Full goal/instructions for the new task"},
                     "available_tools": {
                         "type": "array", "items": {"type": "string"},
@@ -274,6 +276,29 @@ class DynamicToolRegistry:
                     "max_iterations": {"type": "integer", "description": "Max iterations (default 10)"},
                     "priority":   {"type": "string", "enum": ["low", "normal", "high"], "description": "Task priority"},
                 }, "required": ["task_id", "role_id", "goal"]},
+            ),
+            ToolDefinition(
+                name="dispatch_subtask",
+                description=(
+                    "Dispatch a task to another agent role and WAIT for its result before continuing. "
+                    "Use when you need a specialist to do work that you cannot do yourself — e.g. "
+                    "a researcher dispatches to a provisioner to clone a repo, then reads the report. "
+                    "The sub-task runs as a full agentic session; its final answer is returned here. "
+                    "Max dispatch depth: 2 (sub-tasks cannot themselves dispatch further sub-tasks). "
+                    "Prefer this over scheduler_add_task when you need the result in the current task."
+                ),
+                danger_level="medium",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "role_id":         {"type": "string", "description": "Role ID to run the sub-task as (must exist in ~/.memory/roles/)"},
+                    "goal":            {"type": "string", "description": "Full goal/instructions for the sub-task"},
+                    "available_tools": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Tools the sub-task may use. Defaults to role's tool_access."
+                    },
+                    "max_iterations":  {"type": "integer", "description": "Max iterations for sub-task (default 10)"},
+                    "timeout_s":       {"type": "integer", "description": "Seconds to wait for result (default 300)"},
+                }, "required": ["role_id", "goal"]},
             ),
             ToolDefinition(
                 name="memory_search",
@@ -407,6 +432,8 @@ class DynamicToolRegistry:
                     return await self._bash_exec(args)
                 elif name == "scheduler_add_task":
                     return await self._scheduler_add_task(args)
+                elif name == "dispatch_subtask":
+                    return await self._dispatch_subtask(args)
                 elif name == "memory_search":
                     return await self._memory_search(args)
                 elif name == "web_search":
@@ -591,6 +618,88 @@ class DynamicToolRegistry:
         if success:
             return {"success": True, "task_id": task_id, "message": f"Task '{task_id}' scheduled for role '{role_id}'"}
         return {"success": False, "error": f"Failed to schedule task '{task_id}' — may already exist"}
+
+    MAX_DISPATCH_DEPTH = 2
+    DISPATCH_POLL_INTERVAL_S = 3
+    DISPATCH_DEFAULT_TIMEOUT_S = 300
+
+    async def _dispatch_subtask(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Dispatch a sub-task to another agent role and block until it completes.
+
+        Creates a Task with parent linkage, adds it to the scheduler queue, then
+        polls until done (or timeout). Returns the sub-task's final_answer.
+        """
+        if not self._scheduler:
+            return {"success": False, "error": "Scheduler not available in this context"}
+
+        if self._current_dispatch_depth >= self.MAX_DISPATCH_DEPTH:
+            return {
+                "success": False,
+                "error": (
+                    f"Max dispatch depth ({self.MAX_DISPATCH_DEPTH}) reached. "
+                    "Sub-tasks cannot dispatch further sub-tasks."
+                ),
+            }
+
+        import asyncio
+        import uuid
+        from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
+
+        role_id = args.get("role_id")
+        goal = args.get("goal")
+        if not role_id or not goal:
+            return {"success": False, "error": "role_id and goal are required"}
+
+        task_id = f"sub_{self._current_task_id or 'unknown'}_{uuid.uuid4().hex[:6]}"
+        timeout_s = int(args.get("timeout_s", self.DISPATCH_DEFAULT_TIMEOUT_S))
+
+        config: Dict[str, Any] = {"goal": goal, "role_id": role_id}
+        if args.get("available_tools"):
+            config["available_tools"] = args["available_tools"]
+
+        task = Task(
+            id=task_id,
+            type=TaskType.ASSISTANT,
+            priority=TaskPriority.MEDIUM,
+            config=config,
+            resources=TaskResources(max_iterations=int(args.get("max_iterations", 10))),
+            created_by="agent",
+            parent_task_id=self._current_task_id,
+            dispatch_depth=self._current_dispatch_depth + 1,
+        )
+
+        if not self._scheduler.add_task(task):
+            return {"success": False, "error": f"Failed to queue sub-task '{task_id}'"}
+
+        # Poll until complete or timeout
+        elapsed = 0.0
+        while elapsed < timeout_s:
+            await asyncio.sleep(self.DISPATCH_POLL_INTERVAL_S)
+            elapsed += self.DISPATCH_POLL_INTERVAL_S
+            t = self._scheduler.get_task(task_id)
+            if t is None:
+                return {"success": False, "error": f"Sub-task '{task_id}' disappeared from queue"}
+            if t.status.value in ("completed", "failed"):
+                if t.status.value == "failed":
+                    err = t.last_error or "Sub-task failed without error detail"
+                    return {"success": False, "task_id": task_id, "error": err}
+                result = t.result
+                final_answer = ""
+                if result:
+                    final_answer = result.metrics.get("final_answer", "") if result.metrics else ""
+                return {
+                    "success": True,
+                    "task_id": task_id,
+                    "role_id": role_id,
+                    "result": final_answer,
+                }
+
+        return {
+            "success": False,
+            "task_id": task_id,
+            "error": f"Sub-task did not complete within {timeout_s}s timeout",
+        }
 
     async def _bash_exec(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute shell command(s) with safety limits."""
@@ -971,6 +1080,11 @@ class DynamicToolRegistry:
     def set_mcp_client_manager(self, manager) -> None:
         """Set the MCPClientManager for external_mcp executor support."""
         self._mcp_client_manager = manager
+
+    def set_task_context(self, task_id: str, dispatch_depth: int = 0) -> None:
+        """Set the current task context so dispatch_subtask can link parent→child."""
+        self._current_task_id = task_id
+        self._current_dispatch_depth = dispatch_depth
 
     def set_scheduler(self, scheduler) -> None:
         """Set the Scheduler for scheduler_add_task tool support."""

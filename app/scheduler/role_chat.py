@@ -1,0 +1,630 @@
+"""
+Role Chat Interface — conversational mode for assistant roles.
+
+Provides direct, personality-aware conversation with a role using its
+accumulated knowledge units as context. Runs a mini agentic loop (up to
+MAX_CHAT_ITERATIONS) so the role can call tools (memory_search, web_search,
+fetch_url) based on its tool_access configuration.
+
+Session history persists at ~/.memory/roles/{role_id}/chat_history/{session_id}.json
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from app.config.paths import get_memory_subpath
+from app.roles.role_manager import RoleManager
+
+logger = logging.getLogger(__name__)
+
+MAX_HISTORY_TURNS = 10    # conversation turns carried into context
+MAX_KU_ITEMS = 8          # knowledge units injected as context
+MAX_KU_QUOTE_CHARS = 200  # truncate long KU quotes
+MAX_CHAT_ITERATIONS = 5   # max tool-call iterations per exchange
+
+# memory and task_search are always available in chat for roles with memory access
+_CHAT_TOOL_ACCESS: Dict[str, List[str]] = {
+    "memory": ["memory_search", "task_search"],
+}
+
+# OpenAI-format tool definitions for each supported chat tool
+_TOOL_DEFS: Dict[str, Dict] = {
+    "memory_search": {
+        "type": "function",
+        "function": {
+            "name": "memory_search",
+            "description": (
+                "Search your memory for relevant information, past conversations, "
+                "documents, and knowledge."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to search for"},
+                    "max_items": {
+                        "type": "integer",
+                        "description": "Max results to return (default 5)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    "task_search": {
+        "type": "function",
+        "function": {
+            "name": "task_search",
+            "description": (
+                "Search your own task history — completed, failed, or running tasks. "
+                "Use this to answer questions about what you have done, when, and what "
+                "the outcomes were. Supports filtering by keyword, date range, and status."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Keyword(s) to match against task goal and result summary. "
+                            "Leave empty to list tasks without keyword filtering."
+                        ),
+                    },
+                    "date_from": {
+                        "type": "string",
+                        "description": "Start date filter, ISO format or YYYY-MM-DD (inclusive).",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "End date filter, ISO format or YYYY-MM-DD (inclusive).",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Filter by status: completed, failed, running. Leave empty for all.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max tasks to return (default 10, max 50).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+}
+
+
+class RoleChatSession:
+    """
+    One conversational session with a role.
+
+    Each `exchange()` call adds one user→assistant turn to the session
+    history and returns the assistant's response. The role's personality
+    (system prompt) and recent knowledge units are prepended as context.
+
+    If the role has tool_access (memory, web), exchange() runs a mini
+    agentic loop so the role can look things up before answering.
+    """
+
+    def __init__(self, role_id: str, session_id: Optional[str] = None):
+        self.role_id = role_id
+        self.session_id = (
+            session_id
+            or f"chat_{role_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        self._session_dir = (
+            Path(get_memory_subpath("roles")) / role_id / "chat_history"
+        )
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+        self._session_file = self._session_dir / f"{self.session_id}.json"
+
+    # ------------------------------------------------------------------ #
+    # Session persistence                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _load_session(self) -> Dict[str, Any]:
+        if self._session_file.exists():
+            try:
+                with open(self._session_file, encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"RoleChatSession: failed to load {self.session_id}: {e}")
+        return {
+            "session_id": self.session_id,
+            "role_id": self.role_id,
+            "started_at": datetime.now().isoformat(),
+            "exchanges": [],
+        }
+
+    def _save_session(
+        self, session: Dict[str, Any], user_msg: str, assistant_msg: str
+    ) -> None:
+        session["last_active"] = datetime.now().isoformat()
+        session["exchanges"].append({
+            "user": user_msg,
+            "assistant": assistant_msg,
+            "timestamp": datetime.now().isoformat(),
+        })
+        try:
+            with open(self._session_file, "w", encoding="utf-8") as f:
+                json.dump(session, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"RoleChatSession: failed to save session: {e}")
+
+    # ------------------------------------------------------------------ #
+    # Knowledge unit context                                               #
+    # ------------------------------------------------------------------ #
+
+    def _load_ku_context(self) -> str:
+        ku_dir = (
+            Path(get_memory_subpath("roles")) / self.role_id / "knowledge_units"
+        )
+        if not ku_dir.exists():
+            return ""
+
+        archives: list[dict] = []
+        for subdir in sorted(ku_dir.iterdir(), reverse=True):
+            if not subdir.is_dir():
+                continue
+            archive_files = sorted(subdir.glob("archive_v*.json"), reverse=True)
+            if archive_files:
+                try:
+                    with open(archive_files[0], encoding="utf-8") as f:
+                        archives.append(json.load(f))
+                except Exception:
+                    continue
+            if len(archives) >= 3:
+                break
+
+        lines: list[str] = []
+        for archive in archives:
+            for ku in archive.get("knowledge_units", []):
+                meaning = (ku.get("core_meaning") or "").strip()
+                quote = (ku.get("quote") or "").strip()
+                if not meaning:
+                    continue
+                entry = f"• {meaning}"
+                if quote and quote != meaning:
+                    entry += f' ("{quote[:MAX_KU_QUOTE_CHARS]}")'
+                lines.append(entry)
+                if len(lines) >= MAX_KU_ITEMS:
+                    break
+            if len(lines) >= MAX_KU_ITEMS:
+                break
+
+        if not lines:
+            return ""
+        return "## Knowledge from my recent research:\n" + "\n".join(lines)
+
+    def _load_recent_activity(self, max_tasks: int = 10) -> str:
+        """
+        Load this role's recent completed/failed tasks from the scheduler
+        and format them as a context block so the role can answer questions
+        like 'what did you do today' accurately.
+        """
+        tasks_file = Path(get_memory_subpath("scheduler_tasks.json"))
+        if not tasks_file.exists():
+            return ""
+        try:
+            with open(tasks_file, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return ""
+
+        task_map: Dict = data.get("tasks", data) if isinstance(data, dict) else {}
+        if not isinstance(task_map, dict):
+            return ""
+
+        # Filter to this role's non-dreaming tasks, sort newest first
+        role_tasks = []
+        for t in task_map.values():
+            if not isinstance(t, dict):
+                continue
+            if t.get("config", {}).get("role_id") != self.role_id:
+                continue
+            if t.get("type") in ("dreaming",):
+                continue
+            completed = t.get("completed_at") or t.get("started_at")
+            if not completed:
+                continue
+            role_tasks.append((completed, t))
+
+        role_tasks.sort(key=lambda x: x[0], reverse=True)
+
+        lines: list[str] = []
+        for _, t in role_tasks[:max_tasks]:
+            status = t.get("status", "unknown")
+            goal = (t.get("config", {}).get("goal") or "").strip()
+            goal_short = goal[:120] + ("…" if len(goal) > 120 else "")
+            completed = (t.get("completed_at") or t.get("started_at") or "")[:16]
+            # Grab a one-line summary from final_answer if available
+            final = (
+                (t.get("result") or {}).get("metrics", {}).get("final_answer") or ""
+            ).strip()
+            summary = final[:160] + ("…" if len(final) > 160 else "") if final else ""
+            entry = f"• [{completed}] ({status}) {goal_short}"
+            if summary:
+                entry += f"\n  → {summary}"
+            lines.append(entry)
+
+        if not lines:
+            return ""
+        return "## My recent task activity:\n" + "\n".join(lines)
+
+    def _search_tasks(
+        self,
+        query: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        status: str = "",
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search this role's task history. Returns structured task records.
+        Filters by keyword (goal + final_answer), date range, and status.
+        """
+        tasks_file = Path(get_memory_subpath("scheduler_tasks.json"))
+        if not tasks_file.exists():
+            return []
+        try:
+            with open(tasks_file, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return []
+
+        task_map: Dict = data.get("tasks", data) if isinstance(data, dict) else {}
+        if not isinstance(task_map, dict):
+            return []
+
+        limit = min(int(limit or 10), 50)
+        query_lower = query.strip().lower() if query else ""
+
+        results = []
+        for t in task_map.values():
+            if not isinstance(t, dict):
+                continue
+            if t.get("config", {}).get("role_id") != self.role_id:
+                continue
+            if t.get("type") in ("dreaming",):
+                continue
+
+            # Status filter
+            task_status = t.get("status", "")
+            if status and task_status != status:
+                continue
+
+            # Timestamp for sorting and date filter
+            ts = t.get("completed_at") or t.get("started_at") or t.get("created_at") or ""
+            if date_from and ts[:10] < date_from[:10]:
+                continue
+            if date_to and ts[:10] > date_to[:10]:
+                continue
+
+            # Keyword filter against goal + final_answer
+            if query_lower:
+                goal = (t.get("config", {}).get("goal") or "").lower()
+                final = ((t.get("result") or {}).get("metrics", {}).get("final_answer") or "").lower()
+                if query_lower not in goal and query_lower not in final:
+                    continue
+
+            final_answer = ((t.get("result") or {}).get("metrics", {}).get("final_answer") or "").strip()
+            results.append({
+                "id": t.get("id", ""),
+                "status": task_status,
+                "timestamp": ts[:19],
+                "goal": (t.get("config", {}).get("goal") or "").strip(),
+                "summary": final_answer[:300] + ("…" if len(final_answer) > 300 else ""),
+                "error": t.get("last_error") or "",
+            })
+
+        results.sort(key=lambda x: x["timestamp"], reverse=True)
+        return results[:limit]
+
+    # ------------------------------------------------------------------ #
+    # Message building                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _build_messages(
+        self,
+        system_prompt: str,
+        ku_context: str,
+        activity_context: str,
+        history: List[Dict],
+        user_message: str,
+    ) -> List[Dict[str, str]]:
+        system_content = system_prompt
+
+        if ku_context:
+            system_content += f"\n\n{ku_context}"
+
+        if activity_context:
+            system_content += f"\n\n{activity_context}"
+
+        system_content += (
+            "\n\n## Mode: direct conversation\n"
+            "You are talking directly with the user, not executing a task. "
+            "Do NOT accept new task assignments — if the user wants to assign "
+            "work, tell them to route it through MoJo (scheduler). "
+            "Use your tools to look up information before answering when relevant. "
+            "Answer from your personality, knowledge, and research."
+        )
+
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": system_content}
+        ]
+
+        for exchange in history[-MAX_HISTORY_TURNS:]:
+            messages.append({"role": "user", "content": exchange["user"]})
+            messages.append({"role": "assistant", "content": exchange["assistant"]})
+
+        messages.append({"role": "user", "content": user_message})
+        return messages
+
+    # ------------------------------------------------------------------ #
+    # Tool definitions & execution                                         #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _get_chat_tools(tool_access: List[str]) -> List[Dict]:
+        """Return OpenAI tool definitions for the categories in tool_access."""
+        names: List[str] = []
+        for category in tool_access:
+            names.extend(_CHAT_TOOL_ACCESS.get(category, []))
+        return [_TOOL_DEFS[n] for n in names if n in _TOOL_DEFS]
+
+    async def _execute_tool(self, name: str, args: Dict[str, Any]) -> str:
+        """Execute a single chat tool and return its result as a JSON string."""
+        # task_search is handled locally — no external registry needed
+        if name == "task_search":
+            try:
+                results = self._search_tasks(
+                    query=args.get("query", ""),
+                    date_from=args.get("date_from", ""),
+                    date_to=args.get("date_to", ""),
+                    status=args.get("status", ""),
+                    limit=args.get("limit", 10),
+                )
+                return json.dumps({"success": True, "count": len(results), "tasks": results}, ensure_ascii=False)
+            except Exception as e:
+                return json.dumps({"success": False, "error": str(e)})
+
+        try:
+            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+            from app.services.memory_service import MemoryService
+
+            registry = DynamicToolRegistry()
+            registry.set_memory_service(MemoryService())
+            result = await registry.execute_tool(name, args)
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"[role_chat] tool '{name}' failed: {e}")
+            return json.dumps({"success": False, "error": str(e)})
+
+    # ------------------------------------------------------------------ #
+    # LLM call (returns raw response dict)                                 #
+    # ------------------------------------------------------------------ #
+
+    async def _call_raw(
+        self,
+        messages: List[Dict],
+        rm: Any,
+        tools: Optional[List[Dict]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Call the LLM via ResourceManager and return the full response dict.
+        Falls back to FREE_API tier if the primary resource returns an error.
+        """
+        import httpx
+        from app.llm.unified_client import UnifiedLLMClient
+
+        resource = rm.acquire()
+        if resource is None:
+            return {"choices": [{"message": {"content": "(No LLM resource available.)"}}]}
+
+        # Resolve dynamic model for local servers (model=None + dynamic_discovery)
+        model = resource.model
+        if not model and resource.base_url:
+            try:
+                base = resource.base_url.rstrip("/")
+                headers = {}
+                if resource.api_key:
+                    headers["Authorization"] = f"Bearer {resource.api_key}"
+                async with httpx.AsyncClient(timeout=5.0) as c:
+                    resp = await c.get(f"{base}/models", headers=headers)
+                    if resp.status_code == 200:
+                        first = (resp.json().get("data") or [{}])[0]
+                        model = first.get("id") or ""
+            except Exception:
+                pass
+
+        def _make_config(r, m):
+            return {
+                "base_url": r.base_url,
+                "model": m,
+                "api_key": r.api_key,
+                "output_limit": min(r.output_limit or 8192, 8192),
+                "message_format": "openai",
+                "provider": r.provider,
+            }
+
+        client = UnifiedLLMClient()
+        try:
+            data = await client.call_async(
+                messages=messages,
+                resource_config=_make_config(resource, model),
+                model_override=model,
+                tools=tools or None,
+            )
+            rm.record_usage(resource.id, success=True)
+            return data
+        except Exception as e:
+            rm.record_usage(resource.id, success=False)
+            logger.warning(
+                f"[role_chat] resource '{resource.id}' failed ({type(e).__name__}: {e}); "
+                "trying free_api tier fallback"
+            )
+
+        try:
+            from app.scheduler.resource_pool import ResourceTier
+            fallback = rm.acquire(tier_preference=[ResourceTier.FREE_API])
+        except Exception:
+            fallback = None
+
+        if fallback is None:
+            return {"choices": [{"message": {"content": f"(LLM unavailable: {e})"}}]}
+
+        try:
+            data = await client.call_async(
+                messages=messages,
+                resource_config=_make_config(fallback, fallback.model),
+                model_override=fallback.model,
+                tools=tools or None,
+            )
+            rm.record_usage(fallback.id, success=True)
+            return data
+        except Exception as e2:
+            rm.record_usage(fallback.id, success=False)
+            return {"choices": [{"message": {"content": f"(LLM unavailable: {e2})"}}]}
+
+    async def _call_via_llm_interface(self, messages: List[Dict]) -> str:
+        """Fallback when no ResourceManager available — collapses to single prompt."""
+        from app.llm.llm_interface import LLMInterface
+
+        system = next((m["content"] for m in messages if m["role"] == "system"), "")
+        turns = [m for m in messages if m["role"] != "system"]
+        history_text = "\n".join(
+            f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+            for m in turns
+            if isinstance(m.get("content"), str)
+        )
+        llm = LLMInterface()
+        return llm.generate_response(history_text, context=system)
+
+    # ------------------------------------------------------------------ #
+    # Public API                                                           #
+    # ------------------------------------------------------------------ #
+
+    async def exchange(
+        self,
+        message: str,
+        resource_manager: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Send a message and get a response from the role.
+
+        Runs up to MAX_CHAT_ITERATIONS to allow the role to call tools
+        (memory_search, web_search, fetch_url) before giving its final answer.
+
+        Returns:
+            {role_id, session_id, response, context_used: {knowledge_units, history_turns, tool_calls}}
+        """
+        role = RoleManager().get(self.role_id)
+        if role is None:
+            return {
+                "error": f"Role '{self.role_id}' not found",
+                "session_id": self.session_id,
+            }
+
+        system_prompt = role.get(
+            "system_prompt", f"You are {role.get('name', self.role_id)}."
+        )
+        session = self._load_session()
+        ku_context = self._load_ku_context()
+        activity_context = self._load_recent_activity()
+        ku_count = ku_context.count("•") if ku_context else 0
+        history = session.get("exchanges", [])
+
+        messages = self._build_messages(system_prompt, ku_context, activity_context, history, message)
+
+        tool_access = role.get("tool_access") or []
+        chat_tools = self._get_chat_tools(tool_access) if resource_manager else []
+
+        response = ""
+        total_tool_calls = 0
+
+        try:
+            if resource_manager is not None:
+                for _iteration in range(MAX_CHAT_ITERATIONS):
+                    data = await self._call_raw(
+                        messages, resource_manager,
+                        tools=chat_tools if chat_tools else None,
+                    )
+                    msg = (data.get("choices") or [{}])[0].get("message") or {}
+                    tool_calls = msg.get("tool_calls")
+
+                    if not tool_calls:
+                        # Final response — extract text (strip think tokens if present)
+                        content = msg.get("content") or ""
+                        if "<think>" in content and "</think>" in content:
+                            after = content.split("</think>", 1)[-1].strip()
+                            content = after if after else content
+                        response = content
+                        break
+
+                    # Append assistant tool-call message and execute each tool
+                    messages.append(msg)
+                    for tc in tool_calls:
+                        fn = tc.get("function") or {}
+                        tool_name = fn.get("name", "")
+                        try:
+                            args = json.loads(fn.get("arguments") or "{}")
+                        except Exception:
+                            args = {}
+                        logger.debug(f"[role_chat] tool call: {tool_name}({args})")
+                        result_str = await self._execute_tool(tool_name, args)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": result_str,
+                        })
+                        total_tool_calls += 1
+                else:
+                    # Hit iteration limit — extract whatever content the last response had
+                    response = msg.get("content") or "(No response after tool loop)"
+            else:
+                response = await self._call_via_llm_interface(messages)
+
+        except Exception as e:
+            logger.error(f"RoleChatSession.exchange failed for {self.role_id}: {e}")
+            response = f"(Error generating response: {e})"
+
+        self._save_session(session, message, response)
+
+        return {
+            "role_id": self.role_id,
+            "session_id": self.session_id,
+            "response": response,
+            "context_used": {
+                "knowledge_units": ku_count,
+                "history_turns": len(history),
+                "tool_calls": total_tool_calls,
+            },
+        }
+
+
+def list_chat_sessions(role_id: str) -> List[Dict[str, Any]]:
+    """Return summary of all chat sessions for a role, newest first."""
+    session_dir = (
+        Path(get_memory_subpath("roles")) / role_id / "chat_history"
+    )
+    if not session_dir.exists():
+        return []
+
+    sessions = []
+    for f in sorted(session_dir.glob("*.json"), reverse=True):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+            sessions.append({
+                "session_id": data.get("session_id"),
+                "started_at": data.get("started_at"),
+                "last_active": data.get("last_active"),
+                "turn_count": len(data.get("exchanges", [])),
+            })
+        except Exception:
+            continue
+    return sessions

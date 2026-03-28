@@ -1,18 +1,18 @@
 """
-MoJoAssistant Dashboard — READ-ONLY monitoring UI.
-
-This module intentionally has NO write operations. Observability only.
-HITL replies are handled via ntfy action buttons → /api/hitl/reply/{task_id}.
+MoJoAssistant Dashboard — monitoring UI + role chat.
 
 Routes:
-  GET  /dashboard/login     — login form
-  POST /dashboard/login     — authenticate (the only POST — session management)
-  GET  /dashboard/logout    — clear session
-  GET  /dashboard           — overview (queue stats + recent events)
-  GET  /dashboard/tasks     — task list
-  GET  /dashboard/tasks/{id}— task detail + session transcript
-  GET  /dashboard/events    — full event log
-  GET  /dashboard/roles     — roles overview
+  GET  /dashboard/login            — login form
+  POST /dashboard/login            — authenticate
+  GET  /dashboard/logout           — clear session
+  GET  /dashboard                  — overview (queue stats + recent events)
+  GET  /dashboard/tasks            — task list
+  GET  /dashboard/tasks/{id}       — task detail + session transcript
+  GET  /dashboard/events           — full event log
+  GET  /dashboard/roles            — roles overview
+  GET  /dashboard/chat             — list roles available for chat
+  GET  /dashboard/chat/{role_id}   — chat UI for a role (optional ?session_id=)
+  POST /dashboard/chat/{role_id}   — send message, redirect back
 """
 
 import html
@@ -86,6 +86,7 @@ _NAV = """
   <a href="/dashboard/tasks">Tasks</a>
   <a href="/dashboard/events">Events</a>
   <a href="/dashboard/roles">Roles</a>
+  <a href="/dashboard/chat">Chat</a>
   <a href="/dashboard/logout" style="float:right;color:#888">logout</a>
 </nav>
 """
@@ -130,6 +131,37 @@ a:hover { text-decoration: underline; }
 .iter.tool_use { border-color: #7ec8e3; }
 .iter.final    { border-color: #7ec87e; }
 .iter.error    { border-color: #e37e7e; }
+/* Chat UI */
+.chat-layout { display: flex; gap: 16px; height: calc(100vh - 140px); min-height: 500px; }
+.chat-sidebar { width: 220px; flex-shrink: 0; overflow-y: auto; }
+.chat-sidebar h2 { margin-top: 0; }
+.session-link { display: block; padding: 7px 10px; border-radius: 4px; color: #888; font-size: 11px; margin-bottom: 4px; border: 1px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-link:hover { background: #1a1a1a; color: #d4d4d4; text-decoration: none; }
+.session-link.active { background: #1a1a2a; border-color: #7ec8e3; color: #7ec8e3; }
+.new-chat-btn { display: block; padding: 7px 10px; border-radius: 4px; background: #1a2a1a; border: 1px solid #3a3a3a; color: #7ec87e; font-size: 11px; text-align: center; margin-bottom: 12px; cursor: pointer; }
+.new-chat-btn:hover { background: #1e3a1e; text-decoration: none; }
+.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.chat-history { flex: 1; overflow-y: auto; padding: 10px 0; margin-bottom: 12px; }
+.chat-bubble { margin: 8px 0; display: flex; flex-direction: column; }
+.chat-bubble.user { align-items: flex-end; }
+.chat-bubble.assistant { align-items: flex-start; }
+.bubble-label { font-size: 10px; color: #555; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+.bubble-text { max-width: 80%; padding: 10px 14px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; line-height: 1.6; font-size: 12px; }
+.chat-bubble.user .bubble-text { background: #1a2a3a; border: 1px solid #2a4a6a; color: #b0d8f0; }
+.chat-bubble.assistant .bubble-text { background: #1a1a1a; border: 1px solid #333; color: #d4d4d4; }
+.chat-input-area { display: flex; gap: 8px; border-top: 1px solid #333; padding-top: 12px; flex-shrink: 0; }
+.chat-input-area textarea { flex: 1; background: #1a1a1a; border: 1px solid #444; color: #d4d4d4; border-radius: 4px; padding: 10px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 72px; }
+.chat-input-area textarea:focus { outline: none; border-color: #7ec8e3; }
+.chat-send-btn { padding: 10px 18px; background: #7ec8e3; color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-family: inherit; align-self: flex-end; }
+.chat-send-btn:hover { background: #a0d8f0; }
+.chat-send-btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+.chat-meta { font-size: 10px; color: #555; margin-top: 3px; }
+.role-card { background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 16px 20px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
+.role-card .role-name { font-size: 15px; color: #fff; }
+.role-card .role-id { font-size: 11px; color: #555; margin-top: 2px; }
+.role-card .chat-link { padding: 6px 14px; background: #1a2a3a; border: 1px solid #2a4a6a; border-radius: 4px; color: #7ec8e3; font-size: 12px; }
+.role-card .chat-link:hover { background: #1e3a4e; text-decoration: none; }
+.empty-chat { color: #555; text-align: center; padding: 40px 0; font-size: 12px; }
 """
 
 def _page(title: str, body: str, nav: bool = True) -> HTMLResponse:
@@ -343,6 +375,11 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
     def row(k, v):
         return f"<tr><td style='color:#888;width:140px'>{k}</td><td>{v}</td></tr>"
 
+    parent_id = task.get("parent_task_id")
+    parent_link = f'<a href="/dashboard/tasks/{parent_id}">{parent_id}</a>' if parent_id else "—"
+    depth = task.get("dispatch_depth", 0)
+    depth_label = f"{depth}" + (" (sub-task)" if depth > 0 else "")
+
     meta = f"""<table style="margin-bottom:20px">
       {row("Status", _badge(task.get('status','?')))}
       {row("Role", cfg.get('role_id','—'))}
@@ -353,6 +390,8 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
       {row("Iterations", metrics.get('iterations','—'))}
       {row("Duration", f"{metrics.get('duration_seconds',0):.1f}s" if metrics.get('duration_seconds') else '—')}
       {row("Retry count", task.get('retry_count', 0))}
+      {row("Dispatched by", parent_link)}
+      {row("Dispatch depth", depth_label)}
     </table>"""
 
     # Goal
@@ -516,3 +555,192 @@ async def roles_view(mojo_dash: Optional[str] = Cookie(default=None)):
   {rows}
 </table>
 """)
+
+
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
+
+def _get_resource_manager():
+    """Try to create a ResourceManager from config. Returns None on failure."""
+    try:
+        from app.scheduler.resource_pool import ResourceManager
+        import logging
+        return ResourceManager(logger=logging.getLogger(__name__))
+    except Exception:
+        return None
+
+
+@router.get("/chat", response_class=HTMLResponse)
+async def chat_list(mojo_dash: Optional[str] = Cookie(default=None)):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    roles_dir = _mem("roles")
+    role_files = sorted(roles_dir.glob("*.json")) if roles_dir.exists() else []
+
+    cards_html = ""
+    for rf in role_files:
+        role = _load_json(rf, {})
+        rid = rf.stem
+        name = role.get("name", rid)
+        agent_type = role.get("agent_type", "")
+        type_label = f'<span style="color:#555;font-size:11px">{html.escape(agent_type)}</span>' if agent_type else ""
+        # Count past sessions
+        session_dir = _mem("roles", rid, "chat_history")
+        session_count = len(list(session_dir.glob("*.json"))) if session_dir.exists() else 0
+        session_label = f'{session_count} session{"s" if session_count != 1 else ""}' if session_count else "no sessions yet"
+        cards_html += f"""
+<div class="role-card">
+  <div>
+    <div class="role-name">{html.escape(name)}</div>
+    <div class="role-id">{html.escape(rid)} &nbsp;·&nbsp; {type_label} &nbsp;·&nbsp; <span style="color:#555">{session_label}</span></div>
+  </div>
+  <a href="/dashboard/chat/{html.escape(rid)}" class="chat-link">Open Chat →</a>
+</div>"""
+
+    if not cards_html:
+        cards_html = '<p style="color:#555">No roles found in memory. Check ~/.memory/roles/</p>'
+
+    return _page("Chat", f"""
+<h1>Chat with Assistants</h1>
+<p style="color:#555;margin-bottom:20px;font-size:12px">
+  Direct conversation — read-only window into each assistant's knowledge and personality.
+  To assign new work, use <code style="color:#7ec8e3">scheduler_add_task</code> via MoJo.
+</p>
+{cards_html}
+""")
+
+
+@router.get("/chat/{role_id}", response_class=HTMLResponse)
+async def chat_view(
+    role_id: str,
+    session_id: Optional[str] = None,
+    mojo_dash: Optional[str] = Cookie(default=None),
+):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    from app.scheduler.role_chat import list_chat_sessions
+
+    role_file = _mem("roles", f"{role_id}.json")
+    role = _load_json(role_file, {})
+    role_name = role.get("name", role_id) if role else role_id
+
+    # Load session list
+    sessions = list_chat_sessions(role_id)
+
+    # Determine active session.
+    # No session_id in URL = new chat (blank slate, form submits to a fresh session).
+    # Explicit session_id in URL = load that session's history.
+    active_session_id = session_id  # None when "+ New Chat" or first visit
+    exchanges: list = []
+
+    if active_session_id:
+        session_file = _mem("roles", role_id, "chat_history", f"{active_session_id}.json")
+        session_data = _load_json(session_file, {})
+        exchanges = session_data.get("exchanges", [])
+    # No else — no session_id means new chat; exchanges stays empty, form_session stays ""
+
+    # Sidebar: session list
+    new_chat_active = " active" if active_session_id is None else ""
+    sidebar_html = f'<h2>Sessions</h2><a href="/dashboard/chat/{html.escape(role_id)}" class="new-chat-btn{new_chat_active}">+ New Chat</a>'
+    for s in sessions:
+        sid = s.get("session_id", "")
+        turns = s.get("turn_count", 0)
+        last = _ago(s.get("last_active"))
+        css = "active" if sid == active_session_id else ""
+        label = f'{last} · {turns} turn{"s" if turns != 1 else ""}'
+        sidebar_html += f'<a href="/dashboard/chat/{html.escape(role_id)}?session_id={html.escape(sid)}" class="session-link {css}" title="{html.escape(sid)}">{html.escape(label)}</a>'
+
+    if not sessions:
+        sidebar_html += '<div style="color:#555;font-size:11px;padding:6px 0">No sessions yet</div>'
+
+    # Chat history bubbles
+    bubbles_html = ""
+    for ex in exchanges:
+        user_text = html.escape(ex.get("user", ""))
+        asst_text = html.escape(ex.get("assistant", ""))
+        ts = _ts(ex.get("timestamp"))
+        bubbles_html += f"""
+<div class="chat-bubble user">
+  <div class="bubble-label">you</div>
+  <div class="bubble-text">{user_text}</div>
+  <div class="chat-meta">{ts}</div>
+</div>
+<div class="chat-bubble assistant">
+  <div class="bubble-label">{html.escape(role_name)}</div>
+  <div class="bubble-text">{asst_text}</div>
+</div>"""
+
+    if not bubbles_html:
+        if active_session_id:
+            bubbles_html = f'<div class="empty-chat">No messages in this session yet. Say something to {html.escape(role_name)}.</div>'
+        else:
+            bubbles_html = f'<div class="empty-chat">New conversation with {html.escape(role_name)}. Your first message starts the session.</div>'
+
+    # Session id for form: empty string = new session (auto-generated on first POST)
+    form_session = active_session_id or ""
+
+    return _page(f"Chat — {role_name}", f"""
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+  <h1><a href="/dashboard/chat" style="color:#888;font-weight:normal">Chat</a> / {html.escape(role_name)}</h1>
+  <span style="color:#555;font-size:11px">read-only · no task assignments accepted</span>
+</div>
+<div class="chat-layout">
+  <div class="chat-sidebar">
+    {sidebar_html}
+  </div>
+  <div class="chat-main">
+    <div class="chat-history" id="chat-history">
+      {bubbles_html}
+    </div>
+    <form class="chat-input-area" method="post" action="/dashboard/chat/{html.escape(role_id)}" id="chat-form">
+      <input type="hidden" name="session_id" value="{html.escape(form_session)}">
+      <textarea name="message" id="msg-input" placeholder="Message {html.escape(role_name)}…" autofocus
+                onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){{this.form.submit();}}"></textarea>
+      <button type="submit" class="chat-send-btn" id="send-btn">Send</button>
+    </form>
+  </div>
+</div>
+<script>
+  // Scroll chat to bottom on load
+  const h = document.getElementById('chat-history');
+  if (h) h.scrollTop = h.scrollHeight;
+  // Disable send while submitting
+  document.getElementById('chat-form').addEventListener('submit', function() {{
+    document.getElementById('send-btn').disabled = true;
+    document.getElementById('send-btn').textContent = 'Sending…';
+  }});
+</script>
+""")
+
+
+@router.post("/chat/{role_id}")
+async def chat_send(
+    role_id: str,
+    message: str = Form(...),
+    session_id: str = Form(default=""),
+    mojo_dash: Optional[str] = Cookie(default=None),
+):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    from app.scheduler.role_chat import RoleChatSession
+
+    message = message.strip()
+    if not message:
+        sid = session_id or ""
+        return RedirectResponse(
+            f"/dashboard/chat/{role_id}" + (f"?session_id={sid}" if sid else ""),
+            status_code=303,
+        )
+
+    session = RoleChatSession(role_id=role_id, session_id=session_id or None)
+    rm = _get_resource_manager()
+    await session.exchange(message=message, resource_manager=rm)
+
+    return RedirectResponse(
+        f"/dashboard/chat/{role_id}?session_id={session.session_id}",
+        status_code=303,
+    )

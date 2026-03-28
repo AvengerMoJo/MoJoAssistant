@@ -58,18 +58,20 @@ class TestDreamingParsing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks[0].content, "repaired")
         self.assertEqual(chunks[0].speaker, "assistant")
 
-    async def test_chunker_fails_fast_when_parse_and_repair_fail(self):
+    async def test_chunker_falls_back_when_parse_and_repair_fail(self):
         llm = _FakeLLM([
             "not json",
             "still not json",
         ])
         chunker = ConversationChunker(llm_interface=llm)
 
-        with self.assertRaises(RuntimeError) as ctx:
-            await chunker.chunk_conversation("conv_3", "broken")
+        chunks = await chunker.chunk_conversation("conv_3", "broken")
 
-        self.assertIn("Dreaming A->B failed (no fallback)", str(ctx.exception))
-        self.assertIn("provider=fake-provider", str(ctx.exception))
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].content, "broken")
+        self.assertEqual(chunks[0].speaker, "unknown")
+        self.assertEqual(chunks[0].llm_used, "fallback")
+        self.assertTrue(chunks[0].needs_upgrade)
 
     def test_synthesizer_normalizes_list_payload(self):
         llm = _FakeLLM([])
@@ -82,7 +84,7 @@ class TestDreamingParsing(unittest.IsolatedAsyncioTestCase):
         self.assertIn("clusters", parsed)
         self.assertEqual(len(parsed["clusters"]), 1)
 
-    async def test_synthesizer_fails_fast_when_parse_and_repair_fail(self):
+    async def test_synthesizer_falls_back_when_parse_and_repair_fail(self):
         llm = _FakeLLM([
             "invalid",
             "invalid-repair",
@@ -100,11 +102,12 @@ class TestDreamingParsing(unittest.IsolatedAsyncioTestCase):
             )
         ]
 
-        with self.assertRaises(RuntimeError) as ctx:
-            await synthesizer.synthesize_chunks(chunks=chunks, session_id="conv")
+        clusters = await synthesizer.synthesize_chunks(chunks=chunks, session_id="conv")
 
-        self.assertIn("Dreaming B->C failed (no fallback)", str(ctx.exception))
-        self.assertIn("provider=fake-provider", str(ctx.exception))
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0].theme, "Topic: general")
+        self.assertEqual(clusters[0].llm_used, "fallback")
+        self.assertTrue(clusters[0].needs_upgrade)
 
 
 if __name__ == "__main__":

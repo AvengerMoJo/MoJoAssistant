@@ -21,9 +21,9 @@
     },
     {
       "name": "aws_secret_key",
-      "regex": "[A-Za-z0-9/+]{40}",
+      "regex": "(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])",
       "severity": "warn",
-      "description": "Possible AWS secret key (40-char base64) in tool args"
+      "description": "Possible AWS secret key (40-char base64) in tool args — must be exactly 40 chars, not part of a longer path or token"
     },
     {
       "name": "generic_bearer_token",

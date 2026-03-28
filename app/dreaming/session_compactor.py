@@ -30,6 +30,7 @@ def _sessions_dir() -> Path:
     return Path(get_memory_subpath("task_sessions"))
 MIN_MESSAGES = 8        # skip trivial sessions
 MAX_TOOL_RESULT_CHARS = 400  # truncate long tool payloads in the text
+SUMMARIZE_THRESHOLD = 4000   # pre-summarize sessions longer than this before dreaming
 
 
 

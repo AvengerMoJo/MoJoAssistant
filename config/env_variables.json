@@ -377,16 +377,17 @@
           "purpose": "Where MoJoAssistant stores conversation memories, context, and episodic information",
           "type": "string",
           "required": false,
-          "default": ".memory",
-          "examples": [".memory", "data/memory", "/var/lib/mojoassistant/memory"]
+          "default": "~/.memory",
+          "note": "Unset = ~/.memory. No need to set this unless you want a non-default location.",
+          "examples": ["~/.memory", "/data/mojoassistant/memory", "/var/lib/mojoassistant/memory"]
         },
         "KNOWLEDGE_PATH": {
-          "description": "Path to knowledge base directory",
-          "purpose": "Where MoJoAssistant stores long-term knowledge, facts, and indexed documents",
+          "description": "Path to knowledge base directory (legacy — not actively used)",
+          "purpose": "Knowledge base is stored under MEMORY_PATH/knowledge. This variable is currently unused by the runtime.",
           "type": "string",
           "required": false,
-          "default": ".knowledge",
-          "examples": [".knowledge", "data/knowledge", "/var/lib/mojoassistant/knowledge"]
+          "default": "~/.memory/knowledge",
+          "note": "Derived automatically from MEMORY_PATH. Setting this has no effect in the current runtime."
         },
         "MAX_CONTEXT_ITEMS": {
           "description": "Maximum context items to retrieve",

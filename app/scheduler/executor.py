@@ -107,7 +107,10 @@ class TaskExecutor:
         ):
             llm = self._build_dreaming_llm()
             self._dreaming_pipeline = DreamingPipeline(
-                llm_interface=llm, quality_level=quality_level, logger=self.logger
+                llm_interface=llm,
+                quality_level=quality_level,
+                logger=self.logger,
+                storage_path=Path(get_memory_subpath("dreams")),
             )
             self._cached_quality_level = quality_level
         return self._dreaming_pipeline
@@ -145,7 +148,10 @@ class TaskExecutor:
 
         try:
             # Extract configuration
-            conversation_id = task.config.get("conversation_id")
+            mode = task.config.get("mode", "conversation")
+            conversation_id = task.config.get("conversation_id") or (
+                task.config.get("doc_id") if mode == "document" else None
+            )
             conversation_text = task.config.get("conversation_text")
             quality_level = task.config.get("quality_level", "basic")
             automatic = bool(task.config.get("automatic", False))
@@ -190,6 +196,45 @@ class TaskExecutor:
                     error_message="Missing conversation_id or conversation_text in task config",
                 )
 
+            metadata = {**task.config.get("metadata", {}), **auto_metadata}
+
+            if mode == "document":
+                # Atomic fact extraction path — stores KUs in role-private memory
+                from app.config.paths import get_memory_subpath
+                from dreaming.storage.json_backend import JsonFileBackend
+                role_id = task.config.get("role_id", "unknown")
+                storage_path = (
+                    Path(get_memory_subpath("roles")) / role_id / "knowledge_units"
+                )
+                pipeline = self._get_dreaming_pipeline(quality_level)
+                pipeline.storage = JsonFileBackend(storage_path=storage_path)
+
+                doc_id = task.config.get("doc_id") or conversation_id
+                results = await pipeline.process_document(
+                    doc_id=doc_id,
+                    document_text=conversation_text,
+                    metadata=metadata,
+                )
+
+                if results.get("status") == "success":
+                    ku_stage = results["stages"]["knowledge_units"]
+                    return TaskResult(
+                        success=True,
+                        metrics={
+                            "mode": "document",
+                            "doc_id": doc_id,
+                            "knowledge_units_count": ku_stage["count"],
+                            "total_links": ku_stage["total_links"],
+                            "quality_level": quality_level,
+                            "role_id": role_id,
+                        },
+                    )
+                else:
+                    return TaskResult(
+                        success=False,
+                        error_message=results.get("error", "Unknown error during document dreaming"),
+                    )
+
             # Get pipeline
             pipeline = self._get_dreaming_pipeline(quality_level)
 
@@ -197,7 +242,7 @@ class TaskExecutor:
             results = await pipeline.process_conversation(
                 conversation_id=conversation_id,
                 conversation_text=conversation_text,
-                metadata={**task.config.get("metadata", {}), **auto_metadata},
+                metadata=metadata,
             )
 
             if results.get("status") == "success":
@@ -277,10 +322,9 @@ class TaskExecutor:
             "conversation_store_path",
             get_memory_subpath("conversations_multi_model.json"),
         )
-        store_candidates = [
-            Path(store_path),
-            Path(get_memory_subpath("conversations_multi_model.json")),
-        ]
+        store_candidates = [Path(store_path)]
+        if "conversation_store_path" not in config:
+            store_candidates.append(Path(get_memory_subpath("conversations_multi_model.json")))
 
         data = None
         used_path = None

@@ -167,6 +167,8 @@ class AgenticExecutor:
         self._requires_tool_use: bool = False   # reject final answer if no tools called yet
         # Task id stored so _execute_single_tool can inject per-task tmux socket
         self._current_task_id: Optional[str] = task.id
+        # Propagate task context to registry for sub-agent dispatch linkage
+        self._tool_registry.set_task_context(task.id, task.dispatch_depth)
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -706,16 +708,34 @@ class AgenticExecutor:
                     final_answer=final_answer,
                 )
             else:
-                self._session_storage.update_status(
-                    task.id,
-                    "failed",
-                    error_message="Agent did not produce a final answer within limits",
+                # Instead of hard-failing, surface a HITL question so the user
+                # can grant more iterations and resume the session.
+                self._waiting_for_input_question = (
+                    f"Iteration budget exhausted ({max_iterations} iterations used) "
+                    "without a final answer. Reply 'yes' to grant more iterations and "
+                    "resume, or 'no' to mark the task as failed."
                 )
+                self._waiting_for_input_choices = ["yes", "no"]
+                self._session_storage.update_status(task.id, "waiting_for_input")
 
         session_file = str(self._session_storage._path(task.id))
 
+        if self._waiting_for_input_question:
+            return TaskResult(
+                success=False,
+                waiting_for_input=self._waiting_for_input_question,
+                waiting_for_input_choices=self._waiting_for_input_choices,
+                output_file=session_file,
+                metrics={
+                    "iterations": len(iteration_log),
+                    "iteration_log": iteration_log,
+                    "duration_seconds": total_elapsed,
+                    "session_file": session_file,
+                },
+            )
+
         return TaskResult(
-            success=success,
+            success=True,
             output_file=session_file,
             metrics={
                 "iterations": len(iteration_log),
@@ -724,9 +744,6 @@ class AgenticExecutor:
                 "final_answer": final_answer,
                 "session_file": session_file,
             },
-            error_message=None
-            if success
-            else "Agent did not produce a final answer within limits",
         )
 
     def _load_resume_messages(

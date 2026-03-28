@@ -110,7 +110,7 @@ class TestClaudeCodeManager(unittest.TestCase):
         shutil.rmtree(self.workdir, ignore_errors=True)
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        return asyncio.run(coro)
 
     @patch("subprocess.Popen")
     def test_start_stop_cycle(self, mock_popen):

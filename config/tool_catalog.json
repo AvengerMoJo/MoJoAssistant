@@ -65,7 +65,12 @@
     "scheduler_add_task": {
       "category": "orchestration",
       "danger_level": "medium",
-      "description": "Schedule a new task for another agent role. Use to hand off work after completing your own step — a provisioner queuing a reviewer, an executor queuing Carl for code review. The new task runs asynchronously."
+      "description": "Schedule a new task for another agent role. Use to hand off work after completing your own step — e.g. a provisioner queuing a reviewer. The new task runs asynchronously; this tool returns immediately without waiting for the result."
+    },
+    "dispatch_subtask": {
+      "category": "orchestration",
+      "danger_level": "medium",
+      "description": "Dispatch a task to another agent role and WAIT for the result before continuing. Use when you need a specialist's output inline — e.g. a researcher dispatching to a provisioner, then using the provisioner's output to continue. Max depth: 2. Blocked when local_only is set."
     },
     "ask_user":        {
       "category": "comms",
