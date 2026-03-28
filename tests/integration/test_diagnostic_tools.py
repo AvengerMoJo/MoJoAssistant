@@ -12,6 +12,7 @@ Usage:
 import asyncio
 import sys
 from pathlib import Path
+import pytest
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -35,6 +36,7 @@ class MockMemoryService:
         return []
 
 
+@pytest.mark.asyncio
 async def test_detect_duplicates():
     """Test duplicate detection via agent_action"""
     print("\n" + "="*70)
@@ -80,6 +82,7 @@ async def test_detect_duplicates():
         return False
 
 
+@pytest.mark.asyncio
 async def test_cleanup_orphaned():
     """Test orphaned process cleanup via agent_action"""
     print("\n" + "="*70)
@@ -120,6 +123,7 @@ async def test_cleanup_orphaned():
         return False
 
 
+@pytest.mark.asyncio
 async def test_all_diagnostic_tools():
     """Run all diagnostic tool tests"""
     print("\n" + "="*70)

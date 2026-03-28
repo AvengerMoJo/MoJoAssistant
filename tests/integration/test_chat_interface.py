@@ -5,12 +5,15 @@ Test the conversational setup wizard (chat interface style)
 
 import sys
 import asyncio
+import pytest
 
 sys.path.insert(0, ".")
 
 
+@pytest.mark.asyncio
 async def test_chat_interface():
     """Test that setup wizard works like a chat interface"""
+    pytest.importorskip("prompt_toolkit")
     print("Testing Conversational Setup Wizard (Chat Interface)")
     print("=" * 60)
 

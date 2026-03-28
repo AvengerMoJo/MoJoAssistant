@@ -5,12 +5,15 @@ Test Chinese character encoding in setup wizard
 
 import sys
 import asyncio
+import pytest
 
 sys.path.insert(0, ".")
 
 
+@pytest.mark.asyncio
 async def test_chinese_input():
     """Test Chinese character input handling"""
+    pytest.importorskip("prompt_toolkit")
     print("Testing Chinese Character Input Encoding")
     print("=" * 60)
 
