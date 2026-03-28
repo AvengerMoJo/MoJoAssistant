@@ -493,7 +493,68 @@ At publish time, explicitly label:
   coding agent integration, ZeroClaw/OpenClaw integration, PII classification
 Users should know what they're getting, not discover the edges themselves.
 
-**7. Test health**
+**7. Onboarding experience — installation assistant + demo suite**
+A first-time user must be able to understand every key concept of MoJoAssistant
+through the system itself, not only through documentation. This requires three
+components working together:
+
+*Installation assistant (setup wizard)*
+- Guided first-run flow: API key entry, LLM endpoint detection, memory path
+  confirmation, ntfy push opt-in
+- Validates each step before proceeding — no silent misconfiguration
+- Produces a working `.env` and confirms the server starts cleanly
+- Already partially built (`app/interactive-cli.py`); needs polish and a
+  non-interactive path for Docker/CI
+
+*Default bundled roles (demo personas)*
+Each role demonstrates a distinct capability and a distinct safety posture:
+- **Alex** — personal memory assistant; `local_only: false`; shows basic
+  memory search + conversation logging
+- **Rebecca** — research analyst; `tier_preference: free_api`; shows
+  web search, sub-task dispatch, dreaming consolidation
+- **Ahman** — security auditor; `local_only: true`; shows `data_boundary`
+  enforcement, policy violation events, Security Sentinel integration
+- **Carl** — code reviewer; `local_only: true`; shows role chat interface,
+  knowledge repo indexing, `read_file` / `list_files` tool access
+
+*Demo task scripts*
+A set of pre-built scheduler tasks that a new user can run on day one to
+observe the system end-to-end:
+- `demo_memory_roundtrip` — store a conversation, search it back, verify
+  retrieval; confirms memory pipeline is wired
+- `demo_policy_block` — a task that deliberately attempts a blocked tool call;
+  demonstrates policy_violation event, HITL notification, and audit trail
+- `demo_research_loop` — Rebecca researches a local topic, dispatches a
+  summarisation sub-task, writes the result to memory; demonstrates multi-hop
+  agent execution
+- `demo_security_sentinel` — trigger a one-off Security Sentinel run; shows
+  the nightly digest in the dashboard
+- `demo_dreaming` — feed a sample conversation through the dreaming pipeline;
+  shows A→B→C→D consolidation and the resulting archive in `dream(list)`
+
+*Self-protection walkthrough*
+The dashboard must include a "How MoJoAssistant protects you" tab (or a
+`config(action="privacy_report")` MCP tool) that shows, for any task:
+- which LLM resources were used and their tier
+- what tools were called and whether any were blocked by policy
+- the full audit trail (`audit_get(task_id)`)
+- which data left the device and which stayed local
+
+This is the privacy promise made verifiable — not as a document, but as a
+live view the user can inspect at any time.
+
+*Extensibility guide*
+A single `docs/guides/EXTENDING.md` that explains:
+- how to create a new role (copy + edit JSON, no code)
+- how to add a custom behavioral pattern to `~/.memory/config/behavioral_patterns.json`
+- how to register a personal MCP server overlay
+- how to write a custom tool for the scheduler tool registry
+
+The bar: a non-developer can personalise MoJoAssistant within 30 minutes of
+first install without reading source code.
+
+
+**8. Test health**
 No known test failures in CI on the supported path. Tests that exercise
 unsupported/optional paths must be marked `@pytest.mark.optional` or similar
 and skipped by default. The 15 currently pre-existing failures must be resolved
@@ -507,10 +568,14 @@ or explicitly skipped with a documented reason before publish.
 - Inbox distillation / task session compaction — polish
 - Message passing / containerization — v2.x
 
-### The publish bar in one sentence
+### The publish bar in two sentences
 
-A technical user can install MoJoAssistant, run the smoke suite, read the
-release definition, and trust that what it says it does, it actually does —
+A non-developer can install MoJoAssistant, run the bundled demo suite, and
+understand every key concept — memory, roles, policy, dreaming, HITL — through
+the system itself, not through documentation.
+
+A technical user can then read the release definition, inspect the privacy
+report for any task, and trust that what it says it does, it actually does —
 and that what it doesn't mention, it doesn't quietly attempt.
 
 ---
