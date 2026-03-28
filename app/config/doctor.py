@@ -19,6 +19,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.request import urlopen, Request
 from urllib.error import URLError
@@ -153,6 +154,9 @@ class ConfigDoctor:
         self._check_resources(report)
         self._check_roles(report)
         self._check_scheduler_tasks(report)
+        self._check_policy_patterns(report)
+        self._check_memory_path(report)
+        self._check_scheduler_config(report)
         return report
 
     # ------------------------------------------------------------------
@@ -296,8 +300,12 @@ class ConfigDoctor:
             available_models = {
                 res_id: r.model for res_id, r in rm._resources.items() if r.model
             }
+            free_resources_exist = any(
+                r.tier.value == "free" for r in rm._resources.values()
+            )
         except Exception:
             available_models = {}
+            free_resources_exist = True  # unknown — don't false-alarm
 
         try:
             from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
@@ -328,6 +336,18 @@ class ConfigDoctor:
                         status="pass",
                         message=f"Model preference '{model_pref}' is available",
                     ))
+
+            # Check local_only roles have a free-tier resource (v1.2.6+)
+            if role.get("local_only") and not free_resources_exist:
+                report.add(CheckResult(
+                    category="role", id=role_id, field="local_only",
+                    value=True,
+                    status="error",
+                    message=(
+                        "Role has local_only=true but no 'free' tier resource is configured. "
+                        "This role will never be assigned an LLM."
+                    ),
+                ))
 
             # Check allowed_tools against registry
             policy = role.get("policy") or {}
@@ -423,3 +443,225 @@ class ConfigDoctor:
                         status="error",
                         message=f"Unknown tier(s): {bad}. Valid: {sorted(valid_tiers)}",
                     ))
+
+    # ------------------------------------------------------------------
+    # Policy pattern file checks (v1.2.6+)
+    # ------------------------------------------------------------------
+
+    def _check_policy_patterns(self, report: DoctorReport) -> None:
+        """Verify that policy and behavioral pattern files exist and are valid JSON."""
+        project_root = Path(__file__).parent.parent.parent
+        pattern_files = [
+            ("policy_patterns", project_root / "config" / "policy_patterns.json"),
+            ("behavioral_patterns", project_root / "config" / "behavioral_patterns.json"),
+        ]
+        for name, path in pattern_files:
+            if not path.exists():
+                report.add(CheckResult(
+                    category="policy", id=name, field="file",
+                    value=str(path),
+                    status="warn",
+                    message=f"Pattern file not found — content scanning for this category is disabled",
+                ))
+                continue
+            try:
+                data = json.loads(path.read_text())
+            except Exception as e:
+                report.add(CheckResult(
+                    category="policy", id=name, field="file",
+                    value=str(path),
+                    status="error",
+                    message=f"Invalid JSON: {e}",
+                ))
+                continue
+            patterns = data.get("patterns", [])
+            if not patterns:
+                report.add(CheckResult(
+                    category="policy", id=name, field="patterns",
+                    value=0,
+                    status="warn",
+                    message="Pattern list is empty — no rules will be enforced",
+                ))
+            else:
+                report.add(CheckResult(
+                    category="policy", id=name, field="patterns",
+                    value=len(patterns),
+                    status="pass",
+                    message=f"{len(patterns)} pattern(s) loaded",
+                ))
+
+        # Personal overlay directory (informational)
+        from app.config.paths import get_memory_path
+        personal_dir = Path(get_memory_path()) / "config"
+        for name in ("policy_patterns", "behavioral_patterns"):
+            personal_file = personal_dir / f"{name}.json"
+            if personal_file.exists():
+                try:
+                    data = json.loads(personal_file.read_text())
+                    n = len(data.get("patterns", []))
+                    report.add(CheckResult(
+                        category="policy", id=f"{name}_personal", field="file",
+                        value=str(personal_file),
+                        status="pass",
+                        message=f"Personal overlay loaded: {n} pattern(s)",
+                    ))
+                except Exception as e:
+                    report.add(CheckResult(
+                        category="policy", id=f"{name}_personal", field="file",
+                        value=str(personal_file),
+                        status="error",
+                        message=f"Personal overlay has invalid JSON: {e}",
+                    ))
+
+    # ------------------------------------------------------------------
+    # MEMORY_PATH consistency check (v1.2.6+)
+    # ------------------------------------------------------------------
+
+    def _check_memory_path(self, report: DoctorReport) -> None:
+        """Verify MEMORY_PATH is consistent and the directory is writable."""
+        try:
+            from app.config.paths import get_memory_path, get_memory_subpath
+            mem_path = Path(get_memory_path())
+        except Exception as e:
+            report.add(CheckResult(
+                category="memory", id="MEMORY_PATH", field="resolve",
+                value=None, status="error",
+                message=f"Failed to resolve MEMORY_PATH: {e}",
+            ))
+            return
+
+        env_val = os.environ.get("MEMORY_PATH")
+        if env_val:
+            report.add(CheckResult(
+                category="memory", id="MEMORY_PATH", field="env",
+                value=env_val,
+                status="pass",
+                message=f"MEMORY_PATH is set (overrides default ~/.memory)",
+            ))
+        else:
+            report.add(CheckResult(
+                category="memory", id="MEMORY_PATH", field="env",
+                value=str(mem_path),
+                status="pass",
+                message="MEMORY_PATH not set — using default ~/.memory",
+            ))
+
+        # Check directory exists and is writable
+        if mem_path.exists():
+            test_file = mem_path / ".doctor_write_test"
+            try:
+                test_file.touch()
+                test_file.unlink()
+                report.add(CheckResult(
+                    category="memory", id="MEMORY_PATH", field="writable",
+                    value=str(mem_path),
+                    status="pass",
+                    message="Memory directory exists and is writable",
+                ))
+            except Exception as e:
+                report.add(CheckResult(
+                    category="memory", id="MEMORY_PATH", field="writable",
+                    value=str(mem_path),
+                    status="error",
+                    message=f"Memory directory is not writable: {e}",
+                ))
+        else:
+            report.add(CheckResult(
+                category="memory", id="MEMORY_PATH", field="exists",
+                value=str(mem_path),
+                status="warn",
+                message="Memory directory does not exist yet (will be created on first use)",
+            ))
+
+        # Verify dreaming subpath resolves through get_memory_subpath
+        try:
+            dreams_path = Path(get_memory_subpath("dreams"))
+            if str(dreams_path).startswith(str(mem_path)):
+                report.add(CheckResult(
+                    category="memory", id="dreams", field="storage_path",
+                    value=str(dreams_path),
+                    status="pass",
+                    message="Dreaming storage resolves correctly under MEMORY_PATH",
+                ))
+            else:
+                report.add(CheckResult(
+                    category="memory", id="dreams", field="storage_path",
+                    value=str(dreams_path),
+                    status="error",
+                    message=(
+                        f"Dreaming storage path '{dreams_path}' is outside MEMORY_PATH "
+                        f"'{mem_path}' — likely a hardcoded default bypassing MEMORY_PATH"
+                    ),
+                ))
+        except Exception as e:
+            report.add(CheckResult(
+                category="memory", id="dreams", field="storage_path",
+                value=None, status="error",
+                message=f"Failed to resolve dreaming storage path: {e}",
+            ))
+
+    # ------------------------------------------------------------------
+    # Scheduler config check (v1.2.7+)
+    # ------------------------------------------------------------------
+
+    def _check_scheduler_config(self, report: DoctorReport) -> None:
+        """Verify scheduler_config.json exists and all referenced roles are known."""
+        project_root = Path(__file__).parent.parent.parent
+        sched_path = project_root / "config" / "scheduler_config.json"
+
+        if not sched_path.exists():
+            report.add(CheckResult(
+                category="scheduler", id="scheduler_config", field="file",
+                value=str(sched_path),
+                status="warn",
+                message="scheduler_config.json not found — no scheduled jobs will run",
+            ))
+            return
+
+        try:
+            data = json.loads(sched_path.read_text())
+        except Exception as e:
+            report.add(CheckResult(
+                category="scheduler", id="scheduler_config", field="file",
+                value=str(sched_path),
+                status="error",
+                message=f"Invalid JSON: {e}",
+            ))
+            return
+
+        # Support both "jobs" and "default_tasks" key names
+        jobs = data.get("jobs") or data.get("default_tasks", [])
+        report.add(CheckResult(
+            category="scheduler", id="scheduler_config", field="jobs",
+            value=len(jobs),
+            status="pass" if jobs else "warn",
+            message=f"{len(jobs)} scheduled job(s) defined" if jobs else "No jobs defined",
+        ))
+
+        # Check each job's role_id resolves
+        try:
+            from app.roles.role_manager import RoleManager
+            known_roles = {r["id"] for r in RoleManager().list_roles()}
+        except Exception:
+            known_roles = set()
+
+        for job in jobs:
+            job_id = job.get("id", "?")
+            role_id = job.get("role_id")
+            if role_id and known_roles and role_id not in known_roles:
+                report.add(CheckResult(
+                    category="scheduler", id=job_id, field="role_id",
+                    value=role_id,
+                    status="error",
+                    message=f"Scheduled job references unknown role '{role_id}'",
+                ))
+
+            # Warn on jobs with local_only roles that might not have free resources
+            cron = job.get("schedule_cron") or job.get("cron")
+            if cron:
+                report.add(CheckResult(
+                    category="scheduler", id=job_id, field="schedule_cron",
+                    value=cron,
+                    status="pass",
+                    message=f"Cron schedule is set",
+                ))
