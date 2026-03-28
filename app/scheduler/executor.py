@@ -317,10 +317,9 @@ class TaskExecutor:
             "conversation_store_path",
             get_memory_subpath("conversations_multi_model.json"),
         )
-        store_candidates = [
-            Path(store_path),
-            Path(get_memory_subpath("conversations_multi_model.json")),
-        ]
+        store_candidates = [Path(store_path)]
+        if "conversation_store_path" not in config:
+            store_candidates.append(Path(get_memory_subpath("conversations_multi_model.json")))
 
         data = None
         used_path = None
