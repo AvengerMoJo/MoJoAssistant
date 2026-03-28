@@ -11,7 +11,7 @@ import os
 import signal
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -151,7 +151,7 @@ class ClaudeCodeManager(BaseAgentManager):
             pid=process.pid,
             working_dir=working_dir,
             model=model,
-            created_at=datetime.utcnow().isoformat(),
+            created_at=datetime.now(timezone.utc).isoformat(),
         )
         self.state_manager.save_session(session_state)
 
@@ -186,7 +186,7 @@ class ClaudeCodeManager(BaseAgentManager):
         stopped = self._stop_process(session.pid)
 
         session.status = "stopped" if stopped else "failed"
-        session.stopped_at = datetime.utcnow().isoformat()
+        session.stopped_at = datetime.now(timezone.utc).isoformat()
         if not stopped:
             session.error = f"Failed to stop process {session.pid}"
         self.state_manager.save_session(session)
@@ -214,7 +214,7 @@ class ClaudeCodeManager(BaseAgentManager):
         if session.status == "running" and not self._is_process_running(session.pid):
             session.status = "failed"
             session.error = "Process died unexpectedly"
-            session.stopped_at = datetime.utcnow().isoformat()
+            session.stopped_at = datetime.now(timezone.utc).isoformat()
             self.state_manager.save_session(session)
 
         return {
@@ -232,7 +232,7 @@ class ClaudeCodeManager(BaseAgentManager):
             if session.status == "running" and not self._is_process_running(session.pid):
                 session.status = "failed"
                 session.error = "Process died unexpectedly"
-                session.stopped_at = datetime.utcnow().isoformat()
+                session.stopped_at = datetime.now(timezone.utc).isoformat()
                 self.state_manager.save_session(session)
 
             sessions_list.append(session.to_dict())

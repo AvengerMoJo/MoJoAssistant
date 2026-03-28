@@ -22,7 +22,7 @@ Record schema:
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -49,7 +49,7 @@ def append(
 ) -> None:
     """Append one audit record to the log. Thread-safe, never raises."""
     record = {
-        "ts": datetime.utcnow().isoformat() + "Z",
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "task_id": task_id,
         "role_id": role_id,
         "resource_id": resource_id,

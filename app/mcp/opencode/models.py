@@ -6,7 +6,7 @@ File: app/mcp/opencode/models.py
 
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -123,7 +123,7 @@ class ProjectState:
         if self.opencode is None:
             self.opencode = ProcessInfo()
         if self.created_at is None:
-            self.created_at = datetime.utcnow().isoformat()
+            self.created_at = datetime.now(timezone.utc).isoformat()
         if self.worktrees is None:
             self.worktrees = []
         if self.project_name is None:
