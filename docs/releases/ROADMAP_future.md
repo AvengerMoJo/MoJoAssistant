@@ -397,32 +397,47 @@ story and close the remaining trust-layer gaps.
 
 ## Priority Matrix — Urgent / Important
 
-| Item | Urgent | Important | Target | Why |
-|------|--------|-----------|--------|-----|
-| Audit trail + §21 enforcement | 🔴 High | 🔴 High | v1.2.4 | Linchpin for v1.0 gate — privacy promise unverifiable without it |
-| Smoke suite + supported path definition | 🔴 High | 🔴 High | v1.0 gate | Blocks public release — can't ship without it |
-| Tool-calling reliability (Qwen/LMStudio) | 🔴 High | 🔴 High | v1.0 gate | Blocks public release — current path too shaky to present |
-| First-run experience / installer | 🟡 Medium | 🔴 High | v1.0 gate | Blocks public release — strangers can't onboard today |
-| MCPServerManager rollback | 🟡 Medium | 🟡 Medium | v1.2.7 | Known tech debt, low blast radius |
-| Security Sentinel role + behavioral_patterns.json | 🟡 Medium | 🔴 High | v1.2.7 | Foundation for v1.3.0 behavioral layer; low effort, high value |
-| ✅ Atomic fact extraction (KnowledgeUnit pipeline) | 🟡 Medium | 🟡 Medium | v1.2.7 | Research outputs now produce structured searchable knowledge |
-| Role Chat Interface (dialog tool + dashboard) | 🔴 High | 🔴 High | v1.2.7 | Natural way to debrief assistants; no task conflicts; unblocks Rebecca knowledge retrieval |
-| BehavioralMonitor + ContainmentEngine | 🟢 Low | 🔴 High | v1.3.0 | Critical for autonomous AI world; not urgent until pre-public |
-| Agent learning loop (failure→lesson→injection) | 🟢 Low | 🔴 High | v1.3.1 | Fundamental: agents learn from mistakes without human intervention |
-| Per-agent silo memory + cross-agent queries | 🟢 Low | 🔴 High | v1.3.1 | Each agent accumulates its own knowledge; agents can reference each other |
-| Sub-agent dispatch (scheduler_add_task as agent tool) | 🟢 Low | 🔴 High | v1.3.1 | Agents orchestrate each other; Rebecca → Ahman → Carl pipeline |
-| PII classification + sanitization | 🟢 Low | 🟡 Medium | post-v1.0 | Defense-in-depth; data boundary enforcement covers core promise |
-| HttpAgentExecutor / external agent integrations | 🟢 Low | 🟡 Medium | post-v1.0 | Compelling, not foundational |
-| Agent type classification + workflow templates | 🟢 Low | 🟡 Medium | v1.3.1 | Feature expansion, not safety-critical |
-| One-on-one role channel + OpenAI-compat proxy | 🟢 Low | 🟡 Medium | v1.3.1 | UX polish, post-v1.0 |
-| Inbox → Dreaming → Knowledge | 🟢 Low | 🟡 Medium | v1.3.x | Institutional memory; valuable but not blocking |
-| Message passing + containerization | 🟢 Low | 🟢 Low | v2.x | Architecture evolution, long horizon |
+_Last updated: 2026-03-28 (wip_1.2.8)_
+
+| Item | Urgent | Important | Target | Status | Why |
+|------|--------|-----------|--------|--------|-----|
+| Audit trail + §21 enforcement | 🔴 High | 🔴 High | v1.2.4 | ✅ Done | `audit_log.jsonl` append-only, `audit_get` MCP tool, §21 `role_id` required + inline `system_prompt` rejected in `scheduler_add_task` |
+| Tool-calling reliability (Qwen/LMStudio) | 🔴 High | 🔴 High | v2.0.0 gate | ✅ Done v1.2.8 | Malformed JSON args → error feedback to model; consecutive no-tool drift forcing; role chat tool-loop budget |
+| MCPServerManager rollback | 🟡 Medium | 🟡 Medium | v1.2.7 | ✅ Done | Stop/restart hardened; partial status on sibling failure |
+| Security Sentinel role + behavioral_patterns.json | 🟡 Medium | 🔴 High | v1.2.7 | ✅ Done | 23 behavioral patterns (4 categories); sentinel role scheduled nightly |
+| Atomic fact extraction (KnowledgeUnit pipeline) | 🟡 Medium | 🟡 Medium | v1.2.7 | ✅ Done | Document dreaming path; KUs stored per role |
+| Role Chat Interface (dialog tool + dashboard) | 🔴 High | 🔴 High | v1.2.7 | ✅ Done | `dialog` tool; session persistence; dashboard Chat tab |
+| Sub-agent dispatch (`dispatch_subtask`) | 🟢 Low | 🔴 High | v1.2.7 | ✅ Done | Depth-limited (max 3); graceful loop prevention |
+| HITL iteration budget exhaustion | 🟡 Medium | 🔴 High | v1.2.7 | ✅ Done | Budget exhaustion → HITL question instead of hard fail |
+| MEMORY_PATH consistency | 🟡 Medium | 🔴 High | v1.2.7 | ✅ Done | `JsonFileBackend` all call sites pass `storage_path`; doctor verifies |
+| ConfigDoctor v1.2.6/v1.2.7 checks | 🟡 Medium | 🟡 Medium | v1.2.8 | ✅ Done | Policy patterns, MEMORY_PATH writability, scheduler config, `local_only` resource check |
+| Urgency + importance → attention routing | 🟡 Medium | 🔴 High | v1.2.4 | ✅ Done | Fields on task model; drive `hitl_level` floor via urgency×importance |
+| Dependency resilience (optional imports) | 🔴 High | 🔴 High | v2.0.0 gate | 🟡 Partial | `sentence_transformers` soft-import fixed; `prompt_toolkit` skipped in CI; full audit of optional deps needed |
+| Smoke suite — one command, clean install | 🔴 High | 🔴 High | v2.0.0 gate | ❌ Open | `tests/smoke/` directory does not exist; blocks public release |
+| First-run experience / installer (Gate 7) | 🟡 Medium | 🔴 High | v2.0.0 gate | 🟡 Partial | `app/interactive-cli.py` exists; needs wizard polish, demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view |
+| Release definition — documented supported path | 🟡 Medium | 🔴 High | v2.0.0 gate | 🟡 Partial | README rewritten v1.2.7; INSTALL.md with supported OS/Python/model/env-var table still needed |
+| ConfigDoctor NineChapter score validation | 🟢 Low | 🟡 Medium | v1.2.4 | ❌ Open | Validate `nine_chapter_score` matches dimension average; deferred from v1.2.4 |
+| Hybrid memory search (BM25 + embedding) | 🟢 Low | 🔴 High | v1.2.5 | ❌ Open | Semantic-only search misses structural/domain connections for research roles |
+| BehavioralMonitor + ContainmentEngine | 🟢 Low | 🔴 High | v1.3.0 | ❌ Open | Critical for autonomous AI world; not urgent until pre-public |
+| Agent learning loop (failure→lesson→injection) | 🟢 Low | 🔴 High | v1.3.1 | ❌ Open | Agents learn from mistakes without human intervention |
+| Per-agent silo memory + cross-agent queries | 🟢 Low | 🔴 High | v1.3.1 | ❌ Open | Each agent accumulates its own knowledge; agents can reference each other |
+| PII classification + sanitization | 🟢 Low | 🟡 Medium | post-v2.0.0 | ❌ Open | Defense-in-depth; data boundary enforcement covers core promise |
+| HttpAgentExecutor / external agent integrations | 🟢 Low | 🟡 Medium | post-v2.0.0 | ❌ Open | Compelling, not foundational |
+| Agent type classification + workflow templates | 🟢 Low | 🟡 Medium | v1.3.1 | ❌ Open | Feature expansion, not safety-critical |
+| One-on-one role channel + OpenAI-compat proxy | 🟢 Low | 🟡 Medium | v1.3.1 | ❌ Open | UX polish, post-v2.0.0 |
+| Inbox → Dreaming → Knowledge | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Institutional memory; valuable but not blocking |
+| Message passing + containerization | 🟢 Low | 🟢 Low | v2.x | ❌ Open | Architecture evolution, long horizon |
 
 **Reading the matrix:**
-- 🔴🔴 = do next, blocks v1.0 or is the linchpin
+- 🔴🔴 = do next, blocks v2.0.0 or is the linchpin
 - 🟡🔴 = important, schedule soon after linchpin items
 - 🟢🔴 = high value but not time-pressured; design now, build at right milestone
 - anything 🟢🟢 = genuine backlog
+
+**v2.0.0 gate remaining work (3 items):**
+1. **Smoke suite** — `tests/smoke/` with scheduler + memory + policy + one agent loop; no API keys required
+2. **First-run / installer** — wizard polish + 4 bundled demo roles + 5 demo tasks + privacy report view
+3. **INSTALL.md** — supported OS/Python/model, required vs optional env vars, stable vs experimental surface table
 
 ---
 
@@ -438,10 +453,10 @@ when — and here is proof nothing else did."
 
 ---
 
-## v1.0 Public Release — dropping beta
+## v2.0.0 Public Release — dropping beta
 
 This is a separate gate from v1.3.0 graduation. v1.3.0 is a feature milestone;
-v1.0 is a quality and trust milestone. Beta comes off when a stranger can install
+v2.0.0 is a quality and trust milestone. Beta comes off when a stranger can install
 MoJoAssistant on a clean machine, run one command, and get a working system with
 a clear, honest picture of what it does and doesn't do.
 
@@ -560,7 +575,7 @@ unsupported/optional paths must be marked `@pytest.mark.optional` or similar
 and skipped by default. The 15 currently pre-existing failures must be resolved
 or explicitly skipped with a documented reason before publish.
 
-### What can ship post-v1.0
+### What can ship post-v2.0.0
 
 - PII classification (v1.2.5) — defense-in-depth; data boundary enforcement
   already covers the core privacy promise
