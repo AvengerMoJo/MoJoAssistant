@@ -16,6 +16,26 @@ User / External World
 
 ---
 
+## Planned Release Schedule
+
+| Version | Theme | Status | Key Deliverables |
+|---------|-------|--------|-----------------|
+| v1.2.0–v1.2.4 | Foundation → Trust Layer | ✅ Shipped | Role safety, HITL, audit trail, §21 enforcement, policy pipeline |
+| v1.2.5 | PII + Computer-Use groundwork | ✅ Shipped | PII scanner, attention routing, tmux isolation, MCPClientManager fixes |
+| v1.2.6 | Policy enforcement + agentic hardening | ✅ Shipped | PolicyMonitor pipeline, data boundary, behavioral_patterns, local_only |
+| v1.2.7 | Security depth + Role Chat + Sub-agents | ✅ Shipped | Security Sentinel, Role Chat interface, dispatch_subtask, HITL budget, MEMORY_PATH fixes |
+| **v1.2.8** | **Bug hardening + ConfigDoctor** | 🔄 In progress | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
+| v1.2.9 | v2.0.0 gate prep — quality & onboarding | 📋 Planned | Smoke suite (`tests/smoke/`), dependency resilience audit, INSTALL.md supported-path doc |
+| v1.2.10 | First-run experience | 📋 Planned | Setup wizard polish, 4 bundled demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view |
+| v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
+| v1.3.1 | Agent Learning Loop | 📋 Planned | Failure→lesson pipeline, memory context injection, per-role silo memory, cross-agent queries |
+| v1.3.2 | Agent Orchestration + Role Chat Full | 📋 Planned | Agent type classification, workflow templates, OpenAI-compat proxy, cross-role referral |
+| v1.3.x | Hybrid Memory + Institutional Knowledge | 📋 Planned | BM25 + embedding reranking, inbox→dreaming→knowledge distillation |
+| **v2.0.0** | **Public release — dropping beta** | 🎯 Target | All quality gates passed; clean install story; stable vs experimental surface documented |
+| v2.x | Architecture evolution | 💭 Future | Message passing, containerization, multi-node |
+
+---
+
 ## v1.2.0-beta (shipped)
 Role safety, HITL, extensible tools, config validation, smoke test.
 Foundation layer — the infrastructure exists, guardrails are opt-in.
@@ -374,26 +394,6 @@ sub-task to the right role and wait for the result:
 - Explicit memory capture ("remember: X") writes to role private lesson store from chat
 - Post-dialog NineChapter dimension refinement via dream pipeline — personality evolves from extended conversations
 - Cross-role referral — "Ahman would know more about this" hands off chat context to another role
-
-## v1.2.5-beta
-Terminal tools + HttpAgentExecutor + config cleanup — complete the computer-use
-story and close the remaining trust-layer gaps.
-
-- **Terminal tools** — `terminal_exec`, `terminal_read` via persistent tmux sessions.
-  Agents can run commands, see live output, maintain shell state across iterations.
-- **HttpAgentExecutor** — drive ZeroClaw and other HTTP agents via MAP protocol (§17/§18).
-  Design is complete; code is ~300 lines. One config entry per agent in the fleet.
-- **Hybrid memory search** — BM25 + embedding for research roles. Rebecca finds
-  structural/domain connections that pure semantic similarity misses.
-- **Urgency + importance → attention routing** — task fields drive attention level
-  via urgency×importance matrix (deferred from v1.2.4).
-- **Config doctor NineChapter score validation** — validate `nine_chapter_score`
-  derivation from five dimensions (deferred from v1.2.4).
-- **Config tool coverage for `mcp_servers.json`** — add/remove external MCP servers
-  via the `config` MCP tool (currently requires manual file edit).
-- **`llm_config.json` → `resource_pool.json` migration** — make `executor.py`
-  dreaming pipeline pull LLM from `ResourceManager`; update installer to write
-  `resource_pool.json`. Eliminates split-brain config risk.
 
 ## Priority Matrix — Urgent / Important
 
