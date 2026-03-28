@@ -127,7 +127,55 @@ monitoring dashboard.
 
 ---
 
-## 6. Test Coverage
+## 6. Agentic Executor — Iteration Budget HITL
+
+When a task exhausts its iteration budget without producing a `FINAL_ANSWER`,
+the executor now surfaces a HITL question instead of hard-failing:
+
+> "Iteration budget exhausted (N iterations used) without a final answer.
+> Reply 'yes' to grant more iterations and resume, or 'no' to mark as failed."
+
+The task moves to `waiting_for_input`. On a "yes" reply via `reply_to_task`,
+the session resumes from exactly where it left off with a fresh iteration
+budget. Prevents long research tasks (e.g. multi-repo deep-dives) from
+silently disappearing into `failed` state.
+
+---
+
+## 7. Bug Fixes
+
+### Memory path conflict (`MEMORY_PATH` not respected by dreaming storage)
+
+`JsonFileBackend` defaulted to `Path.home() / ".memory" / "dreams"` regardless
+of the `MEMORY_PATH` env var. Three call sites were affected:
+
+- `executor.py` `_get_dreaming_pipeline()` — conversation dreaming
+- `tools.py` `dream(action="list")`
+- `tools.py` `dream(action="get")`
+
+All three now pass `storage_path=Path(get_memory_subpath("dreams"))`. Setting
+`MEMORY_PATH` to a project-local directory now correctly routes all dreaming
+archives alongside the rest of memory.
+
+### Dreaming document tasks rejected with missing `conversation_id`
+
+Tasks dispatched in `mode: "document"` supply a `doc_id` field (not
+`conversation_id`). The early validation guard ran before the mode check and
+rejected them immediately with "Missing conversation_id or conversation_text".
+
+Fix: `mode` is now resolved before validation; in document mode `doc_id` is
+accepted as the identifier. Affected tasks were research consolidation jobs
+dispatched by roles like Rebecca after completing multi-iteration research.
+
+### Dreaming executor test isolation
+
+`_build_automatic_dreaming_input` always fell back to the default memory store
+even when a test passed an explicit non-existent `conversation_store_path`.
+Fixed: the fallback is only added when no explicit path is provided in config.
+
+---
+
+## 8. Test Coverage
 
 | File | Tests | What's covered |
 |------|-------|----------------|
