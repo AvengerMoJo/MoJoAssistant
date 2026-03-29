@@ -110,11 +110,11 @@ _TOOL_DEFS: Dict[str, Dict] = {
         "function": {
             "name": "knowledge_search",
             "description": (
-                "Search prior research task completion reports and knowledge artifacts. "
-                "Use this to retrieve the full output of a previous scheduled research task — "
-                "findings, analysis, comparisons, and recommendations that were written when "
-                "the task completed. More complete than task_search: returns full content, "
-                "not just a summary snippet."
+                "Search your own personal knowledge base — your distilled knowledge units "
+                "and your own completed research reports. This is your private knowledge, "
+                "scoped only to you. Other assistants cannot see it and you cannot see theirs. "
+                "Use this to retrieve your own findings, analysis, and prior research in full. "
+                "More complete than task_search: returns full content, not just a summary snippet."
             ),
             "parameters": {
                 "type": "object",
@@ -461,42 +461,82 @@ class RoleChatSession:
 
     def _search_knowledge(self, query: str = "", limit: int = 5) -> List[Dict[str, Any]]:
         """
-        Search task completion reports in ~/.memory/task_reports/.
+        Search this role's personal knowledge — scoped exclusively to self.role_id.
 
-        Returns structured results with full content so the role can present
-        prior research without the truncation that affects session archives.
+        Sources (both role-scoped):
+          1. ~/.memory/roles/{role_id}/knowledge_units/ — distilled knowledge entries
+          2. ~/.memory/task_reports/{task_id}.json where role_id == self.role_id
+
+        Knowledge from other roles is never returned. Each assistant maintains
+        their own personal knowledge base independently.
         """
-        reports_dir = Path(get_memory_subpath("task_reports"))
-        if not reports_dir.exists():
-            return []
-
         query_lower = query.strip().lower() if query else ""
         limit = min(int(limit or 5), 20)
-        results = []
+        results: List[Dict[str, Any]] = []
 
-        for report_file in sorted(reports_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                with open(report_file, encoding="utf-8") as f:
-                    report = json.load(f)
-            except Exception:
-                continue
-
-            if query_lower:
-                goal = (report.get("goal") or "").lower()
-                content = (report.get("content") or "").lower()
-                if query_lower not in goal and query_lower not in content:
+        # --- Source 1: role's distilled knowledge units ---
+        ku_dir = Path(get_memory_subpath("roles")) / self.role_id / "knowledge_units"
+        if ku_dir.exists():
+            for subdir in sorted(ku_dir.iterdir(), reverse=True):
+                if not subdir.is_dir():
                     continue
+                archive_files = sorted(subdir.glob("archive_v*.json"), reverse=True)
+                for archive_file in archive_files[:1]:
+                    try:
+                        with open(archive_file, encoding="utf-8") as f:
+                            archive = json.load(f)
+                    except Exception:
+                        continue
+                    for ku in archive.get("knowledge_units", []):
+                        meaning = (ku.get("core_meaning") or "").strip()
+                        quote = (ku.get("quote") or "").strip()
+                        source = (ku.get("source") or "").strip()
+                        if not meaning:
+                            continue
+                        text = meaning + (f' — "{quote}"' if quote and quote != meaning else "")
+                        if query_lower and query_lower not in text.lower() and query_lower not in source.lower():
+                            continue
+                        results.append({
+                            "type": "knowledge_unit",
+                            "source": source,
+                            "content": text,
+                            "created_at": (ku.get("created_at") or archive.get("created_at") or "")[:19],
+                        })
+                        if len(results) >= limit:
+                            break
+                if len(results) >= limit:
+                    break
 
-            results.append({
-                "task_id": report.get("task_id", ""),
-                "role_id": report.get("role_id", ""),
-                "goal": report.get("goal", ""),
-                "status": report.get("status", ""),
-                "created_at": (report.get("created_at") or "")[:19],
-                "content": report.get("content", ""),
-            })
-            if len(results) >= limit:
-                break
+        # --- Source 2: this role's task completion reports ---
+        if len(results) < limit:
+            reports_dir = Path(get_memory_subpath("task_reports"))
+            if reports_dir.exists():
+                for report_file in sorted(
+                    reports_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+                ):
+                    try:
+                        with open(report_file, encoding="utf-8") as f:
+                            report = json.load(f)
+                    except Exception:
+                        continue
+                    # Enforce role isolation
+                    if report.get("role_id") != self.role_id:
+                        continue
+                    if query_lower:
+                        goal = (report.get("goal") or "").lower()
+                        content = (report.get("content") or "").lower()
+                        if query_lower not in goal and query_lower not in content:
+                            continue
+                    results.append({
+                        "type": "task_report",
+                        "task_id": report.get("task_id", ""),
+                        "goal": report.get("goal", ""),
+                        "status": report.get("status", ""),
+                        "created_at": (report.get("created_at") or "")[:19],
+                        "content": report.get("content", ""),
+                    })
+                    if len(results) >= limit:
+                        break
 
         return results
 
