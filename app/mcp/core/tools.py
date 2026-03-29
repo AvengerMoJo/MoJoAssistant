@@ -1547,9 +1547,16 @@ class ToolRegistry:
             {
                 "name": "external_agent",
                 "description": (
-                    "External services and 3rd-party integrations. Call with no action for help menu.\n\n"
-                    "action='google', service, resource, method, params?, json_body?, format?, ... — Google Workspace API proxy\n\n"
-                    "action='backend_servers' — list all configured coding agent backends (OpenCode, Claude Code, ...)\n"
+                    "External services, 3rd-party integrations, and coding agent HITL bridge. "
+                    "Call with no action for help menu.\n\n"
+                    "── HITL bridge (for coding agents connected via MCP) ──\n"
+                    "action='ask_user', task_id, question, options? — pause and inject question into HITL inbox\n"
+                    "action='check_reply', task_id — poll for user reply; returns {status:'answered',reply:...} or {status:'pending'}\n"
+                    "action='run_task', prompt, working_dir?, task_id?, model? — spawn headless Claude Code with MoJo as MCP server\n\n"
+                    "── Google Workspace ──\n"
+                    "action='google', service, resource, method, params?, json_body?, format?, ...\n\n"
+                    "── Coding agent backends ──\n"
+                    "action='backend_servers' — list all configured coding agent backends\n"
                     "action='backend_health', server_id? — check if a backend is reachable\n"
                     "action='backend_session_list', server_id? — list sessions on a backend\n"
                     "action='backend_session_create', server_id? — create a new session\n"
@@ -1561,10 +1568,19 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "description": "Integration to use. Omit for help menu."},
+                        "action": {"type": "string", "description": "Action to perform. Omit for help menu."},
+                        # HITL bridge params
+                        "task_id": {"type": "string", "description": "Unique session/task ID (ask_user, check_reply, run_task)."},
+                        "question": {"type": "string", "description": "Question to ask the user (ask_user)."},
+                        "options": {"type": "array", "items": {"type": "string"}, "description": "Optional answer choices (ask_user)."},
+                        "prompt": {"type": "string", "description": "Task prompt for headless Claude Code (run_task)."},
+                        "working_dir": {"type": "string", "description": "Working directory for headless Claude Code (run_task)."},
+                        "model": {"type": "string", "description": "Model override for headless Claude Code (run_task)."},
+                        # Backend params
                         "server_id": {"type": "string", "description": "Backend server ID (backend actions). Omit for default server."},
                         "session_id": {"type": "string", "description": "Session ID (backend session actions)."},
                         "content": {"type": "string", "description": "Message content (backend_session_message)."},
+                        # Google params
                         "service": {"type": "string", "description": "Google service (google action): calendar, drive, sheets, gmail, docs, people."},
                         "resource": {"type": "string", "description": "API resource (google action)."},
                         "method": {"type": "string", "description": "API method (google action): list, get, create, update, delete."},
@@ -5395,6 +5411,11 @@ Agent resumes within seconds.
         HELP = {
             "tool": "external_agent",
             "actions": {
+                # HITL bridge — for coding agents connected to MoJo via MCP
+                "ask_user": "Inject a question into the HITL inbox and pause — params: task_id, question, options?",
+                "check_reply": "Poll for user reply to a previous ask_user — params: task_id",
+                "run_task": "Spawn headless Claude Code for a task — params: prompt, working_dir?, task_id?, model?",
+                # Coding agent backend management
                 "google": "Google Workspace API proxy — params: service, resource, method, params?, json_body?, format?, ...",
                 "backend_servers": "List all configured coding agent backends (OpenCode, Claude Code, ...)",
                 "backend_health": "Check if a backend is reachable — params: server_id?",
@@ -5405,11 +5426,20 @@ Agent resumes within seconds.
                 "backend_session_delete": "Delete a session — params: session_id, server_id?",
             },
             "future": ["github", "slack", "notion"],
-            "example": 'external_agent(action="backend_health")',
+            "example": 'external_agent(action="ask_user", task_id="cc-task-1", question="Use approach A or B?")',
         }
 
         if not action or action == "help":
             return HELP
+
+        if action == "ask_user":
+            return self._execute_external_agent_ask_user(args)
+
+        if action == "check_reply":
+            return self._execute_external_agent_check_reply(args)
+
+        if action == "run_task":
+            return await self._execute_external_agent_run_task(args)
 
         if action == "google":
             for param in ("service", "resource", "method"):
@@ -5422,6 +5452,146 @@ Agent resumes within seconds.
             return await self._execute_backend(action, args)
 
         return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    def _execute_external_agent_ask_user(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Inject a question from an external coding agent into the HITL inbox."""
+        from app.scheduler.hitl_bridge import ask_user as hitl_ask_user
+        task_id = (args.get("task_id") or "").strip()
+        question = (args.get("question") or "").strip()
+        options = args.get("options")
+        return hitl_ask_user(self.scheduler.queue, task_id, question, options)
+
+    def _execute_external_agent_check_reply(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Poll for user reply to a previous ask_user call."""
+        from app.scheduler.hitl_bridge import check_reply as hitl_check_reply
+        task_id = (args.get("task_id") or "").strip()
+        return hitl_check_reply(self.scheduler.queue, task_id)
+
+    async def _execute_external_agent_run_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Spawn headless Claude Code for a task with MoJo as MCP server."""
+        import shutil
+        import subprocess
+        import json
+        import tempfile
+
+        prompt = (args.get("prompt") or "").strip()
+        working_dir = (args.get("working_dir") or "").strip()
+        model = (args.get("model") or "").strip()
+        task_id = (args.get("task_id") or "").strip()
+
+        if not prompt:
+            return {"status": "error", "message": "prompt is required"}
+
+        # Generate a unique task_id if not provided
+        if not task_id:
+            import time as _time
+            task_id = f"ext-cc-{int(_time.time())}"
+
+        # Resolve working directory
+        working_dir = os.path.expanduser(working_dir) if working_dir else os.path.expanduser("~")
+        if not os.path.isdir(working_dir):
+            return {"status": "error", "message": f"working_dir does not exist: {working_dir}"}
+
+        # Find claude binary
+        claude_bin = os.getenv("CLAUDE_BIN") or shutil.which("claude") or ""
+        if not claude_bin:
+            return {
+                "status": "error",
+                "message": "claude binary not found. Install Claude Code CLI or set CLAUDE_BIN env var.",
+            }
+
+        # Generate MCP config pointing back to this MoJo instance
+        mcp_config = self._generate_claude_code_mcp_config()
+
+        # Create stub task so ask_user calls have a home in the inbox
+        from app.scheduler.models import Task, TaskType, TaskStatus
+        existing = self.scheduler.queue.get(task_id)
+        if existing is None:
+            stub = Task(
+                id=task_id,
+                type=TaskType.AGENT,
+                status=TaskStatus.RUNNING,
+                description=f"Headless Claude Code: {prompt[:80]}",
+                config={
+                    "ext_agent_hitl": True,
+                    "source": "headless_claude_code",
+                    "goal": prompt,
+                    "working_dir": working_dir,
+                },
+            )
+            self.scheduler.queue.add(stub)
+
+        # Inject task context into prompt so Claude Code knows its task_id
+        mojo_context = (
+            f"\n\n---\n"
+            f"[MoJo context] Your task_id is '{task_id}'. "
+            f"When you need human input, call: "
+            f"external_agent(action='ask_user', task_id='{task_id}', question='...'). "
+            f"Then poll: external_agent(action='check_reply', task_id='{task_id}') "
+            f"until you get a reply."
+        )
+        full_prompt = prompt + mojo_context
+
+        # Write MCP config to a temp file (not deleted immediately — subprocess needs it)
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".mcp.json", delete=False, prefix="mojo_"
+        )
+        json.dump(mcp_config, tmp)
+        tmp.flush()
+        tmp.close()
+        config_file = tmp.name
+
+        cmd = [claude_bin, "-p", full_prompt, "--dangerously-skip-permissions",
+               "--mcp-config", config_file]
+        if model:
+            cmd.extend(["--model", model])
+
+        try:
+            process = subprocess.Popen(
+                cmd,
+                cwd=working_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to spawn Claude Code: {e}"}
+
+        # Record PID in task config
+        task = self.scheduler.queue.get(task_id)
+        if task:
+            task.config["pid"] = process.pid
+            self.scheduler.queue.update(task)
+
+        return {
+            "status": "started",
+            "task_id": task_id,
+            "pid": process.pid,
+            "working_dir": working_dir,
+            "mcp_config_file": config_file,
+            "note": (
+                "Claude Code is running headlessly with MoJo as MCP server. "
+                "It will call external_agent(action='ask_user') if it needs input."
+            ),
+            "monitor_with": f'scheduler(action="get", task_id="{task_id}")',
+        }
+
+    def _generate_claude_code_mcp_config(self) -> Dict[str, Any]:
+        """Build the .mcp.json config that points headless Claude Code at this MoJo instance."""
+        port = int(os.getenv("SERVER_PORT", "8000"))
+        api_key = os.getenv("MCP_API_KEY", "")
+        base_url = os.getenv("MOJO_BASE_URL", f"http://localhost:{port}")
+        mcp_url = f"{base_url.rstrip('/')}/"
+        config: Dict[str, Any] = {
+            "mcpServers": {
+                "mojo": {
+                    "url": mcp_url,
+                }
+            }
+        }
+        if api_key:
+            config["mcpServers"]["mojo"]["headers"] = {"MCP-API-Key": api_key}
+        return config
 
     async def _execute_backend(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Coding agent backend actions via coding-agent-mcp-tool.

@@ -95,6 +95,17 @@ class Scheduler:
                 "error": f"Task '{task_id}' is not waiting for input (status: {task.status.value})",
             }
 
+        # External agent HITL stubs must NOT re-enter the scheduler execution loop.
+        # Route their reply via ext_agent_reply so check_reply() can consume it,
+        # and keep the task in RUNNING state (never PENDING).
+        if task.config.get("ext_agent_hitl"):
+            task.config["ext_agent_reply"] = reply
+            task.pending_question = None
+            task.status = TaskStatus.RUNNING
+            self.queue.update(task)
+            self._log(f"Task {task_id} (ext-agent HITL) received reply")
+            return {"success": True, "task_id": task_id, "status": "running"}
+
         task.config["reply_to_question"] = reply
         task.pending_question = None
         task.status = TaskStatus.PENDING
