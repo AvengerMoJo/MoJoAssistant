@@ -799,10 +799,25 @@ class RoleChatSession:
                     for tc in tool_calls:
                         fn = tc.get("function") or {}
                         tool_name = fn.get("name", "")
+                        raw_args = fn.get("arguments") or "{}"
                         try:
-                            args = json.loads(fn.get("arguments") or "{}")
+                            args = json.loads(raw_args)
                         except Exception:
-                            args = {}
+                            snippet = raw_args[:120]
+                            parse_error = (
+                                f"Tool arguments could not be parsed as JSON: {snippet!r}. "
+                                "Please retry with valid JSON."
+                            )
+                            logger.warning(
+                                f"[role_chat] malformed tool args for '{tool_name}': {snippet!r}"
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", ""),
+                                "content": json.dumps({"success": False, "error": parse_error}),
+                            })
+                            total_tool_calls += 1
+                            continue
                         logger.debug(f"[role_chat] tool call: {tool_name}({args})")
                         result_str = await self._execute_tool(tool_name, args)
                         messages.append({
@@ -922,10 +937,25 @@ class RoleChatSession:
                         fn = tc.get("function") or {}
                         tool_name = fn.get("name", "")
                         yield f'data: {json.dumps({"type": "tool", "name": tool_name})}\n\n'
+                        raw_args = fn.get("arguments") or "{}"
                         try:
-                            args = json.loads(fn.get("arguments") or "{}")
+                            args = json.loads(raw_args)
                         except Exception:
-                            args = {}
+                            snippet = raw_args[:120]
+                            parse_error = (
+                                f"Tool arguments could not be parsed as JSON: {snippet!r}. "
+                                "Please retry with valid JSON."
+                            )
+                            logger.warning(
+                                f"[role_chat] malformed tool args for '{tool_name}': {snippet!r}"
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", ""),
+                                "content": json.dumps({"success": False, "error": parse_error}),
+                            })
+                            total_tool_calls += 1
+                            continue
                         result_str = await self._execute_tool(tool_name, args)
                         messages.append({
                             "role": "tool",
@@ -995,6 +1025,16 @@ class RoleChatSession:
             err = f"(Error: {e})"
             yield f'data: {json.dumps({"type": "token", "text": err})}\n\n'
             response_text = err
+
+        # Apply the same quality gate as the non-streaming path.
+        # If the raw streamed text is hollow/empty, emit a corrective token
+        # and save the corrected text instead of the bad output.
+        quality_checked = _ensure_response_quality(
+            response_text, role_name=role.get("name", self.role_id)
+        )
+        if quality_checked != response_text:
+            yield f'data: {json.dumps({"type": "token", "text": quality_checked})}\n\n'
+            response_text = quality_checked
 
         self._save_session(session, message, response_text)
 
