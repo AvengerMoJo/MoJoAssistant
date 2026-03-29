@@ -3,8 +3,14 @@ Role Chat Interface — conversational mode for assistant roles.
 
 Provides direct, personality-aware conversation with a role using its
 accumulated knowledge units as context. Runs a mini agentic loop (up to
-MAX_CHAT_ITERATIONS) so the role can call tools (memory_search, web_search,
-fetch_url) based on its tool_access configuration.
+MAX_CHAT_ITERATIONS) so the role can call tools (memory_search, task_search)
+based on its tool_access configuration.
+
+Chat mode is a **private recall/debrief** surface — read-only memory tools
+only. Web search, browser, and orchestration tools are not available here.
+A chat-mode addendum is injected into every system prompt to make this
+contract explicit to the model and prevent it from planning for tools it
+does not have.
 
 Session history persists at ~/.memory/roles/{role_id}/chat_history/{session_id}.json
 """
@@ -103,6 +109,40 @@ _FINAL_TOOL_LOOP_PROMPT = (
     "Using only the conversation and tool results already available, "
     "answer the user directly now."
 )
+
+# Injected at the END of every chat-mode system prompt to override the
+# tool instructions from the role's full agentic system_prompt.
+# This prevents the model from planning for tools (web_search, browser, etc.)
+# that do not exist in chat mode.
+_CHAT_MODE_ADDENDUM = """
+---
+## Chat Session Mode (Private Recall / Debrief)
+
+You are in a **Dashboard Chat** session — a private, read-only debrief interface.
+This is NOT an agentic research session.
+
+**Tools available in this mode:**
+- `memory_search` — search your accumulated memory, past conversations, and knowledge units
+- `task_search` — search your own task history (completed, failed, running tasks)
+
+**Tools NOT available in this mode:**
+- web_search, fetch_url, browser / Playwright tools
+- knowledge base file access
+- orchestration, sub-agent dispatch, or task scheduling
+
+**How to answer:**
+1. Use `memory_search` and `task_search` to recall what you have already learned or done.
+2. Synthesize a direct answer from what you find.
+3. If the question cannot be fully answered from memory/task history, say so explicitly:
+   - What you found from your records
+   - What you could not confirm without live research
+   - That a deeper investigation would need a scheduled research task via the MCP path
+
+**You must always produce a response.** Do not return empty output. If you cannot find
+the answer in memory, say clearly: "I don't have that in my current records — here's
+what I do have..." and give the partial picture. A partial honest answer is always
+better than silence or a stalled tool loop.
+"""
 
 
 class RoleChatSession:
@@ -539,6 +579,11 @@ class RoleChatSession:
         system_prompt = role.get(
             "system_prompt", f"You are {role.get('name', self.role_id)}."
         )
+        # Append the chat-mode addendum to override any tool instructions in
+        # the role's full agentic prompt. This makes the available-tool contract
+        # explicit and prevents the model from planning for tools it doesn't have.
+        system_prompt = system_prompt + _CHAT_MODE_ADDENDUM
+
         session = self._load_session()
         ku_context = self._load_ku_context()
         activity_context = self._load_recent_activity()
