@@ -529,15 +529,127 @@ def handle_command(
 
 
 import asyncio
+import secrets
+import re
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
+
+from app.config.first_run import (
+    create_owner_profile,
+    load_owner_profile,
+    unpack_bundled_roles,
+)
 
 
 def run_setup_wizard():
     """Run smart installer with agents"""
     from app.installer.orchestrator import run_smart_installer
     return run_smart_installer(interactive=True, auto_defaults=False)
+
+
+# ---------------------------------------------------------------------------
+# Simple first-run setup (no LLM required)
+# ---------------------------------------------------------------------------
+
+_DEMO_ROLES = [
+    ("rebecca", "Rebecca — researcher"),
+    ("ahman",   "Ahman   — infrastructure / sysadmin"),
+    ("carl",    "Carl    — code reviewer"),
+]
+
+
+def run_first_run_setup(memory_path: Path) -> None:
+    """Pure-Python first-run wizard.  No LLM required."""
+    print()
+    print("=" * 60)
+    print("  First run detected. Let's get you set up.")
+    print("=" * 60)
+    print()
+
+    # 1. Owner name
+    name = input("Your name (used by assistants to address you) [Alex]: ").strip()
+    if not name:
+        name = "Alex"
+
+    # 2. Timezone
+    tz = input("Timezone [Asia/Taipei]: ").strip()
+    if not tz:
+        tz = "Asia/Taipei"
+
+    # 3. Demo roles
+    print()
+    print("Available demo roles:")
+    for _id, label in _DEMO_ROLES:
+        print(f"  [{_id}]  {label}")
+    role_input = input(
+        "Which roles to enable? (comma-separated ids, or 'all') [all]: "
+    ).strip().lower()
+    if not role_input or role_input == "all":
+        selected_role_ids = [r[0] for r in _DEMO_ROLES]
+    else:
+        selected_role_ids = [s.strip() for s in role_input.split(",") if s.strip()]
+
+    # 4. MCP API key
+    print()
+    api_key_input = input(
+        "MCP_API_KEY (leave blank to auto-generate): "
+    ).strip()
+    mcp_api_key = api_key_input if api_key_input else secrets.token_hex(24)
+
+    # 5. Write owner profile
+    print()
+    profile_path = create_owner_profile(
+        memory_path,
+        overrides={
+            "owner_id": name.lower().replace(" ", "_"),
+            "name": name,
+            "preferred_name": name,
+            "timezone": tz,
+        },
+    )
+    print(f"  Created: {profile_path}")
+
+    # 6. Unpack selected roles
+    # Temporarily filter bundled roles to only unpacked selected ones; but
+    # unpack_bundled_roles unpacks all — then we just report the selected ones.
+    unpacked = unpack_bundled_roles(memory_path)
+    for role_id in unpacked:
+        if role_id in selected_role_ids:
+            print(f"  Unpacked role: {role_id}")
+
+    # 7. .env bootstrap
+    project_root = Path(__file__).resolve().parent.parent
+    env_path = project_root / ".env"
+    env_example_path = project_root / ".env.example"
+    if not env_path.exists() and env_example_path.exists():
+        import shutil
+        shutil.copy2(env_example_path, env_path)
+        # Patch MCP_API_KEY and SERVER_PORT
+        content = env_path.read_text(encoding="utf-8")
+        content = re.sub(
+            r"^(MCP_API_KEY\s*=).*$",
+            f"\\g<1>{mcp_api_key}",
+            content,
+            flags=re.MULTILINE,
+        )
+        content = re.sub(
+            r"^(SERVER_PORT\s*=).*$",
+            "\\g<1>8000",
+            content,
+            flags=re.MULTILINE,
+        )
+        env_path.write_text(content, encoding="utf-8")
+        print(f"  Created .env from .env.example (MCP_API_KEY set)")
+    elif env_path.exists():
+        print(f"  .env already exists — skipped")
+    else:
+        print(f"  .env.example not found — skipped .env creation")
+
+    print()
+    print("Setup complete. Starting MoJoAssistant...")
+    print("=" * 60)
+    print()
 
 
 def main() -> int:
@@ -572,12 +684,23 @@ def main() -> int:
     parser.add_argument(
         "--setup", action="store_true", help="Run setup wizard with AI guidance"
     )
+    parser.add_argument(
+        "--no-setup",
+        action="store_true",
+        help="Skip automatic first-run setup detection",
+    )
 
     args = parser.parse_args()
 
     # Run setup wizard if requested
     if args.setup:
         return run_setup_wizard()
+
+    # Auto first-run detection (runs before LLM/memory initialisation)
+    if not args.no_setup:
+        memory_path = Path(os.getenv("MEMORY_PATH", str(Path.home() / ".memory")))
+        if not (memory_path / "owner_profile.json").exists():
+            run_first_run_setup(memory_path)
 
     # Initialize logging
     setup_logging(log_level=args.log_level, log_file=args.log_file)
