@@ -192,6 +192,7 @@ class AgenticExecutor:
                 level="warning",
             )
         self._data_boundary: dict = {}  # role-level data boundary constraints
+        role = None  # populated below if role_id resolves
         if role_id:
             try:
                 from app.roles.role_manager import RoleManager
