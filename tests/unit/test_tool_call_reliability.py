@@ -159,6 +159,29 @@ class TestMalformedToolArguments(unittest.IsolatedAsyncioTestCase):
 
         exc._execute_single_tool.assert_awaited_once_with("list_files", {"path": "/tmp"})
 
+    async def test_pre_parsed_dict_arguments_proceed_normally(self):
+        """If a backend returns arguments as an already-parsed dict (not a JSON
+        string), the executor must not raise TypeError and must call the tool."""
+        exc = _make_executor()
+
+        tool_calls = [
+            {
+                "id": "call_dict",
+                "function": {
+                    "name": "memory_search",
+                    "arguments": {"query": "pre-parsed"},  # dict, not str
+                },
+            }
+        ]
+        results = await exc._execute_tool_calls(tool_calls)
+
+        self.assertEqual(len(results), 1)
+        parsed = json.loads(results[0])
+        self.assertNotIn("error", parsed)
+        exc._execute_single_tool.assert_awaited_once_with(
+            "memory_search", {"query": "pre-parsed"}
+        )
+
 
 # ===========================================================================
 # Consecutive no-tool drift counter

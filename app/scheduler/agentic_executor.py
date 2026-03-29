@@ -934,23 +934,30 @@ class AgenticExecutor:
         for tc in tool_calls:
             fn_name = tc["function"]["name"]
             raw_args = tc.get("function", {}).get("arguments", "")
-            try:
-                fn_args = json.loads(raw_args) if raw_args else {}
-            except (json.JSONDecodeError, ValueError) as parse_err:
-                # Return a clear error so the model can self-correct its JSON
-                self._log(
-                    f"Tool {fn_name}: argument JSON parse failed — {parse_err}", "warning"
-                )
-                results.append(
-                    json.dumps({
-                        "error": (
-                            f"Your tool call arguments for '{fn_name}' were not valid JSON "
-                            f"({parse_err}). Please call the tool again with properly "
-                            "formatted JSON arguments."
-                        )
-                    })
-                )
-                continue
+            # Some OpenAI-compatible backends already parse arguments into a dict;
+            # others return a JSON string.  Handle both shapes.
+            if isinstance(raw_args, dict):
+                fn_args = raw_args
+            elif not raw_args:
+                fn_args = {}
+            else:
+                try:
+                    fn_args = json.loads(raw_args)
+                except (json.JSONDecodeError, ValueError, TypeError) as parse_err:
+                    # Return a clear error so the model can self-correct its JSON
+                    self._log(
+                        f"Tool {fn_name}: argument JSON parse failed — {parse_err}", "warning"
+                    )
+                    results.append(
+                        json.dumps({
+                            "error": (
+                                f"Your tool call arguments for '{fn_name}' were not valid JSON "
+                                f"({parse_err}). Please call the tool again with properly "
+                                "formatted JSON arguments."
+                            )
+                        })
+                    )
+                    continue
 
             try:
                 result = await self._execute_single_tool(fn_name, fn_args)

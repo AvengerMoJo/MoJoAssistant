@@ -300,12 +300,14 @@ class ConfigDoctor:
             available_models = {
                 res_id: r.model for res_id, r in rm._resources.items() if r.model
             }
-            free_resources_exist = any(
-                r.tier.value == "free" for r in rm._resources.values()
+            # A usable free resource must be both tier=free AND enabled=True
+            free_resources_usable = any(
+                r.tier.value == "free" and r.enabled
+                for r in rm._resources.values()
             )
         except Exception:
             available_models = {}
-            free_resources_exist = True  # unknown — don't false-alarm
+            free_resources_usable = True  # unknown — don't false-alarm
 
         try:
             from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
@@ -338,13 +340,13 @@ class ConfigDoctor:
                     ))
 
             # Check local_only roles have a free-tier resource (v1.2.6+)
-            if role.get("local_only") and not free_resources_exist:
+            if role.get("local_only") and not free_resources_usable:
                 report.add(CheckResult(
                     category="role", id=role_id, field="local_only",
                     value=True,
                     status="error",
                     message=(
-                        "Role has local_only=true but no 'free' tier resource is configured. "
+                        "Role has local_only=true but no enabled 'free' tier resource is configured. "
                         "This role will never be assigned an LLM."
                     ),
                 ))
@@ -605,7 +607,11 @@ class ConfigDoctor:
     # ------------------------------------------------------------------
 
     def _check_scheduler_config(self, report: DoctorReport) -> None:
-        """Verify scheduler_config.json exists and all referenced roles are known."""
+        """Verify scheduler_config.json exists and all referenced roles are known.
+
+        Reads through both config layers (project config/ and ~/.memory/config/)
+        so runtime overrides are visible to the doctor.
+        """
         project_root = Path(__file__).parent.parent.parent
         sched_path = project_root / "config" / "scheduler_config.json"
 
@@ -619,13 +625,14 @@ class ConfigDoctor:
             return
 
         try:
-            data = json.loads(sched_path.read_text())
+            from app.config.config_loader import load_layered_json_config
+            data = load_layered_json_config(str(sched_path))
         except Exception as e:
             report.add(CheckResult(
                 category="scheduler", id="scheduler_config", field="file",
                 value=str(sched_path),
                 status="error",
-                message=f"Invalid JSON: {e}",
+                message=f"Failed to load scheduler config: {e}",
             ))
             return
 
