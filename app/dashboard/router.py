@@ -628,6 +628,48 @@ async def chat_view(
     role = _load_json(role_file, {})
     role_name = role.get("name", role_id) if role else role_id
 
+    # Build capability strip from mode contract + role tool_access
+    from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
+    _CAT_LABEL = {
+        "memory": "memory",
+        "knowledge": "personal knowledge",
+        "web": "external search",
+        "browser": "browser",
+        "file": "file access",
+        "code": "code execution",
+        "exec": "code execution",
+        "orchestration": "run tasks",
+        "comms": "messaging",
+    }
+    chat_contract = get_mode_contract(InteractionMode.DASHBOARD_CHAT)
+    role_tool_access = role.get("tool_access", []) if role else []
+    available_cats = chat_contract.allowed_tool_categories
+    unavailable_cats = [c for c in role_tool_access if c not in available_cats]
+    if not unavailable_cats:
+        unavailable_cats = ["external search", "run tasks", "write"]
+
+    def _pill(label: str, kind: str) -> str:
+        colors = {
+            "available": "background:#1a3a1a;color:#6fcf6f;border:1px solid #2d5a2d",
+            "unavailable": "background:#2a1a1a;color:#666;border:1px solid #3a2a2a;text-decoration:line-through",
+        }
+        return f'<span style="font-size:10px;padding:2px 7px;border-radius:10px;{colors[kind]}">{html.escape(label)}</span>'
+
+    avail_pills = " ".join(_pill(_CAT_LABEL.get(c, c), "available") for c in available_cats)
+    unavail_pills = " ".join(
+        _pill(_CAT_LABEL.get(c, c) if c in _CAT_LABEL else c, "unavailable")
+        for c in unavailable_cats
+    )
+    capability_strip = (
+        f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;'
+        f'padding:6px 10px;background:#111;border-radius:6px;margin-bottom:14px;font-size:10px">'
+        f'<span style="background:#1a2a3a;color:#4a9eff;border:1px solid #2a4a6a;'
+        f'padding:2px 8px;border-radius:10px;font-weight:600">🔒 Private Debrief</span>'
+        f'<span style="color:#555">can use:</span>{avail_pills}'
+        f'<span style="color:#555;margin-left:4px">cannot:</span>{unavail_pills}'
+        f'</div>'
+    )
+
     # Load session list
     sessions = list_chat_sessions(role_id)
 
@@ -684,10 +726,10 @@ async def chat_view(
     form_session = active_session_id or ""
 
     return _page(f"Chat — {role_name}", f"""
-<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px">
   <h1><a href="/dashboard/chat" style="color:#888;font-weight:normal">Chat</a> / {html.escape(role_name)}</h1>
-  <span style="color:#555;font-size:11px">read-only · no task assignments accepted</span>
 </div>
+{capability_strip}
 <div class="chat-layout">
   <div class="chat-sidebar">
     {sidebar_html}

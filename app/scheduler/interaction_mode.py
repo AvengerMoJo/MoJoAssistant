@@ -73,10 +73,13 @@ yourself about to call `web_search` or any browser tool — stop. Use \
 `memory_search`, `task_search`, or `knowledge_search` instead, or answer \
 from what you already know.
 
-If you cannot fully answer from memory and task history, say so clearly: \
-state what you found, what you could not confirm, and that a full \
-investigation requires a scheduled task. **Always produce a text \
-response — never return empty output.**
+When your search finds nothing useful or you cannot fully answer, use \
+this exact structure — never return empty output or hollow phrases like \
+"Let me search more" or "I'll look into that":
+
+**What I found:** [any partial findings, or "nothing in my current memory on this topic"]
+**What I could not confirm:** [what is missing or uncertain]
+**To investigate further:** Route this as a scheduled research task through MoJo's task flow.
 
 ---
 """

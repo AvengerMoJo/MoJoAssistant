@@ -141,6 +141,47 @@ _FINAL_TOOL_LOOP_PROMPT = (
     "answer the user directly now."
 )
 
+# Hollow phrases that indicate the model failed to produce a real answer.
+_HOLLOW_PATTERNS = (
+    "let me search",
+    "i'll search",
+    "let me look",
+    "searching for",
+    "i'll look into",
+    "let me find",
+    "i need to search",
+)
+
+
+def _ensure_response_quality(response: str, role_name: str) -> str:
+    """
+    Safety net for blocked/hollow chat responses.
+
+    If the model returns empty output or a hollow placeholder phrase instead
+    of a real answer, substitute a structured fallback that tells the user
+    what happened and how to proceed.  The prompt overlay handles most cases;
+    this catches the remainder.
+    """
+    text = response.strip()
+    if not text:
+        return (
+            f"**What I found:** nothing in my current memory on this topic.\n"
+            f"**What I could not confirm:** the full answer — I do not have "
+            f"enough context in this session.\n"
+            f"**To investigate further:** Route this as a scheduled research "
+            f"task through MoJo's task flow and I can give you a complete answer."
+        )
+    lower = text.lower()
+    if any(lower.startswith(p) for p in _HOLLOW_PATTERNS) and len(text) < 120:
+        return (
+            f"**What I found:** nothing conclusive in my current memory.\n"
+            f"**What I could not confirm:** the full answer requires a fresh "
+            f"investigation beyond what's available in this debrief session.\n"
+            f"**To investigate further:** Route this as a scheduled research "
+            f"task through MoJo's task flow."
+        )
+    return response
+
 # The default chat-mode overlay is sourced from the DASHBOARD_CHAT mode contract.
 # Roles may override it via mode_overlays.dashboard_chat in their config.
 # Kept as a module-level alias for backwards compatibility with any callers that
@@ -794,6 +835,7 @@ class RoleChatSession:
             logger.error(f"RoleChatSession.exchange failed for {self.role_id}: {e}")
             response = f"(Error generating response: {e})"
 
+        response = _ensure_response_quality(response, role_name=role.get("name", self.role_id))
         self._save_session(session, message, response)
 
         return {
