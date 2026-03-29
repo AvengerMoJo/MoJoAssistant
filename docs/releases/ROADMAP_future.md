@@ -26,7 +26,7 @@ User / External World
 | v1.2.7 | Security depth + Role Chat + Sub-agents | ✅ Shipped | Security Sentinel, Role Chat interface, dispatch_subtask, HITL budget, MEMORY_PATH fixes |
 | v1.2.8 | Bug hardening + ConfigDoctor | ✅ Shipped | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
 | **v1.2.9** | **Quality gates + coding agent bridge** | ✅ Shipped | Smoke suite (133 tests), NineChapter, InteractionMode contracts, physical knowledge isolation, completion artifacts, dependency resilience audit, INSTALL.md, coding agent HITL bridge, per-source attention routing rules |
-| v1.2.10 | First-run experience + catalog architecture | 📋 Planned | Setup wizard polish, 4 bundled demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view, resource pool unification, tool registry catalog + `list_tools()` discovery |
+| **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile (`~/.memory/owner_profile.json`), demo roles (Rebecca/Ahman/Carl) bundled into `config/roles/` + first-run unpack, setup wizard completion (auto-first-run, config generation, role selection, 147 smoke tests) |
 | v1.2.11 | Computer-use + config completeness | 📋 Planned | Terminal tools (`terminal_exec`, `terminal_read`), HttpAgentExecutor (ZeroClaw/MAP protocol), `mcp_servers.json` config tool coverage, ConfigDoctor NineChapter score validation |
 | v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
 | v1.3.1 | Agent Learning Loop | 📋 Planned | Failure→lesson pipeline, memory context injection, per-role silo memory, cross-agent queries |
@@ -399,7 +399,7 @@ sub-task to the right role and wait for the result:
 
 ## Priority Matrix — Urgent / Important
 
-_Last updated: 2026-03-29 (v1.2.9 shipped)_
+_Last updated: 2026-03-29 (v1.2.10 shipped)_
 
 | Item | Urgent | Important | Target | Status | Why |
 |------|--------|-----------|--------|--------|-----|
@@ -416,7 +416,10 @@ _Last updated: 2026-03-29 (v1.2.9 shipped)_
 | Urgency + importance → attention routing | 🟡 Medium | 🔴 High | v1.2.4 | ✅ Done | Fields on task model; drive `hitl_level` floor via urgency×importance |
 | Dependency resilience (optional imports) | 🔴 High | 🔴 High | v1.2.9 | ✅ Done | All optional imports (`prompt_toolkit`, `psutil`, `coding_agent_mcp`, `sentence_transformers`) wrapped with graceful fallbacks |
 | Smoke suite — one command, clean install | 🔴 High | 🔴 High | v1.2.9 | ✅ Done | 133 tests across mode contracts, chat mode, NineChapter, role isolation, attention routing, HITL bridge |
-| First-run experience / installer (Gate 7) | 🟡 Medium | 🔴 High | v2.0.0 gate | 🟡 Partial | `app/interactive-cli.py` exists; needs wizard polish, demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view |
+| First-run experience / installer (Gate 7) | 🟡 Medium | 🔴 High | v2.0.0 gate | 🟡 Partial | auto-first-run + config generation + role selection done in v1.2.10; remaining: wizard UX polish, seed 2-3 demo tasks in first-run flow, end-to-end new-user story validation |
+| Resource pool unification | 🔴 High | 🔴 High | v1.2.10 | ✅ Done | Unified ResourceManager, tier system, rate limiting, budget tracking |
+| Tool registry catalog + `list_tools()` | 🔴 High | 🔴 High | v1.2.10 | ✅ Done | 112+ tools, system catalog + dynamic registry, `list_tools` MCP tool exposed |
+| Privacy report view | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Aggregated view of data locations, memory retention, role/tool access audit — deferred from v1.2.10 |
 | Release definition — documented supported path | 🟡 Medium | 🔴 High | v1.2.9 | ✅ Done | README rewritten v1.2.7; INSTALL.md with supported OS/Python/model/env-var table — done |
 | ConfigDoctor NineChapter score validation | 🟢 Low | 🟡 Medium | v1.2.4 | ❌ Open | Validate `nine_chapter_score` matches dimension average; deferred from v1.2.4 |
 | Hybrid memory search (BM25 + embedding) | 🟢 Low | 🔴 High | v1.2.5 | ❌ Open | Semantic-only search misses structural/domain connections for research roles |
@@ -429,6 +432,11 @@ _Last updated: 2026-03-29 (v1.2.9 shipped)_
 | One-on-one role channel + OpenAI-compat proxy | 🟢 Low | 🟡 Medium | v1.3.1 | ❌ Open | UX polish, post-v2.0.0 |
 | Inbox → Dreaming → Knowledge | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Institutional memory; valuable but not blocking |
 | Message passing + containerization | 🟢 Low | 🟢 Low | v2.x | ❌ Open | Architecture evolution, long horizon |
+| Owner profile (`~/.memory/owner_profile.json`) | 🟡 Medium | 🔴 High | v1.2.10 | ✅ Done | Canonical human identity anchor; created on first-run; `policy_authority`, `assistant_relationships`, `communication_preferences` |
+| Owner context filtered injection | 🟡 Medium | 🔴 High | v1.3.x | ❌ Open | Mode overlay declares which owner profile fields each role/mode can see; prompt builder assembles filtered slice; backend channel assumed safe until mechanism is designed |
+| Sensitive-domain watchdog (monitor + data watchdog roles) | 🟢 Low | 🔴 High | v1.3.x | ❌ Open | Two system roles proactively scan operations against `sensitive_domains` list in owner profile; blocks or flags policy violations before they reach memory or external tools |
+| `assistant_relationships` auto-update via dreaming | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Dreaming pipeline consolidates interaction history into owner profile `assistant_relationships`; authored values are v1 seed; long-term values grow from memory |
+| Policy/role/relationship coupling model | 🟢 Low | 🟡 Medium | post-v1.3 | ❌ Open | policy, role, and relationship definitions are interdependent; coupling model needs design before enforcement layer can be finalized |
 
 **Reading the matrix:**
 - 🔴🔴 = do next, blocks v2.0.0 or is the linchpin
