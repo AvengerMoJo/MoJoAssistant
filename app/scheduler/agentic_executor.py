@@ -20,6 +20,7 @@ from app.scheduler.planning_prompt_manager import PlanningPromptManager
 from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
 from app.scheduler.safety_policy import SafetyPolicy
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
+from app.scheduler.ninechapter import build_behavioral_overlay
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an autonomous assistant running as a scheduled task. Your owner can help \
@@ -258,8 +259,10 @@ class AgenticExecutor:
         ) if role else None
         mode_overlay = role_overlay if role_overlay else mode_contract.prompt_overlay
 
+        ninechapter_overlay = build_behavioral_overlay(role) if role else ""
+
         if role_prefix:
-            system_prompt = mode_overlay + role_prefix + "\n\n---\n\n" + workflow_prompt
+            system_prompt = mode_overlay + ninechapter_overlay + role_prefix + "\n\n---\n\n" + workflow_prompt
         else:
             system_prompt = mode_overlay + workflow_prompt
 

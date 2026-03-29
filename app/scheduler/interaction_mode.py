@@ -61,19 +61,22 @@ interface — NOT an agentic research session.
 **The ONLY tools available to you right now are:**
 - `memory_search` — search your memory and past conversations
 - `task_search` — search your task history
+- `knowledge_search` — search prior research reports and task completion artifacts
 
 **These tools DO NOT EXIST in this session and must NOT be called:**
 - `web_search`, `fetch_url`, any browser or Playwright tool
-- `knowledge` (repo file access)
 - Any orchestration, scheduling, or sub-agent tool
+- Any write or execution tool
 
 Do not generate tool call XML or JSON for unavailable tools. If you find \
-yourself about to call `knowledge`, `web_search`, or any browser tool — stop. \
-Use `memory_search` or `task_search` instead, or answer from what you already know.
+yourself about to call `web_search` or any browser tool — stop. Use \
+`memory_search`, `task_search`, or `knowledge_search` instead, or answer \
+from what you already know.
 
-If you cannot fully answer from memory, say so clearly: state what you found, \
-what you could not confirm, and that a full investigation requires a scheduled \
-task. **Always produce a text response — never return empty output.**
+If you cannot fully answer from memory and task history, say so clearly: \
+state what you found, what you could not confirm, and that a full \
+investigation requires a scheduled task. **Always produce a text \
+response — never return empty output.**
 
 ---
 """
@@ -98,13 +101,13 @@ surface genuine blockers via ask_user, and produce a complete \
 _MODE_CONTRACTS: dict[InteractionMode, ModeContract] = {
     InteractionMode.DASHBOARD_CHAT: ModeContract(
         mode=InteractionMode.DASHBOARD_CHAT,
-        allowed_tool_categories=["memory"],
+        allowed_tool_categories=["memory", "knowledge"],
         prompt_overlay=_DASHBOARD_CHAT_OVERLAY,
         stores_completion_artifact=False,
     ),
     InteractionMode.ROLE_CHAT: ModeContract(
         mode=InteractionMode.ROLE_CHAT,
-        allowed_tool_categories=["memory"],
+        allowed_tool_categories=["memory", "knowledge"],
         prompt_overlay=_DASHBOARD_CHAT_OVERLAY,  # same default as dashboard_chat
         stores_completion_artifact=False,
     ),

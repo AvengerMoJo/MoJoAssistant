@@ -26,6 +26,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from app.config.paths import get_memory_subpath
 from app.roles.role_manager import RoleManager
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
+from app.scheduler.ninechapter import build_behavioral_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ MAX_CHAT_ITERATIONS = 5   # max tool-call iterations per exchange
 # Filtered at runtime by the active mode contract's allowed_tool_categories.
 _CHAT_TOOL_ACCESS: Dict[str, List[str]] = {
     "memory": ["memory_search", "task_search"],
+    "knowledge": ["knowledge_search"],
 }
 
 # OpenAI-format tool definitions for each supported chat tool
@@ -100,6 +102,33 @@ _TOOL_DEFS: Dict[str, Dict] = {
                     },
                 },
                 "required": [],
+            },
+        },
+    },
+    "knowledge_search": {
+        "type": "function",
+        "function": {
+            "name": "knowledge_search",
+            "description": (
+                "Search prior research task completion reports and knowledge artifacts. "
+                "Use this to retrieve the full output of a previous scheduled research task — "
+                "findings, analysis, comparisons, and recommendations that were written when "
+                "the task completed. More complete than task_search: returns full content, "
+                "not just a summary snippet."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords to match against task goals and report content.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max reports to return (default 5).",
+                    },
+                },
+                "required": ["query"],
             },
         },
     },
@@ -430,8 +459,63 @@ class RoleChatSession:
                 names.extend(_CHAT_TOOL_ACCESS.get(category, []))
         return [_TOOL_DEFS[n] for n in names if n in _TOOL_DEFS]
 
+    def _search_knowledge(self, query: str = "", limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Search task completion reports in ~/.memory/task_reports/.
+
+        Returns structured results with full content so the role can present
+        prior research without the truncation that affects session archives.
+        """
+        reports_dir = Path(get_memory_subpath("task_reports"))
+        if not reports_dir.exists():
+            return []
+
+        query_lower = query.strip().lower() if query else ""
+        limit = min(int(limit or 5), 20)
+        results = []
+
+        for report_file in sorted(reports_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                with open(report_file, encoding="utf-8") as f:
+                    report = json.load(f)
+            except Exception:
+                continue
+
+            if query_lower:
+                goal = (report.get("goal") or "").lower()
+                content = (report.get("content") or "").lower()
+                if query_lower not in goal and query_lower not in content:
+                    continue
+
+            results.append({
+                "task_id": report.get("task_id", ""),
+                "role_id": report.get("role_id", ""),
+                "goal": report.get("goal", ""),
+                "status": report.get("status", ""),
+                "created_at": (report.get("created_at") or "")[:19],
+                "content": report.get("content", ""),
+            })
+            if len(results) >= limit:
+                break
+
+        return results
+
     async def _execute_tool(self, name: str, args: Dict[str, Any]) -> str:
         """Execute a single chat tool and return its result as a JSON string."""
+        # knowledge_search and task_search are handled locally
+        if name == "knowledge_search":
+            try:
+                results = self._search_knowledge(
+                    query=args.get("query", ""),
+                    limit=args.get("limit", 5),
+                )
+                return json.dumps(
+                    {"success": True, "count": len(results), "reports": results},
+                    ensure_ascii=False,
+                )
+            except Exception as e:
+                return json.dumps({"success": False, "error": str(e)})
+
         # task_search is handled locally — no external registry needed
         if name == "task_search":
             try:
@@ -592,7 +676,8 @@ class RoleChatSession:
         contract = get_mode_contract(self.mode)
         role_overlay = (role.get("mode_overlays") or {}).get(self.mode.value)
         mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
-        system_prompt = mode_overlay + _strip_tool_sections(base_prompt)
+        ninechapter_overlay = build_behavioral_overlay(role)
+        system_prompt = mode_overlay + ninechapter_overlay + _strip_tool_sections(base_prompt)
 
         session = self._load_session()
         ku_context = self._load_ku_context()
@@ -710,7 +795,8 @@ class RoleChatSession:
         contract = get_mode_contract(self.mode)
         role_overlay = (role.get("mode_overlays") or {}).get(self.mode.value)
         mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
-        system_prompt = mode_overlay + _strip_tool_sections(base_prompt)
+        ninechapter_overlay = build_behavioral_overlay(role)
+        system_prompt = mode_overlay + ninechapter_overlay + _strip_tool_sections(base_prompt)
 
         session = self._load_session()
         ku_context = self._load_ku_context()
