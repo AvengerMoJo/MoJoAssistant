@@ -540,6 +540,7 @@ from app.config.first_run import (
     detect_llm_backends,
     load_owner_profile,
     recommend_model,
+    seed_demo_tasks,
     unpack_bundled_roles,
 )
 
@@ -561,46 +562,98 @@ _DEMO_ROLES = [
 ]
 
 
+def _prompt(question: str, default: str = "") -> str:
+    """Print a prompt with a visible default and return stripped input."""
+    suffix = f" [{default}]" if default else ""
+    answer = input(f"{question}{suffix}: ").strip()
+    return answer if answer else default
+
+
 def run_first_run_setup(memory_path: Path) -> None:
-    """Pure-Python first-run wizard.  No LLM required."""
+    """Pure-Python first-run wizard. No LLM required."""
+    project_root = Path(__file__).resolve().parent.parent
+
     print()
-    print("=" * 60)
-    print("  First run detected. Let's get you set up.")
-    print("=" * 60)
+    print("┌─────────────────────────────────────────────────────┐")
+    print("│         MoJoAssistant — First-Run Setup             │")
+    print("│  Takes about 60 seconds. Press Enter to accept      │")
+    print("│  defaults shown in [brackets].                      │")
+    print("└─────────────────────────────────────────────────────┘")
     print()
 
-    # 1. Owner name
-    name = input("Your name (used by assistants to address you) [Alex]: ").strip()
-    if not name:
-        name = "Alex"
-
-    # 2. Timezone
-    tz = input("Timezone [Asia/Taipei]: ").strip()
-    if not tz:
-        tz = "Asia/Taipei"
-
-    # 3. Demo roles
+    # ── 1. Identity ───────────────────────────────────────────────────────
+    print("── Identity ─────────────────────────────────────────")
+    name = _prompt("Your name (assistants will use this)", "Alex")
+    tz   = _prompt("Timezone", "Asia/Taipei")
     print()
-    print("Available demo roles:")
+
+    # ── 2. Roles ──────────────────────────────────────────────────────────
+    print("── Roles ────────────────────────────────────────────")
     for _id, label in _DEMO_ROLES:
-        print(f"  [{_id}]  {label}")
-    role_input = input(
-        "Which roles to enable? (comma-separated ids, or 'all') [all]: "
-    ).strip().lower()
-    if not role_input or role_input == "all":
-        selected_role_ids = [r[0] for r in _DEMO_ROLES]
+        print(f"  {_id:<10}  {label}")
+    role_input = _prompt(
+        "Roles to enable (comma-separated ids, or 'all')", "all"
+    ).lower()
+    selected_role_ids = (
+        [r[0] for r in _DEMO_ROLES]
+        if role_input == "all"
+        else [s.strip() for s in role_input.split(",") if s.strip()]
+    )
+    print()
+
+    # ── 3. MCP API key ────────────────────────────────────────────────────
+    print("── Security ─────────────────────────────────────────")
+    env_path = project_root / ".env"
+    existing_key = ""
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith("MCP_API_KEY="):
+                existing_key = line.split("=", 1)[1].strip()
+                break
+
+    if existing_key and existing_key != "demo_key_for_development":
+        print(f"  MCP_API_KEY already set in .env — keeping it.")
+        mcp_api_key = existing_key
     else:
-        selected_role_ids = [s.strip() for s in role_input.split(",") if s.strip()]
-
-    # 4. MCP API key
+        api_key_input = input(
+            "  MCP_API_KEY (leave blank to auto-generate a secure key): "
+        ).strip()
+        mcp_api_key = api_key_input if api_key_input else secrets.token_hex(24)
     print()
-    api_key_input = input(
-        "MCP_API_KEY (leave blank to auto-generate): "
-    ).strip()
-    mcp_api_key = api_key_input if api_key_input else secrets.token_hex(24)
 
-    # 5. Write owner profile
+    # ── 4. LLM backend ───────────────────────────────────────────────────
+    print("── LLM Backend ──────────────────────────────────────")
+    print("  Probing common ports (Ollama · LM Studio · llama-server · vLLM)...")
+    detected = detect_llm_backends()
+    llm_base_url = ""
+
+    if detected:
+        backend = detected[0]
+        print(f"  ✓ {backend['label']} detected at {backend['base_url']}")
+        try:
+            vram_gb = int(_prompt("  GPU VRAM in GB (0 = CPU-only)", "0"))
+        except ValueError:
+            vram_gb = 0
+        rec = recommend_model(backend, vram_gb)
+        print(f"  Recommended model: {rec['label']}")
+        if "pull_cmd" in rec:
+            print(f"  To download:       {rec['pull_cmd']}")
+        llm_base_url = backend["base_url"]
+    else:
+        print("  No backend detected — you can start one after setup.")
+        print()
+        print("  Recommended (easiest, works on any OS):")
+        print("    1. Install Ollama:  https://ollama.com")
+        print("    2. Pull starter:    ollama pull qwen3:4b  (~2.5 GB, 8 GB RAM)")
+        print()
+        print("  Other options:  LM Studio · llama-server · vLLM")
+        print("  Set LMSTUDIO_BASE_URL in .env once your backend is running.")
     print()
+
+    # ── 5. Write files ───────────────────────────────────────────────────
+    print("── Creating files ───────────────────────────────────")
+
+    # Owner profile
     profile_path = create_owner_profile(
         memory_path,
         overrides={
@@ -610,89 +663,66 @@ def run_first_run_setup(memory_path: Path) -> None:
             "timezone": tz,
         },
     )
-    print(f"  Created: {profile_path}")
+    print(f"  ✓ Owner profile:  {profile_path}")
 
-    # 6. Unpack selected roles
-    # Temporarily filter bundled roles to only unpacked selected ones; but
-    # unpack_bundled_roles unpacks all — then we just report the selected ones.
+    # Roles
     unpacked = unpack_bundled_roles(memory_path)
-    for role_id in unpacked:
-        if role_id in selected_role_ids:
-            print(f"  Unpacked role: {role_id}")
+    enabled  = [r for r in unpacked if r in selected_role_ids]
+    skipped  = [r for r in unpacked if r not in selected_role_ids]
+    for role_id in enabled:
+        print(f"  ✓ Role unpacked:  {role_id}")
+    if skipped:
+        print(f"  - Skipped roles:  {', '.join(skipped)}")
 
-    # 7. .env bootstrap
-    project_root = Path(__file__).resolve().parent.parent
-    env_path = project_root / ".env"
+    # .env
     env_example_path = project_root / ".env.example"
     if not env_path.exists() and env_example_path.exists():
-        import shutil
-        shutil.copy2(env_example_path, env_path)
-        # Patch MCP_API_KEY and SERVER_PORT
+        import shutil as _shutil
+        _shutil.copy2(env_example_path, env_path)
+        print(f"  ✓ Created .env from .env.example")
+
+    if env_path.exists():
         content = env_path.read_text(encoding="utf-8")
         content = re.sub(
             r"^(MCP_API_KEY\s*=).*$",
             f"\\g<1>{mcp_api_key}",
-            content,
-            flags=re.MULTILINE,
+            content, flags=re.MULTILINE,
         )
         content = re.sub(
             r"^(SERVER_PORT\s*=).*$",
             "\\g<1>8000",
-            content,
-            flags=re.MULTILINE,
+            content, flags=re.MULTILINE,
         )
-        env_path.write_text(content, encoding="utf-8")
-        print(f"  Created .env from .env.example (MCP_API_KEY set)")
-    elif env_path.exists():
-        print(f"  .env already exists — skipped")
-    else:
-        print(f"  .env.example not found — skipped .env creation")
-
-    # 8. LLM backend detection
-    print()
-    print("Detecting local LLM backends...")
-    detected = detect_llm_backends()
-
-    if detected:
-        backend = detected[0]   # prefer first found (priority: Ollama > LM Studio > llama-server > vLLM)
-        print(f"  ✓ {backend['label']} detected at {backend['base_url']}")
-        vram_input = input("  How much GPU VRAM do you have in GB? (0 = CPU-only) [0]: ").strip()
-        try:
-            vram_gb = int(vram_input) if vram_input else 0
-        except ValueError:
-            vram_gb = 0
-        rec = recommend_model(backend, vram_gb)
-        print(f"  Recommended model: {rec['label']}")
-        if "pull_cmd" in rec:
-            print(f"  To download:  {rec['pull_cmd']}")
-        # Patch LMSTUDIO_BASE_URL in .env if it exists
-        env_path = Path(__file__).resolve().parent.parent / ".env"
-        if env_path.exists():
-            content = env_path.read_text(encoding="utf-8")
-            import re as _re
-            content = _re.sub(
+        if llm_base_url:
+            content = re.sub(
                 r"^#?\s*(LMSTUDIO_BASE_URL\s*=).*$",
-                f"\\g<1>{backend['base_url']}",
-                content,
-                flags=_re.MULTILINE,
+                f"\\g<1>{llm_base_url}",
+                content, flags=re.MULTILINE,
             )
-            env_path.write_text(content, encoding="utf-8")
-            print(f"  Set LMSTUDIO_BASE_URL={backend['base_url']} in .env")
-    else:
-        print("  No local LLM backend detected.")
-        print()
-        print("  Easiest option — install Ollama (works on any OS, CPU-friendly):")
-        print("    https://ollama.com")
-        print()
-        print("  Then pull the recommended starter model:")
-        print("    ollama pull qwen3:4b   (~2.5 GB, works on 8 GB RAM)")
-        print()
-        print("  Other supported backends:  LM Studio · llama-server · vLLM")
-        print("  Configure the endpoint in .env as LMSTUDIO_BASE_URL after starting your backend.")
+        env_path.write_text(content, encoding="utf-8")
+        print(f"  ✓ .env configured  (MCP_API_KEY, SERVER_PORT{', LMSTUDIO_BASE_URL' if llm_base_url else ''})")
 
+    # Demo tasks
+    scheduler_storage = memory_path / "scheduler"
+    seeded = seed_demo_tasks(scheduler_storage)
+    if seeded:
+        print(f"  ✓ Demo tasks seeded: {', '.join(seeded)}")
     print()
-    print("Setup complete. Starting MoJoAssistant...")
-    print("=" * 60)
+
+    # ── 6. Summary ───────────────────────────────────────────────────────
+    print("── Ready ────────────────────────────────────────────")
+    print(f"  Name:      {name}")
+    print(f"  Timezone:  {tz}")
+    print(f"  Roles:     {', '.join(selected_role_ids) if selected_role_ids else 'none'}")
+    print(f"  API key:   {'(existing)' if existing_key and existing_key != 'demo_key_for_development' else mcp_api_key[:8] + '...'}")
+    if detected:
+        print(f"  LLM:       {detected[0]['label']} → {detected[0]['base_url']}")
+    else:
+        print( "  LLM:       not configured — set LMSTUDIO_BASE_URL in .env")
+    print()
+    print("  Start the server:  python app/main.py")
+    print("  Dashboard:         http://localhost:8000/dashboard")
+    print("─────────────────────────────────────────────────────")
     print()
 
 

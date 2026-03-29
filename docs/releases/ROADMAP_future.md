@@ -26,7 +26,7 @@ User / External World
 | v1.2.7 | Security depth + Role Chat + Sub-agents | ✅ Shipped | Security Sentinel, Role Chat interface, dispatch_subtask, HITL budget, MEMORY_PATH fixes |
 | v1.2.8 | Bug hardening + ConfigDoctor | ✅ Shipped | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
 | **v1.2.9** | **Quality gates + coding agent bridge** | ✅ Shipped | Smoke suite (133 tests), NineChapter, InteractionMode contracts, physical knowledge isolation, completion artifacts, dependency resilience audit, INSTALL.md, coding agent HITL bridge, per-source attention routing rules |
-| **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile (`~/.memory/owner_profile.json`), demo roles (Rebecca/Ahman/Carl) bundled into `config/roles/` + first-run unpack, setup wizard completion (auto-first-run, config generation, role selection, 147 smoke tests) |
+| **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile, demo roles (Rebecca/Ahman/Carl) bundled, first-run wizard (auto-detect, config gen, role selection, LLM backend detection + model ladder), 3 demo tasks seeded, 158 smoke tests |
 | v1.2.11 | Computer-use + config completeness | 📋 Planned | Terminal tools (`terminal_exec`, `terminal_read`), HttpAgentExecutor (ZeroClaw/MAP protocol), `mcp_servers.json` config tool coverage, ConfigDoctor NineChapter score validation |
 | v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
 | v1.3.1 | Agent Learning Loop | 📋 Planned | Failure→lesson pipeline, memory context injection, per-role silo memory, cross-agent queries |
@@ -399,7 +399,7 @@ sub-task to the right role and wait for the result:
 
 ## Priority Matrix — Urgent / Important
 
-_Last updated: 2026-03-29 (v1.2.10 shipped)_
+_Last updated: 2026-03-30 (v1.2.10 shipped)_
 
 | Item | Urgent | Important | Target | Status | Why |
 |------|--------|-----------|--------|--------|-----|
@@ -416,7 +416,7 @@ _Last updated: 2026-03-29 (v1.2.10 shipped)_
 | Urgency + importance → attention routing | 🟡 Medium | 🔴 High | v1.2.4 | ✅ Done | Fields on task model; drive `hitl_level` floor via urgency×importance |
 | Dependency resilience (optional imports) | 🔴 High | 🔴 High | v1.2.9 | ✅ Done | All optional imports (`prompt_toolkit`, `psutil`, `coding_agent_mcp`, `sentence_transformers`) wrapped with graceful fallbacks |
 | Smoke suite — one command, clean install | 🔴 High | 🔴 High | v1.2.9 | ✅ Done | 133 tests across mode contracts, chat mode, NineChapter, role isolation, attention routing, HITL bridge |
-| First-run experience / installer (Gate 7) | 🟡 Medium | 🔴 High | v2.0.0 gate | 🟡 Partial | auto-first-run + config generation + role selection done in v1.2.10; remaining: wizard UX polish, seed 2-3 demo tasks in first-run flow, end-to-end new-user story validation |
+| First-run experience / installer (Gate 7) | 🟡 Medium | 🔴 High | v1.2.10 | ✅ Done | wizard UX polish, LLM backend detection, 3 demo tasks seeded, end-to-end idempotent smoke test — all done in v1.2.10 |
 | Resource pool unification | 🔴 High | 🔴 High | v1.2.10 | ✅ Done | Unified ResourceManager, tier system, rate limiting, budget tracking |
 | Tool registry catalog + `list_tools()` | 🔴 High | 🔴 High | v1.2.10 | ✅ Done | 112+ tools, system catalog + dynamic registry, `list_tools` MCP tool exposed |
 | Privacy report view | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Aggregated view of data locations, memory retention, role/tool access audit — deferred from v1.2.10 |

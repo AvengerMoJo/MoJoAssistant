@@ -8,10 +8,12 @@ import pytest
 from app.config.first_run import (
     BACKEND_CATALOG,
     OWNER_PROFILE_TEMPLATE,
+    _DEMO_TASKS,
     create_owner_profile,
     detect_llm_backends,
     load_owner_profile,
     recommend_model,
+    seed_demo_tasks,
     unpack_bundled_roles,
 )
 
@@ -170,3 +172,93 @@ def test_backend_catalog_all_have_required_fields() -> None:
     for backend in BACKEND_CATALOG:
         missing = required - set(backend.keys())
         assert not missing, f"Backend '{backend.get('id')}' missing fields: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# seed_demo_tasks
+# ---------------------------------------------------------------------------
+
+
+def test_seed_demo_tasks_creates_task_files(tmp_path: Path) -> None:
+    """seed_demo_tasks() should write one JSON file per demo task."""
+    seeded = seed_demo_tasks(tmp_path)
+    tasks_dir = tmp_path / "tasks"
+
+    assert len(seeded) == len(_DEMO_TASKS)
+    for task_id in seeded:
+        assert (tasks_dir / f"{task_id}.json").exists()
+
+
+def test_seed_demo_tasks_files_are_valid_json(tmp_path: Path) -> None:
+    """Each seeded task file must be valid JSON with required keys."""
+    seed_demo_tasks(tmp_path)
+    tasks_dir = tmp_path / "tasks"
+    required_keys = {"id", "type", "status", "config", "created_at"}
+    for task_file in tasks_dir.glob("*.json"):
+        data = json.loads(task_file.read_text())
+        missing = required_keys - set(data.keys())
+        assert not missing, f"{task_file.name} missing keys: {missing}"
+        assert data["status"] == "pending"
+
+
+def test_seed_demo_tasks_idempotent(tmp_path: Path) -> None:
+    """Running seed_demo_tasks twice must not overwrite existing task files."""
+    seed_demo_tasks(tmp_path)
+    # Tamper with a file
+    tasks_dir = tmp_path / "tasks"
+    first_file = next(tasks_dir.glob("*.json"))
+    first_file.write_text('{"tampered": true}', encoding="utf-8")
+
+    second_seeded = seed_demo_tasks(tmp_path)
+    # Nothing should be re-seeded
+    assert len(second_seeded) == 0
+    # Tampered file must still be tampered
+    assert json.loads(first_file.read_text()) == {"tampered": True}
+
+
+def test_seed_demo_tasks_each_has_role_id(tmp_path: Path) -> None:
+    """Every demo task config must specify a role_id."""
+    seed_demo_tasks(tmp_path)
+    tasks_dir = tmp_path / "tasks"
+    for task_file in tasks_dir.glob("*.json"):
+        data = json.loads(task_file.read_text())
+        assert "role_id" in data.get("config", {}), f"{task_file.name} missing config.role_id"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: clean tmp directory
+# ---------------------------------------------------------------------------
+
+
+def test_end_to_end_clean_install(tmp_path: Path) -> None:
+    """Full first-run on a clean tmp directory produces all expected artefacts."""
+    memory_path = tmp_path / ".memory"
+
+    # 1. Owner profile
+    create_owner_profile(memory_path, overrides={"name": "TestUser", "timezone": "UTC"})
+    assert (memory_path / "owner_profile.json").exists()
+    profile = json.loads((memory_path / "owner_profile.json").read_text())
+    assert profile["name"] == "TestUser"
+    assert profile["timezone"] == "UTC"
+
+    # 2. Roles unpacked
+    unpacked = unpack_bundled_roles(memory_path)
+    assert len(unpacked) >= 3  # rebecca, ahman, carl at minimum
+    for role_id in unpacked:
+        assert (memory_path / "roles" / f"{role_id}.json").exists()
+
+    # 3. Demo tasks seeded
+    scheduler_storage = memory_path / "scheduler"
+    seeded = seed_demo_tasks(scheduler_storage)
+    assert len(seeded) == len(_DEMO_TASKS)
+    tasks_dir = scheduler_storage / "tasks"
+    for task_id in seeded:
+        task_data = json.loads((tasks_dir / f"{task_id}.json").read_text())
+        assert task_data["status"] == "pending"
+        assert task_data["config"].get("source") == "first_run"
+
+    # 4. Second run is fully idempotent
+    assert unpack_bundled_roles(memory_path) == []
+    assert seed_demo_tasks(scheduler_storage) == []
+    create_owner_profile(memory_path, overrides={"name": "ShouldNotAppear"})
+    assert json.loads((memory_path / "owner_profile.json").read_text())["name"] == "TestUser"

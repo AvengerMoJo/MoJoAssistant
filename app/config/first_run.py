@@ -255,3 +255,94 @@ def load_owner_profile(memory_path: Path) -> dict:
         return json.loads(profile_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Demo task seeding
+# ---------------------------------------------------------------------------
+
+_DEMO_TASKS = [
+    {
+        "id": "demo_rebecca_summarise",
+        "type": "assistant",
+        "description": "Rebecca: summarise recent memory and what you know about this project",
+        "config": {
+            "role_id": "rebecca",
+            "prompt": (
+                "Summarise what you know about MoJoAssistant from memory and knowledge. "
+                "Cover: what the system does, the main roles available, and any recent activity "
+                "you can find. Keep it concise — this is a first-run orientation summary."
+            ),
+            "source": "first_run",
+        },
+    },
+    {
+        "id": "demo_ahman_health",
+        "type": "assistant",
+        "description": "Ahman: check system health (memory path, config files, scheduler storage)",
+        "config": {
+            "role_id": "ahman",
+            "prompt": (
+                "Run a quick system health check on MoJoAssistant. Verify: "
+                "1) memory path exists and is writable, "
+                "2) config files (llm_config.json, resource_pool.json) are present, "
+                "3) scheduler storage directory is accessible. "
+                "Report findings in a short bullet list."
+            ),
+            "source": "first_run",
+        },
+    },
+    {
+        "id": "demo_carl_review",
+        "type": "assistant",
+        "description": "Carl: review the first_run.py module for quality issues",
+        "config": {
+            "role_id": "carl",
+            "prompt": (
+                "Review app/config/first_run.py. "
+                "Flag any 🔴 blockers (correctness, security), 🟡 suggestions (robustness, edge cases), "
+                "and 💬 nits (style). Keep the review focused and concise."
+            ),
+            "source": "first_run",
+        },
+    },
+]
+
+
+def seed_demo_tasks(storage_path: Path) -> list[str]:
+    """Write demo task JSON files into storage_path/tasks/ if they don't exist yet.
+
+    Does NOT start the scheduler — tasks are written as PENDING JSON files so
+    the scheduler picks them up on its next wake cycle.
+
+    Returns:
+        List of task ids that were seeded.
+    """
+    from datetime import datetime
+
+    tasks_dir = storage_path / "tasks"
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+
+    seeded: list[str] = []
+    for spec in _DEMO_TASKS:
+        task_file = tasks_dir / f"{spec['id']}.json"
+        if task_file.exists():
+            continue
+
+        task_data = {
+            "id": spec["id"],
+            "type": spec["type"],
+            "status": "pending",
+            "priority": "medium",
+            "description": spec["description"],
+            "config": spec["config"],
+            "created_at": datetime.now().isoformat(),
+            "created_by": "first_run",
+            "retry_count": 0,
+            "max_retries": 1,
+            "dispatch_depth": 0,
+        }
+        task_file.write_text(json.dumps(task_data, indent=2, ensure_ascii=False) + "\n")
+        seeded.append(spec["id"])
+
+    return seeded
