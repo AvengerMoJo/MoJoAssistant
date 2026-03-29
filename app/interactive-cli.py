@@ -537,7 +537,9 @@ from pathlib import Path
 
 from app.config.first_run import (
     create_owner_profile,
+    detect_llm_backends,
     load_owner_profile,
+    recommend_model,
     unpack_bundled_roles,
 )
 
@@ -645,6 +647,48 @@ def run_first_run_setup(memory_path: Path) -> None:
         print(f"  .env already exists — skipped")
     else:
         print(f"  .env.example not found — skipped .env creation")
+
+    # 8. LLM backend detection
+    print()
+    print("Detecting local LLM backends...")
+    detected = detect_llm_backends()
+
+    if detected:
+        backend = detected[0]   # prefer first found (priority: Ollama > LM Studio > llama-server > vLLM)
+        print(f"  ✓ {backend['label']} detected at {backend['base_url']}")
+        vram_input = input("  How much GPU VRAM do you have in GB? (0 = CPU-only) [0]: ").strip()
+        try:
+            vram_gb = int(vram_input) if vram_input else 0
+        except ValueError:
+            vram_gb = 0
+        rec = recommend_model(backend, vram_gb)
+        print(f"  Recommended model: {rec['label']}")
+        if "pull_cmd" in rec:
+            print(f"  To download:  {rec['pull_cmd']}")
+        # Patch LMSTUDIO_BASE_URL in .env if it exists
+        env_path = Path(__file__).resolve().parent.parent / ".env"
+        if env_path.exists():
+            content = env_path.read_text(encoding="utf-8")
+            import re as _re
+            content = _re.sub(
+                r"^#?\s*(LMSTUDIO_BASE_URL\s*=).*$",
+                f"\\g<1>{backend['base_url']}",
+                content,
+                flags=_re.MULTILINE,
+            )
+            env_path.write_text(content, encoding="utf-8")
+            print(f"  Set LMSTUDIO_BASE_URL={backend['base_url']} in .env")
+    else:
+        print("  No local LLM backend detected.")
+        print()
+        print("  Easiest option — install Ollama (works on any OS, CPU-friendly):")
+        print("    https://ollama.com")
+        print()
+        print("  Then pull the recommended starter model:")
+        print("    ollama pull qwen3:4b   (~2.5 GB, works on 8 GB RAM)")
+        print()
+        print("  Other supported backends:  LM Studio · llama-server · vLLM")
+        print("  Configure the endpoint in .env as LMSTUDIO_BASE_URL after starting your backend.")
 
     print()
     print("Setup complete. Starting MoJoAssistant...")

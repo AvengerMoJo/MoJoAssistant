@@ -6,10 +6,13 @@ Provides:
 - OWNER_PROFILE_TEMPLATE  — default owner profile schema
 - create_owner_profile()  — write ~/.memory/owner_profile.json if absent
 - load_owner_profile()    — read ~/.memory/owner_profile.json (empty dict if missing)
+- detect_llm_backends()   — probe common local LLM server ports
+- BACKEND_CATALOG         — known backends with model recommendations
 """
 
 import json
 import shutil
+import socket
 from pathlib import Path
 from typing import Optional
 
@@ -137,6 +140,106 @@ def create_owner_profile(
 
     return profile_path
 
+
+# ---------------------------------------------------------------------------
+# LLM backend detection
+# ---------------------------------------------------------------------------
+
+# Each entry: (backend_id, label, host, port, base_url_path, env_var)
+# model_ladder: list of (model_id, label, min_vram_gb, pull_cmd)
+BACKEND_CATALOG: list[dict] = [
+    {
+        "id": "ollama",
+        "label": "Ollama",
+        "host": "localhost",
+        "port": 11434,
+        "base_url": "http://localhost:11434/v1",
+        "env_var": "LMSTUDIO_BASE_URL",   # reuse OpenAI-compat var
+        "install_url": "https://ollama.com",
+        "model_ladder": [
+            {"model": "qwen3:1.7b",  "label": "Qwen3-1.7B  (~1 GB) — CPU-only, minimal",          "min_vram_gb": 0,  "pull_cmd": "ollama pull qwen3:1.7b"},
+            {"model": "qwen3:4b",    "label": "Qwen3-4B    (~2.5 GB) — 4–8 GB VRAM, recommended", "min_vram_gb": 4,  "pull_cmd": "ollama pull qwen3:4b"},
+            {"model": "qwen3:8b",    "label": "Qwen3-8B    (~5 GB)   — 8 GB VRAM",                "min_vram_gb": 8,  "pull_cmd": "ollama pull qwen3:8b"},
+            {"model": "qwen3:14b",   "label": "Qwen3-14B   (~9 GB)   — 16 GB VRAM",               "min_vram_gb": 16, "pull_cmd": "ollama pull qwen3:14b"},
+            {"model": "qwen3:30b-a3b","label": "Qwen3-30B-A3B (~18 GB) — 24 GB VRAM",            "min_vram_gb": 24, "pull_cmd": "ollama pull qwen3:30b-a3b"},
+        ],
+        "default_model": "qwen3:4b",
+    },
+    {
+        "id": "lmstudio",
+        "label": "LM Studio",
+        "host": "localhost",
+        "port": 1234,
+        "base_url": "http://localhost:1234/v1",
+        "env_var": "LMSTUDIO_BASE_URL",
+        "install_url": "https://lmstudio.ai",
+        "model_ladder": [
+            {"model": "qwen3-1.7b",    "label": "Qwen3-1.7B  (~1 GB) — CPU-only, minimal",          "min_vram_gb": 0},
+            {"model": "qwen3-4b",      "label": "Qwen3-4B    (~2.5 GB) — 4–8 GB VRAM, recommended", "min_vram_gb": 4},
+            {"model": "qwen3-8b",      "label": "Qwen3-8B    (~5 GB)   — 8 GB VRAM",                "min_vram_gb": 8},
+            {"model": "qwen3-14b",     "label": "Qwen3-14B   (~9 GB)   — 16 GB VRAM",               "min_vram_gb": 16},
+            {"model": "qwen3-30b-a3b", "label": "Qwen3-30B-A3B (~18 GB) — 24 GB VRAM",             "min_vram_gb": 24},
+        ],
+        "default_model": "qwen3-4b",
+    },
+    {
+        "id": "llamaserver",
+        "label": "llama-server (llama.cpp)",
+        "host": "localhost",
+        "port": 8080,
+        "base_url": "http://localhost:8080/v1",
+        "env_var": "LMSTUDIO_BASE_URL",
+        "install_url": "https://github.com/ggml-org/llama.cpp",
+        "model_ladder": [
+            {"model": "qwen3-1.7b-q4.gguf", "label": "Qwen3-1.7B Q4 (~1 GB) — CPU-only, minimal",          "min_vram_gb": 0},
+            {"model": "qwen3-4b-q4.gguf",   "label": "Qwen3-4B Q4 (~2.5 GB) — 4–8 GB VRAM, recommended", "min_vram_gb": 4},
+            {"model": "qwen3-8b-q4.gguf",   "label": "Qwen3-8B Q4 (~5 GB)   — 8 GB VRAM",                "min_vram_gb": 8},
+        ],
+        "default_model": "qwen3-4b-q4.gguf",
+    },
+    {
+        "id": "vllm",
+        "label": "vLLM",
+        "host": "localhost",
+        "port": 8000,
+        "base_url": "http://localhost:8000/v1",
+        "env_var": "LMSTUDIO_BASE_URL",
+        "install_url": "https://docs.vllm.ai",
+        "model_ladder": [
+            {"model": "Qwen/Qwen3-8B",      "label": "Qwen3-8B    (~5 GB)   — 8 GB VRAM",  "min_vram_gb": 8},
+            {"model": "Qwen/Qwen3-14B",     "label": "Qwen3-14B   (~9 GB)   — 16 GB VRAM", "min_vram_gb": 16},
+            {"model": "Qwen/Qwen3-30B-A3B", "label": "Qwen3-30B-A3B (~18 GB) — 24 GB VRAM","min_vram_gb": 24},
+            {"model": "Qwen/Qwen3-72B",     "label": "Qwen3-72B   (Q4, ~40 GB) — 48 GB+",  "min_vram_gb": 48},
+        ],
+        "default_model": "Qwen/Qwen3-8B",
+    },
+]
+
+
+def detect_llm_backends(timeout: float = 0.5) -> list[dict]:
+    """Probe known LLM backend ports. Returns list of detected backend dicts."""
+    detected = []
+    for backend in BACKEND_CATALOG:
+        try:
+            with socket.create_connection((backend["host"], backend["port"]), timeout=timeout):
+                detected.append(backend)
+        except OSError:
+            pass
+    return detected
+
+
+def recommend_model(backend: dict, vram_gb: int) -> dict:
+    """Return the highest-tier model in the ladder that fits within vram_gb.
+    Falls back to the smallest (index 0) if nothing fits."""
+    ladder = backend["model_ladder"]
+    best = ladder[0]
+    for entry in ladder:
+        if entry["min_vram_gb"] <= vram_gb:
+            best = entry
+    return best
+
+
+# ---------------------------------------------------------------------------
 
 def load_owner_profile(memory_path: Path) -> dict:
     """Load owner_profile.json.

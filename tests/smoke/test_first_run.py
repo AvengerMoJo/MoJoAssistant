@@ -6,9 +6,12 @@ from pathlib import Path
 import pytest
 
 from app.config.first_run import (
+    BACKEND_CATALOG,
     OWNER_PROFILE_TEMPLATE,
     create_owner_profile,
+    detect_llm_backends,
     load_owner_profile,
+    recommend_model,
     unpack_bundled_roles,
 )
 
@@ -116,3 +119,54 @@ def test_load_owner_profile_returns_data_when_present(tmp_path: Path) -> None:
     create_owner_profile(tmp_path, overrides={"name": "Alex"})
     data = load_owner_profile(tmp_path)
     assert data["name"] == "Alex"
+
+
+# ---------------------------------------------------------------------------
+# detect_llm_backends / recommend_model
+# ---------------------------------------------------------------------------
+
+
+def test_detect_llm_backends_returns_list() -> None:
+    """detect_llm_backends() must always return a list (even if nothing is running)."""
+    result = detect_llm_backends(timeout=0.1)
+    assert isinstance(result, list)
+
+
+def test_detect_llm_backends_entries_are_known_backends() -> None:
+    """Every detected entry must be a dict with at least id/label/base_url keys."""
+    result = detect_llm_backends(timeout=0.1)
+    catalog_ids = {b["id"] for b in BACKEND_CATALOG}
+    for entry in result:
+        assert "id" in entry
+        assert "label" in entry
+        assert "base_url" in entry
+        assert entry["id"] in catalog_ids
+
+
+def test_recommend_model_returns_smallest_when_zero_vram() -> None:
+    """With 0 VRAM, recommend_model should return the smallest model (min_vram_gb=0)."""
+    ollama = next(b for b in BACKEND_CATALOG if b["id"] == "ollama")
+    rec = recommend_model(ollama, vram_gb=0)
+    assert rec["min_vram_gb"] == 0
+
+
+def test_recommend_model_respects_vram_ceiling() -> None:
+    """With 8 GB VRAM, should not recommend a model requiring > 8 GB."""
+    ollama = next(b for b in BACKEND_CATALOG if b["id"] == "ollama")
+    rec = recommend_model(ollama, vram_gb=8)
+    assert rec["min_vram_gb"] <= 8
+
+
+def test_recommend_model_picks_highest_fitting_tier() -> None:
+    """With 16 GB VRAM, should recommend the 16 GB tier, not 8 GB or lower."""
+    ollama = next(b for b in BACKEND_CATALOG if b["id"] == "ollama")
+    rec = recommend_model(ollama, vram_gb=16)
+    assert rec["min_vram_gb"] == 16
+
+
+def test_backend_catalog_all_have_required_fields() -> None:
+    """Every entry in BACKEND_CATALOG must have the required fields."""
+    required = {"id", "label", "host", "port", "base_url", "model_ladder", "default_model"}
+    for backend in BACKEND_CATALOG:
+        missing = required - set(backend.keys())
+        assert not missing, f"Backend '{backend.get('id')}' missing fields: {missing}"
