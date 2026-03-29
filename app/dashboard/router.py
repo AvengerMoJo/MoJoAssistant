@@ -707,12 +707,12 @@ async def chat_view(
   const ROLE_NAME  = {json.dumps(role_name)};
   let   sessionId  = {json.dumps(form_session)};
 
-  const history  = document.getElementById('chat-history');
+  const chatLog  = document.getElementById('chat-history');
   const input    = document.getElementById('msg-input');
   const sendBtn  = document.getElementById('send-btn');
 
   // Scroll to bottom helper
-  function scrollDown() {{ history.scrollTop = history.scrollHeight; }}
+  function scrollDown() {{ chatLog.scrollTop = chatLog.scrollHeight; }}
   scrollDown();
 
   // Ctrl+Enter sends
@@ -737,7 +737,7 @@ async def chat_view(
       m.textContent = meta;
       wrap.appendChild(m);
     }}
-    history.appendChild(wrap);
+    chatLog.appendChild(wrap);
     scrollDown();
     return bubble;
   }}
@@ -747,7 +747,7 @@ async def chat_view(
     el.className = 'chat-meta';
     el.style.paddingLeft = '8px';
     el.textContent = '⚙ ' + name + '…';
-    history.appendChild(el);
+    chatLog.appendChild(el);
     scrollDown();
     return el;
   }}
