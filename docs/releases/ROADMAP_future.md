@@ -24,8 +24,8 @@ User / External World
 | v1.2.5 | PII + Computer-Use groundwork | ✅ Shipped | PII scanner, attention routing, tmux isolation, MCPClientManager fixes |
 | v1.2.6 | Policy enforcement + agentic hardening | ✅ Shipped | PolicyMonitor pipeline, data boundary, behavioral_patterns, local_only |
 | v1.2.7 | Security depth + Role Chat + Sub-agents | ✅ Shipped | Security Sentinel, Role Chat interface, dispatch_subtask, HITL budget, MEMORY_PATH fixes |
-| **v1.2.8** | **Bug hardening + ConfigDoctor** | 🔄 In progress | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
-| v1.2.9 | Quality gates + coding agent bridge | 📋 Planned | Smoke suite (`tests/smoke/`), dependency resilience audit, INSTALL.md, coding agent HITL bridge (OpenCode/Claude Code → inbox), per-source attention routing rules |
+| v1.2.8 | Bug hardening + ConfigDoctor | ✅ Shipped | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
+| **v1.2.9** | **Quality gates + coding agent bridge** | 🔄 In progress | ~~Smoke suite (`tests/smoke/`)~~ ✅, ~~NineChapter operational layer~~ ✅, ~~InteractionMode contracts~~ ✅, ~~Physical knowledge isolation~~ ✅, ~~Completion artifacts~~ ✅ — remaining: dependency resilience audit, INSTALL.md, coding agent HITL bridge, per-source attention routing rules |
 | v1.2.10 | First-run experience + catalog architecture | 📋 Planned | Setup wizard polish, 4 bundled demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view, resource pool unification, tool registry catalog + `list_tools()` discovery |
 | v1.2.11 | Computer-use + config completeness | 📋 Planned | Terminal tools (`terminal_exec`, `terminal_read`), HttpAgentExecutor (ZeroClaw/MAP protocol), `mcp_servers.json` config tool coverage, ConfigDoctor NineChapter score validation |
 | v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
@@ -399,7 +399,7 @@ sub-task to the right role and wait for the result:
 
 ## Priority Matrix — Urgent / Important
 
-_Last updated: 2026-03-28 (wip_1.2.8)_
+_Last updated: 2026-03-29 (wip_v1.2.9)_
 
 | Item | Urgent | Important | Target | Status | Why |
 |------|--------|-----------|--------|--------|-----|
@@ -415,7 +415,7 @@ _Last updated: 2026-03-28 (wip_1.2.8)_
 | ConfigDoctor v1.2.6/v1.2.7 checks | 🟡 Medium | 🟡 Medium | v1.2.8 | ✅ Done | Policy patterns, MEMORY_PATH writability, scheduler config, `local_only` resource check |
 | Urgency + importance → attention routing | 🟡 Medium | 🔴 High | v1.2.4 | ✅ Done | Fields on task model; drive `hitl_level` floor via urgency×importance |
 | Dependency resilience (optional imports) | 🔴 High | 🔴 High | v2.0.0 gate | 🟡 Partial | `sentence_transformers` soft-import fixed; `prompt_toolkit` skipped in CI; full audit of optional deps needed |
-| Smoke suite — one command, clean install | 🔴 High | 🔴 High | v2.0.0 gate | ❌ Open | `tests/smoke/` directory does not exist; blocks public release |
+| Smoke suite — one command, clean install | 🔴 High | 🔴 High | v2.0.0 gate | 🟡 Partial | 95 tests across mode contracts, chat mode, NineChapter, role isolation — dependency resilience audit + INSTALL.md still needed |
 | First-run experience / installer (Gate 7) | 🟡 Medium | 🔴 High | v2.0.0 gate | 🟡 Partial | `app/interactive-cli.py` exists; needs wizard polish, demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view |
 | Release definition — documented supported path | 🟡 Medium | 🔴 High | v2.0.0 gate | 🟡 Partial | README rewritten v1.2.7; INSTALL.md with supported OS/Python/model/env-var table still needed |
 | ConfigDoctor NineChapter score validation | 🟢 Low | 🟡 Medium | v1.2.4 | ❌ Open | Validate `nine_chapter_score` matches dimension average; deferred from v1.2.4 |
