@@ -21,7 +21,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from app.config.paths import get_memory_subpath
 from app.roles.role_manager import RoleManager
@@ -671,6 +671,158 @@ class RoleChatSession:
                 "tool_calls": total_tool_calls,
             },
         }
+
+
+    async def exchange_stream(
+        self,
+        message: str,
+        resource_manager: Optional[Any] = None,
+    ) -> AsyncIterator[str]:
+        """
+        Streaming variant of exchange().
+
+        Yields SSE-formatted lines:
+          data: {"type": "tool",  "name": "<tool_name>"}      — tool call in progress
+          data: {"type": "token", "text": "<chunk>"}           — LLM text token
+          data: {"type": "done",  "session_id": "...", "tool_calls": N}  — complete
+
+        Tool-call iterations run to completion before streaming begins.
+        Only the final text response is streamed token-by-token.
+        """
+        role = RoleManager().get(self.role_id)
+        if role is None:
+            yield f'data: {json.dumps({"type": "error", "message": f"Role {self.role_id!r} not found"})}\n\n'
+            return
+
+        system_prompt = role.get(
+            "system_prompt", f"You are {role.get('name', self.role_id)}."
+        )
+        system_prompt = system_prompt + _CHAT_MODE_ADDENDUM
+
+        session = self._load_session()
+        ku_context = self._load_ku_context()
+        activity_context = self._load_recent_activity()
+        history = session.get("exchanges", [])
+
+        messages = self._build_messages(system_prompt, ku_context, activity_context, history, message)
+
+        tool_access = role.get("tool_access") or []
+        chat_tools = self._get_chat_tools(tool_access) if resource_manager else []
+
+        total_tool_calls = 0
+        response_text = ""
+
+        try:
+            if resource_manager is None:
+                # No resource manager — fall back to blocking LLM interface
+                response_text = await self._call_via_llm_interface(messages)
+                for chunk in _split_chunks(response_text):
+                    yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+            else:
+                # --- Tool-call iterations (non-streaming) ---
+                msg: Dict[str, Any] = {}
+                ready_to_stream = False
+                for _iteration in range(MAX_CHAT_ITERATIONS):
+                    data = await self._call_raw(
+                        messages, resource_manager,
+                        tools=chat_tools if chat_tools else None,
+                    )
+                    msg = (data.get("choices") or [{}])[0].get("message") or {}
+                    tool_calls = msg.get("tool_calls")
+
+                    if not tool_calls:
+                        # No more tool calls — stream this response
+                        ready_to_stream = True
+                        break
+
+                    # Execute tools, yield status events so the UI shows progress
+                    messages.append(msg)
+                    for tc in tool_calls:
+                        fn = tc.get("function") or {}
+                        tool_name = fn.get("name", "")
+                        yield f'data: {json.dumps({"type": "tool", "name": tool_name})}\n\n'
+                        try:
+                            args = json.loads(fn.get("arguments") or "{}")
+                        except Exception:
+                            args = {}
+                        result_str = await self._execute_tool(tool_name, args)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": result_str,
+                        })
+                        total_tool_calls += 1
+                else:
+                    # Budget exhausted — force a final text-only call, then stream it
+                    messages.append({"role": "system", "content": _FINAL_TOOL_LOOP_PROMPT})
+                    ready_to_stream = True
+
+                # --- Stream the final text response ---
+                if ready_to_stream and msg.get("tool_calls") is None and msg.get("content"):
+                    # Non-streaming final response already in `msg` (no tool calls, got text)
+                    content = msg.get("content") or ""
+                    if "<think>" in content and "</think>" in content:
+                        content = content.split("</think>", 1)[-1].strip() or content
+                    response_text = content
+                    for chunk in _split_chunks(response_text):
+                        yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+                else:
+                    # Use streaming for the final LLM call
+                    resource = resource_manager.acquire()
+                    if resource is None:
+                        err = "(No LLM resource available for streaming)"
+                        yield f'data: {json.dumps({"type": "token", "text": err})}\n\n'
+                        response_text = err
+                    else:
+                        model = resource.model or ""
+                        resource_config = {
+                            "base_url": resource.base_url,
+                            "model": model,
+                            "api_key": resource.api_key,
+                            "output_limit": min(resource.output_limit or 8192, 8192),
+                            "message_format": "openai",
+                            "provider": resource.provider,
+                        }
+                        from app.llm.unified_client import UnifiedLLMClient
+                        client = UnifiedLLMClient()
+                        try:
+                            async for chunk in client.call_stream_async(
+                                messages, resource_config, model_override=model
+                            ):
+                                # Strip <think> prefix before streaming
+                                if not response_text and chunk.startswith("<think>"):
+                                    continue
+                                response_text += chunk
+                                yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+                            # Post-process: strip any <think>...</think> block
+                            if "<think>" in response_text and "</think>" in response_text:
+                                response_text = response_text.split("</think>", 1)[-1].strip()
+                        except Exception as stream_err:
+                            logger.warning(f"[role_chat] stream failed, falling back: {stream_err}")
+                            # Fallback to blocking call
+                            fallback_data = await self._call_raw(messages, resource_manager, tools=None)
+                            fallback_msg = (fallback_data.get("choices") or [{}])[0].get("message") or {}
+                            content = fallback_msg.get("content") or ""
+                            if "<think>" in content and "</think>" in content:
+                                content = content.split("</think>", 1)[-1].strip() or content
+                            response_text = content
+                            for chunk in _split_chunks(response_text):
+                                yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+
+        except Exception as e:
+            logger.error(f"RoleChatSession.exchange_stream failed for {self.role_id}: {e}")
+            err = f"(Error: {e})"
+            yield f'data: {json.dumps({"type": "token", "text": err})}\n\n'
+            response_text = err
+
+        self._save_session(session, message, response_text)
+
+        yield f'data: {json.dumps({"type": "done", "session_id": self.session_id, "tool_calls": total_tool_calls})}\n\n'
+
+
+def _split_chunks(text: str, size: int = 4) -> List[str]:
+    """Split a complete text string into small chunks for simulated streaming."""
+    return [text[i:i + size] for i in range(0, len(text), size)] if text else []
 
 
 def list_chat_sessions(role_id: str) -> List[Dict[str, Any]]:

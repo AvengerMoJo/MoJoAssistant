@@ -11,8 +11,9 @@ Routes:
   GET  /dashboard/events           — full event log
   GET  /dashboard/roles            — roles overview
   GET  /dashboard/chat             — list roles available for chat
-  GET  /dashboard/chat/{role_id}   — chat UI for a role (optional ?session_id=)
-  POST /dashboard/chat/{role_id}   — send message, redirect back
+  GET  /dashboard/chat/{role_id}         — chat UI for a role (optional ?session_id=)
+  GET  /dashboard/chat/{role_id}/stream  — SSE stream: ?message=&session_id=
+  POST /dashboard/chat/{role_id}         — send message, redirect back (non-JS fallback)
 """
 
 import html
@@ -22,8 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Cookie, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from app.dashboard.auth import COOKIE_NAME, check_password, make_token, verify_token
 from app.config.paths import get_memory_path
@@ -695,25 +696,188 @@ async def chat_view(
     <div class="chat-history" id="chat-history">
       {bubbles_html}
     </div>
-    <form class="chat-input-area" method="post" action="/dashboard/chat/{html.escape(role_id)}" id="chat-form">
-      <input type="hidden" name="session_id" value="{html.escape(form_session)}">
-      <textarea name="message" id="msg-input" placeholder="Message {html.escape(role_name)}…" autofocus
-                onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){{this.form.submit();}}"></textarea>
-      <button type="submit" class="chat-send-btn" id="send-btn">Send</button>
-    </form>
+    <div class="chat-input-area">
+      <textarea id="msg-input" placeholder="Message {html.escape(role_name)}… (Ctrl+Enter to send)" autofocus></textarea>
+      <button class="chat-send-btn" id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
   </div>
 </div>
 <script>
-  // Scroll chat to bottom on load
-  const h = document.getElementById('chat-history');
-  if (h) h.scrollTop = h.scrollHeight;
-  // Disable send while submitting
-  document.getElementById('chat-form').addEventListener('submit', function() {{
-    document.getElementById('send-btn').disabled = true;
-    document.getElementById('send-btn').textContent = 'Sending…';
+  const ROLE_ID    = {json.dumps(role_id)};
+  const ROLE_NAME  = {json.dumps(role_name)};
+  let   sessionId  = {json.dumps(form_session)};
+
+  const history  = document.getElementById('chat-history');
+  const input    = document.getElementById('msg-input');
+  const sendBtn  = document.getElementById('send-btn');
+
+  // Scroll to bottom helper
+  function scrollDown() {{ history.scrollTop = history.scrollHeight; }}
+  scrollDown();
+
+  // Ctrl+Enter sends
+  input.addEventListener('keydown', e => {{
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {{ e.preventDefault(); sendMessage(); }}
   }});
+
+  function appendBubble(role, text, meta) {{
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-bubble ' + role;
+    const label = document.createElement('div');
+    label.className = 'bubble-label';
+    label.textContent = role === 'user' ? 'you' : ROLE_NAME;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble-text';
+    bubble.textContent = text;
+    wrap.appendChild(label);
+    wrap.appendChild(bubble);
+    if (meta) {{
+      const m = document.createElement('div');
+      m.className = 'chat-meta';
+      m.textContent = meta;
+      wrap.appendChild(m);
+    }}
+    history.appendChild(wrap);
+    scrollDown();
+    return bubble;
+  }}
+
+  function appendToolStatus(name) {{
+    const el = document.createElement('div');
+    el.className = 'chat-meta';
+    el.style.paddingLeft = '8px';
+    el.textContent = '⚙ ' + name + '…';
+    history.appendChild(el);
+    scrollDown();
+    return el;
+  }}
+
+  async function sendMessage() {{
+    const msg = input.value.trim();
+    if (!msg) return;
+
+    input.value = '';
+    sendBtn.disabled = true;
+    sendBtn.textContent = '…';
+
+    // Show user bubble immediately
+    appendBubble('user', msg, new Date().toLocaleTimeString());
+
+    // Placeholder for assistant response
+    const asstBubble = appendBubble('assistant', '', null);
+    asstBubble.textContent = '';
+    asstBubble.style.color = '#555';
+    asstBubble.textContent = 'thinking…';
+
+    const params = new URLSearchParams({{ message: msg, session_id: sessionId }});
+    const url = '/dashboard/chat/' + encodeURIComponent(ROLE_ID) + '/stream?' + params;
+
+    let toolIndicator = null;
+    let responseText  = '';
+    let streaming     = false;
+
+    try {{
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+      const reader = resp.body.getReader();
+      const dec    = new TextDecoder();
+      let   buf    = '';
+
+      while (true) {{
+        const {{ done, value }} = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, {{ stream: true }});
+
+        // Process complete SSE lines
+        let nl;
+        while ((nl = buf.indexOf('\\n\\n')) !== -1) {{
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 2);
+          if (!line.startsWith('data:')) continue;
+          let evt;
+          try {{ evt = JSON.parse(line.slice(5).trim()); }} catch {{ continue; }}
+
+          if (evt.type === 'tool') {{
+            if (!toolIndicator) {{
+              if (toolIndicator) toolIndicator.remove();
+            }}
+            if (toolIndicator) toolIndicator.remove();
+            toolIndicator = appendToolStatus(evt.name);
+            asstBubble.style.color = '#555';
+            asstBubble.textContent = 'searching…';
+
+          }} else if (evt.type === 'token') {{
+            if (!streaming) {{
+              if (toolIndicator) {{ toolIndicator.remove(); toolIndicator = null; }}
+              asstBubble.style.color = '';
+              asstBubble.textContent = '';
+              streaming = true;
+            }}
+            responseText += evt.text;
+            asstBubble.textContent = responseText;
+            scrollDown();
+
+          }} else if (evt.type === 'done') {{
+            if (toolIndicator) {{ toolIndicator.remove(); toolIndicator = null; }}
+            if (!responseText) asstBubble.textContent = '(no response)';
+            if (evt.session_id) {{
+              sessionId = evt.session_id;
+              // Update URL without reload so Back button works
+              const newUrl = '/dashboard/chat/' + encodeURIComponent(ROLE_ID) + '?session_id=' + encodeURIComponent(evt.session_id);
+              history.replaceState(null, '', newUrl);
+            }}
+          }} else if (evt.type === 'error') {{
+            asstBubble.style.color = '#c44';
+            asstBubble.textContent = evt.message || '(error)';
+          }}
+        }}
+      }}
+    }} catch (err) {{
+      asstBubble.style.color = '#c44';
+      asstBubble.textContent = 'Error: ' + err.message;
+    }}
+
+    sendBtn.disabled = false;
+    sendBtn.textContent = 'Send';
+    input.focus();
+  }}
 </script>
 """)
+
+
+@router.get("/chat/{role_id}/stream")
+async def chat_stream(
+    role_id: str,
+    message: str = Query(...),
+    session_id: str = Query(default=""),
+    mojo_dash: Optional[str] = Cookie(default=None),
+):
+    """SSE endpoint — streams the role's reply token-by-token."""
+    if _require_auth(mojo_dash):
+        async def _auth_error():
+            yield 'data: {"type":"error","message":"Not authenticated"}\n\n'
+        return StreamingResponse(_auth_error(), media_type="text/event-stream")
+
+    from app.scheduler.role_chat import RoleChatSession
+
+    message = message.strip()
+    if not message:
+        async def _empty():
+            yield 'data: {"type":"error","message":"Empty message"}\n\n'
+        return StreamingResponse(_empty(), media_type="text/event-stream")
+
+    session = RoleChatSession(role_id=role_id, session_id=session_id or None)
+    rm = _get_resource_manager()
+
+    return StreamingResponse(
+        session.exchange_stream(message=message, resource_manager=rm),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering if behind a proxy
+        },
+    )
 
 
 @router.post("/chat/{role_id}")
