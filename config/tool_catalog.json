@@ -77,6 +77,19 @@
       "danger_level": "low",
       "always_injected": true,
       "description": "Pause the task and ask the user a question. Use when you are blocked and only the user can unblock you — missing credentials, ambiguous requirements, or a decision that requires human judgment. The task waits in HITL state until the user replies. Do not use this when another tool can answer the question."
-    }
+    },
+    "list-sessions":      { "category": "terminal", "danger_level": "low",    "description": "List all active tmux sessions." },
+    "find-session":       { "category": "terminal", "danger_level": "low",    "description": "Find a tmux session by name." },
+    "list-windows":       { "category": "terminal", "danger_level": "low",    "description": "List windows in a tmux session." },
+    "list-panes":         { "category": "terminal", "danger_level": "low",    "description": "List panes in a tmux window." },
+    "capture-pane":       { "category": "terminal", "danger_level": "low",    "description": "Capture content from a tmux pane with configurable line count." },
+    "create-session":     { "category": "terminal", "danger_level": "medium", "description": "Create a new tmux session." },
+    "create-window":      { "category": "terminal", "danger_level": "medium", "description": "Create a new window in a tmux session." },
+    "kill-session":       { "category": "terminal", "danger_level": "high",   "description": "Kill a tmux session by ID." },
+    "kill-window":        { "category": "terminal", "danger_level": "high",   "description": "Kill a tmux window by ID." },
+    "kill-pane":          { "category": "terminal", "danger_level": "high",   "description": "Kill a tmux pane by ID." },
+    "split-pane":         { "category": "terminal", "danger_level": "medium", "description": "Split a tmux pane horizontally or vertically." },
+    "execute-command":    { "category": "terminal", "danger_level": "high",   "requires_auth": true, "description": "Execute a command in a tmux pane and get results." },
+    "get-command-result": { "category": "terminal", "danger_level": "low",    "description": "Get the result of a previously executed tmux command." }
   }
 }

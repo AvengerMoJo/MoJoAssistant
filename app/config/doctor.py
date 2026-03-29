@@ -153,6 +153,7 @@ class ConfigDoctor:
         report = DoctorReport()
         self._check_resources(report)
         self._check_roles(report)
+        self._check_nine_chapter_scores(report)
         self._check_scheduler_tasks(report)
         self._check_policy_patterns(report)
         self._check_memory_path(report)
@@ -671,4 +672,82 @@ class ConfigDoctor:
                     value=cron,
                     status="pass",
                     message=f"Cron schedule is set",
+                ))
+
+    # ------------------------------------------------------------------
+    # NineChapter score validation (v1.2.11)
+    # ------------------------------------------------------------------
+
+    _NC_WEIGHTS = {
+        "core_values":        0.30,
+        "emotional_reaction": 0.25,
+        "cognitive_style":    0.20,
+        "social_orientation": 0.15,
+        "adaptability":       0.10,
+    }
+
+    def _check_nine_chapter_scores(self, report: DoctorReport) -> None:
+        """Verify that each role's nine_chapter_score matches the weighted average
+        of its dimension scores.  Flags roles where the stored score drifts from
+        what role_designer would compute — usually caused by manual edits."""
+        try:
+            from app.roles.role_manager import RoleManager
+            rm = RoleManager()
+            # list_roles() returns summaries without dimensions — load each role fully
+            summaries = rm.list_roles()
+            roles = []
+            for s in summaries:
+                full = rm.get(s["id"])
+                if full:
+                    roles.append(full)
+        except Exception as e:
+            report.add(CheckResult(
+                category="nine_chapter", id="roles", field="load",
+                value=None, status="error",
+                message=f"Could not load roles for NineChapter validation: {e}",
+            ))
+            return
+
+        for role in roles:
+            role_id = role.get("id", "?")
+            stored = role.get("nine_chapter_score")
+            dims = role.get("dimensions")
+
+            if stored is None:
+                report.add(CheckResult(
+                    category="nine_chapter", id=role_id, field="nine_chapter_score",
+                    value=None, status="warn",
+                    message="nine_chapter_score is missing — role was not created by role_designer",
+                ))
+                continue
+
+            if not dims:
+                report.add(CheckResult(
+                    category="nine_chapter", id=role_id, field="dimensions",
+                    value=None, status="warn",
+                    message="dimensions block is missing — cannot validate nine_chapter_score",
+                ))
+                continue
+
+            expected = round(sum(
+                dims.get(dim, {}).get("score", 0) * weight
+                for dim, weight in self._NC_WEIGHTS.items()
+            ))
+
+            if expected != stored:
+                report.add(CheckResult(
+                    category="nine_chapter", id=role_id, field="nine_chapter_score",
+                    value=stored,
+                    status="warn",
+                    message=(
+                        f"nine_chapter_score={stored} but weighted dimension average={expected}. "
+                        f"Role may have been manually edited. Re-run role_designer to recompute."
+                    ),
+                ))
+            else:
+                report.add(CheckResult(
+                    category="nine_chapter", id=role_id, field="nine_chapter_score",
+                    value=stored,
+                    status="pass",
+                    message=f"nine_chapter_score={stored} matches weighted dimension average",
                 ))

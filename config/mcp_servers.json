@@ -9,6 +9,16 @@
       "args": ["@playwright/mcp@latest", "--headless"],
       "category": "browser",
       "enabled": true
+    },
+    {
+      "id": "tmux",
+      "name": "tmux MCP (nickgnd/tmux-mcp)",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "tmux-mcp"],
+      "category": "terminal",
+      "enabled": false,
+      "comment": "Persistent tmux session management. Set enabled=true when tmux is available. No global install needed — npx pulls on first use."
     }
   ]
 }

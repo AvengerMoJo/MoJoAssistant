@@ -27,7 +27,7 @@ User / External World
 | v1.2.8 | Bug hardening + ConfigDoctor | ✅ Shipped | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
 | **v1.2.9** | **Quality gates + coding agent bridge** | ✅ Shipped | Smoke suite (133 tests), NineChapter, InteractionMode contracts, physical knowledge isolation, completion artifacts, dependency resilience audit, INSTALL.md, coding agent HITL bridge, per-source attention routing rules |
 | **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile, demo roles (Rebecca/Ahman/Carl) bundled, first-run wizard (auto-detect, config gen, role selection, LLM backend detection + model ladder), 3 demo tasks seeded, 158 smoke tests |
-| v1.2.11 | Computer-use + config completeness | 📋 Planned | Terminal tools (`terminal_exec`, `terminal_read`), HttpAgentExecutor (ZeroClaw/MAP protocol), `mcp_servers.json` config tool coverage, ConfigDoctor NineChapter score validation |
+| **v1.2.11** | **Terminal + config completeness** | ✅ Shipped | Terminal tools via nickgnd/tmux-mcp (13 tools registered in tool_catalog + mcp_servers.json, enabled=false until tmux available), ConfigDoctor NineChapter score validation (weighted dimension drift detection), HttpAgentExecutor deferred (needs protocol spec) |
 | v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
 | v1.3.1 | Agent Learning Loop | 📋 Planned | Failure→lesson pipeline, memory context injection, per-role silo memory, cross-agent queries |
 | v1.3.2 | Agent Orchestration + Role Chat Full | 📋 Planned | Agent type classification, workflow templates, OpenAI-compat proxy, cross-role referral |
@@ -399,7 +399,7 @@ sub-task to the right role and wait for the result:
 
 ## Priority Matrix — Urgent / Important
 
-_Last updated: 2026-03-30 (v1.2.10 shipped)_
+_Last updated: 2026-03-30 (v1.2.11 shipped)_
 
 | Item | Urgent | Important | Target | Status | Why |
 |------|--------|-----------|--------|--------|-----|
@@ -421,7 +421,7 @@ _Last updated: 2026-03-30 (v1.2.10 shipped)_
 | Tool registry catalog + `list_tools()` | 🔴 High | 🔴 High | v1.2.10 | ✅ Done | 112+ tools, system catalog + dynamic registry, `list_tools` MCP tool exposed |
 | Privacy report view | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Aggregated view of data locations, memory retention, role/tool access audit — deferred from v1.2.10 |
 | Release definition — documented supported path | 🟡 Medium | 🔴 High | v1.2.9 | ✅ Done | README rewritten v1.2.7; INSTALL.md with supported OS/Python/model/env-var table — done |
-| ConfigDoctor NineChapter score validation | 🟢 Low | 🟡 Medium | v1.2.4 | ❌ Open | Validate `nine_chapter_score` matches dimension average; deferred from v1.2.4 |
+| ConfigDoctor NineChapter score validation | 🟢 Low | 🟡 Medium | v1.2.11 | ✅ Done | Weighted dimension drift detection; flags manually-edited roles |
 | Hybrid memory search (BM25 + embedding) | 🟢 Low | 🔴 High | v1.2.5 | ❌ Open | Semantic-only search misses structural/domain connections for research roles |
 | BehavioralMonitor + ContainmentEngine | 🟢 Low | 🔴 High | v1.3.0 | ❌ Open | Critical for autonomous AI world; not urgent until pre-public |
 | Agent learning loop (failure→lesson→injection) | 🟢 Low | 🔴 High | v1.3.1 | ❌ Open | Agents learn from mistakes without human intervention |
