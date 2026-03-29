@@ -25,6 +25,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from app.config.paths import get_memory_subpath
 from app.roles.role_manager import RoleManager
+from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,8 @@ MAX_KU_ITEMS = 8          # knowledge units injected as context
 MAX_KU_QUOTE_CHARS = 200  # truncate long KU quotes
 MAX_CHAT_ITERATIONS = 5   # max tool-call iterations per exchange
 
-# memory and task_search are always available in chat for roles with memory access
+# Maps tool catalog categories → concrete tool names available in chat mode.
+# Filtered at runtime by the active mode contract's allowed_tool_categories.
 _CHAT_TOOL_ACCESS: Dict[str, List[str]] = {
     "memory": ["memory_search", "task_search"],
 }
@@ -110,35 +112,11 @@ _FINAL_TOOL_LOOP_PROMPT = (
     "answer the user directly now."
 )
 
-# Injected at the END of every chat-mode system prompt to override the
-# tool instructions from the role's full agentic system_prompt.
-# This prevents the model from planning for tools (web_search, browser, etc.)
-# that do not exist in chat mode.
-_CHAT_MODE_ADDENDUM = """\
-## DASHBOARD CHAT — READ-ONLY DEBRIEF MODE
-
-You are in a Dashboard Chat session. This is a private recall and debrief interface — \
-NOT an agentic research session.
-
-**The ONLY tools available to you right now are:**
-- `memory_search` — search your memory and past conversations
-- `task_search` — search your task history
-
-**These tools DO NOT EXIST in this session and must NOT be called:**
-- `web_search`, `fetch_url`, any browser or Playwright tool
-- `knowledge` (repo file access)
-- Any orchestration, scheduling, or sub-agent tool
-
-Do not generate tool call XML or JSON for unavailable tools. If you find yourself \
-about to call `knowledge`, `web_search`, or any browser tool — stop. Use \
-`memory_search` or `task_search` instead, or answer from what you already know.
-
-If you cannot fully answer from memory, say so clearly: state what you found, what \
-you could not confirm, and that a full investigation requires a scheduled task. \
-**Always produce a text response — never return empty output.**
-
----
-"""
+# The default chat-mode overlay is sourced from the DASHBOARD_CHAT mode contract.
+# Roles may override it via mode_overlays.dashboard_chat in their config.
+# Kept as a module-level alias for backwards compatibility with any callers that
+# reference it directly.
+_CHAT_MODE_ADDENDUM = get_mode_contract(InteractionMode.DASHBOARD_CHAT).prompt_overlay
 
 # Sections in a role's full agentic system_prompt that describe tools unavailable
 # in chat mode.  Stripping them prevents the model from planning for tools it
@@ -175,8 +153,14 @@ class RoleChatSession:
     agentic loop so the role can look things up before answering.
     """
 
-    def __init__(self, role_id: str, session_id: Optional[str] = None):
+    def __init__(
+        self,
+        role_id: str,
+        session_id: Optional[str] = None,
+        mode: InteractionMode = InteractionMode.DASHBOARD_CHAT,
+    ):
         self.role_id = role_id
+        self.mode = mode
         self.session_id = (
             session_id
             or f"chat_{role_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -433,12 +417,17 @@ class RoleChatSession:
     # Tool definitions & execution                                         #
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _get_chat_tools(tool_access: List[str]) -> List[Dict]:
-        """Return OpenAI tool definitions for the categories in tool_access."""
+    def _get_chat_tools(self, tool_access: List[str]) -> List[Dict]:
+        """Return OpenAI tool definitions allowed in the current mode.
+
+        Intersects the role's tool_access categories with the mode contract's
+        allowed_tool_categories so the model only sees tools the mode permits.
+        """
+        contract = get_mode_contract(self.mode)
         names: List[str] = []
         for category in tool_access:
-            names.extend(_CHAT_TOOL_ACCESS.get(category, []))
+            if category in contract.allowed_tool_categories:
+                names.extend(_CHAT_TOOL_ACCESS.get(category, []))
         return [_TOOL_DEFS[n] for n in names if n in _TOOL_DEFS]
 
     async def _execute_tool(self, name: str, args: Dict[str, Any]) -> str:
@@ -597,9 +586,13 @@ class RoleChatSession:
         base_prompt = role.get(
             "system_prompt", f"You are {role.get('name', self.role_id)}."
         )
-        # Prepend the chat-mode contract (highest priority — model reads top-down)
-        # and strip tool-instruction sections that describe unavailable tools.
-        system_prompt = _CHAT_MODE_ADDENDUM + _strip_tool_sections(base_prompt)
+        # Resolve mode overlay: role-specific override > contract default.
+        # Prepend at highest priority (model reads top-down) and strip any
+        # tool-instruction sections that describe tools unavailable in this mode.
+        contract = get_mode_contract(self.mode)
+        role_overlay = (role.get("mode_overlays") or {}).get(self.mode.value)
+        mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
+        system_prompt = mode_overlay + _strip_tool_sections(base_prompt)
 
         session = self._load_session()
         ku_context = self._load_ku_context()
@@ -714,7 +707,10 @@ class RoleChatSession:
         base_prompt = role.get(
             "system_prompt", f"You are {role.get('name', self.role_id)}."
         )
-        system_prompt = _CHAT_MODE_ADDENDUM + _strip_tool_sections(base_prompt)
+        contract = get_mode_contract(self.mode)
+        role_overlay = (role.get("mode_overlays") or {}).get(self.mode.value)
+        mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
+        system_prompt = mode_overlay + _strip_tool_sections(base_prompt)
 
         session = self._load_session()
         ku_context = self._load_ku_context()

@@ -19,6 +19,7 @@ from app.scheduler.session_storage import SessionMessage, SessionStorage, TaskSe
 from app.scheduler.planning_prompt_manager import PlanningPromptManager
 from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
 from app.scheduler.safety_policy import SafetyPolicy
+from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an autonomous assistant running as a scheduled task. Your owner can help \
@@ -249,11 +250,18 @@ class AgenticExecutor:
                 f"Using default system prompt (no planning prompt found: {planning_prompt_name})"
             )
 
-        # Combine: role personality first, then workflow instructions
+        # Combine: mode overlay + role personality + workflow instructions.
+        # Mode overlay is role-specific if defined in mode_overlays, else contract default.
+        mode_contract = get_mode_contract(InteractionMode.SCHEDULER_AGENTIC_TASK)
+        role_overlay = (role.get("mode_overlays") or {}).get(
+            InteractionMode.SCHEDULER_AGENTIC_TASK.value
+        ) if role else None
+        mode_overlay = role_overlay if role_overlay else mode_contract.prompt_overlay
+
         if role_prefix:
-            system_prompt = role_prefix + "\n\n---\n\n" + workflow_prompt
+            system_prompt = mode_overlay + role_prefix + "\n\n---\n\n" + workflow_prompt
         else:
-            system_prompt = workflow_prompt
+            system_prompt = mode_overlay + workflow_prompt
 
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get(
@@ -656,6 +664,13 @@ class AgenticExecutor:
                     "completed",
                     final_answer=final_answer,
                 )
+                if get_mode_contract(InteractionMode.SCHEDULER_AGENTIC_TASK).stores_completion_artifact:
+                    self._store_completion_artifact(
+                        task=task,
+                        role_id=config.get("role_id"),
+                        goal=goal,
+                        final_answer=final_answer,
+                    )
                 break
             if final_validation_error:
                 correction_prompt = (
@@ -765,6 +780,42 @@ class AgenticExecutor:
                 "session_file": session_file,
             },
         )
+
+    def _store_completion_artifact(
+        self, task: "Task", role_id: Optional[str], goal: str, final_answer: str
+    ) -> None:
+        """
+        Write a reviewable completion artifact to ~/.memory/task_reports/{task_id}.json.
+
+        Status starts as "pending_review" so the user can inspect and promote
+        the report to the knowledge base.  Called only when the mode contract
+        has stores_completion_artifact=True (i.e. SCHEDULER_AGENTIC_TASK).
+        """
+        import json as _json
+        from datetime import datetime as _dt
+        from pathlib import Path as _Path
+        from app.config.paths import get_memory_subpath
+
+        reports_dir = _Path(get_memory_subpath("task_reports"))
+        try:
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            report = {
+                "task_id": task.id,
+                "role_id": role_id,
+                "goal": goal,
+                "status": "pending_review",
+                "created_at": _dt.now().isoformat(),
+                "content": final_answer,
+            }
+            report_path = reports_dir / f"{task.id}.json"
+            with open(report_path, "w", encoding="utf-8") as f:
+                _json.dump(report, f, indent=2, ensure_ascii=False)
+            self._log(f"Task {task.id}: artifact written → {report_path}")
+        except Exception as e:
+            self._log(
+                f"Task {task.id}: failed to write completion artifact: {e}",
+                level="warning",
+            )
 
     def _load_resume_messages(
         self, task_id: str, system_prompt: str
