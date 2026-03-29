@@ -10,8 +10,14 @@ import argparse
 import json
 import datetime
 import sys
-from prompt_toolkit import PromptSession
-from prompt_toolkit.history import FileHistory
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import FileHistory
+    _PROMPT_TOOLKIT = True
+except ImportError:
+    PromptSession = None  # type: ignore[assignment,misc]
+    FileHistory = None    # type: ignore[assignment,misc]
+    _PROMPT_TOOLKIT = False
 
 # Ensure the app module can be found
 sys.path.append(".")
@@ -641,14 +647,20 @@ def main() -> int:
         print_header()
         running = True
 
-        # Create a history object
-        history = FileHistory(".mojo_history")
-        session: PromptSession = PromptSession(history=history)
+        # Create a prompt session (falls back to plain input if prompt_toolkit not installed)
+        if _PROMPT_TOOLKIT:
+            history = FileHistory(".mojo_history")
+            session = PromptSession(history=history)
+            def _get_input():
+                return session.prompt("> ", multiline=True).strip()
+        else:
+            def _get_input():
+                return input("> ").strip()
 
         while running:
             try:
                 # Get user input
-                user_input = session.prompt("> ", multiline=True).strip()
+                user_input = _get_input()
 
                 # Handle special commands
                 if user_input.startswith("/"):

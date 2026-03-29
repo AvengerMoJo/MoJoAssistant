@@ -47,29 +47,56 @@ _CONFIG_PATH = os.path.join(
 )
 
 
-def _load_source_rules() -> Dict[str, Dict[str, int]]:
-    """Load per-source rules from config file, falling back to defaults."""
+def _load_routing_config() -> Dict[str, Any]:
+    """Load the full attention_routing.json, returning {} on error."""
     try:
         path = os.path.normpath(_CONFIG_PATH)
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
-                cfg = json.load(f)
-            rules: Dict[str, Dict[str, int]] = {}
-            for source, rule in cfg.get("source_rules", {}).items():
-                entry: Dict[str, int] = {}
-                if "min_level" in rule:
-                    entry["min_level"] = int(rule["min_level"])
-                if "max_level" in rule:
-                    entry["max_level"] = int(rule["max_level"])
-                rules[source] = entry
-            return rules
+                return json.load(f)
     except Exception as e:
         logger.warning("AttentionClassifier: failed to load attention_routing.json: %s", e)
-    return dict(_DEFAULT_SOURCE_RULES)
+    return {}
 
 
-# Module-level cache — loaded once per process start.
+def _load_source_rules() -> Dict[str, Dict[str, int]]:
+    """Load per-source min/max caps from config, falling back to defaults."""
+    cfg = _load_routing_config()
+    rules: Dict[str, Dict[str, int]] = {}
+    for source, rule in cfg.get("source_rules", {}).items():
+        entry: Dict[str, int] = {}
+        if "min_level" in rule:
+            entry["min_level"] = int(rule["min_level"])
+        if "max_level" in rule:
+            entry["max_level"] = int(rule["max_level"])
+        if entry:
+            rules[source] = entry
+    return rules or dict(_DEFAULT_SOURCE_RULES)
+
+
+def _load_event_rules() -> list:
+    """
+    Load multi-field event rules from config.
+
+    Each rule has a "match" dict (all fields must match the event) and one
+    or more of: set_level, min_level, max_level.  Rules are evaluated in
+    order; first match wins and the rule's action is applied.
+    """
+    cfg = _load_routing_config()
+    return cfg.get("event_rules", [])
+
+
+def _rule_matches(rule: Dict[str, Any], event: Dict[str, Any]) -> bool:
+    """Return True if every field in rule["match"] equals the corresponding event field."""
+    match = rule.get("match")
+    if not match:
+        return False
+    return all(event.get(key) == value for key, value in match.items())
+
+
+# Module-level caches — loaded once per process start, invalidated by reload_rules().
 _SOURCE_RULES: Optional[Dict[str, Dict[str, int]]] = None
+_EVENT_RULES: Optional[list] = None
 
 
 def _get_source_rules() -> Dict[str, Dict[str, int]]:
@@ -78,6 +105,14 @@ def _get_source_rules() -> Dict[str, Dict[str, int]]:
     if _SOURCE_RULES is None:
         _SOURCE_RULES = _load_source_rules()
     return _SOURCE_RULES
+
+
+def _get_event_rules() -> list:
+    """Return cached event rules, loading from config on first access."""
+    global _EVENT_RULES
+    if _EVENT_RULES is None:
+        _EVENT_RULES = _load_event_rules()
+    return _EVENT_RULES
 
 
 class AttentionClassifier:
@@ -154,9 +189,25 @@ class AttentionClassifier:
                 ui_floor = 0
             level = max(level, ui_floor)
 
-        # --- Per-source adjustments ---
+        # --- Event rules (multi-field match, evaluated before source caps) ---
+        # Rules in config["event_rules"]; first match wins.
+        # A matching rule's set_level/min_level/max_level takes priority over
+        # the per-source source_rules caps for this event.
+        matched_event_rule = False
+        for rule in _get_event_rules():
+            if _rule_matches(rule, event):
+                if "set_level" in rule:
+                    level = int(rule["set_level"])
+                if "min_level" in rule:
+                    level = max(level, int(rule["min_level"]))
+                if "max_level" in rule:
+                    level = min(level, int(rule["max_level"]))
+                matched_event_rule = True
+                break
+
+        # --- Per-source adjustments (fallback when no event rule matched) ---
         # task_type maps directly to the source_rules keys.
-        if task_type:
+        if not matched_event_rule and task_type:
             rules = _get_source_rules().get(task_type, {})
             min_l = rules.get("min_level")
             max_l = rules.get("max_level")
@@ -169,6 +220,7 @@ class AttentionClassifier:
 
     @staticmethod
     def reload_rules() -> None:
-        """Force reload of source rules from config (useful after config changes)."""
-        global _SOURCE_RULES
+        """Force reload of all routing rules from config (useful after config changes)."""
+        global _SOURCE_RULES, _EVENT_RULES
         _SOURCE_RULES = _load_source_rules()
+        _EVENT_RULES = _load_event_rules()

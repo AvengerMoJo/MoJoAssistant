@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-source attention routing rules. Applied after base level calculation in AttentionClassifier.",
+  "_comment": "Per-source and per-event attention routing rules. Applied after base level calculation in AttentionClassifier.",
   "_levels": {
     "5": "critical — server crash, fatal error",
     "4": "blocking — waiting for human input",
@@ -9,6 +9,7 @@
     "0": "noise — heartbeats, ticks, internal bookkeeping"
   },
   "source_rules": {
+    "_comment": "Fallback per-source min/max caps. Only applied when no event_rule matches.",
     "dreaming": {
       "_comment": "Memory consolidation is background work. Never interrupt the user for it.",
       "max_level": 1
@@ -27,5 +28,32 @@
     "custom": {
       "_comment": "User-defined tasks: normal rules apply."
     }
-  }
+  },
+  "event_rules": [
+    {
+      "_comment": "Dreaming failures are background noise — cap at 1, never surface as a full error.",
+      "match": {"task_type": "dreaming", "event_type": "task_failed"},
+      "set_level": 1
+    },
+    {
+      "_comment": "Security sentinel failures are always critical — override any source cap.",
+      "match": {"task_type": "assistant", "role_id": "security_sentinel", "event_type": "task_failed"},
+      "set_level": 5
+    },
+    {
+      "_comment": "Coding agent failures are at least error-level (3), not just notable (2).",
+      "match": {"task_type": "agent", "event_type": "task_failed"},
+      "min_level": 3
+    },
+    {
+      "_comment": "Coding agent HITL questions surface as blocking (4), not capped by agent min_level.",
+      "match": {"task_type": "agent", "event_type": "task_waiting_for_input"},
+      "set_level": 4
+    },
+    {
+      "_comment": "Scheduled task failures are notable (2), not full errors (3) — cron noise.",
+      "match": {"task_type": "scheduled", "event_type": "task_failed"},
+      "set_level": 2
+    }
+  ]
 }
