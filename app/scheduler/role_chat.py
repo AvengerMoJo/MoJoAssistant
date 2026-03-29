@@ -114,35 +114,53 @@ _FINAL_TOOL_LOOP_PROMPT = (
 # tool instructions from the role's full agentic system_prompt.
 # This prevents the model from planning for tools (web_search, browser, etc.)
 # that do not exist in chat mode.
-_CHAT_MODE_ADDENDUM = """
+_CHAT_MODE_ADDENDUM = """\
+## DASHBOARD CHAT — READ-ONLY DEBRIEF MODE
+
+You are in a Dashboard Chat session. This is a private recall and debrief interface — \
+NOT an agentic research session.
+
+**The ONLY tools available to you right now are:**
+- `memory_search` — search your memory and past conversations
+- `task_search` — search your task history
+
+**These tools DO NOT EXIST in this session and must NOT be called:**
+- `web_search`, `fetch_url`, any browser or Playwright tool
+- `knowledge` (repo file access)
+- Any orchestration, scheduling, or sub-agent tool
+
+Do not generate tool call XML or JSON for unavailable tools. If you find yourself \
+about to call `knowledge`, `web_search`, or any browser tool — stop. Use \
+`memory_search` or `task_search` instead, or answer from what you already know.
+
+If you cannot fully answer from memory, say so clearly: state what you found, what \
+you could not confirm, and that a full investigation requires a scheduled task. \
+**Always produce a text response — never return empty output.**
+
 ---
-## Chat Session Mode (Private Recall / Debrief)
-
-You are in a **Dashboard Chat** session — a private, read-only debrief interface.
-This is NOT an agentic research session.
-
-**Tools available in this mode:**
-- `memory_search` — search your accumulated memory, past conversations, and knowledge units
-- `task_search` — search your own task history (completed, failed, running tasks)
-
-**Tools NOT available in this mode:**
-- web_search, fetch_url, browser / Playwright tools
-- knowledge base file access
-- orchestration, sub-agent dispatch, or task scheduling
-
-**How to answer:**
-1. Use `memory_search` and `task_search` to recall what you have already learned or done.
-2. Synthesize a direct answer from what you find.
-3. If the question cannot be fully answered from memory/task history, say so explicitly:
-   - What you found from your records
-   - What you could not confirm without live research
-   - That a deeper investigation would need a scheduled research task via the MCP path
-
-**You must always produce a response.** Do not return empty output. If you cannot find
-the answer in memory, say clearly: "I don't have that in my current records — here's
-what I do have..." and give the partial picture. A partial honest answer is always
-better than silence or a stalled tool loop.
 """
+
+# Sections in a role's full agentic system_prompt that describe tools unavailable
+# in chat mode.  Stripping them prevents the model from planning for tools it
+# doesn't have (e.g. trying to call `knowledge` after reading the how-to section).
+_CHAT_MODE_STRIP_SECTIONS = [
+    "## How you use tools",
+    "## Accessing MoJoAssistant's own codebase and docs",
+    "## When a tool is unavailable",
+]
+
+
+def _strip_tool_sections(prompt: str) -> str:
+    """Remove agentic tool-instruction sections from a system prompt for chat mode."""
+    import re
+    for heading in _CHAT_MODE_STRIP_SECTIONS:
+        # Match from the heading line up to (but not including) the next ## heading
+        # or end of string.  re.DOTALL so . matches newlines.
+        pattern = re.escape(heading) + r".*?(?=\n## |\Z)"
+        prompt = re.sub(pattern, "", prompt, flags=re.DOTALL)
+    # Collapse runs of 3+ blank lines left behind by the removal
+    prompt = re.sub(r"\n{3,}", "\n\n", prompt)
+    return prompt.strip()
 
 
 class RoleChatSession:
@@ -576,13 +594,12 @@ class RoleChatSession:
                 "session_id": self.session_id,
             }
 
-        system_prompt = role.get(
+        base_prompt = role.get(
             "system_prompt", f"You are {role.get('name', self.role_id)}."
         )
-        # Append the chat-mode addendum to override any tool instructions in
-        # the role's full agentic prompt. This makes the available-tool contract
-        # explicit and prevents the model from planning for tools it doesn't have.
-        system_prompt = system_prompt + _CHAT_MODE_ADDENDUM
+        # Prepend the chat-mode contract (highest priority — model reads top-down)
+        # and strip tool-instruction sections that describe unavailable tools.
+        system_prompt = _CHAT_MODE_ADDENDUM + _strip_tool_sections(base_prompt)
 
         session = self._load_session()
         ku_context = self._load_ku_context()
@@ -694,10 +711,10 @@ class RoleChatSession:
             yield f'data: {json.dumps({"type": "error", "message": f"Role {self.role_id!r} not found"})}\n\n'
             return
 
-        system_prompt = role.get(
+        base_prompt = role.get(
             "system_prompt", f"You are {role.get('name', self.role_id)}."
         )
-        system_prompt = system_prompt + _CHAT_MODE_ADDENDUM
+        system_prompt = _CHAT_MODE_ADDENDUM + _strip_tool_sections(base_prompt)
 
         session = self._load_session()
         ku_context = self._load_ku_context()
