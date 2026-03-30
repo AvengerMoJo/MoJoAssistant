@@ -88,6 +88,7 @@ _NAV = """
   <a href="/dashboard/events">Events</a>
   <a href="/dashboard/roles">Roles</a>
   <a href="/dashboard/chat">Chat</a>
+  <a href="/dashboard/privacy">Privacy</a>
   <a href="/dashboard/logout" style="float:right;color:#888">logout</a>
 </nav>
 """
@@ -554,6 +555,150 @@ async def roles_view(mojo_dash: Optional[str] = Cookie(default=None)):
 <table>
   <tr><th>Name / ID</th><th>Type</th><th>Tools</th><th>Completed</th><th>Failed</th><th>Private Memory</th></tr>
   {rows}
+</table>
+""")
+
+
+# ---------------------------------------------------------------------------
+# Privacy report
+# ---------------------------------------------------------------------------
+
+@router.get("/privacy", response_class=HTMLResponse)
+async def privacy_report(mojo_dash: Optional[str] = Cookie(default=None)):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    import html as _html
+    from app.roles.owner_context import load_owner_profile
+    from app.config.paths import get_memory_path
+
+    owner = load_owner_profile()
+    mem_root = Path(get_memory_path())
+
+    # ── Owner profile summary ────────────────────────────────────────────
+    if owner:
+        name = owner.get("preferred_name") or owner.get("name") or "—"
+        tz = owner.get("timezone") or "—"
+        langs = ", ".join(owner.get("languages", [])) or "—"
+        sensitive = owner.get("privacy_preferences", {}).get("sensitive_domains", [])
+        prefer_local = owner.get("privacy_preferences", {}).get("prefer_local_when_possible", False)
+        goals = owner.get("core_goals", [])
+
+        sensitive_html = "".join(
+            f'<span style="background:#3a1a1a;color:#e37e7e;padding:2px 7px;border-radius:3px;margin:2px;display:inline-block">{_html.escape(d)}</span>'
+            for d in sensitive
+        ) or '<span style="color:#555">none declared</span>'
+
+        goals_html = "".join(f"<li>{_html.escape(g)}</li>" for g in goals) or "<li style='color:#555'>none</li>"
+
+        owner_html = f"""
+<div style="background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:16px;margin-bottom:20px">
+  <table style="width:auto;border:none">
+    <tr><td style="color:#888;padding:4px 12px 4px 0;border:none">Name</td><td style="border:none"><b>{_html.escape(name)}</b></td></tr>
+    <tr><td style="color:#888;padding:4px 12px 4px 0;border:none">Timezone</td><td style="border:none">{_html.escape(tz)}</td></tr>
+    <tr><td style="color:#888;padding:4px 12px 4px 0;border:none">Languages</td><td style="border:none">{_html.escape(langs)}</td></tr>
+    <tr><td style="color:#888;padding:4px 12px 4px 0;border:none">Prefer local</td><td style="border:none">{'<span style="color:#7ec87e">yes</span>' if prefer_local else '<span style="color:#888">no</span>'}</td></tr>
+  </table>
+  <div style="margin-top:10px"><span style="color:#888">Sensitive domains:</span><br><div style="margin-top:6px">{sensitive_html}</div></div>
+  <div style="margin-top:10px"><span style="color:#888">Goals:</span><ul style="margin:6px 0 0 18px;color:#d4d4d4">{goals_html}</ul></div>
+</div>"""
+    else:
+        owner_html = '<p style="color:#888">No owner profile found at ~/.memory/owner_profile.json. Run the setup wizard to create one.</p>'
+
+    # ── Role → tool access ───────────────────────────────────────────────
+    roles_dir = mem_root / "roles"
+    role_rows = ""
+    if roles_dir.exists():
+        for rf in sorted(roles_dir.glob("*.json")):
+            role = _load_json(rf, {})
+            if not role.get("id"):
+                continue
+            rname = role.get("name", rf.stem)
+            rtype = role.get("agent_type", "—")
+            tools = ", ".join(role.get("tool_access", role.get("tools", []))) or '<span style="color:#555">none</span>'
+            local_only = role.get("local_only", False)
+            local_badge = '<span style="color:#7ec87e">local_only</span>' if local_only else ""
+            role_rows += f"""<tr>
+              <td><b>{_html.escape(rname)}</b><br><span style="color:#555">{rf.stem}</span></td>
+              <td style="color:#888">{_html.escape(rtype)}</td>
+              <td style="font-size:11px">{tools}</td>
+              <td>{local_badge}</td>
+            </tr>"""
+
+    # ── Memory storage locations ─────────────────────────────────────────
+    mem_locations = [
+        ("Conversations", mem_root / "conversations"),
+        ("Knowledge base", mem_root / "knowledge"),
+        ("Role knowledge", mem_root / "roles"),
+        ("Scheduler tasks", mem_root / "scheduler"),
+        ("Dreams", mem_root / "dreams"),
+        ("Event log", mem_root / "events.json"),
+    ]
+    mem_rows = ""
+    for label, path in mem_locations:
+        exists = path.exists()
+        size = ""
+        if exists and path.is_file():
+            size = f"{path.stat().st_size // 1024} KB"
+        elif exists and path.is_dir():
+            files = list(path.rglob("*"))
+            size = f"{len(files)} files"
+        status = f'<span style="color:#7ec87e">✓</span> {size}' if exists else '<span style="color:#555">—</span>'
+        mem_rows += f"""<tr>
+          <td>{_html.escape(label)}</td>
+          <td style="color:#888;font-size:11px">{_html.escape(str(path))}</td>
+          <td>{status}</td>
+        </tr>"""
+
+    # ── External services (resource pool) ────────────────────────────────
+    ext_rows = ""
+    try:
+        from app.scheduler.resource_pool import ResourceManager
+        import logging
+        rm = ResourceManager(logger=logging.getLogger(__name__))
+        status = rm.get_status()
+        for rid, info in status.get("resources", {}).items():
+            rtype = info.get("type", "?")
+            model = info.get("model", "—")
+            tier = info.get("tier", "—")
+            base_url = info.get("base_url", "")
+            is_ext = rtype == "api"
+            ext_badge = '<span style="color:#e3a87e">external</span>' if is_ext else '<span style="color:#7ec87e">local</span>'
+            ext_rows += f"""<tr>
+              <td>{_html.escape(rid)}</td>
+              <td>{ext_badge}</td>
+              <td style="color:#888;font-size:11px">{_html.escape(model)}</td>
+              <td style="color:#888;font-size:11px">{_html.escape(tier)}</td>
+              <td style="color:#555;font-size:11px">{_html.escape(base_url)}</td>
+            </tr>"""
+    except Exception:
+        ext_rows = '<tr><td colspan="5" style="color:#555">Resource pool unavailable</td></tr>'
+
+    return _page("Privacy Report", f"""
+<h1>Privacy Report</h1>
+
+<h2>Owner Profile</h2>
+{owner_html}
+
+<h2>Role Tool Access</h2>
+<table>
+  <tr><th>Role</th><th>Type</th><th>Tool Categories</th><th>Restrictions</th></tr>
+  {role_rows or '<tr><td colspan="4" style="color:#555">No roles found</td></tr>'}
+</table>
+
+<h2>Memory Storage</h2>
+<table>
+  <tr><th>Store</th><th>Path</th><th>Status</th></tr>
+  {mem_rows}
+</table>
+
+<h2>LLM Backends</h2>
+<p style="color:#888;font-size:11px;margin-bottom:8px">
+  Local backends receive full owner context. External (API) backends receive minimal context only.
+</p>
+<table>
+  <tr><th>Resource ID</th><th>Locality</th><th>Model</th><th>Tier</th><th>Base URL</th></tr>
+  {ext_rows}
 </table>
 """)
 

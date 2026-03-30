@@ -20,7 +20,15 @@ from app.scheduler.policy.static import StaticPolicyChecker
 from app.scheduler.policy.content import ContentAwarePolicyChecker
 from app.scheduler.policy.data_boundary_checker import DataBoundaryChecker
 from app.scheduler.policy.context import ContextAwarePolicyChecker
+from app.scheduler.policy.sensitive_domain import SensitiveDomainChecker
 from app.scheduler.policy.monitor import PolicyMonitor
+
+# Auto-register all built-in checkers
+PolicyMonitor.register_checker("static", StaticPolicyChecker)
+PolicyMonitor.register_checker("content", ContentAwarePolicyChecker)
+PolicyMonitor.register_checker("data_boundary", DataBoundaryChecker)
+PolicyMonitor.register_checker("context", ContextAwarePolicyChecker)
+PolicyMonitor.register_checker("sensitive_domain", SensitiveDomainChecker)
 
 __all__ = [
     "PolicyChecker",
@@ -29,5 +37,6 @@ __all__ = [
     "ContentAwarePolicyChecker",
     "DataBoundaryChecker",
     "ContextAwarePolicyChecker",
+    "SensitiveDomainChecker",
     "PolicyMonitor",
 ]
