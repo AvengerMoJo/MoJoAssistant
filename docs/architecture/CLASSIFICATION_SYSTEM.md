@@ -57,22 +57,29 @@ A display label:
 
 ## User Input for Classification (Wizard / Forms)
 
-When asking a user to classify something:
+When asking a user to classify something, present explicit choices. Custom
+input is stored separately — never let free text silently become `agent_type`.
 
 ```
-# Good — explicit choices, language-neutral keys
-"What best describes this role's primary function?
- researcher · coder · reviewer · ops · analyst · assistant
- (or type your own)"
+# Good — explicit choices, custom path with separate label field
+User picks "researcher" → agent_type: "researcher"  (no label needed)
+User types "研究員"      → agent_type: "custom", agent_type_label: "研究員"
+User types "My Lead"    → agent_type: "custom", agent_type_label: "My Lead"
 
-# Bad — relies on English keyword parsing to infer meaning
-"Describe what kind of role this is."
-→ matches "coding" → infers "coder"  ← breaks in any other language
+# Bad — free text becomes canonical ID directly
+User types "coding expert" → agent_type: "coding_expert"  ← brittle, untranslatable
 ```
 
-The `role_designer.py` `_infer_agent_type()` function follows this: it does an
-exact match against `_KNOWN_AGENT_TYPES`, and stores everything else verbatim.
-No keyword parsing.
+The `role_designer.py` `_infer_agent_type()` returns a `(agent_type, label)`
+tuple. Known types match case-insensitively and return `(type, None)`. Anything
+else returns `("custom", original_text)`. The spec writer adds `agent_type_label`
+only when label is not None.
+
+### LLM Role in Classification
+
+LLM can suggest a likely built-in type or a slug for a custom type, but it
+never writes `agent_type` directly. User confirmation (picking from the list)
+is the only write path to `agent_type`.
 
 ## Display Label Registry (Future)
 

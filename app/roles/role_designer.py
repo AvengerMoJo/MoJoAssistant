@@ -295,11 +295,12 @@ class RoleDesignSession:
             ad=ad_answer, purpose=purpose,
         )
 
-        return {
+        agent_type, agent_type_label = _infer_agent_type(rt_answer)
+        spec: Dict[str, Any] = {
             "id": role_id,
             "name": name,
             "archetype": _infer_archetype(cv_score, er_score, cs_score, so_score, ad_score),
-            "agent_type": _infer_agent_type(rt_answer),
+            "agent_type": agent_type,
             "nine_chapter_score": round(overall),
             "dimensions": dimensions,
             "purpose": purpose,
@@ -308,6 +309,9 @@ class RoleDesignSession:
             "tool_access": [],
             "session_id": self.session_id,
         }
+        if agent_type_label:
+            spec["agent_type_label"] = agent_type_label
+        return spec
 
     def progress(self) -> int:
         """Percentage of steps completed (0–100)."""
@@ -366,21 +370,26 @@ def _logic_from_cognitive(cognitive: str) -> str:
 _KNOWN_AGENT_TYPES = {"researcher", "coder", "reviewer", "ops", "analyst", "assistant"}
 
 
-def _infer_agent_type(answer: str) -> str:
-    """Normalise a role_type answer to an agent_type label.
+def _infer_agent_type(answer: str) -> tuple[str, str | None]:
+    """Resolve a role_type answer to (agent_type, agent_type_label).
 
-    If the answer exactly matches one of the known types, use it.
-    Otherwise store the raw answer as-is (supports any language or custom type).
-    Falls back to 'assistant' if empty.
+    Rules:
+    - Empty answer           → ("assistant", None)
+    - Matches a known type   → (matched_type, None)   — no label needed
+    - Anything else          → ("custom", answer)      — label preserves user text
+
+    This keeps agent_type as a strict canonical ID used by code and filters,
+    while agent_type_label carries the user-facing display text for custom types.
+    LLM free text never silently becomes the canonical ID.
     """
     stripped = answer.strip()
     if not stripped:
-        return "assistant"
+        return "assistant", None
     lower = stripped.lower()
     if lower in _KNOWN_AGENT_TYPES:
-        return lower
-    # Custom value — keep verbatim, just normalise whitespace
-    return stripped.replace(" ", "_")
+        return lower, None
+    # Custom — preserve user text verbatim as label; canonical ID is "custom"
+    return "custom", stripped
 
 
 def _infer_archetype(cv, er, cs, so, ad) -> str:

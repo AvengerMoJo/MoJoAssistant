@@ -531,7 +531,9 @@ async def roles_view(mojo_dash: Optional[str] = Cookie(default=None)):
         role = _load_json(rf, {})
         rid = rf.stem
         name = role.get("name", rid)
-        agent_type = role.get("agent_type", "—")
+        _at = role.get("agent_type", "—")
+        _at_label = role.get("agent_type_label")
+        agent_type = f'{_at_label} <span style="color:#555;font-size:10px">({_at})</span>' if _at_label else _at
         tool_access = ", ".join(role.get("tool_access", []))
         # Count tasks for this role
         role_tasks = [t for t in tasks if t.get("config", {}).get("role_id") == rid]
@@ -731,7 +733,9 @@ async def chat_list(mojo_dash: Optional[str] = Cookie(default=None)):
         rid = rf.stem
         name = role.get("name", rid)
         agent_type = role.get("agent_type", "")
-        type_label = f'<span style="color:#555;font-size:11px">{html.escape(agent_type)}</span>' if agent_type else ""
+        _at_label = role.get("agent_type_label", "")
+        _display = _at_label if _at_label else agent_type
+        type_label = f'<span style="color:#555;font-size:11px">{html.escape(_display)}</span>' if _display else ""
         # Count past sessions
         session_dir = _mem("roles", rid, "chat_history")
         session_count = len(list(session_dir.glob("*.json"))) if session_dir.exists() else 0
