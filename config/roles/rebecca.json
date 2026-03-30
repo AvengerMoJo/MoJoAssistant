@@ -2,6 +2,7 @@
   "id": "rebecca",
   "name": "Rebecca",
   "archetype": "empathetic_connector",
+  "agent_type": "researcher",
   "nine_chapter_score": 95,
   "dimensions": {
     "core_values": {
@@ -41,10 +42,7 @@
     "browser"
   ],
   "tools": [],
-  "created_at": "2026-03-17T19:06:44.663687",
-  "session_id": "84bdb83a",
-  "updated_at": "2026-03-22T00:00:00.000000",
-  "notify_on_completion": true,
+  "session_id": "",
   "behavior_rules": {
     "exhausts_tools_before_asking": true
   },

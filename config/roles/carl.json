@@ -2,7 +2,7 @@
   "id": "carl",
   "name": "Carl",
   "archetype": "precision_code_reviewer",
-  "nine_chapter_score": 92,
+  "nine_chapter_score": 94,
   "dimensions": {
     "core_values": {
       "score": 100,
@@ -46,9 +46,6 @@
     "memory",
     "file"
   ],
-  "model_preference": "qwen/qwen3.5-35b-a3b",
-  "created_at": "2026-03-13T00:00:00.000000",
-  "session_id": "",
-  "updated_at": "2026-03-13T00:00:00.000000",
-  "notify_on_completion": true
+  "model_preference": null,
+  "session_id": ""
 }

@@ -37,6 +37,7 @@ _STEPS = [
     "social_orientation",
     "adaptability",
     "purpose",
+    "role_type",
     "predict_verify",
     "synthesis",
 ]
@@ -73,9 +74,14 @@ _QUESTIONS = {
         "Where are they rigid and where are they flexible?"
     ),
     "purpose": (
-        "Last dimension: what is **{name}**'s purpose — "
+        "What is **{name}**'s purpose — "
         "why do they exist, what are they ultimately trying to accomplish, "
         "what's the thing they're always working toward?"
+    ),
+    "role_type": (
+        "Last one: what best describes **{name}**'s primary function?\n\n"
+        "`researcher` · `coder` · `reviewer` · `ops` · `analyst` · `assistant`\n\n"
+        "Pick one, or type your own."
     ),
 }
 
@@ -235,6 +241,7 @@ class RoleDesignSession:
         so_answer   = self.answers.get("social_orientation", "")
         ad_answer   = self.answers.get("adaptability", "")
         purpose     = self.answers.get("purpose", "")
+        rt_answer   = self.answers.get("role_type", "")
         pv_answer   = self.answers.get("predict_verify", "")
 
         # Simple dimension scores based on answer length + predict-verify result
@@ -292,13 +299,13 @@ class RoleDesignSession:
             "id": role_id,
             "name": name,
             "archetype": _infer_archetype(cv_score, er_score, cs_score, so_score, ad_score),
+            "agent_type": _infer_agent_type(rt_answer),
             "nine_chapter_score": round(overall),
             "dimensions": dimensions,
             "purpose": purpose,
             "system_prompt": system_prompt,
             "model_preference": None,
-            "tools": [],
-            "created_at": self.created_at,
+            "tool_access": [],
             "session_id": self.session_id,
         }
 
@@ -354,6 +361,26 @@ def _logic_from_cognitive(cognitive: str) -> str:
     if any(w in lower for w in ["intuit", "pattern", "gut"]):
         return "trust their gut on this"
     return "think it through first"
+
+
+_KNOWN_AGENT_TYPES = {"researcher", "coder", "reviewer", "ops", "analyst", "assistant"}
+
+
+def _infer_agent_type(answer: str) -> str:
+    """Normalise a role_type answer to an agent_type label.
+
+    If the answer exactly matches one of the known types, use it.
+    Otherwise store the raw answer as-is (supports any language or custom type).
+    Falls back to 'assistant' if empty.
+    """
+    stripped = answer.strip()
+    if not stripped:
+        return "assistant"
+    lower = stripped.lower()
+    if lower in _KNOWN_AGENT_TYPES:
+        return lower
+    # Custom value — keep verbatim, just normalise whitespace
+    return stripped.replace(" ", "_")
 
 
 def _infer_archetype(cv, er, cs, so, ad) -> str:
