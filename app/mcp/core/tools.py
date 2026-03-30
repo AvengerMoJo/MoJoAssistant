@@ -2541,6 +2541,7 @@ Agent resumes within seconds.
 
         # Default: orientation
         from datetime import datetime
+        from app.roles.owner_context import load_owner_profile
 
         now = datetime.now()
         response: Dict[str, Any] = {
@@ -2549,6 +2550,27 @@ Agent resumes within seconds.
             "day_of_week": now.strftime("%A"),
             "time": now.strftime("%H:%M"),
         }
+
+        # Owner identity — minimal slice (safe for external LLMs via tool result path)
+        try:
+            _owner = load_owner_profile()
+            if _owner:
+                _name = _owner.get("preferred_name") or _owner.get("name")
+                _comm = _owner.get("communication_preferences", {})
+                _owner_ctx: Dict[str, Any] = {}
+                if _name:
+                    _owner_ctx["name"] = _name
+                if _comm:
+                    _style = _comm.get("style", [])
+                    _verbosity = _comm.get("verbosity_default", "")
+                    if _style:
+                        _owner_ctx["communication_style"] = _style
+                    if _verbosity:
+                        _owner_ctx["verbosity"] = _verbosity
+                if _owner_ctx:
+                    response["owner"] = _owner_ctx
+        except Exception:
+            pass  # never let owner profile errors break context
 
         # Last 3 items from working memory — recency-based, no embedding needed
         try:
