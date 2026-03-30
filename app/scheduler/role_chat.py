@@ -27,6 +27,7 @@ from app.config.paths import get_memory_subpath
 from app.roles.role_manager import RoleManager
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 from app.scheduler.ninechapter import build_behavioral_overlay
+from app.roles.owner_context import load_owner_profile, build_owner_context_slice
 
 logger = logging.getLogger(__name__)
 
@@ -759,6 +760,9 @@ class RoleChatSession:
         mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
         ninechapter_overlay = build_behavioral_overlay(role)
         system_prompt = mode_overlay + ninechapter_overlay + _strip_tool_sections(base_prompt)
+        _owner_slice = build_owner_context_slice(load_owner_profile(), "minimal")
+        if _owner_slice:
+            system_prompt = system_prompt + _owner_slice
 
         session = self._load_session()
         ku_context = self._load_ku_context()
@@ -894,6 +898,9 @@ class RoleChatSession:
         mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
         ninechapter_overlay = build_behavioral_overlay(role)
         system_prompt = mode_overlay + ninechapter_overlay + _strip_tool_sections(base_prompt)
+        _owner_slice = build_owner_context_slice(load_owner_profile(), "minimal")
+        if _owner_slice:
+            system_prompt = system_prompt + _owner_slice
 
         session = self._load_session()
         ku_context = self._load_ku_context()

@@ -21,6 +21,7 @@ from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
 from app.scheduler.safety_policy import SafetyPolicy
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context
+from app.roles.owner_context import load_owner_profile, infer_context_tier, build_owner_context_slice
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an autonomous assistant running as a scheduled task. Your owner can help \
@@ -292,6 +293,15 @@ class AgenticExecutor:
             tier_preference = [ResourceTier(t) for t in tier_pref_raw]
         else:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
+
+        # Owner context — inject filtered slice based on whether we may call external LLMs.
+        _owner_profile = load_owner_profile()
+        if _owner_profile:
+            _context_tier = infer_context_tier(tier_preference)
+            _owner_slice = build_owner_context_slice(_owner_profile, _context_tier)
+            if _owner_slice:
+                system_prompt = system_prompt + _owner_slice
+                self._log(f"Owner context injected (tier={_context_tier})")
 
         # Lazy-connect external MCP servers and register their tools on first use.
         if not self._mcp_tools_discovered and self._mcp_client_manager.has_servers():
