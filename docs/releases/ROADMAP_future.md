@@ -28,6 +28,8 @@ User / External World
 | **v1.2.9** | **Quality gates + coding agent bridge** | ✅ Shipped | Smoke suite (133 tests), NineChapter, InteractionMode contracts, physical knowledge isolation, completion artifacts, dependency resilience audit, INSTALL.md, coding agent HITL bridge, per-source attention routing rules |
 | **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile, demo roles (Rebecca/Ahman/Carl) bundled, first-run wizard (auto-detect, config gen, role selection, LLM backend detection + model ladder), 3 demo tasks seeded, 158 smoke tests |
 | **v1.2.11** | **Terminal + config completeness** | ✅ Shipped | Terminal tools via nickgnd/tmux-mcp (13 tools registered in tool_catalog + mcp_servers.json, enabled=false until tmux available), ConfigDoctor NineChapter score validation (weighted dimension drift detection), HttpAgentExecutor deferred (needs protocol spec) |
+| **v1.2.12** | **Owner identity — active layer** | 📋 Planned | Owner context filtered injection (mode overlay → filtered prompt slice per role/mode), sensitive-domain watchdog (system roles scan operations against `sensitive_domains` in owner profile) |
+| **v1.2.13** | **Owner relationships + policy coupling** | 📋 Planned | `assistant_relationships` auto-update via dreaming pipeline, policy/role/relationship coupling model design + enforcement groundwork |
 | v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
 | v1.3.1 | Agent Learning Loop | 📋 Planned | Failure→lesson pipeline, memory context injection, per-role silo memory, cross-agent queries |
 | v1.3.2 | Agent Orchestration + Role Chat Full | 📋 Planned | Agent type classification, workflow templates, OpenAI-compat proxy, cross-role referral |
@@ -419,7 +421,7 @@ _Last updated: 2026-03-30 (v1.2.11 shipped)_
 | First-run experience / installer (Gate 7) | 🟡 Medium | 🔴 High | v1.2.10 | ✅ Done | wizard UX polish, LLM backend detection, 3 demo tasks seeded, end-to-end idempotent smoke test — all done in v1.2.10 |
 | Resource pool unification | 🔴 High | 🔴 High | v1.2.10 | ✅ Done | Unified ResourceManager, tier system, rate limiting, budget tracking |
 | Tool registry catalog + `list_tools()` | 🔴 High | 🔴 High | v1.2.10 | ✅ Done | 112+ tools, system catalog + dynamic registry, `list_tools` MCP tool exposed |
-| Privacy report view | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Aggregated view of data locations, memory retention, role/tool access audit — deferred from v1.2.10 |
+| Privacy report view | 🟢 Low | 🟡 Medium | v1.2.12 | ❌ Open | Aggregated view of data locations, memory retention, role/tool access audit — deferred from v1.2.10 |
 | Release definition — documented supported path | 🟡 Medium | 🔴 High | v1.2.9 | ✅ Done | README rewritten v1.2.7; INSTALL.md with supported OS/Python/model/env-var table — done |
 | ConfigDoctor NineChapter score validation | 🟢 Low | 🟡 Medium | v1.2.11 | ✅ Done | Weighted dimension drift detection; flags manually-edited roles |
 | Hybrid memory search (BM25 + embedding) | 🟢 Low | 🔴 High | v1.2.5 | ❌ Open | Semantic-only search misses structural/domain connections for research roles |
@@ -433,10 +435,10 @@ _Last updated: 2026-03-30 (v1.2.11 shipped)_
 | Inbox → Dreaming → Knowledge | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Institutional memory; valuable but not blocking |
 | Message passing + containerization | 🟢 Low | 🟢 Low | v2.x | ❌ Open | Architecture evolution, long horizon |
 | Owner profile (`~/.memory/owner_profile.json`) | 🟡 Medium | 🔴 High | v1.2.10 | ✅ Done | Canonical human identity anchor; created on first-run; `policy_authority`, `assistant_relationships`, `communication_preferences` |
-| Owner context filtered injection | 🟡 Medium | 🔴 High | v1.3.x | ❌ Open | Mode overlay declares which owner profile fields each role/mode can see; prompt builder assembles filtered slice; backend channel assumed safe until mechanism is designed |
-| Sensitive-domain watchdog (monitor + data watchdog roles) | 🟢 Low | 🔴 High | v1.3.x | ❌ Open | Two system roles proactively scan operations against `sensitive_domains` list in owner profile; blocks or flags policy violations before they reach memory or external tools |
-| `assistant_relationships` auto-update via dreaming | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Dreaming pipeline consolidates interaction history into owner profile `assistant_relationships`; authored values are v1 seed; long-term values grow from memory |
-| Policy/role/relationship coupling model | 🟢 Low | 🟡 Medium | post-v1.3 | ❌ Open | policy, role, and relationship definitions are interdependent; coupling model needs design before enforcement layer can be finalized |
+| Owner context filtered injection | 🟡 Medium | 🔴 High | v1.2.12 | ❌ Open | Mode overlay declares which owner profile fields each role/mode can see; prompt builder assembles filtered slice; backend channel assumed safe until mechanism is designed |
+| Sensitive-domain watchdog (monitor + data watchdog roles) | 🟡 Medium | 🔴 High | v1.2.12 | ❌ Open | Two system roles proactively scan operations against `sensitive_domains` list in owner profile; blocks or flags policy violations before they reach memory or external tools |
+| `assistant_relationships` auto-update via dreaming | 🟢 Low | 🟡 Medium | v1.2.13 | ❌ Open | Dreaming pipeline consolidates interaction history into owner profile `assistant_relationships`; authored values are v1 seed; long-term values grow from memory |
+| Policy/role/relationship coupling model | 🟡 Medium | 🔴 High | v1.2.13 | ❌ Open | policy, role, and relationship definitions are interdependent; coupling model needs design before enforcement layer can be finalized |
 
 **Reading the matrix:**
 - 🔴🔴 = do next, blocks v2.0.0 or is the linchpin
@@ -456,10 +458,12 @@ v1.3.0 releases when:
 1. **Trust layer is real** (v1.2.4): audit trail, §21 enforcement, inbox distillation
 2. **Computer-use is complete** (v1.2.5): browser + terminal + external agents
 3. **Safety foundation holds** (v1.2.6): PII classification, data boundary enforcement
+4. **Owner identity layer is active** (v1.2.12–v1.2.13): filtered context injection, sensitive-domain watchdog, policy/role/relationship coupling model
 
 The graduation promise: a user can run MoJoAssistant with agents touching real
 data, point to the audit log, and say "here is exactly what left my device and
-when — and here is proof nothing else did."
+when — and here is proof nothing else did." The owner identity layer adds: "and
+every agent knew who it was working for and what it was not allowed to touch."
 
 ---
 
