@@ -29,7 +29,8 @@ User / External World
 | **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile, demo roles (Rebecca/Ahman/Carl) bundled, first-run wizard (auto-detect, config gen, role selection, LLM backend detection + model ladder), 3 demo tasks seeded, 158 smoke tests |
 | **v1.2.11** | **Terminal + config completeness** | ✅ Shipped | Terminal tools via nickgnd/tmux-mcp (13 tools registered in tool_catalog + mcp_servers.json, enabled=false until tmux available), ConfigDoctor NineChapter score validation (weighted dimension drift detection), HttpAgentExecutor deferred (needs protocol spec) |
 | **v1.2.12** | **Owner identity — active layer** | 📋 Planned | Owner context filtered injection (mode overlay → filtered prompt slice per role/mode), sensitive-domain watchdog (system roles scan operations against `sensitive_domains` in owner profile) |
-| **v1.2.13** | **Owner relationships + policy coupling** | 📋 Planned | `assistant_relationships` auto-update via dreaming pipeline, policy/role/relationship coupling model design + enforcement groundwork |
+| **v1.2.13** | **agency-agents import bridge** | 📋 Planned | `agency-agents` reference library integration — parse markdown personas, map to Nine Chapter wizard pre-fills, "Import from library" path in role designer, GUI operator role as first candidate |
+| **v1.2.14** | **Owner relationships + policy coupling** | 📋 Planned | `assistant_relationships` auto-update via dreaming pipeline, policy/role/relationship coupling model design + enforcement groundwork |
 | v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
 | v1.3.1 | Agent Learning Loop | 📋 Planned | Failure→lesson pipeline, memory context injection, per-role silo memory, cross-agent queries |
 | v1.3.2 | Agent Orchestration + Role Chat Full | 📋 Planned | Agent type classification, workflow templates, OpenAI-compat proxy, cross-role referral |
@@ -437,8 +438,10 @@ _Last updated: 2026-03-30 (v1.2.11 shipped)_
 | Owner profile (`~/.memory/owner_profile.json`) | 🟡 Medium | 🔴 High | v1.2.10 | ✅ Done | Canonical human identity anchor; created on first-run; `policy_authority`, `assistant_relationships`, `communication_preferences` |
 | Owner context filtered injection | 🟡 Medium | 🔴 High | v1.2.12 | ❌ Open | Mode overlay declares which owner profile fields each role/mode can see; prompt builder assembles filtered slice; backend channel assumed safe until mechanism is designed |
 | Sensitive-domain watchdog (monitor + data watchdog roles) | 🟡 Medium | 🔴 High | v1.2.12 | ❌ Open | Two system roles proactively scan operations against `sensitive_domains` list in owner profile; blocks or flags policy violations before they reach memory or external tools |
-| `assistant_relationships` auto-update via dreaming | 🟢 Low | 🟡 Medium | v1.2.13 | ❌ Open | Dreaming pipeline consolidates interaction history into owner profile `assistant_relationships`; authored values are v1 seed; long-term values grow from memory |
-| Policy/role/relationship coupling model | 🟡 Medium | 🔴 High | v1.2.13 | ❌ Open | policy, role, and relationship definitions are interdependent; coupling model needs design before enforcement layer can be finalized |
+| agency-agents reference library integration | 🟢 Low | 🟡 Medium | v1.2.13 | ❌ Open | Vendor/clone agency-agents; markdown parser extracts persona fields; mapper pre-fills Nine Chapter wizard; "Import from library" UI path in role designer |
+| GUI operator role (browser/web UI interaction) | 🟢 Low | 🟡 Medium | v1.2.13 | ❌ Open | First role created via agency-agents bridge; focused on browser tools, web UI navigation, Portainer-style ops |
+| `assistant_relationships` auto-update via dreaming | 🟢 Low | 🟡 Medium | v1.2.14 | ❌ Open | Dreaming pipeline consolidates interaction history into owner profile `assistant_relationships`; authored values are v1 seed; long-term values grow from memory |
+| Policy/role/relationship coupling model | 🟡 Medium | 🔴 High | v1.2.14 | ❌ Open | policy, role, and relationship definitions are interdependent; coupling model needs design before enforcement layer can be finalized |
 
 **Reading the matrix:**
 - 🔴🔴 = do next, blocks v2.0.0 or is the linchpin
@@ -458,7 +461,9 @@ v1.3.0 releases when:
 1. **Trust layer is real** (v1.2.4): audit trail, §21 enforcement, inbox distillation
 2. **Computer-use is complete** (v1.2.5): browser + terminal + external agents
 3. **Safety foundation holds** (v1.2.6): PII classification, data boundary enforcement
-4. **Owner identity layer is active** (v1.2.12–v1.2.13): filtered context injection, sensitive-domain watchdog, policy/role/relationship coupling model
+4. **Owner identity layer is active** (v1.2.12): filtered context injection, sensitive-domain watchdog
+5. **Role creation enriched** (v1.2.13): agency-agents import bridge live, GUI operator role shipped
+6. **Relationship coupling model designed** (v1.2.14): policy/role/relationship coupling model
 
 The graduation promise: a user can run MoJoAssistant with agents touching real
 data, point to the audit log, and say "here is exactly what left my device and

@@ -95,6 +95,33 @@ class RoleDesignSession:
         self.current_step: str = "intro"
         self.answers: Dict[str, str] = {}
         self.name: str = "Character"
+        self.import_source: Optional[str] = None  # agency-agents file path if imported
+
+    @classmethod
+    def from_agency_agent(cls, file_path: str, session_id: str = None) -> "RoleDesignSession":
+        """
+        Create a pre-filled session from an agency-agents role file.
+        The session starts at 'intro' with answers pre-loaded — the user
+        walks through the wizard to confirm/adjust each step.
+        """
+        from app.roles.agency_agents_parser import parse_file
+        from app.roles.agency_agents_bridge import build_prefills, prefills_to_session_answers
+        from pathlib import Path
+
+        entry = parse_file(Path(file_path))
+        if not entry:
+            raise ValueError(f"Could not parse agency-agents file: {file_path}")
+
+        s = cls(session_id=session_id)
+        s.import_source = file_path
+        prefills = build_prefills(entry)
+        s.answers = prefills_to_session_answers(prefills)
+
+        # Extract name from intro prefill so wizard personalises questions
+        if entry.name:
+            s.name = entry.name
+
+        return s
 
     # ── Persistence ──────────────────────────────────────────────────────────
 
@@ -118,16 +145,20 @@ class RoleDesignSession:
         s.current_step = data["current_step"]
         s.answers = data["answers"]
         s.name = data.get("name", "Character")
+        s.import_source = data.get("import_source")
         return s
 
     def _to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "session_id": self.session_id,
             "created_at": self.created_at,
             "current_step": self.current_step,
             "answers": self.answers,
             "name": self.name,
         }
+        if self.import_source:
+            d["import_source"] = self.import_source
+        return d
 
     # ── Conversation flow ─────────────────────────────────────────────────────
 

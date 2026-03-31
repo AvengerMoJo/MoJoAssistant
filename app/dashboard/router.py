@@ -87,6 +87,7 @@ _NAV = """
   <a href="/dashboard/tasks">Tasks</a>
   <a href="/dashboard/events">Events</a>
   <a href="/dashboard/roles">Roles</a>
+  <a href="/dashboard/library">Library</a>
   <a href="/dashboard/chat">Chat</a>
   <a href="/dashboard/privacy">Privacy</a>
   <a href="/dashboard/logout" style="float:right;color:#888">logout</a>
@@ -701,6 +702,77 @@ async def privacy_report(mojo_dash: Optional[str] = Cookie(default=None)):
 <table>
   <tr><th>Resource ID</th><th>Locality</th><th>Model</th><th>Tier</th><th>Base URL</th></tr>
   {ext_rows}
+</table>
+""")
+
+
+# ---------------------------------------------------------------------------
+# Agency-agents Library
+# ---------------------------------------------------------------------------
+
+@router.get("/library", response_class=HTMLResponse)
+async def library_browse(
+    q: str = "",
+    mojo_dash: Optional[str] = Cookie(default=None),
+):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    import html as _html
+    from app.roles.agency_agents_parser import list_roles, search_roles, _SUBMODULE_PATH
+
+    available = _SUBMODULE_PATH.exists()
+
+    if not available:
+        return _page("Role Library", """
+<h1>Role Library</h1>
+<p style="color:#888">agency-agents submodule not found at <code>submodules/agency-agents</code>.</p>
+<p style="color:#555">Run: <code>git submodule update --init submodules/agency-agents</code></p>
+""")
+
+    roles = search_roles(q) if q.strip() else list_roles()
+    total = len(list_roles()) if q.strip() else len(roles)
+
+    # Group by division
+    from collections import defaultdict
+    by_division: dict = defaultdict(list)
+    for r in roles:
+        by_division[r.division].append(r)
+
+    rows_html = ""
+    for division in sorted(by_division):
+        rows_html += f'<tr><td colspan="4" style="background:#1a1a1a;color:#888;padding:6px 10px;font-size:11px;letter-spacing:1px">{_html.escape(division.upper())}</td></tr>\n'
+        for r in by_division[division]:
+            emoji = _html.escape(r.emoji or "")
+            name = _html.escape(r.name)
+            desc = _html.escape(r.description[:90] + ("…" if len(r.description) > 90 else ""))
+            atype = _html.escape(r.agent_type_hint)
+            fname = Path(r.file_path).name
+            rows_html += f"""<tr>
+  <td>{emoji} <b>{name}</b><br><span style="color:#555;font-size:11px">{fname}</span></td>
+  <td style="color:#888;font-size:11px">{_html.escape(r.division)}</td>
+  <td style="color:#7ec87e;font-size:11px">{atype}</td>
+  <td style="color:#aaa;font-size:11px">{desc}</td>
+</tr>"""
+
+    search_val = _html.escape(q)
+    count_label = f"{len(roles)} of {total}" if q.strip() else str(total)
+
+    return _page("Role Library", f"""
+<h1>Role Library <span style="font-size:14px;color:#555;font-weight:normal">({count_label} roles)</span></h1>
+<p style="color:#888;font-size:12px">
+  Pre-built role personas from <a href="https://github.com/msitarzewski/agency-agents" style="color:#7ec8c8">agency-agents</a>.
+  Browse and import into the Nine Chapter wizard to create a role faster.
+</p>
+<form method="get" style="margin-bottom:16px">
+  <input name="q" value="{search_val}" placeholder="Search roles…"
+         style="background:#111;color:#d4d4d4;border:1px solid #333;padding:6px 10px;border-radius:4px;width:280px">
+  <button type="submit" style="margin-left:6px;background:#2a2a2a;color:#d4d4d4;border:1px solid #444;padding:6px 12px;border-radius:4px;cursor:pointer">Search</button>
+  {'<a href="/dashboard/library" style="margin-left:8px;color:#888;font-size:12px">clear</a>' if q else ''}
+</form>
+<table>
+  <tr><th>Role</th><th>Division</th><th>Type hint</th><th>Description</th></tr>
+  {rows_html or '<tr><td colspan="4" style="color:#555">No roles found</td></tr>'}
 </table>
 """)
 
