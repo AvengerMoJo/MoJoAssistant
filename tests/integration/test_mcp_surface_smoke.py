@@ -392,6 +392,21 @@ class TestConfigHub:
         result = run(registry.execute("config", {"action": "role_get"}))
         assert_expected_error(result, "config[role_get no id]", contains="role_id")
 
+    def test_role_tools_not_placeholder(self, registry):
+        result = run(registry.execute("role_design_start", {}))
+        assert_no_crash(result)
+        assert_not_placeholder(result, "role_design_start")
+
+        session_id = result.get("session_id")
+        assert session_id, "role_design_start should return session_id"
+
+        result = run(registry.execute("role_design_answer", {
+            "session_id": session_id,
+            "answer": "TestRole is a concise research helper."
+        }))
+        assert_no_crash(result)
+        assert_not_placeholder(result, "role_design_answer")
+
     def test_llm_models_missing_id(self, registry):
         result = run(registry.execute("config", {"action": "llm_models"}))
         assert_expected_error(result, "config[llm_models no id]", contains="resource_id")
@@ -552,7 +567,7 @@ class TestPlaceholderTools:
         "knowledge_add_repo", "knowledge_list_repos",
         "scheduler_add_task", "scheduler_list_tasks", "scheduler_get_status",
         "dreaming_process", "dreaming_list_archives",
-        "config_doctor", "resource_pool_status", "role_list",
+        "config_doctor", "resource_pool_status",
         "google_service",
     ]
 

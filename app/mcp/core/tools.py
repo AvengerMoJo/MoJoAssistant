@@ -216,11 +216,6 @@ class ToolRegistry:
             "resource_pool_revoke",
             "resource_pool_smoke_test",
             "audit_get",
-            "role_design_start",
-            "role_design_answer",
-            "role_create",
-            "role_list",
-            "role_get",
             # External agent → external_agent hub
             "google_service",
         }
