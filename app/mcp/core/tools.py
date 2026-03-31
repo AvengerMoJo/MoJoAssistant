@@ -1702,7 +1702,7 @@ class ToolRegistry:
             },
             {
                 "name": "role_design_answer",
-                "description": "Submit the user's answer to the current role design question and get the next question. When step=synthesis, the draft role spec is returned for review. Reply 'yes' to finalise, 'adjust: ...' to refine, or 'restart' to begin again.",
+                "description": "Submit the user's answer to the current role design question and get the next question. When step=synthesis, the draft role spec is returned for review — present it to the user and ask for confirmation. When the user confirms ('yes'), submit that answer; the step will become 'complete' and you MUST immediately call role_create with the session_id to save the role to the library. Do not skip this step.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1736,10 +1736,10 @@ class ToolRegistry:
                             "type": "string",
                             "description": "Preferred LLM model for this role (e.g. 'qwen/qwen3-35b-a22b').",
                         },
-                        "tools": {
+                        "tool_access": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Tool names this role should have access to.",
+                            "description": "Tool categories this role can access. Valid values: file, exec, memory, web, comms, terminal, orchestration.",
                         },
                         "notify_on_completion": {
                             "type": "boolean",
@@ -4394,6 +4394,26 @@ Agent resumes within seconds.
             "progress": session.progress(),
         }
         result.update(payload)
+        if next_step == "complete":
+            # Auto-save — design is confirmed, persist immediately
+            try:
+                role_data = result.get("id") and result or payload
+                # payload IS the role_spec when step=complete
+                saved_path = self._role_manager.save(payload)
+                result["saved"] = True
+                result["path"] = saved_path
+                result["role_id"] = payload.get("id")
+                result["message"] = (
+                    f"Role '{payload.get('name')}' saved to {saved_path}. "
+                    "It is now available in the role library."
+                )
+            except Exception as e:
+                result["saved"] = False
+                result["save_error"] = str(e)
+                result["next_action"] = (
+                    f"Auto-save failed ({e}). Call role_create with "
+                    f"session_id='{session_id}' to save manually."
+                )
         return result
 
     async def _execute_role_create(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -4414,8 +4434,10 @@ Agent resumes within seconds.
         # Apply optional overrides
         if args.get("model_preference") is not None:
             role_data["model_preference"] = args["model_preference"]
-        if args.get("tools") is not None:
-            role_data["tools"] = args["tools"]
+        if args.get("tool_access") is not None:
+            role_data["tool_access"] = args["tool_access"]
+        elif args.get("tools") is not None:  # backwards compat
+            role_data["tool_access"] = args["tools"]
         if args.get("notify_on_completion") is not None:
             role_data["notify_on_completion"] = args["notify_on_completion"]
         if args.get("policy") is not None:
