@@ -1493,7 +1493,13 @@ class ToolRegistry:
                         "available_tools": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Tools the assistant may use (add action, type='assistant'). Call action='list_tools' to see all available tool names. If omitted the assistant only has ask_user.",
+                            "description": (
+                                "Runtime tool override for this specific task (add action, type='assistant'). "
+                                "Overrides the role's default tool_access for this run only. "
+                                "Use to restrict (e.g. read-only task: ['memory','file']) or extend (e.g. add 'browser' for one-off web task). "
+                                "If omitted, the role's tool_access categories are used. "
+                                "Call action='list_tools' to see all available tool names."
+                            ),
                         },
                         "max_iterations": {
                             "type": "integer",
@@ -1767,7 +1773,17 @@ class ToolRegistry:
             },
             {
                 "name": "role_create",
-                "description": "Save a finalised role config to the role library. Accepts either a session_id (auto-builds from session) or a complete role spec dict. Saved roles define the personality and model for a MoJo agentic assistant — assign via role_id in scheduler_add_task.",
+                "description": (
+                    "Save a finalised role config to the role library (~/.memory/roles/). "
+                    "Accepts either a session_id (auto-builds from completed design session) or a complete role spec dict.\n\n"
+                    "TOOL ACCESS — two-layer model:\n"
+                    "  1. Role default (tool_access): categories the role can use in any task.\n"
+                    "     e.g. ['memory', 'file', 'exec', 'browser'] — set here at role creation time.\n"
+                    "     Categories: memory, file, exec, web, browser, terminal, orchestration\n"
+                    "  2. Task runtime override (available_tools in scheduler_add_task): restricts or extends\n"
+                    "     the role default for a specific task run. Omit to use the role default.\n\n"
+                    "Always set tool_access when creating a role — an empty list means the role can do nothing."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {

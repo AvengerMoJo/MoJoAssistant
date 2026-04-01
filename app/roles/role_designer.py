@@ -12,6 +12,7 @@ State machine:
 
 import json
 import os
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
@@ -38,6 +39,7 @@ _STEPS = [
     "adaptability",
     "purpose",
     "role_type",
+    "tool_access",
     "predict_verify",
     "synthesis",
 ]
@@ -79,9 +81,27 @@ _QUESTIONS = {
         "what's the thing they're always working toward?"
     ),
     "role_type": (
-        "Last one: what best describes **{name}**'s primary function?\n\n"
+        "What best describes **{name}**'s primary function?\n\n"
         "`researcher` · `coder` · `reviewer` · `ops` · `analyst` · `assistant`\n\n"
         "Pick one, or type your own."
+    ),
+    "tool_access": (
+        "What tool categories should **{name}** have access to by default?\n\n"
+        "Available categories:\n"
+        "  `memory`        — search and store knowledge (all roles get this)\n"
+        "  `file`          — read, write, search files\n"
+        "  `exec`          — run shell commands\n"
+        "  `web`           — web search and fetch URLs\n"
+        "  `browser`       — headless browser: navigate, click, fill forms, screenshot\n"
+        "  `terminal`      — persistent tmux sessions\n"
+        "  `orchestration` — schedule tasks and dispatch to other agents\n\n"
+        "Examples:\n"
+        "  researcher → `memory, web, file`\n"
+        "  coder      → `memory, file, exec`\n"
+        "  ops        → `memory, file, exec, terminal, web`\n"
+        "  browser operator → `memory, file, exec, web, browser`\n\n"
+        "List the categories **{name}** needs, separated by commas.\n"
+        "Note: individual tasks can always restrict this list further at runtime."
     ),
 }
 
@@ -242,10 +262,15 @@ class RoleDesignSession:
         purpose = spec.get("purpose", "")
         system_prompt = spec.get("system_prompt", "")
 
+        tool_access = spec.get("tool_access", [])
+        agent_type = spec.get("agent_type", "—")
+        ta_display = ", ".join(f"`{t}`" for t in tool_access) if tool_access else "⚠️ **none** — role cannot use any tools"
+
         return (
             f"## Draft Role: {name}\n\n"
             f"**Nine Chapter score**: {spec['nine_chapter_score']}/100 "
-            f"({'ready to simulate ✅' if spec['nine_chapter_score'] >= 70 else 'needs more definition ⚠️'})\n\n"
+            f"({'ready to simulate ✅' if spec['nine_chapter_score'] >= 70 else 'needs more definition ⚠️'})\n"
+            f"**Type**: `{agent_type}`  |  **Tools**: {ta_display}\n\n"
             f"### Dimensions\n"
             + "\n".join(
                 f"- **{k.replace('_', ' ').title()}** ({int(_WEIGHTS[k]*100)}%): "
@@ -264,7 +289,7 @@ class RoleDesignSession:
     def _build_role_spec(self) -> Dict[str, Any]:
         """Synthesise all collected answers into a role config dict."""
         name = self.name
-        role_id = name.lower().replace(" ", "_")
+        role_id = _slugify_role_id(name)
 
         cv_answer   = self.answers.get("core_values", "")
         er_answer   = self.answers.get("emotional_reaction", "")
@@ -327,6 +352,9 @@ class RoleDesignSession:
         )
 
         agent_type, agent_type_label = _infer_agent_type(rt_answer)
+        ta_answer = self.answers.get("tool_access", "")
+        tool_access = _parse_tool_access(ta_answer, agent_type)
+
         spec: Dict[str, Any] = {
             "id": role_id,
             "name": name,
@@ -337,7 +365,7 @@ class RoleDesignSession:
             "purpose": purpose,
             "system_prompt": system_prompt,
             "model_preference": None,
-            "tool_access": [],
+            "tool_access": tool_access,
             "session_id": self.session_id,
         }
         if agent_type_label:
@@ -356,16 +384,56 @@ class RoleDesignSession:
 
 def _extract_name(intro_text: str) -> str:
     """Best-effort name extraction from intro answer."""
+    label_patterns = [
+        r"\bname\s*[:\-]\s*([A-Za-z][\w'-]*)",
+        r"\bcalled\s+([A-Za-z][\w'-]*)",
+        r"\bnamed\s+([A-Za-z][\w'-]*)",
+    ]
+    for pattern in label_patterns:
+        match = re.search(pattern, intro_text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip(".,!?\"':;")
+
     words = intro_text.split()
     # Look for capitalised word that isn't a common sentence opener
     stop = {"i", "the", "a", "an", "my", "this", "they", "she", "he", "it",
-            "her", "his", "their", "want", "would", "like", "called", "named"}
+            "her", "his", "their", "want", "would", "like", "called", "named", "name"}
     for w in words:
-        clean = w.strip(".,!?\"'")
+        clean = w.strip(".,!?\"':;()[]{}")
         if clean and clean[0].isupper() and clean.lower() not in stop:
             return clean
     # Fall back to first capitalised word or "Character"
     return "Character"
+
+
+def _slugify_role_id(name: str) -> str:
+    """Convert a display name into a filename-safe role id."""
+    slug = re.sub(r"[^\w]+", "_", name.strip().lower(), flags=re.UNICODE)
+    slug = slug.strip("_")
+    return slug or "character"
+
+
+def _parse_tool_access(answer: str, agent_type: str) -> list:
+    """
+    Parse tool_access answer into a validated list of category names.
+    Unknown categories are silently dropped. Falls back to type-based
+    defaults if the answer is empty or yields nothing valid.
+    Always ensures 'memory' is present.
+    """
+    if answer.strip():
+        # Accept comma/space/semicolon separated tokens
+        tokens = re.split(r"[,;\s]+", answer.lower())
+        parsed = [t.strip() for t in tokens if t.strip() in _VALID_TOOL_CATEGORIES]
+    else:
+        parsed = []
+
+    if not parsed:
+        parsed = list(_DEFAULT_TOOL_ACCESS.get(agent_type, ["memory"]))
+
+    if "memory" not in parsed:
+        parsed = ["memory"] + parsed
+
+    return parsed
 
 
 def _parse_pv(answer: str) -> str:
@@ -397,6 +465,21 @@ def _logic_from_cognitive(cognitive: str) -> str:
         return "trust their gut on this"
     return "think it through first"
 
+
+# Default tool_access per agent_type — used when user skips or gives empty answer
+_DEFAULT_TOOL_ACCESS: Dict[str, list] = {
+    "researcher": ["memory", "web", "file"],
+    "coder":      ["memory", "file", "exec"],
+    "reviewer":   ["memory", "file"],
+    "ops":        ["memory", "file", "exec", "terminal", "web"],
+    "analyst":    ["memory", "web", "file"],
+    "assistant":  ["memory", "web"],
+    "custom":     ["memory"],
+}
+
+_VALID_TOOL_CATEGORIES = {
+    "memory", "file", "exec", "web", "browser", "terminal", "orchestration", "comms",
+}
 
 _KNOWN_AGENT_TYPES = {"researcher", "coder", "reviewer", "ops", "analyst", "assistant"}
 

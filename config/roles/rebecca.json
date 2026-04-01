@@ -37,9 +37,9 @@
     "min_context": 65536
   },
   "tool_access": [
-    "web",
     "memory",
-    "browser"
+    "web",
+    "file"
   ],
   "tools": [],
   "session_id": "",

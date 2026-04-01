@@ -41,8 +41,6 @@
   ],
   "agent_type": "reviewer",
   "tool_access": [
-    "terminal",
-    "browser",
     "memory",
     "file"
   ],
