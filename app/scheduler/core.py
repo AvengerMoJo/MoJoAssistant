@@ -63,6 +63,7 @@ class Scheduler:
 
         # Wake signal — set by wake() to interrupt the inter-tick sleep early
         self._wake_event: Optional[asyncio.Event] = None  # Created in start()
+        self._scheduler_loop: Optional[asyncio.AbstractEventLoop] = None  # loop wake() uses
 
         # Statistics
         self.stats = {
@@ -118,11 +119,24 @@ class Scheduler:
         """
         Wake the scheduler immediately to process pending work.
 
-        Safe to call from any context (sync or async, before or after start()).
+        Safe to call from any context — sync or async, same thread or different.
+        Uses call_soon_threadsafe when called from outside the scheduler's loop
+        so the asyncio.Event.set() is dispatched on the correct loop.
         No-op if the scheduler has not started yet.
         """
-        if self._wake_event is not None:
+        if self._wake_event is None or self._scheduler_loop is None:
+            return
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is self._scheduler_loop:
+            # Already on the scheduler's loop — set directly
             self._wake_event.set()
+        else:
+            # Called from a different thread/loop — must use threadsafe dispatch
+            self._scheduler_loop.call_soon_threadsafe(self._wake_event.set)
 
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
@@ -145,6 +159,7 @@ class Scheduler:
         self.running = True
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._wake_event = asyncio.Event()
+        self._scheduler_loop = asyncio.get_event_loop()
         self.stats["started_at"] = datetime.now()
         self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
         self._seed_tasks_from_config()
