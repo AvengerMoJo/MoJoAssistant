@@ -1233,12 +1233,19 @@ class AgenticExecutor:
                     continue
                 if tool_meta.get("always_injected"):
                     continue
+                if tool_meta.get("internal"):  # facade-only; never expose raw to LLM
+                    continue
                 if tool_meta.get("category") in tool_access:
                     names.append(tool_name)
                     seen.add(tool_name)
             # Registry-defined tools (e.g. external MCP tools with a category field)
             for t_name, t_def in self._tool_registry._tools.items():
                 if t_name in seen:
+                    continue
+                # Skip internal/raw tools registered by MCP servers that have
+                # a catalog entry marked internal (e.g. playwright__ tools)
+                cat_meta = tool_entries.get(t_name, {})
+                if isinstance(cat_meta, dict) and cat_meta.get("internal"):
                     continue
                 if t_def.category and t_def.category in tool_access:
                     names.append(t_name)

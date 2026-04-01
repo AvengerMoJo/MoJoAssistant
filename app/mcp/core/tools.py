@@ -724,6 +724,58 @@ class ToolRegistry:
                 },
             },
             {
+                "name": "browser",
+                "description": (
+                    "Control a headless browser via Playwright. Use for any web UI interaction: "
+                    "navigate pages, click buttons, fill forms, take screenshots, read page state.\n\n"
+                    "Actions:\n"
+                    "  navigate        — go to a URL (params: url)\n"
+                    "  back            — go back in history\n"
+                    "  click           — click an element (params: selector or ref from snapshot)\n"
+                    "  hover           — hover over an element (params: selector)\n"
+                    "  type            — type text into an element (params: selector, text)\n"
+                    "  fill_form       — fill multiple fields at once (params: fields: {selector: value})\n"
+                    "  select          — choose a dropdown option (params: selector, value)\n"
+                    "  press_key       — press a keyboard key (params: key e.g. 'Enter', 'Tab')\n"
+                    "  snapshot        — accessibility snapshot — preferred before acting (no params)\n"
+                    "  screenshot      — visual screenshot (no params)\n"
+                    "  wait_for        — wait for text or timeout (params: text? or timeout_ms?)\n"
+                    "  tabs            — list/create/close/switch tabs (params: action, tab_id?)\n"
+                    "  evaluate        — run JavaScript (params: expression)\n"
+                    "  console         — get console messages\n"
+                    "  network         — get network requests\n"
+                    "  close           — close the page\n\n"
+                    "Workflow: snapshot → act (click/type/fill_form) → snapshot to verify."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "navigate", "back", "click", "hover", "type",
+                                "fill_form", "select", "press_key", "snapshot",
+                                "screenshot", "wait_for", "tabs", "evaluate",
+                                "console", "network", "close",
+                            ],
+                            "description": "The browser action to perform.",
+                        },
+                        "url":        {"type": "string",  "description": "URL for navigate action."},
+                        "selector":   {"type": "string",  "description": "CSS selector or accessibility ref for element actions."},
+                        "text":       {"type": "string",  "description": "Text to type (type action)."},
+                        "fields":     {"type": "object",  "description": "Field map {selector: value} for fill_form."},
+                        "value":      {"type": "string",  "description": "Option value for select action."},
+                        "key":        {"type": "string",  "description": "Key name for press_key (e.g. 'Enter', 'Tab', 'Escape')."},
+                        "expression": {"type": "string",  "description": "JavaScript expression for evaluate."},
+                        "text_to_wait": {"type": "string","description": "Text to wait for (wait_for action)."},
+                        "timeout_ms": {"type": "integer", "description": "Timeout in ms (wait_for action)."},
+                        "tab_action": {"type": "string",  "description": "Tab sub-action: list, new, close, select (tabs action)."},
+                        "tab_id":     {"type": "string",  "description": "Tab ID for close/select (tabs action)."},
+                    },
+                    "required": ["action"],
+                },
+            },
+            {
                 "name": "google_service",
                 "description": "Generic Google Workspace gateway via gws CLI. Use one tool by passing service/resource/method and optional params/body.",
                 "inputSchema": {
@@ -2344,6 +2396,8 @@ Agent resumes within seconds.
             return await self._execute_remove_document(args)
         elif name == "web_search":
             return await self._execute_web_search(args)
+        elif name == "browser":
+            return await self._execute_browser(args)
         elif name == "google_service":
             return await self._execute_google_service(args)
         elif name == "get_current_day":
@@ -3011,6 +3065,50 @@ Agent resumes within seconds.
                 "results": [],
                 "timestamp": time.time(),
             }
+
+    async def _execute_browser(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Browser facade — routes to the appropriate playwright__ MCP tool.
+        The LLM sees one 'browser' tool; playwright tools are internal.
+        """
+        action = args.get("action", "")
+
+        # Map action → (playwright tool name, arg builder)
+        _ROUTES: Dict[str, tuple] = {
+            "navigate":   ("playwright__browser_navigate",        lambda a: {"url": a.get("url", "")}),
+            "back":       ("playwright__browser_navigate_back",   lambda a: {}),
+            "click":      ("playwright__browser_click",           lambda a: {"selector": a.get("selector", "")}),
+            "hover":      ("playwright__browser_hover",           lambda a: {"selector": a.get("selector", "")}),
+            "type":       ("playwright__browser_type",            lambda a: {"selector": a.get("selector", ""), "text": a.get("text", "")}),
+            "fill_form":  ("playwright__browser_fill_form",       lambda a: {"fields": a.get("fields", {})}),
+            "select":     ("playwright__browser_select_option",   lambda a: {"selector": a.get("selector", ""), "value": a.get("value", "")}),
+            "press_key":  ("playwright__browser_press_key",       lambda a: {"key": a.get("key", "")}),
+            "snapshot":   ("playwright__browser_snapshot",        lambda a: {}),
+            "screenshot": ("playwright__browser_take_screenshot", lambda a: {}),
+            "wait_for":   ("playwright__browser_wait_for",        lambda a: {k: v for k, v in {
+                "text": a.get("text_to_wait"), "timeout": a.get("timeout_ms")}.items() if v is not None}),
+            "tabs":       ("playwright__browser_tabs",            lambda a: {k: v for k, v in {
+                "action": a.get("tab_action"), "tab_id": a.get("tab_id")}.items() if v is not None}),
+            "evaluate":   ("playwright__browser_evaluate",        lambda a: {"expression": a.get("expression", "")}),
+            "console":    ("playwright__browser_console_messages",lambda a: {}),
+            "network":    ("playwright__browser_network_requests",lambda a: {}),
+            "close":      ("playwright__browser_close",           lambda a: {}),
+        }
+
+        if action not in _ROUTES:
+            return {"error": f"Unknown browser action '{action}'. Valid: {sorted(_ROUTES)}"}
+
+        tool_name, arg_builder = _ROUTES[action]
+
+        # Delegate to the tool registry (playwright MCP registered there)
+        try:
+            tool = self._tool_registry.get_tool(tool_name) if hasattr(self, "_tool_registry") else None
+            if tool is None:
+                return {"error": f"Playwright not available (tool '{tool_name}' not registered). Is the playwright MCP server running?"}
+            result = await self._tool_registry.execute_tool(tool_name, arg_builder(args))
+            return result
+        except Exception as e:
+            return {"error": f"browser({action}) failed: {e}"}
 
     async def _execute_google_service(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute generic Google Workspace operation via gws CLI."""
