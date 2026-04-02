@@ -20,7 +20,7 @@ from app.scheduler.planning_prompt_manager import PlanningPromptManager
 from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
 from app.scheduler.safety_policy import SafetyPolicy
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
-from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context
+from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context, build_capability_summary
 from app.roles.owner_context import load_owner_profile, infer_context_tier, build_owner_context_slice
 
 DEFAULT_SYSTEM_PROMPT = """\
@@ -351,12 +351,14 @@ class AgenticExecutor:
 
         ninechapter_overlay = build_behavioral_overlay(role) if role else ""
         task_context = build_task_context(role) if role else ""
+        capability_summary = build_capability_summary(role) if role else ""
 
         if role_prefix:
             system_prompt = (
                 mode_overlay
                 + ninechapter_overlay
                 + task_context
+                + capability_summary
                 + role_prefix
                 + "\n\n---\n\n"
                 + workflow_prompt

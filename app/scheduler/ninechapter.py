@@ -1,7 +1,7 @@
 """
 NineChapter runtime behavioral and task context overlays.
 
-Two public functions:
+Three public functions:
 
   build_behavioral_overlay(role)
       Converts dimension scores into behavioral directives.
@@ -15,6 +15,12 @@ Two public functions:
       Injected only in SCHEDULER_AGENTIC_TASK prompts.
       Tells the model what "done well" looks like and exactly when to escalate.
 
+  build_capability_summary(role)
+      Converts role.tool_access category names into a human-readable
+      capability block injected at task start.  Tells the assistant exactly
+      what it can and cannot do before the first tool call — no runtime
+      discovery needed, no loop risk.
+
 Dimension → behavior mapping
 ----------------------------
 core_values        Evidence rigor, intellectual honesty, uncertainty naming
@@ -27,6 +33,8 @@ Thresholds: ≥90 → strong directive, 75–89 → moderate, <75 → silent.
 """
 from __future__ import annotations
 
+import json
+import os
 from typing import Any, Dict, List
 
 
@@ -166,3 +174,59 @@ def build_task_context(role: Dict[str, Any]) -> str:
         return ""
 
     return "\n\n".join(blocks) + "\n\n"
+
+
+# ---------------------------------------------------------------------------
+# Capability summary
+# ---------------------------------------------------------------------------
+
+_TOOL_CATALOG_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "config", "tool_catalog.json"
+)
+_tool_catalog_cache: Dict[str, Any] = {}
+
+
+def _load_tool_catalog() -> Dict[str, Any]:
+    global _tool_catalog_cache
+    if _tool_catalog_cache:
+        return _tool_catalog_cache
+    try:
+        with open(_TOOL_CATALOG_PATH) as f:
+            _tool_catalog_cache = json.load(f)
+    except Exception:
+        _tool_catalog_cache = {}
+    return _tool_catalog_cache
+
+
+def build_capability_summary(role: Dict[str, Any]) -> str:
+    """
+    Return a capability summary block derived from role.tool_access and
+    tool_catalog.json category descriptions.
+
+    Injected into the system prompt at task start so the assistant knows
+    exactly what it can do before making any tool calls.  Static — no LLM
+    call, no loop risk.
+
+    Returns empty string if the role has no tool_access.
+    """
+    tool_access: List[str] = role.get("tool_access") or []
+    if not tool_access:
+        return ""
+
+    catalog = _load_tool_catalog()
+    categories = catalog.get("categories", {})
+
+    lines: List[str] = []
+    for cat in tool_access:
+        desc = categories.get(cat, {}).get("description", cat)
+        lines.append(f"- **{cat}**: {desc}")
+
+    summary = (
+        "## Your Capabilities\n"
+        "You have access to the following tool categories:\n"
+        + "\n".join(lines)
+        + "\n\n"
+        "If a task requires a capability not listed above, use `ask_user` to escalate "
+        "— do not attempt to work around or fabricate missing tools.\n"
+    )
+    return summary + "\n"
