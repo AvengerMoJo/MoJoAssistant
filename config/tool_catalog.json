@@ -9,7 +9,7 @@
     "browser":       { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP)" },
     "terminal":      { "description": "Persistent terminal sessions via tmux — run commands, read output" },
     "orchestration": { "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" },
-    "google":        { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (via Google Workspace MCP)" }
+    "google":        { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (via Google Workspace MCP or gws CLI)" }
   },
   "tools": {
     "memory_search":   {
@@ -101,6 +101,9 @@
     "browser_click":      { "category": "browser", "danger_level": "medium", "description": "Click an element by CSS selector or accessibility ref." },
     "browser_type":       { "category": "browser", "danger_level": "medium", "description": "Type text into an input field." },
     "browser_press_key":  { "category": "browser", "danger_level": "low",    "description": "Press a keyboard key (Enter, Tab, Escape, etc.)." },
+
+    "google_calendar_list":   { "category": "google", "danger_level": "low",    "description": "List events from Google Calendar for a date range." },
+    "google_calendar_create": { "category": "google", "danger_level": "medium", "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary." },
 
     "playwright__browser_navigate":        { "category": "browser", "danger_level": "low",    "internal": true, "description": "Navigate to a URL." },
     "playwright__browser_navigate_back":   { "category": "browser", "danger_level": "low",    "internal": true, "description": "Go back to the previous page." },

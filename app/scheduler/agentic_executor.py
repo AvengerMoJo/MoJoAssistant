@@ -173,6 +173,66 @@ BUILTIN_TOOLS = {
             },
         },
     },
+    "google_calendar_list": {
+        "type": "function",
+        "function": {
+            "name": "google_calendar_list",
+            "description": (
+                "List events from Google Calendar for a given date range. "
+                "Use to check Alex's schedule for today, this week, or any date range. "
+                "Returns event titles, start/end times, and descriptions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start of date range. ISO date or datetime, e.g. '2026-04-02' or '2026-04-02T00:00:00'.",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End of date range (exclusive). ISO date or datetime, e.g. '2026-04-09'.",
+                    },
+                    "calendar_id": {
+                        "type": "string",
+                        "description": "Calendar to read from. Default: 'primary' (Alex's main calendar).",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of events to return. Default: 20.",
+                    },
+                },
+                "required": ["start_date", "end_date"],
+            },
+        },
+    },
+    "google_calendar_create": {
+        "type": "function",
+        "function": {
+            "name": "google_calendar_create",
+            "description": (
+                "Create a new event on Google Calendar. "
+                "Only use for the ops calendar (MoJo operational tasks) unless Alex explicitly "
+                "asks for an event on his primary calendar."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Event title/summary."},
+                    "start_at": {"type": "string", "description": "Event start as ISO datetime, e.g. '2026-04-03T10:00:00'."},
+                    "end_at": {"type": "string", "description": "Event end as ISO datetime. Optional — uses duration_minutes if absent."},
+                    "details": {"type": "string", "description": "Event description or notes."},
+                    "calendar_id": {
+                        "type": "string",
+                        "description": "Calendar to write to. Default: 'primary'. Use 'mojo_assistant_ops' for operational tasks.",
+                    },
+                    "timezone": {"type": "string", "description": "Timezone, e.g. 'Asia/Taipei'. Default: 'Asia/Taipei'."},
+                    "duration_minutes": {"type": "integer", "description": "Duration in minutes if end_at not provided. Default: 30."},
+                },
+                "required": ["title", "start_at"],
+            },
+        },
+    },
 }
 
 CONTINUE_PROMPT = (
@@ -1248,7 +1308,37 @@ class AgenticExecutor:
         if name.startswith("browser_") or name == "browser":
             return await self._execute_browser_facade(name, args)
 
+        if name in ("google_calendar_list", "google_calendar_create"):
+            return await self._execute_google_calendar(name, args)
+
         return {"error": f"Unknown or unavailable tool: {name}"}
+
+    # --- Google Calendar bridge -------------------------------------------------
+
+    async def _execute_google_calendar(self, name: str, args: Dict) -> Dict:
+        """Dispatch google_calendar_list / google_calendar_create to the gws bridge."""
+        from app.scheduler.google_calendar_bridge import (
+            calendar_list_events,
+            calendar_create_event,
+        )
+        if name == "google_calendar_list":
+            return await calendar_list_events(
+                start_date=args.get("start_date", ""),
+                end_date=args.get("end_date", ""),
+                calendar_id=args.get("calendar_id", "primary"),
+                max_results=int(args.get("max_results", 20)),
+            )
+        if name == "google_calendar_create":
+            return await calendar_create_event(
+                title=args.get("title", ""),
+                start_at=args.get("start_at", ""),
+                end_at=args.get("end_at"),
+                details=args.get("details", ""),
+                calendar_id=args.get("calendar_id", "primary"),
+                timezone=args.get("timezone", "Asia/Taipei"),
+                duration_minutes=int(args.get("duration_minutes", 30)),
+            )
+        return {"error": f"Unknown google calendar tool: {name}"}
 
     # --- browser facade ---------------------------------------------------------
 
