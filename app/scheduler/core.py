@@ -292,8 +292,33 @@ class Scheduler:
 
     async def _execute_task_concurrent(self, task: Task):
         """Wrapper that acquires the semaphore before executing a task."""
-        async with self._semaphore:
-            await self._execute_task(task)
+        try:
+            async with self._semaphore:
+                await self._execute_task(task)
+        except BaseException as e:
+            # CancelledError inherits from BaseException (not Exception) in Python 3.8+.
+            # If it escapes _execute_task's own try/except, the task is left in RUNNING
+            # forever (zombie). Catch here and force it to FAILED so the queue is clean.
+            if task.status.value == "running":
+                self._log(
+                    f"Task {task.id} died unexpectedly ({type(e).__name__}): {e}", "error"
+                )
+                task.mark_failed(f"{type(e).__name__}: {e}")
+                self.stats["tasks_failed"] += 1
+                self.queue.update(task)
+                try:
+                    await self._broadcast({
+                        "event_type": "task_failed",
+                        "task_id": task.id,
+                        "task_type": task.type.value,
+                        "error": f"{type(e).__name__}: {e}",
+                        "severity": "error",
+                        "title": f"Task {task.id} died unexpectedly",
+                        "notify_user": True,
+                    })
+                except Exception:
+                    pass
+            raise  # re-raise so asyncio marks the Task as cancelled/failed
 
     def _task_routing_fields(self, task: "Task") -> Dict[str, int]:
         """Return urgency/importance fields for broadcast events (omit when None)."""

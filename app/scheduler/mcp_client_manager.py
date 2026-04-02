@@ -8,16 +8,21 @@ with executor type "external_mcp" and the server's category (e.g. "browser").
 Roles that declare tool_access: ["browser"] automatically receive all tools
 discovered from servers in that category — no manual registration needed.
 
-Example config/mcp_servers.json entry:
-  {
-    "id": "playwright",
-    "name": "Playwright MCP",
-    "transport": "stdio",
-    "command": "npx",
-    "args": ["@playwright/mcp@latest", "--headless"],
-    "category": "browser",
-    "enabled": true
-  }
+Two transport models are supported:
+
+  stdio  — MoJo spawns the process and communicates via stdin/stdout.
+           Required fields: command, args.
+           Example: Playwright MCP, tmux MCP.
+
+  http   — The server is already running (started externally, by systemd,
+           the user, or another process). MoJo registers how to reach it.
+           Required fields: mcp_http_url OR port (fallback: localhost:{port}/mcp).
+           Optional fields: pid (informational), authorization (Bearer token).
+           Example: OpenCode, Google Workspace MCP, any long-running service.
+
+The personal layer (~/.memory/config/mcp_servers.json) overrides system
+entries with the same id. Users or internal assistants can add entries there
+without touching the system config.
 """
 
 import asyncio
@@ -35,10 +40,17 @@ logger = logging.getLogger(__name__)
 class ExternalMCPServer:
     id: str
     name: str
-    transport: str          # "stdio" (HTTP planned)
-    command: str
+    transport: str                      # "stdio" | "http"
+    # stdio fields
+    command: str = ""
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
+    # http / externally-running fields
+    mcp_http_url: Optional[str] = None  # full URL, e.g. http://localhost:3100/mcp
+    port: Optional[int] = None          # fallback if mcp_http_url absent → localhost:{port}/mcp
+    pid: Optional[int] = None           # informational only — not used for connection
+    authorization: Optional[str] = None # Bearer token or raw API key
+    # common
     category: str = "external"
     enabled: bool = True
 
@@ -92,9 +104,13 @@ class MCPClientManager:
                     id=srv["id"],
                     name=srv.get("name", srv["id"]),
                     transport=srv.get("transport", "stdio"),
-                    command=_expand(srv["command"]),
+                    command=_expand(srv.get("command", "")),
                     args=[_expand(a) for a in srv.get("args", [])],
                     env=srv.get("env", {}),
+                    mcp_http_url=srv.get("mcp_http_url"),
+                    port=srv.get("port"),
+                    pid=srv.get("pid"),
+                    authorization=srv.get("authorization") or os.environ.get(srv.get("authorization_env", "") or ""),
                     category=srv.get("category", "external"),
                     enabled=True,
                 )
@@ -131,9 +147,14 @@ class MCPClientManager:
             return results
 
     async def _connect_server(self, server: ExternalMCPServer) -> List[Any]:
-        if server.transport != "stdio":
+        if server.transport == "stdio":
+            return await self._connect_stdio(server)
+        elif server.transport in ("http", "streamable_http"):
+            return await self._connect_http(server)
+        else:
             raise NotImplementedError(f"Transport '{server.transport}' not yet supported")
 
+    async def _connect_stdio(self, server: ExternalMCPServer) -> List[Any]:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
@@ -147,7 +168,25 @@ class MCPClientManager:
         session = await self._exit_stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         self._sessions[server.id] = session
+        response = await session.list_tools()
+        return response.tools
 
+    async def _connect_http(self, server: ExternalMCPServer) -> List[Any]:
+        """Connect to an externally-running MCP server over HTTP (Streamable HTTP)."""
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        url = server.mcp_http_url or f"http://localhost:{server.port}/mcp"
+        headers: Dict[str, str] = {}
+        if server.authorization:
+            headers["Authorization"] = f"Bearer {server.authorization}"
+
+        read, write, _ = await self._exit_stack.enter_async_context(
+            streamablehttp_client(url, headers=headers or None)
+        )
+        session = await self._exit_stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        self._sessions[server.id] = session
         response = await session.list_tools()
         return response.tools
 

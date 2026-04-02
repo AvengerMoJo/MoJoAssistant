@@ -84,6 +84,95 @@ BUILTIN_TOOLS = {
             },
         },
     },
+    # Individual browser tools — Qwen handles one-tool-one-action better than enum dispatch.
+    # These all route through _execute_browser_facade which calls the playwright MCP server.
+    "browser_navigate": {
+        "type": "function",
+        "function": {
+            "name": "browser_navigate",
+            "description": "Open a URL in the headless browser. Call before any page interactions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to navigate to."},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    "browser_snapshot": {
+        "type": "function",
+        "function": {
+            "name": "browser_snapshot",
+            "description": (
+                "Get an accessibility snapshot of the current page — text content, "
+                "element roles, and refs. Use this BEFORE clicking or typing to find "
+                "the correct selector/ref for the target element."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    "browser_screenshot": {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "Take a visual screenshot of the current page. Use to verify page state visually.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    "browser_click": {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": (
+                "Click an element on the page. "
+                "Use the 'ref' value from browser_snapshot output (e.g. ref='e21'). "
+                "Also provide 'element' as a short human description of what you're clicking."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref":     {"type": "string", "description": "Element ref from browser_snapshot (e.g. 'e21')."},
+                    "element": {"type": "string", "description": "Human description of the element (e.g. 'Login button')."},
+                },
+                "required": ["ref"],
+            },
+        },
+    },
+    "browser_type": {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": (
+                "Type text into an input field. "
+                "Use the 'ref' value from browser_snapshot output (e.g. ref='e16'). "
+                "Also provide 'element' as a short human description of the field."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref":     {"type": "string", "description": "Element ref from browser_snapshot (e.g. 'e16')."},
+                    "element": {"type": "string", "description": "Human description of the input (e.g. 'Username field')."},
+                    "text":    {"type": "string", "description": "Text to type into the field."},
+                },
+                "required": ["ref", "text"],
+            },
+        },
+    },
+    "browser_press_key": {
+        "type": "function",
+        "function": {
+            "name": "browser_press_key",
+            "description": "Press a keyboard key (e.g. Enter to submit a form, Tab to move focus, Escape to dismiss).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Key name: 'Enter', 'Tab', 'Escape', 'Space', etc."},
+                },
+                "required": ["key"],
+            },
+        },
+    },
 }
 
 CONTINUE_PROMPT = (
@@ -1138,8 +1227,11 @@ class AgenticExecutor:
                     operation="execute", tool_name=name, success=True
                 )
                 return result
-            # Preserve concrete tool error for the LLM instead of masking it.
-            return {"error": result.get("error", f"Tool '{name}' failed")}
+            # "Tool not found" means it's a builtin — fall through to builtin handlers.
+            # Any other failure is a real error — return it to the LLM.
+            err = result.get("error", "")
+            if not (err.endswith("not found") or "not found" in err):
+                return {"error": err or f"Tool '{name}' failed"}
         except Exception as e:
             self._log(f"Dynamic tool {name} failed: {e}", "error")
 
@@ -1151,7 +1243,99 @@ class AgenticExecutor:
             )
             return {"query": query, "results": results, "count": len(results)}
 
+        if name.startswith("browser_") or name == "browser":
+            return await self._execute_browser_facade(name, args)
+
         return {"error": f"Unknown or unavailable tool: {name}"}
+
+    # --- browser facade ---------------------------------------------------------
+
+    _BROWSER_ROUTES: Dict[str, tuple] = {
+        "navigate":   ("browser_navigate",        lambda a: {"url": a.get("url", "")}),
+        "back":       ("browser_navigate_back",   lambda a: {}),
+        "click":      ("browser_click",  lambda a: {
+            "ref": a.get("ref") or a.get("selector", ""),
+            "element": a.get("element", a.get("ref") or a.get("selector", "")),
+        }),
+        "hover":      ("browser_hover",  lambda a: {
+            "ref": a.get("ref") or a.get("selector", ""),
+            "element": a.get("element", a.get("ref") or a.get("selector", "")),
+        }),
+        "type":       ("browser_type",   lambda a: {
+            "ref": a.get("ref") or a.get("selector", ""),
+            "element": a.get("element", a.get("ref") or a.get("selector", "")),
+            "text": a.get("text", ""),
+        }),
+        "fill_form":  ("browser_fill_form",       lambda a: {"fields": a.get("fields", {})}),
+        "select":     ("browser_select_option",   lambda a: {"selector": a.get("selector", ""), "value": a.get("value", "")}),
+        "press_key":  ("browser_press_key",       lambda a: {"key": a.get("key", "")}),
+        "snapshot":   ("browser_snapshot",        lambda a: {}),
+        "screenshot": ("browser_take_screenshot", lambda a: {}),
+        "wait_for":   ("browser_wait_for",        lambda a: {k: v for k, v in {
+            "text": a.get("text_to_wait"), "timeout": a.get("timeout_ms")}.items() if v is not None}),
+        "tabs":       ("browser_tabs",            lambda a: {k: v for k, v in {
+            "action": a.get("tab_action"), "tab_id": a.get("tab_id")}.items() if v is not None}),
+        "evaluate":   ("browser_evaluate",        lambda a: {"expression": a.get("expression", "")}),
+        "console":    ("browser_console_messages",lambda a: {}),
+        "network":    ("browser_network_requests",lambda a: {}),
+        "close":      ("browser_close",           lambda a: {}),
+    }
+
+    async def _execute_browser_facade(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Route browser_* tools (and legacy browser(action=...) facade) to the playwright MCP server.
+
+        Individual tools: browser_navigate, browser_snapshot, browser_screenshot,
+                          browser_click, browser_type, browser_press_key
+        Legacy facade:    browser(action='navigate', ...)
+        """
+        # Map tool name → (playwright tool name suffix, arg_builder)
+        # Playwright MCP uses 'ref' (from snapshot) + 'element' (human label), not 'selector'.
+        # Individual tools use the tool name directly; legacy facade uses action param.
+        _INDIVIDUAL_MAP: Dict[str, tuple] = {
+            "browser_navigate":   ("browser_navigate",        lambda a: {"url": a.get("url", "")}),
+            "browser_snapshot":   ("browser_snapshot",        lambda a: {}),
+            "browser_screenshot": ("browser_take_screenshot", lambda a: {}),
+            "browser_click":      ("browser_click",           lambda a: {
+                "ref": a.get("ref") or a.get("selector", ""),
+                "element": a.get("element", a.get("ref") or a.get("selector", "")),
+            }),
+            "browser_type":       ("browser_type",            lambda a: {
+                "ref": a.get("ref") or a.get("selector", ""),
+                "element": a.get("element", a.get("ref") or a.get("selector", "")),
+                "text": a.get("text", ""),
+            }),
+            "browser_press_key":  ("browser_press_key",       lambda a: {"key": a.get("key", "")}),
+        }
+
+        if name in _INDIVIDUAL_MAP:
+            pw_tool, arg_builder = _INDIVIDUAL_MAP[name]
+        elif name == "browser":
+            # Legacy enum facade
+            action = args.get("action", "")
+            if action not in self._BROWSER_ROUTES:
+                return {"error": f"Unknown browser action '{action}'. Valid: {sorted(self._BROWSER_ROUTES)}"}
+            pw_tool, arg_builder = self._BROWSER_ROUTES[action]
+        else:
+            return {"error": f"Unknown browser tool: {name}"}
+
+        built_args = arg_builder(args)
+
+        # Try via mcp_client_manager (playwright server)
+        if self._mcp_client_manager:
+            try:
+                result = await self._mcp_client_manager.call_tool("playwright", pw_tool, built_args)
+                return result
+            except Exception as e:
+                return {"error": f"{name} via playwright MCP failed: {e}"}
+
+        # Fallback: try the registry directly (playwright__ prefix)
+        reg_name = f"playwright__{pw_tool}"
+        try:
+            result = await self._tool_registry.execute_tool(reg_name, built_args)
+            return result
+        except Exception as e:
+            return {"error": f"{name} failed: playwright MCP not available. {e}"}
 
     async def _emit_policy_violation(
         self,

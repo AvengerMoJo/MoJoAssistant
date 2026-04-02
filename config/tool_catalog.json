@@ -8,7 +8,8 @@
     "comms":    { "description": "Communication with the user (HITL)" },
     "browser":       { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP)" },
     "terminal":      { "description": "Persistent terminal sessions via tmux — run commands, read output" },
-    "orchestration": { "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" }
+    "orchestration": { "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" },
+    "google":        { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (via Google Workspace MCP)" }
   },
   "tools": {
     "memory_search":   {
@@ -93,6 +94,13 @@
     "get-command-result": { "category": "terminal", "danger_level": "low",    "description": "Get the result of a previously executed tmux command." },
 
     "browser": { "category": "browser", "danger_level": "medium", "description": "Control a headless browser — navigate, click, type, fill forms, take screenshots, and read page state. Pass action + params. See action enum in tool schema." },
+
+    "browser_navigate":   { "category": "browser", "danger_level": "low",    "description": "Open a URL in the headless browser." },
+    "browser_snapshot":   { "category": "browser", "danger_level": "low",    "description": "Accessibility snapshot of the current page — use before click/type to find element refs." },
+    "browser_screenshot": { "category": "browser", "danger_level": "low",    "description": "Visual screenshot of the current page." },
+    "browser_click":      { "category": "browser", "danger_level": "medium", "description": "Click an element by CSS selector or accessibility ref." },
+    "browser_type":       { "category": "browser", "danger_level": "medium", "description": "Type text into an input field." },
+    "browser_press_key":  { "category": "browser", "danger_level": "low",    "description": "Press a keyboard key (Enter, Tab, Escape, etc.)." },
 
     "playwright__browser_navigate":        { "category": "browser", "danger_level": "low",    "internal": true, "description": "Navigate to a URL." },
     "playwright__browser_navigate_back":   { "category": "browser", "danger_level": "low",    "internal": true, "description": "Go back to the previous page." },

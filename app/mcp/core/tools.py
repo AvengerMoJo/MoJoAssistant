@@ -11,13 +11,11 @@ import asyncio
 from datetime import datetime
 from app.git.git_service import GitService
 
-
 def _is_llm_model_path(path: str) -> bool:
     """Check if a dot-path targets a model field under api_models (e.g. 'api_models.lmstudio.model')."""
     import fnmatch
 
     return fnmatch.fnmatch(path, "api_models.*.model")
-
 
 class ToolRegistry:
     """Registry of available tools and their execution"""
@@ -218,6 +216,16 @@ class ToolRegistry:
             "audit_get",
             # External agent → external_agent hub
             "google_service",
+            # Web search → handled by backend LLM, external MCP, or agent task
+            "web_search",
+            # Browser → agent tool only (never expose to user via MCP)
+            "browser",
+            # Role → role hub
+            "role_design_start",
+            "role_design_answer",
+            "role_create",
+            "role_list",
+            "role_get",
         }
 
         # Standardized user prompt templates for LLM usability
@@ -450,7 +458,14 @@ class ToolRegistry:
     # ========================================================================
 
     def _define_tools(self) -> List[Dict[str, Any]]:
-        """Define all available tools"""
+        """
+        Active MCP tools — what Claude Code sees in the tool list.
+
+        Design rule: ONLY user-facing tools live here.
+        Agent-layer tools (browser_navigate, bash_exec, memory_search, etc.)
+        belong in agentic_executor.py BUILTIN_TOOLS or the DynamicToolRegistry.
+        Retired individual tools are in placeholder_tools (handled in execute()).
+        """
         return [
             {
                 "name": "get_context",
@@ -549,37 +564,6 @@ class ToolRegistry:
                 },
             },
             {
-                "name": "add_documents",
-                "description": "Add reference documents, code examples, or knowledge to the permanent knowledge base for future retrieval. When to use: Use this when you want to permanently store reference material, documentation, code snippets, or any information that should be available for future conversations. How it works: Documents are embedded and stored in the knowledge base with optional metadata. Why useful: Builds a personal knowledge repository that can be searched later using search_memory.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "documents": {
-                            "type": "array",
-                            "description": "Array of documents to add to knowledge base",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "content": {
-                                        "type": "string",
-                                        "description": "Document content (supports Chinese and English text)",
-                                        "minLength": 1,
-                                    },
-                                    "metadata": {
-                                        "type": "object",
-                                        "description": "Optional metadata (title, topic, tags, source, etc.) for better organization",
-                                        "additionalProperties": True,
-                                    },
-                                },
-                                "required": ["content"],
-                            },
-                            "minItems": 1,
-                        }
-                    },
-                    "required": ["documents"],
-                },
-            },
-            {
                 "name": "add_conversation",
                 "description": "PRESERVE CONVERSATION CONTEXT: Add this Q&A exchange to memory so I remember our conversation. Use IMMEDIATELY after every user question and my response to maintain context across our interaction. This ensures I can reference previous parts of our conversation.",
                 "inputSchema": {
@@ -599,746 +583,13 @@ class ToolRegistry:
                     "required": ["user_message", "assistant_message"],
                 },
             },
-            {
-                "name": "get_memory_stats",
-                "description": "Get comprehensive statistics about the memory system including sizes of different memory tiers and performance metrics. When to use: Use to monitor memory usage, check system health, or understand how much information is stored. How it works: Returns detailed statistics from all memory tiers (working, active, archival, knowledge base). Why useful: Helps monitor system performance and memory utilization for optimization.",
-                "inputSchema": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "end_conversation",
-                "description": "ARCHIVE CURRENT TOPIC: End this conversation topic and archive it for long-term memory. Use when switching to a completely different topic or when the current discussion is complete. This moves our conversation from short-term working memory to long-term storage.",
-                "inputSchema": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "toggle_multi_model",
-                "description": "Enable or disable multi-model embedding support at runtime for enhanced semantic search. When to use: Enable when you need better search accuracy across diverse content types, disable to reduce resource usage. How it works: Switches between single and multi-model embedding modes. Why useful: Multi-model mode provides better semantic understanding but uses more computational resources.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "enabled": {
-                            "type": "boolean",
-                            "description": "True to enable multi-model embeddings, False to disable (uses single model)",
-                        }
-                    },
-                    "required": ["enabled"],
-                },
-            },
-            {
-                "name": "list_recent_conversations",
-                "description": "REVIEW CONVERSATION HISTORY: Show me recent conversation exchanges that are stored in memory. Use this when I need to see what we've discussed before, or when I want to clean up unwanted conversations. This helps me understand our conversation history and manage stored content.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "limit": {
-                            "type": "integer",
-                            "description": "Number of recent conversations to show (default: 10, max: 50)",
-                            "default": 10,
-                            "minimum": 1,
-                            "maximum": 50,
-                        }
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "remove_conversation_message",
-                "description": "CLEAN UP BAD CONVERSATIONS: Remove a specific problematic conversation message by its ID. Use when other AI models generated bad responses that are cluttering our memory. This helps keep our conversation history clean and relevant.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "message_id": {
-                            "type": "string",
-                            "description": "ID of the bad message to remove (get this from list_recent_conversations first)",
-                        }
-                    },
-                    "required": ["message_id"],
-                },
-            },
-            {
-                "name": "remove_recent_conversations",
-                "description": "BULK CLEANUP: Remove multiple recent bad conversations at once. Use when several recent interactions were problematic and need to be cleared. This is faster than removing conversations one by one.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "count": {
-                            "type": "integer",
-                            "description": "Number of most recent conversations to remove (1-100)",
-                            "minimum": 1,
-                            "maximum": 100,
-                        }
-                    },
-                    "required": ["count"],
-                },
-            },
-            {
-                "name": "list_recent_documents",
-                "description": "REVIEW KNOWLEDGE BASE: Show me recently added documents in the knowledge base. Use this to see what reference materials are available, or to identify documents that need cleanup. This helps me understand what information is stored for future reference.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "limit": {
-                            "type": "integer",
-                            "description": "Number of recent documents to show (default: 10, max: 50)",
-                            "default": 10,
-                            "minimum": 1,
-                            "maximum": 50,
-                        }
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "remove_document",
-                "description": "CLEAN UP KNOWLEDGE BASE: Remove a specific document by its ID. Use when a document is outdated, incorrect, or no longer relevant. This keeps the knowledge base focused on useful reference material.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "document_id": {
-                            "type": "string",
-                            "description": "ID of the document to remove (get this from list_recent_documents first)",
-                        }
-                    },
-                    "required": ["document_id"],
-                },
-            },
-            {
-                "name": "web_search",
-                "description": "Search the internet for current information using Google Custom Search API. When to use: Use when you need up-to-date information, news, or data not available in local memory. How it works: Queries Google Custom Search API and returns relevant results with citations. Why useful: Provides access to current web information for comprehensive responses. [PLACEHOLDER - Not yet implemented]",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query for finding current information on the web",
-                            "minLength": 1,
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of search results to return (max: 10)",
-                            "default": 10,
-                            "minimum": 1,
-                            "maximum": 10,
-                        },
-                    },
-                    "required": ["query"],
-                },
-            },
-            {
-                "name": "browser",
-                "description": (
-                    "Control a headless browser via Playwright. Use for any web UI interaction: "
-                    "navigate pages, click buttons, fill forms, take screenshots, read page state.\n\n"
-                    "Actions:\n"
-                    "  navigate        — go to a URL (params: url)\n"
-                    "  back            — go back in history\n"
-                    "  click           — click an element (params: selector or ref from snapshot)\n"
-                    "  hover           — hover over an element (params: selector)\n"
-                    "  type            — type text into an element (params: selector, text)\n"
-                    "  fill_form       — fill multiple fields at once (params: fields: {selector: value})\n"
-                    "  select          — choose a dropdown option (params: selector, value)\n"
-                    "  press_key       — press a keyboard key (params: key e.g. 'Enter', 'Tab')\n"
-                    "  snapshot        — accessibility snapshot — preferred before acting (no params)\n"
-                    "  screenshot      — visual screenshot (no params)\n"
-                    "  wait_for        — wait for text or timeout (params: text? or timeout_ms?)\n"
-                    "  tabs            — list/create/close/switch tabs (params: action, tab_id?)\n"
-                    "  evaluate        — run JavaScript (params: expression)\n"
-                    "  console         — get console messages\n"
-                    "  network         — get network requests\n"
-                    "  close           — close the page\n\n"
-                    "Workflow: snapshot → act (click/type/fill_form) → snapshot to verify."
-                ),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": [
-                                "navigate", "back", "click", "hover", "type",
-                                "fill_form", "select", "press_key", "snapshot",
-                                "screenshot", "wait_for", "tabs", "evaluate",
-                                "console", "network", "close",
-                            ],
-                            "description": "The browser action to perform.",
-                        },
-                        "url":        {"type": "string",  "description": "URL for navigate action."},
-                        "selector":   {"type": "string",  "description": "CSS selector or accessibility ref for element actions."},
-                        "text":       {"type": "string",  "description": "Text to type (type action)."},
-                        "fields":     {"type": "object",  "description": "Field map {selector: value} for fill_form."},
-                        "value":      {"type": "string",  "description": "Option value for select action."},
-                        "key":        {"type": "string",  "description": "Key name for press_key (e.g. 'Enter', 'Tab', 'Escape')."},
-                        "expression": {"type": "string",  "description": "JavaScript expression for evaluate."},
-                        "text_to_wait": {"type": "string","description": "Text to wait for (wait_for action)."},
-                        "timeout_ms": {"type": "integer", "description": "Timeout in ms (wait_for action)."},
-                        "tab_action": {"type": "string",  "description": "Tab sub-action: list, new, close, select (tabs action)."},
-                        "tab_id":     {"type": "string",  "description": "Tab ID for close/select (tabs action)."},
-                    },
-                    "required": ["action"],
-                },
-            },
-            {
-                "name": "google_service",
-                "description": "Generic Google Workspace gateway via gws CLI. Use one tool by passing service/resource/method and optional params/body.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "service": {
-                            "type": "string",
-                            "description": "Google Workspace service (calendar, drive, sheets, gmail, docs, people)",
-                            "minLength": 1,
-                        },
-                        "resource": {
-                            "type": "string",
-                            "description": "API resource name (e.g., events, files, spreadsheets, users)",
-                            "minLength": 1,
-                        },
-                        "method": {
-                            "type": "string",
-                            "description": "API method (e.g., list, get, create, update, delete)",
-                            "minLength": 1,
-                        },
-                        "sub_resource": {
-                            "type": "string",
-                            "description": "Optional sub-resource between resource and method",
-                        },
-                        "params": {
-                            "type": "object",
-                            "description": "JSON object for gws --params",
-                        },
-                        "json_body": {
-                            "type": "object",
-                            "description": "JSON request body for gws --json",
-                        },
-                        "format": {
-                            "type": "string",
-                            "enum": ["json", "table", "yaml", "csv"],
-                            "default": "json",
-                        },
-                        "api_version": {
-                            "type": "string",
-                            "description": "Optional API version override",
-                        },
-                        "page_all": {
-                            "type": "boolean",
-                            "default": False,
-                        },
-                        "page_limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                        },
-                        "page_delay": {
-                            "type": "integer",
-                            "minimum": 0,
-                        },
-                        "upload_path": {
-                            "type": "string",
-                            "description": "Optional local file path for upload",
-                        },
-                        "output_path": {
-                            "type": "string",
-                            "description": "Optional output file path for download/binary responses",
-                        },
-                    },
-                    "required": ["service", "resource", "method"],
-                },
-            },
-            {
-                "name": "knowledge_add_repo",
-                "description": "Register a git repository in the knowledge base for code analysis and retrieval. When to use: Use when you want to give the memory system access to a codebase for future reference and understanding. How it works: Clones repository using SSH key authentication and stores it locally for file access. Why useful: Enables code-aware conversations and allows storing code insights in memory. IMPORTANT: SSH key must NOT have a passphrase. If your key has a passphrase, remove it first with: ssh-keygen -p -f <key_path>",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "repo_name": {
-                            "type": "string",
-                            "description": "Local name for the repository (e.g., 'MyProject')",
-                            "minLength": 1,
-                        },
-                        "repo_url": {
-                            "type": "string",
-                            "description": "Git SSH URL (e.g., 'git@github.com:user/repo.git')",
-                            "minLength": 1,
-                        },
-                        "ssh_key_path": {
-                            "type": "string",
-                            "description": "Path to SSH private key file (e.g., '~/.ssh/id_rsa'). Must be a passwordless SSH key!",
-                            "minLength": 1,
-                        },
-                        "branch": {
-                            "type": "string",
-                            "description": "Branch to track (default: 'main')",
-                            "default": "main",
-                        },
-                    },
-                    "required": ["repo_name", "repo_url", "ssh_key_path"],
-                },
-            },
-            {
-                "name": "knowledge_get_file",
-                "description": "Retrieve file content from a repository registered in the knowledge base. When to use: Use when you need to read the actual code content of specific files for analysis or reference. How it works: Retrieves current or historical file content directly from the repository. Why useful: Provides access to actual code for detailed analysis and understanding.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "repo_name": {
-                            "type": "string",
-                            "description": "Name of registered repository",
-                            "minLength": 1,
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": "Path to file within repository (e.g., 'src/main.py')",
-                            "minLength": 1,
-                        },
-                        "git_hash": {
-                            "type": "string",
-                            "description": "Optional specific commit hash (defaults to latest)",
-                            "minLength": 7,
-                        },
-                    },
-                    "required": ["repo_name", "file_path"],
-                },
-            },
-            {
-                "name": "knowledge_list_repos",
-                "description": "List all repositories registered in the knowledge base. When to use: Use to see which repositories are available for code analysis and their current status. How it works: Shows all registered repositories with their URLs, branches, and status. Why useful: Helps you understand what codebases are available for analysis.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
-            },
             # External Agent Manager Tools — manages external agent processes (opencode, claude_code,
             # or any external agent). NOTE: These are NOT MoJo's internal agentic assistants.
             # To run a MoJo agentic assistant task (e.g. Ahman), use scheduler_add_task with
             # task_type="assistant" and a role_id.
-            {
-                "name": "agent_list_types",
-                "description": "List all installed external agent types (e.g. 'opencode', 'claude_code'). Shows supported actions and how to identify instances. NOTE: These are external agent processes — for MoJo's internal agentic assistants use scheduler_add_task.",
-                "inputSchema": {"type": "object", "properties": {}, "required": []},
-            },
-            {
-                "name": "agent_start",
-                "description": "Start an external agent process. For opencode: pass git_url as identifier. For claude_code: pass session_id as identifier with working_dir in params. Use agent_list_types to see available types.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "agent_type": {
-                            "type": "string",
-                            "description": "External agent type (e.g. 'opencode', 'claude_code'). Use agent_list_types to see available types.",
-                            "minLength": 1,
-                        },
-                        "identifier": {
-                            "type": "string",
-                            "description": "Instance identifier (git_url for opencode, session_id for claude_code)",
-                            "minLength": 1,
-                        },
-                        "params": {
-                            "type": "object",
-                            "description": "Additional parameters (e.g. user_ssh_key for opencode, working_dir/model for claude_code)",
-                        },
-                    },
-                    "required": ["agent_type", "identifier"],
-                },
-            },
-            {
-                "name": "agent_stop",
-                "description": "Stop a coding assistant process. Terminates the process but preserves state for restart.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "agent_type": {
-                            "type": "string",
-                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
-                            "minLength": 1,
-                        },
-                        "identifier": {
-                            "type": "string",
-                            "description": "Instance identifier",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["agent_type", "identifier"],
-                },
-            },
-            {
-                "name": "agent_status",
-                "description": "Get the status of a coding assistant process. Shows PID, ports, health, and running state.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "agent_type": {
-                            "type": "string",
-                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
-                            "minLength": 1,
-                        },
-                        "identifier": {
-                            "type": "string",
-                            "description": "Instance identifier",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["agent_type", "identifier"],
-                },
-            },
-            {
-                "name": "agent_list",
-                "description": "List all running instances of a coding assistant type. Shows identifiers, running status, and details.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "agent_type": {
-                            "type": "string",
-                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["agent_type"],
-                },
-            },
-            {
-                "name": "agent_restart",
-                "description": "Restart a coding assistant process. Stops and starts the process with the same configuration.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "agent_type": {
-                            "type": "string",
-                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
-                            "minLength": 1,
-                        },
-                        "identifier": {
-                            "type": "string",
-                            "description": "Instance identifier",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["agent_type", "identifier"],
-                },
-            },
-            {
-                "name": "agent_destroy",
-                "description": "Destroy a coding assistant instance and clean up all local resources. DESTRUCTIVE: permanently removes local data. The remote Git repository is NOT affected.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "agent_type": {
-                            "type": "string",
-                            "description": "External agent type (e.g. 'opencode', 'claude_code')",
-                            "minLength": 1,
-                        },
-                        "identifier": {
-                            "type": "string",
-                            "description": "Instance identifier",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["agent_type", "identifier"],
-                },
-            },
-            {
-                "name": "agent_action",
-                "description": "Execute a backend-specific action on a coding assistant. Use agent_list_types to see supported actions per type. Examples: sandbox_create, llm_config, get_deploy_key.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "agent_type": {
-                            "type": "string",
-                            "description": "Agent type (e.g. 'opencode', 'claude_code')",
-                            "minLength": 1,
-                        },
-                        "action": {
-                            "type": "string",
-                            "description": "Action name (e.g. 'sandbox_create', 'llm_config', 'get_deploy_key')",
-                            "minLength": 1,
-                        },
-                        "params": {
-                            "type": "object",
-                            "description": "Action-specific parameters",
-                        },
-                    },
-                    "required": ["agent_type", "action"],
-                },
-            },
             # Scheduler Tools
-            {
-                "name": "scheduler_add_task",
-                "description": "Schedule a MoJo task for immediate, one-time (datetime), or recurring (cron) execution.\n\nTO RUN A MOJO AGENTIC ASSISTANT (e.g. Ahman): use task_type='assistant'. MoJo runs an LLM think-act loop where the assistant reasons, calls tools, and iterates until it produces a FINAL_ANSWER.\n  • Call scheduler_list_assistant_tools first to see what capabilities to grant.\n  • Key config fields: goal (required), role_id, planning_prompt, max_iterations, tier_preference, available_tools, resource_policy, final_answer_requirements.\n  • Assign a role with role_id to give the assistant a personality and model (see role_list).\n  • Example: task_type='assistant', role_id='ahman', goal='scan the local network'\n\nOTHER TASK TYPES:\n• custom — runs a single shell command, no LLM.\n• dreaming — memory consolidation pipeline.\n• agent — launches an external agent subprocess (opencode, claude_code, etc.).",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {
-                            "type": "string",
-                            "description": "Unique identifier for the task",
-                            "minLength": 1,
-                        },
-                        "task_type": {
-                            "type": "string",
-                            "enum": [
-                                "assistant",
-                                "dreaming",
-                                "custom",
-                                "agent",
-                                "scheduled",
-                            ],
-                            "description": "Type of task: assistant=MoJo agentic assistant with a role (use this to run Ahman or any internal assistant), custom=shell command, dreaming=memory consolidation, agent=external agent subprocess, scheduled=calendar event",
-                        },
-                        "schedule": {
-                            "type": "string",
-                            "description": "When to run (ISO datetime format, e.g., '2026-02-12T03:00:00'). Omit for immediate execution.",
-                        },
-                        "cron_expression": {
-                            "type": "string",
-                            "description": "Recurring schedule (cron format, e.g., '0 3 * * *' for daily at 3 AM). Overrides 'schedule'.",
-                        },
-                        "priority": {
-                            "type": "string",
-                            "enum": ["critical", "high", "medium", "low"],
-                            "description": "Task priority (default: medium). Critical tasks run first.",
-                        },
-                        "config": {
-                            "type": "object",
-                            "description": "Task-specific configuration (for custom tasks, include 'command' key with shell command)",
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "Human-readable description of what this task does",
-                        },
-                        "urgency": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 5,
-                            "description": "How time-sensitive is this task? 1=can wait, 5=do it now. Combined with importance to set a minimum attention level on task events.",
-                        },
-                        "importance": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 5,
-                            "description": "How much does this task matter? 1=nice-to-have, 5=critical outcome. Combined with urgency to set a minimum attention level on task events.",
-                        },
-                    },
-                    "required": ["task_id", "task_type"],
-                },
-            },
-            {
-                "name": "scheduler_list_tasks",
-                "description": "List all scheduled tasks with optional filtering. Shows task status, priority, schedule, and execution results. Use this to monitor what tasks are pending, running, or completed.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "enum": [
-                                "pending",
-                                "running",
-                                "completed",
-                                "failed",
-                                "cancelled",
-                                "waiting_for_input",
-                            ],
-                            "description": "Filter by task status",
-                        },
-                        "priority": {
-                            "type": "string",
-                            "enum": ["critical", "high", "medium", "low"],
-                            "description": "Filter by priority",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of tasks to return (default: 100)",
-                            "minimum": 1,
-                            "maximum": 1000,
-                        },
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "scheduler_get_status",
-                "description": "Get current scheduler status including running state, tick count, current task being executed, and overall statistics. Use this to check if the scheduler is healthy and see performance metrics.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-            },
-            {
-                "name": "scheduler_get_task",
-                "description": "Get detailed information about a specific task by ID. Shows full task configuration, execution status, result, and retry count. Use this to check on a specific task's progress.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {
-                            "type": "string",
-                            "description": "Task identifier",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["task_id"],
-                },
-            },
-            {
-                "name": "scheduler_remove_task",
-                "description": "Remove a task from the scheduler queue. Works for any task status (pending, failed, running, completed). Use this to clean up old or zombie tasks.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {
-                            "type": "string",
-                            "description": "Task identifier",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["task_id"],
-                },
-            },
-            {
-                "name": "scheduler_purge_tasks",
-                "description": "Bulk remove tasks by status. Use this to clean up all failed, completed, or zombie running tasks in one call.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "enum": ["failed", "completed", "running", "cancelled"],
-                            "description": "Remove all tasks with this status",
-                        },
-                        "exclude_ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Task IDs to keep even if they match the status",
-                        },
-                    },
-                    "required": ["status"],
-                },
-            },
             # Scheduler Daemon Control Tools
-            {
-                "name": "scheduler_start_daemon",
-                "description": "Manually start the scheduler daemon if it's not running. The scheduler daemon is the background process that executes scheduled tasks. Normally it starts automatically with the MCP service, but you can use this to restart it if needed.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-            {
-                "name": "scheduler_stop_daemon",
-                "description": "Stop the scheduler daemon gracefully. This will stop the background ticker loop that processes scheduled tasks. Tasks in the queue will be preserved and can be processed when the daemon restarts.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-            {
-                "name": "scheduler_restart_daemon",
-                "description": "Restart the scheduler daemon. Useful if the scheduler appears stuck or you want to force a clean restart of the background processing loop.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-            {
-                "name": "scheduler_daemon_status",
-                "description": "Check if the scheduler daemon is running and get basic health information. Shows whether the background ticker is active, thread status, and basic statistics.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-            {
-                "name": "scheduler_list_assistant_tools",
-                "description": "List all tools that can be given to a MoJo agentic assistant via the available_tools field in scheduler_add_task. Returns each tool's name, description, and danger_level (low/medium/high). Call this before scheduling an agentic assistant task to know what capabilities to grant.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-            {
-                "name": "list_tools",
-                "description": "List all tools from the tool catalog, with category metadata. Use category filter to see tools for a specific access category (memory, file, web, exec, comms). Roles declare tool_access by category — e.g. tool_access: [\"memory\", \"web\"] grants all tools in those categories.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "category": {
-                            "type": "string",
-                            "description": "Filter by category: memory, file, web, exec, comms. Omit to list all tools.",
-                            "enum": ["memory", "file", "web", "exec", "comms"],
-                        }
-                    },
-                },
-            },
             # Dreaming Tools
-            {
-                "name": "dreaming_process",
-                "description": "Process a conversation through the dreaming pipeline (A→B→C→D). Transforms raw conversation into semantic chunks, synthesized clusters, and archived knowledge. Use this for immediate memory consolidation or to test the dreaming system.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "conversation_id": {
-                            "type": "string",
-                            "description": "Unique identifier for this conversation",
-                            "minLength": 1,
-                        },
-                        "conversation_text": {
-                            "type": "string",
-                            "description": "Raw conversation content (multi-language supported)",
-                            "minLength": 1,
-                        },
-                        "quality_level": {
-                            "type": "string",
-                            "enum": ["basic", "good", "premium"],
-                            "description": "Processing quality level (basic=local free, good=API budget, premium=extra cost). Default: basic",
-                        },
-                        "metadata": {
-                            "type": "object",
-                            "description": "Optional metadata (topic, date, participants, etc.)",
-                        },
-                    },
-                    "required": ["conversation_id", "conversation_text"],
-                },
-            },
-            {
-                "name": "dreaming_list_archives",
-                "description": "List all archived conversations from the dreaming system. Shows conversation IDs, quality levels, entity counts, and archive metadata. Use this to see what has been consolidated into long-term memory.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-            },
-            {
-                "name": "dreaming_get_archive",
-                "description": "Retrieve a specific archived conversation with all its chunks, clusters, entities, and relationships. Use this to recall consolidated knowledge from past conversations.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "conversation_id": {
-                            "type": "string",
-                            "description": "ID of the archived conversation",
-                            "minLength": 1,
-                        },
-                        "version": {
-                            "type": "integer",
-                            "description": "Specific version to retrieve (omit for latest version)",
-                            "minimum": 1,
-                        },
-                    },
-                    "required": ["conversation_id"],
-                },
-            },
-            {
-                "name": "dreaming_upgrade_quality",
-                "description": "Upgrade an existing archive to higher quality by reprocessing with better LLM. Progressive enhancement: basic→good (uses API budget), good→premium (extra cost). Use when you need better quality consolidation for important conversations.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "conversation_id": {
-                            "type": "string",
-                            "description": "ID of the conversation to upgrade",
-                            "minLength": 1,
-                        },
-                        "target_quality": {
-                            "type": "string",
-                            "enum": ["good", "premium"],
-                            "description": "Target quality level to upgrade to",
-                        },
-                    },
-                    "required": ["conversation_id", "target_quality"],
-                },
-            },
             # Generic Configuration Tool
             {
                 "name": "config",
@@ -1358,13 +609,7 @@ class ToolRegistry:
                     "action='resource_smoke_test',resource_id            → test connectivity\n"
                     "action='llm_models',         resource_id            → list live models from server\n\n"
                     "# Validation\n"
-                    "action='doctor'                                     → full config pre-flight report\n\n"
-                    "# Role management\n"
-                    "action='role_list'                                  → list all roles\n"
-                    "action='role_get',           role_id                → get role details\n"
-                    "action='role_create',        role_id, system_prompt, model_preference, ... → create role\n"
-                    "action='role_design_start'                          → guided role design (Nine Chapter Q1)\n"
-                    "action='role_design_answer', session_id, answer     → next design question / finish"
+                    "action='doctor'                                     → full config pre-flight report"
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -1389,11 +634,6 @@ class ToolRegistry:
                             "description": "For LLM model changes: validate the model is loaded in the server before applying (default: true)",
                         },
                         "resource_id": {"type": "string", "description": "Resource ID (resource_* and llm_models actions)."},
-                        "role_id": {"type": "string", "description": "Role ID (role_* actions)."},
-                        "system_prompt": {"type": "string", "description": "Role system prompt (role_create)."},
-                        "model_preference": {"type": "string", "description": "Preferred model for role (role_create)."},
-                        "session_id": {"type": "string", "description": "Design session ID (role_design_answer)."},
-                        "answer": {"type": "string", "description": "Answer to design question (role_design_answer)."},
                     },
                     "required": [],
                 },
@@ -1652,228 +892,77 @@ class ToolRegistry:
                 },
             },
             # Event Log polling (non-WebSocket clients)
-            {
-                "name": "get_recent_events",
-                "description": "Poll the persistent event log for recent system events. Use this to check what has happened recently (task completions, failures, config changes, etc.). Events with notify_user=true or severity warning/error/critical are worth surfacing to the user. Advance your cursor by passing the timestamp of the last event you saw as since_timestamp.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "since_timestamp": {
-                            "type": "string",
-                            "description": "ISO-8601 timestamp. Only return events after this point. Omit for all recent events.",
-                        },
-                        "types": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Filter by event_type (e.g. ['task_failed', 'config_changed']). Omit for all types.",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of events to return (default: 50, max: 500).",
-                            "default": 50,
-                        },
-                        "include_data": {
-                            "type": "boolean",
-                            "description": "Include full event data payload (default: false — returns envelope only).",
-                            "default": False,
-                        },
-                    },
-                    "required": [],
-                },
-            },
             # Attention Layer — proactive situational awareness
-            {
-                "name": "get_attention_summary",
-                "description": (
-                    "Return a token-compact grouped summary of events that need attention, "
-                    "bucketed by urgency. Use this at conversation start (or when checking in) "
-                    "to discover tasks waiting for input, failures, and completions.\n\n"
-                    "Response buckets:\n"
-                    "  blocking  — level 4-5, requires immediate action; each item has reply_with + args\n"
-                    "  alerts    — level 3, errors needing attention\n"
-                    "  digest    — level 1-2, FYI completions and notifications (capped at 10)\n"
-                    "  noise_count — suppressed level-0 events\n"
-                    "  cursor    — pass as 'since' on next call to advance your position\n\n"
-                    "Behaviour:\n"
-                    "  - If blocking is non-empty: surface to user before anything else.\n"
-                    "    Each item includes reply_with so you know how to respond.\n"
-                    "  - If alerts is non-empty: mention in passing, ask if user wants to investigate.\n"
-                    "  - If all buckets are empty: everything is quiet, proceed normally."
-                ),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "since": {
-                            "type": "string",
-                            "description": "ISO-8601 cursor. Only return events after this timestamp. Omit for the last 24 hours.",
-                        },
-                        "min_level": {
-                            "type": "integer",
-                            "description": "Minimum hitl_level to include (default: 1 — suppresses level-0 noise).",
-                            "default": 1,
-                        },
-                    },
-                    "required": [],
-                },
-            },
             # Configuration Doctor
+            # Agentic Assistant — Role Hub (Nine Chapter framework)
             {
-                "name": "config_doctor",
+                "name": "role",
                 "description": (
-                    "Validate all runtime configuration before running tasks. "
-                    "Checks LLM resource reachability, API key presence, model name correctness, "
-                    "role model_preference alignment, allowed_tools existence, and task sanity. "
-                    "Returns structured pass/warn/error report. Run this when tasks fail with "
-                    "cryptic errors to pinpoint configuration mistakes."
+                    "Role management hub. Call with no action for help menu.\n\n"
+                    "action='list'                                    → list all saved roles\n"
+                    "action='get',           role_id                  → full role spec + system prompt\n"
+                    "action='create',        session_id? | role?      → save a finalised role to the library\n"
+                    "action='design_start',  description?             → begin Nine Chapter interview (returns Q1 + session_id)\n"
+                    "action='design_answer', session_id, answer       → submit answer → next question or synthesis\n\n"
+                    "TOOL ACCESS — two-layer model:\n"
+                    "  1. Role default (tool_access): categories the role can use in any task.\n"
+                    "     e.g. ['memory', 'file', 'exec', 'browser'] — set at role creation time.\n"
+                    "     Valid categories: memory, file, exec, web, browser, terminal, orchestration\n"
+                    "  2. Task runtime override (available_tools in scheduler): restricts or extends\n"
+                    "     the role default for one specific task run.\n\n"
+                    "Always set tool_access when creating a role — an empty list means the role can do nothing.\n\n"
+                    "Design flow: design_start → design_answer × N → synthesis → user confirms → create"
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "categories": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Limit checks to specific categories: 'resource', 'role', 'task'. Omit to run all.",
-                        },
-                    },
-                    "required": [],
-                },
-            },
-            # Agentic Assistant — Role Design & Personality (Nine Chapter framework)
-            {
-                "name": "role_design_start",
-                "description": "Start a Nine Chapter role design interview to create a MoJo agentic assistant personality. Guides across five dimensions (Core Values, Emotional Reaction, Cognitive Style, Social Orientation, Adaptability) to build a complete role config and system prompt. Returns the first question and a session_id for follow-up calls.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "description": {
+                        "action": {
                             "type": "string",
-                            "description": "Optional initial description of the character to pre-fill the intro step.",
+                            "description": "Operation. Omit for help menu.",
                         },
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "role_design_answer",
-                "description": "Submit the user's answer to the current role design question and get the next question. When step=synthesis, the draft role spec is returned for review — present it to the user and ask for confirmation. When the user confirms ('yes'), submit that answer; the step will become 'complete' and you MUST immediately call role_create with the session_id to save the role to the library. Do not skip this step.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
+                        "role_id": {
+                            "type": "string",
+                            "description": "Role ID — required for action=get.",
+                        },
                         "session_id": {
                             "type": "string",
-                            "description": "Session ID from role_design_start.",
+                            "description": "Design session ID — required for design_answer; optional for create.",
                         },
                         "answer": {
                             "type": "string",
-                            "description": "The user's answer to the current question.",
+                            "description": "User's answer to current design question (design_answer).",
                         },
-                    },
-                    "required": ["session_id", "answer"],
-                },
-            },
-            {
-                "name": "role_create",
-                "description": (
-                    "Save a finalised role config to the role library (~/.memory/roles/). "
-                    "Accepts either a session_id (auto-builds from completed design session) or a complete role spec dict.\n\n"
-                    "TOOL ACCESS — two-layer model:\n"
-                    "  1. Role default (tool_access): categories the role can use in any task.\n"
-                    "     e.g. ['memory', 'file', 'exec', 'browser'] — set here at role creation time.\n"
-                    "     Categories: memory, file, exec, web, browser, terminal, orchestration\n"
-                    "  2. Task runtime override (available_tools in scheduler_add_task): restricts or extends\n"
-                    "     the role default for a specific task run. Omit to use the role default.\n\n"
-                    "Always set tool_access when creating a role — an empty list means the role can do nothing."
-                ),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "session_id": {
+                        "description": {
                             "type": "string",
-                            "description": "Session ID of a completed design session (step=complete).",
+                            "description": "Optional initial character description to pre-fill the intro step (design_start).",
                         },
                         "role": {
                             "type": "object",
-                            "description": "Complete role spec dict (alternative to session_id).",
-                        },
-                        "model_preference": {
-                            "type": "string",
-                            "description": "Preferred LLM model for this role (e.g. 'qwen/qwen3-35b-a22b').",
+                            "description": "Complete role spec dict — alternative to session_id for create.",
                         },
                         "tool_access": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Tool categories this role can access. Valid values: file, exec, memory, web, comms, terminal, orchestration.",
+                            "description": "Tool categories for create: memory, file, exec, web, browser, terminal, orchestration.",
+                        },
+                        "model_preference": {
+                            "type": "string",
+                            "description": "Preferred LLM model for the role (create).",
                         },
                         "notify_on_completion": {
                             "type": "boolean",
-                            "description": "Push a notification when a task assigned to this role completes. Defaults to false (system tasks are silent; user-initiated tasks always notify regardless).",
+                            "description": "Push notification when a task using this role completes (create).",
                         },
                         "policy": {
                             "type": "object",
-                            "description": "Runtime permission policy for this role. Fields: allowed_tools (list), denied_tools (list), require_confirmation_for (list), max_bash_exec_per_task (int), sandbox_paths_only (bool).",
+                            "description": "Runtime permission policy (create). Fields: allowed_tools, denied_tools, require_confirmation_for, max_bash_exec_per_task, sandbox_paths_only.",
                         },
                     },
                     "required": [],
-                },
-            },
-            {
-                "name": "role_list",
-                "description": "List all saved agentic assistant roles with their Nine Chapter scores, archetypes, and purpose. Use role_id from this list when scheduling an assistant task.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-            },
-            {
-                "name": "role_get",
-                "description": "Get the full spec for a saved role including its system prompt and all dimension details.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "role_id": {
-                            "type": "string",
-                            "description": "Role ID to retrieve.",
-                        },
-                    },
-                    "required": ["role_id"],
                 },
             },
             # LLM Server Discovery (not a config operation — queries external service)
-            {
-                "name": "llm_list_available_models",
-                "description": "List models currently loaded in an OpenAI-compatible server (e.g. LMStudio). Queries the server's /models endpoint to show what's actually available for use.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "interface_name": {
-                            "type": "string",
-                            "description": "Name of the interface to query (defaults to active interface if omitted)",
-                        },
-                    },
-                    "required": [],
-                },
-            },
             # Task Session Tools
-            {
-                "name": "task_session_read",
-                "description": "Read the full conversation trail for an agentic task. Works for both running and completed tasks (live tracking). Returns session status, messages, final_answer, and timestamps.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {
-                            "type": "string",
-                            "description": "ID of the agentic task to read the session for",
-                            "minLength": 1,
-                        },
-                        "include_metadata": {
-                            "type": "boolean",
-                            "description": "Include per-message metadata in the response (default: false)",
-                        },
-                    },
-                    "required": ["task_id"],
-                },
-            },
             {
                 "name": "reply_to_task",
                 "description": (
@@ -1898,112 +987,7 @@ class ToolRegistry:
                     "required": ["task_id", "reply"],
                 },
             },
-            {
-                "name": "scheduler_resume_task",
-                "description": "Resume a failed or timed-out agentic task. Creates a new task that loads the previous session's conversation and continues from where it left off.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {
-                            "type": "string",
-                            "description": "ID of the failed/timed_out agentic task to resume",
-                            "minLength": 1,
-                        },
-                        "max_additional_iterations": {
-                            "type": "integer",
-                            "description": "Maximum additional LLM iterations for the resumed task (default: 10)",
-                            "minimum": 1,
-                            "maximum": 50,
-                        },
-                    },
-                    "required": ["task_id"],
-                },
-            },
             # Resource Pool Tools
-            {
-                "name": "audit_get",
-                "description": "Show the audit trail of external LLM boundary crossings — every call to a non-local resource (free_api, paid) logged with task_id, role_id, resource_id, tier, model, and token counts. Content is never logged. Use task_id to filter to a specific task.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {
-                            "type": "string",
-                            "description": "Filter to a specific task. Omit to see all recent crossings.",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max records to return (default 50).",
-                            "default": 50,
-                        },
-                    },
-                    "required": [],
-                },
-            },
-            {
-                "name": "resource_pool_status",
-                "description": "Get the status of all LLM resources in the resource pool. Shows model, tier, priority, availability status, and usage statistics for each resource. Use this to monitor resource health and utilization for agentic tasks.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-            },
-            {
-                "name": "resource_pool_approve",
-                "description": "Approve a paid LLM resource for use by agentic tasks. Paid resources are not used by default — they must be explicitly approved. Use resource_pool_status to see available resource IDs.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "resource_id": {
-                            "type": "string",
-                            "description": "ID of the paid resource to approve (e.g., 'openai_gpt4')",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["resource_id"],
-                },
-            },
-            {
-                "name": "resource_pool_revoke",
-                "description": "Revoke approval for a paid LLM resource, preventing agentic tasks from using it. The resource remains configured but will not be selected for agent use.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "resource_id": {
-                            "type": "string",
-                            "description": "ID of the paid resource to revoke approval for",
-                            "minLength": 1,
-                        },
-                    },
-                    "required": ["resource_id"],
-                },
-            },
-            {
-                "name": "resource_pool_smoke_test",
-                "description": (
-                    "Run an agentic capability smoke test on a specific LLM resource. "
-                    "Validates that the model can: (1) emit real tool calls (not hallucinate results), "
-                    "(2) produce <FINAL_ANSWER> tags within the iteration budget. "
-                    "Sets agentic_capable flag on the resource. "
-                    "Use before approving a new model for agentic tasks."
-                ),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "resource_id": {
-                            "type": "string",
-                            "description": "ID of the resource to test (from resource_pool_status)",
-                            "minLength": 1,
-                        },
-                        "full": {
-                            "type": "boolean",
-                            "description": "If true, also run extended checks (default: false)",
-                            "default": False,
-                        },
-                    },
-                    "required": ["resource_id"],
-                },
-            },
         ]
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -2412,8 +1396,6 @@ Agent resumes within seconds.
             return await self._execute_remove_document(args)
         elif name == "web_search":
             return await self._execute_web_search(args)
-        elif name == "browser":
-            return await self._execute_browser(args)
         elif name == "google_service":
             return await self._execute_google_service(args)
         elif name == "get_current_day":
@@ -2509,18 +1491,9 @@ Agent resumes within seconds.
             return await self._execute_resource_pool_revoke(args)
         elif name == "resource_pool_smoke_test":
             return await self._execute_resource_pool_smoke_test(args)
-        # Role System Tools
-        elif name == "role_design_start":
-            return await self._execute_role_design_start(args)
-        elif name == "role_design_answer":
-            return await self._execute_role_design_answer(args)
-        elif name == "role_create":
-            return await self._execute_role_create(args)
-        elif name == "role_list":
-            return await self._execute_role_list(args)
-        elif name == "role_get":
-            return await self._execute_role_get(args)
         # Hub Tools
+        elif name == "role":
+            return await self._execute_role_hub(args)
         elif name == "memory":
             return await self._execute_memory(args)
         elif name == "knowledge":
@@ -4472,6 +3445,50 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Smoke test failed: {e}"}
 
+    # ── Role Hub ─────────────────────────────────────────────────────
+
+    async def _execute_role_hub(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Unified role management hub — routes action to the appropriate role handler."""
+        action = args.get("action", "")
+
+        if action == "list":
+            return await self._execute_role_list({})
+        if action == "get":
+            role_id = args.get("role_id")
+            if not role_id:
+                return {"status": "error", "message": "role_id is required for action=get"}
+            return await self._execute_role_get({"role_id": role_id})
+        if action == "create":
+            return await self._execute_role_create(args)
+        if action == "design_start":
+            return await self._execute_role_design_start({
+                "description": args.get("description", "")
+            })
+        if action == "design_answer":
+            session_id = args.get("session_id")
+            answer = args.get("answer")
+            if not session_id or answer is None:
+                return {"status": "error", "message": "session_id and answer are required for action=design_answer"}
+            return await self._execute_role_design_answer({
+                "session_id": session_id,
+                "answer": answer,
+            })
+
+        # Help menu
+        return {
+            "status": "help",
+            "actions": {
+                "list":          "List all saved roles",
+                "get":           "Full role spec — params: role_id",
+                "create":        "Save role — params: session_id? | role?, tool_access?, model_preference?, policy?, notify_on_completion?",
+                "design_start":  "Begin Nine Chapter interview — params: description?",
+                "design_answer": "Submit answer / advance interview — params: session_id, answer",
+            },
+            "flow": "design_start → design_answer × N → synthesis → user confirms → create",
+            "tool_access_categories": ["memory", "file", "exec", "web", "browser", "terminal", "orchestration"],
+            "example": 'role(action="list")',
+        }
+
     # ── Role System Tools ────────────────────────────────────────────
 
     async def _execute_role_design_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -4769,24 +3786,6 @@ Agent resumes within seconds.
         if action == "doctor":
             return await self._execute_config_doctor({})
 
-        # --- role management ---
-        if action == "role_list":
-            return await self._execute_role_list({})
-        if action == "role_get":
-            role_id = args.get("role_id")
-            if not role_id:
-                return {"status": "error", "message": "Parameter 'role_id' is required."}
-            return await self._execute_role_get({"role_id": role_id})
-        if action == "role_create":
-            return await self._execute_role_create(args)
-        if action == "role_design_start":
-            return await self._execute_role_design_start({})
-        if action == "role_design_answer":
-            return await self._execute_role_design_answer({
-                "session_id": args.get("session_id"),
-                "answer": args.get("answer"),
-            })
-
         # --- modules list ---
         if action == "modules":
             modules = {}
@@ -4824,11 +3823,6 @@ Agent resumes within seconds.
                         "resource_smoke_test":   "Test resource connectivity — params: resource_id",
                         "llm_models":            "List live models from server — params: resource_id",
                         "doctor":                "Full config pre-flight report",
-                        "role_list":             "List all roles",
-                        "role_get":              "Get role details — params: role_id",
-                        "role_create":           "Create a role — params: role_id, system_prompt, model_preference, ...",
-                        "role_design_start":     "Guided role design (Nine Chapter Q1)",
-                        "role_design_answer":    "Next design question — params: session_id, answer",
                     },
                     "example": 'config(action="resource_status")',
                 }
