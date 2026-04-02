@@ -2489,6 +2489,20 @@ Agent resumes within seconds.
             if isinstance(config, dict) and "max_iterations" in config:
                 resources_dict = dict(resources_dict) if isinstance(resources_dict, dict) else {}
                 resources_dict.setdefault("max_iterations", config["max_iterations"])
+
+            # Role default_resources: apply as fallback (caller-supplied resources win)
+            if role_id and task_type_str == "assistant":
+                try:
+                    from app.roles.role_manager import RoleManager as _RM
+                    _role = _RM().get(role_id)
+                    _role_defaults = (_role or {}).get("default_resources", {})
+                    if _role_defaults:
+                        resources_dict = dict(resources_dict) if isinstance(resources_dict, dict) else {}
+                        for k, v in _role_defaults.items():
+                            resources_dict.setdefault(k, v)
+                except Exception:
+                    pass
+
             resources = (
                 TaskResources.from_dict(resources_dict)
                 if isinstance(resources_dict, dict)
