@@ -3258,8 +3258,8 @@ Agent resumes within seconds.
                 "created_at": e.get("timestamp"),
             }
 
-            # For waiting_for_input events, attach reply guidance — but skip if
-            # the task is no longer actually waiting (completed/failed/cancelled).
+            # blocking is exclusively for tasks actively waiting for user input RIGHT NOW.
+            # All other high-level events go to alerts regardless of hitl_level.
             if event_type == "task_waiting_for_input":
                 task_id = data.get("task_id")
                 if task_id:
@@ -3275,9 +3275,14 @@ Agent resumes within seconds.
                 question = data.get("question") or data.get("pending_question")
                 if question:
                     item["blurb"] = f"Waiting: {question}"
-
-            if level >= 4:
-                blocking.append(item)
+                if level >= 4:
+                    blocking.append(item)
+                else:
+                    alerts.append(item)
+            elif level >= 4:
+                # Non-waiting events at blocking level → demote to alerts
+                # (they are noteworthy but don't require user action to unblock anyone)
+                alerts.append(item)
             elif level == 3:
                 alerts.append(item)
             else:
