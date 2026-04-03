@@ -335,13 +335,18 @@ class Scheduler:
         return out
 
     async def _broadcast(self, event: dict):
-        """Broadcast an event to SSE clients and the persistent event log (push adapters)."""
+        """Broadcast an event to SSE clients and the persistent event log (push adapters).
+
+        SSENotifier.broadcast() already writes to the EventLog when one is wired.
+        The fallback path (no SSE notifier) writes directly so events are never lost.
+        """
         if self._sse_notifier:
             try:
                 await self._sse_notifier.broadcast(event)
             except Exception:
                 pass  # non-critical
-        if self._event_log:
+        elif self._event_log:
+            # No SSE notifier — write directly so push adapters still receive the event
             try:
                 await self._event_log.append(event)
             except Exception:
