@@ -572,6 +572,11 @@ class AgenticExecutor:
         iteration_log: List[Dict[str, Any]] = []
         start_time = time.time()
         final_answer: Optional[str] = None
+        auto_extracted: bool = False  # provenance flag for fallback completion
+
+        # Tracked across iterations for fallback completion recovery
+        _last_response_text: str = ""
+        _last_turn_had_tool_calls: bool = False
 
         self._log(
             f"Starting agentic loop for task {task.id} (max {max_iterations} iterations)"
@@ -722,6 +727,10 @@ class AgenticExecutor:
             # (older builds or non-jinja mode leak think tokens into content).
             response_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
             tool_calls = message.get("tool_calls")
+
+            # Track last substantive assistant turn for fallback completion recovery
+            _last_response_text = response_text
+            _last_turn_had_tool_calls = bool(tool_calls)
 
             # Handle tool calls if present
             if tool_calls:
@@ -941,6 +950,43 @@ class AgenticExecutor:
                 },
             )
 
+        # ── Fallback completion recovery ──────────────────────────────────────
+        # If the agent finished its work but forgot to write <FINAL_ANSWER> tags,
+        # auto-extract the last response rather than sending the user a HITL question
+        # for a task that's effectively done.
+        #
+        # Conditions (all must hold):
+        #   - no final_answer found by tag parsing
+        #   - no pending waiting_for_input (model didn't ask a question)
+        #   - last turn had NO tool calls (model was writing, not acting)
+        #   - last response is substantive (length + no in-progress patterns)
+        #
+        # This is a recovery mechanism, not the primary path. A proper
+        # forced-finalization phase on the last iteration should be added later.
+        if (
+            final_answer is None
+            and not self._waiting_for_input_question
+            and not _last_turn_had_tool_calls
+        ):
+            text = _last_response_text.strip()
+            _IN_PROGRESS_PATTERNS = [
+                "let me continue", "i'll now", "i will now", "next i will",
+                "next, i", "i need more information", "i need to", "i'll need to",
+                "let me check", "let me look", "i should", "i'll start",
+                "first, i", "first i'll",
+            ]
+            _looks_complete = (
+                len(text) > 150
+                and not any(p in text.lower() for p in _IN_PROGRESS_PATTERNS)
+            )
+            if _looks_complete:
+                final_answer = text
+                auto_extracted = True
+                self._log(
+                    f"Task {task.id}: fallback completion recovery — "
+                    "auto-extracted last response (no FINAL_ANSWER tags found)"
+                )
+
         success = final_answer is not None
 
         # Finalize session status if not already set
@@ -979,16 +1025,21 @@ class AgenticExecutor:
                 },
             )
 
+        metrics: Dict[str, Any] = {
+            "iterations": len(iteration_log),
+            "iteration_log": iteration_log,
+            "duration_seconds": total_elapsed,
+            "final_answer": final_answer,
+            "session_file": session_file,
+        }
+        if auto_extracted:
+            metrics["completion_mode"] = "auto_extracted"
+            metrics["auto_extracted_final_answer"] = True
+
         return TaskResult(
             success=True,
             output_file=session_file,
-            metrics={
-                "iterations": len(iteration_log),
-                "iteration_log": iteration_log,
-                "duration_seconds": total_elapsed,
-                "final_answer": final_answer,
-                "session_file": session_file,
-            },
+            metrics=metrics,
         )
 
     def _store_completion_artifact(
