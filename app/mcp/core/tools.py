@@ -747,6 +747,10 @@ class ToolRegistry:
                             "type": "integer",
                             "description": "Max think-act iterations before the task fails (add action, default 10).",
                         },
+                        "pinned_resource": {
+                            "type": "string",
+                            "description": "Pin this task to a specific resource ID (add action, e.g. 'lmstudio__google_gemma_4_26b_a4b' or 'lmstudio_qwen35b'). Bypasses tier selection. Use resource_status to see available IDs.",
+                        },
                         "status": {"type": "string", "description": "Filter by status (list action)."},
                         "limit": {"type": "integer"},
                         "before_date": {"type": "string", "description": "ISO date for purge cutoff."},
@@ -4327,6 +4331,8 @@ Agent resumes within seconds.
                 config["available_tools"] = add_args["available_tools"]
             if add_args.get("max_iterations") and "max_iterations" not in config:
                 config["max_iterations"] = add_args["max_iterations"]
+            if add_args.get("pinned_resource") and "pinned_resource" not in config:
+                config["pinned_resource"] = add_args["pinned_resource"]
             add_args["config"] = config
             return await self._execute_scheduler_add_task(add_args)
         elif action == "list":

@@ -610,7 +610,13 @@ class AgenticExecutor:
                 config=config,
                 iteration_log=iteration_log,
             )
-            if role_resource_requirements:
+            pinned_resource_id = config.get("pinned_resource")
+            if pinned_resource_id:
+                resource = self._rm.acquire_by_id(pinned_resource_id)
+                if resource is None:
+                    self._log(f"Pinned resource '{pinned_resource_id}' unavailable, falling back to tier selection")
+                    resource = self._rm.acquire(tier_preference=iter_tiers)
+            elif role_resource_requirements:
                 resource = self._rm.acquire_by_requirements(role_resource_requirements)
                 if resource is None:
                     # Fall back to tier-only acquire if requirements can't be fully satisfied
