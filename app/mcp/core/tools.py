@@ -222,12 +222,6 @@ class ToolRegistry:
             "web_search",
             # Browser → agent tool only (never expose to user via MCP)
             "browser",
-            # Role → role hub
-            "role_design_start",
-            "role_design_answer",
-            "role_create",
-            "role_list",
-            "role_get",
             # Dialog → belongs in web dashboard UI, not MCP
             "dialog",
         }
