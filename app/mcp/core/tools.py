@@ -1336,9 +1336,22 @@ Agent resumes within seconds.
 
         # Check if this is a placeholder tool
         if name in self.placeholder_tools:
+            # Specific retirement messages for tools that were intentionally removed
+            _retirement_reasons = {
+                "dialog": (
+                    "The 'dialog' tool has been removed from MCP. "
+                    "dialog is a human ↔ role conversational interface — it belongs in the web dashboard UI, not in the MCP tool layer. "
+                    "If you want a role to perform work, use scheduler(action='add', type='assistant', role_id=...). "
+                    "If you want to chat with a role as a human, open the web dashboard."
+                ),
+            }
+            message = _retirement_reasons.get(
+                name,
+                f"Tool '{name}' is not yet implemented. This is a placeholder for future development.",
+            )
             return {
                 "status": "placeholder",
-                "message": f"Tool '{name}' is not yet implemented. This is a placeholder for future development.",
+                "message": message,
                 "tool_name": name,
                 "timestamp": time.time(),
             }
