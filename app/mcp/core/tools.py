@@ -3266,12 +3266,14 @@ Agent resumes within seconds.
                     try:
                         from app.scheduler.models import TaskStatus
                         task = self.scheduler.get_task(task_id)
-                        if task and task.status != TaskStatus.WAITING_FOR_INPUT:
-                            continue  # task resolved — drop stale blocking item
+                        if task is None or task.status != TaskStatus.WAITING_FOR_INPUT:
+                            continue  # task resolved or removed — drop stale blocking item
                     except Exception:
-                        pass  # can't check status → show the item to be safe
+                        continue  # can't verify status → assume resolved, drop it
                     item["reply_with"] = "reply_to_task"
                     item["task_id"] = task_id
+                else:
+                    continue  # no task_id → can't verify, drop it
                 question = data.get("question") or data.get("pending_question")
                 if question:
                     item["blurb"] = f"Waiting: {question}"
@@ -3287,6 +3289,18 @@ Agent resumes within seconds.
                 alerts.append(item)
             else:
                 digest.append(item)
+
+        # Deduplicate blocking by task_id — keep only the latest event per waiting task
+        seen_task_ids: set = set()
+        deduped_blocking = []
+        for item in reversed(blocking):  # newest first
+            tid = item.get("task_id")
+            if tid and tid in seen_task_ids:
+                continue
+            if tid:
+                seen_task_ids.add(tid)
+            deduped_blocking.append(item)
+        blocking = list(reversed(deduped_blocking))  # restore chronological order
 
         # Cap digest at 10 items (keep newest)
         digest = digest[-10:]
