@@ -82,6 +82,7 @@ class ToolRegistry:
             sse_notifier=self._sse_notifier,
             mcp_client_manager=self._mcp_client_manager,
             push_manager=self._push_manager,
+            event_log=self._event_log,
         )
         self.scheduler_thread = None
 

@@ -29,7 +29,8 @@ class Scheduler:
 
     def __init__(self, storage_path: str = None, tick_interval: int = 60,
                  max_concurrent: int = 3, logger=None, memory_service=None,
-                 sse_notifier=None, mcp_client_manager=None, push_manager=None):
+                 sse_notifier=None, mcp_client_manager=None, push_manager=None,
+                 event_log=None):
         """
         Initialize scheduler
 
@@ -42,6 +43,7 @@ class Scheduler:
             sse_notifier: Optional SSENotifier for real-time task events
             mcp_client_manager: Shared MCPClientManager for tool dispatch + lifecycle mgmt
             push_manager: Optional PushAdapterManager for ntfy/push notifications
+            event_log: Optional EventLog — written by _broadcast so push adapters receive events
         """
         self.queue = TaskQueue(storage_path)
         self.memory_service = memory_service
@@ -52,6 +54,7 @@ class Scheduler:
         self.logger = logger
         self._sse_notifier = sse_notifier
         self._push_manager = push_manager
+        self._event_log = event_log
 
         # State
         self.running = False
@@ -332,10 +335,15 @@ class Scheduler:
         return out
 
     async def _broadcast(self, event: dict):
-        """Broadcast an SSE event if notifier is available."""
+        """Broadcast an event to SSE clients and the persistent event log (push adapters)."""
         if self._sse_notifier:
             try:
                 await self._sse_notifier.broadcast(event)
+            except Exception:
+                pass  # non-critical
+        if self._event_log:
+            try:
+                await self._event_log.append(event)
             except Exception:
                 pass  # non-critical
 
