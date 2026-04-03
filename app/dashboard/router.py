@@ -741,18 +741,20 @@ async def library_browse(
 
     rows_html = ""
     for division in sorted(by_division):
-        rows_html += f'<tr><td colspan="4" style="background:#1a1a1a;color:#888;padding:6px 10px;font-size:11px;letter-spacing:1px">{_html.escape(division.upper())}</td></tr>\n'
+        rows_html += f'<tr><td colspan="5" style="background:#1a1a1a;color:#888;padding:6px 10px;font-size:11px;letter-spacing:1px">{_html.escape(division.upper())}</td></tr>\n'
         for r in by_division[division]:
             emoji = _html.escape(r.emoji or "")
             name = _html.escape(r.name)
             desc = _html.escape(r.description[:90] + ("…" if len(r.description) > 90 else ""))
             atype = _html.escape(r.agent_type_hint)
             fname = Path(r.file_path).name
+            import_href = f"/dashboard/library/import?file={_html.escape(r.file_path)}"
             rows_html += f"""<tr>
   <td>{emoji} <b>{name}</b><br><span style="color:#555;font-size:11px">{fname}</span></td>
   <td style="color:#888;font-size:11px">{_html.escape(r.division)}</td>
   <td style="color:#7ec87e;font-size:11px">{atype}</td>
   <td style="color:#aaa;font-size:11px">{desc}</td>
+  <td><a href="{import_href}" style="color:#7ec8c8;font-size:11px;white-space:nowrap">Import →</a></td>
 </tr>"""
 
     search_val = _html.escape(q)
@@ -771,9 +773,50 @@ async def library_browse(
   {'<a href="/dashboard/library" style="margin-left:8px;color:#888;font-size:12px">clear</a>' if q else ''}
 </form>
 <table>
-  <tr><th>Role</th><th>Division</th><th>Type hint</th><th>Description</th></tr>
-  {rows_html or '<tr><td colspan="4" style="color:#555">No roles found</td></tr>'}
+  <tr><th>Role</th><th>Division</th><th>Type hint</th><th>Description</th><th></th></tr>
+  {rows_html or '<tr><td colspan="5" style="color:#555">No roles found</td></tr>'}
 </table>
+""")
+
+
+@router.get("/library/import", response_class=HTMLResponse)
+async def library_import(
+    file: str = "",
+    mojo_dash: Optional[str] = Cookie(default=None),
+):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    import html as _html
+
+    if not file:
+        return _page("Import Role", "<p style='color:#888'>No file specified.</p>")
+
+    try:
+        from app.roles.role_designer import RoleDesignSession
+        session = RoleDesignSession.from_agency_agent(file)
+        session.save()
+        sid = _html.escape(session.session_id)
+        name = _html.escape(session.name)
+        fname = _html.escape(Path(file).name)
+        return _page("Import Role", f"""
+<h1>Role imported: {name}</h1>
+<p style="color:#888;font-size:12px">Source: <code>{fname}</code></p>
+<p>A Nine Chapter wizard session has been pre-filled with answers from this role.<br>
+Continue the interview via MCP to review and adjust each step, then save.</p>
+<table style="margin-top:16px">
+  <tr><th>Session ID</th><td><code>{sid}</code></td></tr>
+  <tr><th>Next step</th><td><code>role(action="design_answer", session_id="{sid}", answer="...")</code></td></tr>
+</table>
+<p style="margin-top:16px">
+  <a href="/dashboard/library" style="color:#7ec8c8;font-size:12px">← Back to library</a>
+</p>
+""")
+    except Exception as e:
+        return _page("Import Role", f"""
+<h1>Import failed</h1>
+<p style="color:#e06c75">{_html.escape(str(e))}</p>
+<p><a href="/dashboard/library" style="color:#7ec8c8;font-size:12px">← Back to library</a></p>
 """)
 
 

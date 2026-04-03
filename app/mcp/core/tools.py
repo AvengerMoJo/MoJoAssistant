@@ -878,6 +878,7 @@ class ToolRegistry:
                     "action='get',           role_id                  → full role spec + system prompt\n"
                     "action='create',        session_id? | role?      → save a finalised role to the library\n"
                     "action='design_start',  description?             → begin Nine Chapter interview (returns Q1 + session_id)\n"
+                    "action='design_start',  file_path=<path>         → import from agency-agents file, pre-fills wizard answers\n"
                     "action='design_answer', session_id, answer       → submit answer → next question or synthesis\n\n"
                     "TOOL ACCESS — two-layer model:\n"
                     "  1. Role default (tool_access): categories the role can use in any task.\n"
@@ -910,6 +911,10 @@ class ToolRegistry:
                         "description": {
                             "type": "string",
                             "description": "Optional initial character description to pre-fill the intro step (design_start).",
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Import from agency-agents file path (design_start). Pre-fills wizard answers from the file. Get paths from /dashboard/library or search_memory.",
                         },
                         "role": {
                             "type": "object",
@@ -3533,15 +3538,26 @@ Agent resumes within seconds.
     # ── Role System Tools ────────────────────────────────────────────
 
     async def _execute_role_design_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Start a new role design session."""
+        """Start a new role design session, optionally pre-filled from an agency-agents file."""
         from app.roles.role_designer import RoleDesignSession
-        session = RoleDesignSession()
+        file_path = args.get("file_path")
+        if file_path:
+            try:
+                session = RoleDesignSession.from_agency_agent(file_path)
+            except Exception as e:
+                return {"status": "error", "message": f"Import failed: {e}"}
+        else:
+            session = RoleDesignSession()
+            description = args.get("description", "")
+            if description:
+                session.answers["intro"] = description
         session.save()
         return {
             "session_id": session.session_id,
             "step": session.current_step,
             "question": session.current_question(),
             "progress": session.progress(),
+            "imported_from": file_path or None,
         }
 
     async def _execute_role_design_answer(self, args: Dict[str, Any]) -> Dict[str, Any]:
