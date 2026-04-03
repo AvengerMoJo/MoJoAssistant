@@ -9,6 +9,24 @@ from typing import Any, Dict, List, Optional
 from app.config.paths import get_memory_path
 
 
+def _get_agent_workdir() -> str:
+    """Return the configured agent working directory, creating it if needed.
+
+    Reads `agent_workdir` from ~/.memory/config/infra_context.json.
+    Falls back to ~/.memory/sandboxes if not set.
+    """
+    fallback = Path.home() / ".memory" / "sandboxes"
+    try:
+        infra_path = Path(get_memory_path()) / "config" / "infra_context.json"
+        data = json.loads(infra_path.read_text(encoding="utf-8"))
+        raw = data.get("agent_workdir", "")
+        workdir = Path(raw).expanduser() if raw else fallback
+    except Exception:
+        workdir = fallback
+    workdir.mkdir(parents=True, exist_ok=True)
+    return str(workdir)
+
+
 class SandboxSecurity:
     """Enforces sandbox security boundaries for tools.
 
@@ -772,7 +790,7 @@ class DynamicToolRegistry:
                     capture_output=True,
                     text=True,
                     timeout=60,
-                    cwd=os.getcwd(),
+                    cwd=_get_agent_workdir(),
                 )
             except subprocess.TimeoutExpired:
                 return {

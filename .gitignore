@@ -202,3 +202,13 @@ TODO.md
 # Auto-generated startup scripts (created by install.py)
 # run_cli.sh and run_mcp.sh are now checked-in under scripts/
 .mojo_setup_history
+
+# Runtime/generated directories
+node_modules/
+sandbox/          # agents must use ~/.memory/opencode-sandboxes/ instead
+.playwright-mcp/
+.qwen/
+package-lock.json
+
+# Generated screenshots/artifacts
+*.png
