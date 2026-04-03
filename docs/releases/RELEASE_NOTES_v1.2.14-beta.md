@@ -73,6 +73,34 @@ Previously `false` or `null` which could cause the executor to skip them for age
 
 ## Changes
 
+### Parallel tool call runaway fix (`parallel_tool_calls=false` + dedup)
+
+Gemma 4 exhibited a generation bug where it batched dozens of **identical** tool calls in a
+single response instead of one. Observed: 88 bash_exec calls in iteration 1, 161 in iteration 2,
+all with the same `git clone` command. The first call succeeded; the other 87 failed because the
+destination already existed, flooding the context with errors and causing the model to spiral.
+
+**Root cause:** The OpenAI spec allows models to return multiple tool calls per response for
+genuine parallel work. Local models like Gemma 4 can misuse this to generate runaway batches.
+
+**Fix — two layers:**
+
+1. **`parallel_tool_calls: false`** added to every OpenAI-format payload in `UnifiedLLMClient._build_payload`
+   when tools are present. Instructs compliant backends (OpenRouter, GPT-4, Claude API) to issue
+   one tool call per response.
+
+2. **Dedup + cap in `_execute_tool_calls`** as a defensive backstop for local models that ignore
+   the flag. Identical `(name, args)` pairs in the same response are collapsed to one execution.
+   Total calls per turn are also hard-capped at 10.
+
+**Side effects tested:** Qwen 3.5 and Gemma 4 both behaved correctly after the fix — no
+regressions on sequential tool use. Qwen already issued one call at a time; Gemma's batching
+was eliminated.
+
+**Guidance for model authors:** If your role needs genuinely parallel tool calls (e.g. two
+independent searches at once), the dedup will not interfere as long as the calls have different
+arguments. The cap (10) is high enough that no legitimate task should hit it.
+
 ### MCP call timeout 60s → 300s
 
 Browser automation against SPAs (e.g. Portainer) regularly exceeded 60s during page navigation

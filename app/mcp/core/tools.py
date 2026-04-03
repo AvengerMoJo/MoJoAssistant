@@ -534,7 +534,10 @@ class ToolRegistry:
                     "  documents     — knowledge base (documents added via add_documents)\n"
                     "Omit types to search all. limit_per_type controls how many results come "
                     "from each tier — use higher values (10+) for broad research, lower (3) for "
-                    "a quick check."
+                    "a quick check.\n\n"
+                    "Results are truncated to max_content_chars (default 500) to keep responses "
+                    "concise. If a result has content_truncated=true and you need the full text, "
+                    "call again with max_content_chars=0."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -558,6 +561,11 @@ class ToolRegistry:
                             "default": 5,
                             "minimum": 1,
                             "maximum": 20,
+                        },
+                        "max_content_chars": {
+                            "type": "integer",
+                            "description": "Truncate each result's content to this many characters (default: 500). Pass 0 for full text.",
+                            "default": 500,
                         },
                         "role_id": {
                             "type": "string",
@@ -1709,6 +1717,7 @@ Agent resumes within seconds.
         query = args.get("query", "")
         requested_types = args.get("types")  # None = all
         limit_per_type = min(int(args.get("limit_per_type", 5)), 20)
+        max_content_chars = int(args.get("max_content_chars", 500))
         role_id = args.get("role_id")  # optional: search role-private store
 
         if not query:
@@ -1751,6 +1760,16 @@ Agent resumes within seconds.
                 results["documents"] = docs[:limit_per_type]
             except Exception as e:
                 results["documents"] = []
+
+        # Truncate content fields so large documents don't flood the context.
+        # Callers can pass max_content_chars=0 to get full text.
+        if max_content_chars > 0:
+            for bucket in results.values():
+                for item in bucket:
+                    text = item.get("content", "")
+                    if len(text) > max_content_chars:
+                        item["content"] = text[:max_content_chars] + "…"
+                        item["content_truncated"] = True
 
         total = sum(len(v) for v in results.values())
         return {

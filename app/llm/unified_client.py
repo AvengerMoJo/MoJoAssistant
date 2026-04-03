@@ -153,6 +153,12 @@ class UnifiedLLMClient:
             }
             if tools:
                 payload["tools"] = tools
+                # Ask the model to issue one tool call per response.
+                # Prevents runaway parallel-call batches (e.g. Gemma 4 issuing
+                # 88 identical bash_exec calls in a single response).
+                # Most OpenAI-compatible backends honour this; local servers
+                # that ignore it are covered by the dedup in _execute_tool_calls.
+                payload["parallel_tool_calls"] = False
         return payload
 
     @staticmethod

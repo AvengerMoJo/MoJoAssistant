@@ -1191,6 +1191,35 @@ class AgenticExecutor:
 
     async def _execute_tool_calls(self, tool_calls: List[Dict]) -> List[str]:
         """Execute tool calls and return results as strings."""
+        # Defensive dedup: some local models (e.g. Gemma 4) ignore
+        # parallel_tool_calls=false and batch dozens of identical calls.
+        # Keep only the first occurrence of each (name, args) pair so the
+        # model gets one result per unique call instead of 87 errors.
+        _MAX_CALLS_PER_TURN = 10
+        seen_signatures: set = set()
+        deduped: List[Dict] = []
+        for tc in tool_calls:
+            sig = (
+                tc.get("function", {}).get("name", ""),
+                json.dumps(tc.get("function", {}).get("arguments", ""), sort_keys=True),
+            )
+            if sig not in seen_signatures:
+                seen_signatures.add(sig)
+                deduped.append(tc)
+        if len(tool_calls) != len(deduped):
+            self._log(
+                f"Deduped {len(tool_calls)} tool calls → {len(deduped)} unique "
+                "(model ignored parallel_tool_calls=false)",
+                "warning",
+            )
+        if len(deduped) > _MAX_CALLS_PER_TURN:
+            self._log(
+                f"Capping tool calls from {len(deduped)} → {_MAX_CALLS_PER_TURN} per turn",
+                "warning",
+            )
+            deduped = deduped[:_MAX_CALLS_PER_TURN]
+        tool_calls = deduped
+
         results = []
         for tc in tool_calls:
             fn_name = tc["function"]["name"]
