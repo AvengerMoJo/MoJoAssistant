@@ -242,13 +242,16 @@ CONTINUE_PROMPT = (
 
 NEAR_LIMIT_PROMPT = (
     "⚠ ITERATION BUDGET WARNING: You are on iteration {current} of {max} — only {remaining} iteration(s) left.\n\n"
-    "You MUST stop using tools and produce a <FINAL_ANSWER> NOW, even if the work is incomplete.\n\n"
-    "Your FINAL_ANSWER should:\n"
-    "1. Summarise everything you have discovered or accomplished so far.\n"
-    "2. Clearly state what remains unfinished and what additional cycles would be needed to complete it.\n"
-    "3. Give the client enough context to resume this task in a future run.\n\n"
-    "Do NOT call any more tools. Synthesise what you know and wrap up."
+    "Pick exactly one option:\n\n"
+    "**Option A — Task is complete:** produce <FINAL_ANSWER> now.\n\n"
+    "**Option B — Task is NOT complete:** write this exact text:\n"
+    "  BUDGET_EXTENSION_REQUEST: Need N more iterations. Done: [what you finished]. Remaining: [what's left].\n"
+    "  The system will grant more cycles automatically.\n\n"
+    "Do NOT produce a partial FINAL_ANSWER if you are not done. Write Option B text instead."
 )
+
+_BUDGET_EXTENSION_PREFIX = "BUDGET_EXTENSION_REQUEST:"
+_BUDGET_EXTENSION_MAX_GRANT = 20  # cap per extension to avoid runaway loops
 
 
 class AgenticExecutor:
@@ -316,6 +319,7 @@ class AgenticExecutor:
         self._waiting_for_input_choices: Optional[list] = None
         self._tool_calls_made: int = 0          # non-ask_user tool calls this execution
         self._consecutive_no_tool: int = 0      # iterations with tools available but unused
+        self._budget_extension_granted: int = 0  # extra iterations granted via BUDGET_EXTENSION_REQUEST
         self._exhausts_tools_before_asking: bool = False
         self._requires_tool_use: bool = False   # reject final answer if no tools called yet
         # Task id stored so _execute_single_tool can inject per-task tmux socket
@@ -470,7 +474,9 @@ class AgenticExecutor:
         # ask_user is always included — it's the HITL escape hatch for any blocker.
         explicit_tools = config.get("available_tools")
         if explicit_tools is not None:
-            enabled_tool_names = list(explicit_tools)
+            # available_tools may be category names (e.g. "browser") or explicit tool
+            # names. Expand categories via the catalog so the LLM sees real tool defs.
+            enabled_tool_names = self._resolve_tools_from_role({"tool_access": explicit_tools})
         elif role:
             enabled_tool_names = self._resolve_tools_from_role(role)
         else:
@@ -571,7 +577,19 @@ class AgenticExecutor:
             f"Starting agentic loop for task {task.id} (max {max_iterations} iterations)"
         )
 
-        for iteration in range(1, max_iterations + 1):
+        iteration = 0
+        while True:
+            iteration += 1
+            # Apply any budget extension granted by BUDGET_EXTENSION_REQUEST ask_user calls
+            if self._budget_extension_granted > 0:
+                max_iterations += self._budget_extension_granted
+                self._log(
+                    f"Task {task.id}: budget extended +{self._budget_extension_granted} "
+                    f"iterations (new max: {max_iterations})"
+                )
+                self._budget_extension_granted = 0
+            if iteration > max_iterations:
+                break
             abs_iteration = start_iteration + iteration
             elapsed = time.time() - start_time
             if elapsed >= max_duration:
@@ -766,6 +784,20 @@ class AgenticExecutor:
             # Append assistant response
             messages.append({"role": "assistant", "content": response_text})
             self._record(task.id, "assistant", response_text, iteration=abs_iteration)
+
+            # Detect plain-text BUDGET_EXTENSION_REQUEST (agent wrote it as text, not a tool call)
+            if _BUDGET_EXTENSION_PREFIX in response_text and self._budget_extension_granted == 0:
+                import re as _re
+                match = _re.search(r"Need\s+(\d+)\s+more", response_text, _re.IGNORECASE)
+                grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
+                max_iterations += grant
+                self._log(
+                    f"Task {task.id}: plain-text budget extension detected, granted +{grant} "
+                    f"(new max: {max_iterations})"
+                )
+                messages.append({"role": "user", "content": f"Budget extended by {grant} iterations. Continue your work."})
+                self._record(task.id, "user", f"Budget extended by {grant} iterations. Continue your work.", iteration=abs_iteration)
+                continue
 
             # Check for final answer
             candidate_final_answer = self._parse_final_answer(response_text)
@@ -1264,6 +1296,23 @@ class AgenticExecutor:
                 }
             question = args.get("question", "")
             choices = args.get("choices")
+
+            # Budget extension request: agent signals it needs more cycles rather
+            # than a genuine HITL blocker. Grant automatically up to the cap.
+            if question.strip().startswith(_BUDGET_EXTENSION_PREFIX):
+                import re as _re
+                match = _re.search(r"Need\s+(\d+)\s+more", question, _re.IGNORECASE)
+                grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
+                self._budget_extension_granted += grant
+                self._log(
+                    f"Task {self._current_task_id}: budget extension granted (+{grant} iterations). "
+                    f"Message: {question[:120]}"
+                )
+                return {
+                    "success": True,
+                    "message": f"Budget extended by {grant} iterations. Continue your work.",
+                }
+
             self._waiting_for_input_question = question
             self._waiting_for_input_choices = choices if isinstance(choices, list) else None
             result_msg = f"Question submitted to user: {question}"

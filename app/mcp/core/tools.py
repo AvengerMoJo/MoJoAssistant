@@ -81,6 +81,7 @@ class ToolRegistry:
             memory_service=memory_service,
             sse_notifier=self._sse_notifier,
             mcp_client_manager=self._mcp_client_manager,
+            push_manager=self._push_manager,
         )
         self.scheduler_thread = None
 

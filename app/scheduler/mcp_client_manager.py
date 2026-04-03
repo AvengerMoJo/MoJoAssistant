@@ -245,9 +245,9 @@ class MCPClientManager:
         return count
 
     # Per-call timeout so a hung external process (e.g. frozen browser) cannot
-    # hold a semaphore slot forever. Browser navigation can be slow; 60 s is
-    # generous but still bounded. Override per-server in the future if needed.
-    CALL_TIMEOUT_SECONDS: float = 60.0
+    # hold a semaphore slot forever. 5 minutes gives SPAs like Portainer enough
+    # time to load without blocking a semaphore slot indefinitely.
+    CALL_TIMEOUT_SECONDS: float = 300.0
 
     async def call_tool(self, server_id: str, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Call a tool on a specific external MCP server."""
