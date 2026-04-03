@@ -1,4 +1,4 @@
-# Release Notes — v1.2.9-beta
+# Release Notes — v1.2.14-beta
 
 ## Bug Fixes
 
