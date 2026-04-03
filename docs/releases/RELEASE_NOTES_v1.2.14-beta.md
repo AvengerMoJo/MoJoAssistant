@@ -164,3 +164,27 @@ When SSE notifier is wired it owns the EventLog write. Full backend restart requ
 stale daemon threads; `daemon_restart` alone did not reliably stop the old thread.
 
 **Validated:** 1 notification per task completion after clean restart.
+
+### FINAL_ANSWER fallback completion recovery
+
+Agents that completed their work but forgot to write `<FINAL_ANSWER>` tags were silently going
+to `waiting_for_input` instead of completing. The budget extension HITL ("grant more iterations?")
+was being triggered even when the agent had nothing left to do.
+
+**Fix:** After the iteration loop exits without a tagged answer, auto-extract the last assistant
+response if all conditions hold:
+- Last turn had no tool calls (model was writing, not acting)
+- Response > 150 chars
+- No in-progress patterns ("let me continue", "I'll now", "next I will", etc.)
+
+Provenance stored in metrics: `completion_mode: "auto_extracted"`, `auto_extracted_final_answer: true`.
+A proper forced-finalization phase on the last iteration is planned for v1.2.15.
+
+### Scheduler `list` / `detail` separation
+
+`scheduler(action='list')` was calling `task.to_dict()` — dumping full config, result, metrics,
+and iteration_log for every task. Too heavy for discovery use.
+
+`list` now returns compact summary rows: `id`, `status`, `type`, `priority`, `role_id`, `goal`
+(truncated to 120 chars), timestamps, `pending_question`, `success`, `completion_mode`.
+Full detail (config, result, iteration_log) is only returned by `action='get', task_id=...`.
