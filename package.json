@@ -1,0 +1,28 @@
+{
+  "name": "mojoassistant",
+  "version": "1.0.0",
+  "description": "**Personal AI memory, scheduling, and agent orchestration — local-first, privacy-preserving.**",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AvengerMoJo/MoJoAssistant.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AvengerMoJo/MoJoAssistant/issues"
+  },
+  "homepage": "https://github.com/AvengerMoJo/MoJoAssistant#readme",
+  "dependencies": {
+    "playwright": "^1.58.2"
+  }
+}
