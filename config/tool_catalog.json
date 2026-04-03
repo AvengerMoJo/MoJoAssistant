@@ -8,7 +8,8 @@
     "comms":    { "description": "Communication with the user (HITL)" },
     "browser":       { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP)" },
     "terminal":      { "description": "Persistent terminal sessions via tmux — run commands, read output" },
-    "orchestration": { "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" }
+    "orchestration": { "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" },
+    "google":        { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (via Google Workspace MCP or gws CLI)" }
   },
   "tools": {
     "memory_search":   {
@@ -77,6 +78,53 @@
       "danger_level": "low",
       "always_injected": true,
       "description": "Pause the task and ask the user a question. Use when you are blocked and only the user can unblock you — missing credentials, ambiguous requirements, or a decision that requires human judgment. The task waits in HITL state until the user replies. Do not use this when another tool can answer the question."
-    }
+    },
+    "list-sessions":      { "category": "terminal", "danger_level": "low",    "description": "List all active tmux sessions." },
+    "find-session":       { "category": "terminal", "danger_level": "low",    "description": "Find a tmux session by name." },
+    "list-windows":       { "category": "terminal", "danger_level": "low",    "description": "List windows in a tmux session." },
+    "list-panes":         { "category": "terminal", "danger_level": "low",    "description": "List panes in a tmux window." },
+    "capture-pane":       { "category": "terminal", "danger_level": "low",    "description": "Capture content from a tmux pane with configurable line count." },
+    "create-session":     { "category": "terminal", "danger_level": "medium", "description": "Create a new tmux session." },
+    "create-window":      { "category": "terminal", "danger_level": "medium", "description": "Create a new window in a tmux session." },
+    "kill-session":       { "category": "terminal", "danger_level": "high",   "description": "Kill a tmux session by ID." },
+    "kill-window":        { "category": "terminal", "danger_level": "high",   "description": "Kill a tmux window by ID." },
+    "kill-pane":          { "category": "terminal", "danger_level": "high",   "description": "Kill a tmux pane by ID." },
+    "split-pane":         { "category": "terminal", "danger_level": "medium", "description": "Split a tmux pane horizontally or vertically." },
+    "execute-command":    { "category": "terminal", "danger_level": "high",   "requires_auth": true, "description": "Execute a command in a tmux pane and get results." },
+    "get-command-result": { "category": "terminal", "danger_level": "low",    "description": "Get the result of a previously executed tmux command." },
+
+    "browser": { "category": "browser", "danger_level": "medium", "description": "Control a headless browser — navigate, click, type, fill forms, take screenshots, and read page state. Pass action + params. See action enum in tool schema." },
+
+    "browser_navigate":   { "category": "browser", "danger_level": "low",    "description": "Open a URL in the headless browser." },
+    "browser_snapshot":   { "category": "browser", "danger_level": "low",    "description": "Accessibility snapshot of the current page — use before click/type to find element refs." },
+    "browser_screenshot": { "category": "browser", "danger_level": "low",    "description": "Visual screenshot of the current page." },
+    "browser_click":      { "category": "browser", "danger_level": "medium", "description": "Click an element by CSS selector or accessibility ref." },
+    "browser_type":       { "category": "browser", "danger_level": "medium", "description": "Type text into an input field." },
+    "browser_press_key":  { "category": "browser", "danger_level": "low",    "description": "Press a keyboard key (Enter, Tab, Escape, etc.)." },
+
+    "google_calendar_list":   { "category": "google", "danger_level": "low",    "description": "List events from Google Calendar for a date range." },
+    "google_calendar_create": { "category": "google", "danger_level": "medium", "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary." },
+
+    "playwright__browser_navigate":        { "category": "browser", "danger_level": "low",    "internal": true, "description": "Navigate to a URL." },
+    "playwright__browser_navigate_back":   { "category": "browser", "danger_level": "low",    "internal": true, "description": "Go back to the previous page." },
+    "playwright__browser_click":           { "category": "browser", "danger_level": "medium", "internal": true, "description": "Click an element." },
+    "playwright__browser_hover":           { "category": "browser", "danger_level": "low",    "internal": true, "description": "Hover over an element." },
+    "playwright__browser_type":            { "category": "browser", "danger_level": "medium", "internal": true, "description": "Type text into an element." },
+    "playwright__browser_fill_form":       { "category": "browser", "danger_level": "medium", "internal": true, "description": "Fill multiple form fields." },
+    "playwright__browser_select_option":   { "category": "browser", "danger_level": "medium", "internal": true, "description": "Select a dropdown option." },
+    "playwright__browser_press_key":       { "category": "browser", "danger_level": "low",    "internal": true, "description": "Press a keyboard key." },
+    "playwright__browser_drag":            { "category": "browser", "danger_level": "medium", "internal": true, "description": "Drag and drop between elements." },
+    "playwright__browser_snapshot":        { "category": "browser", "danger_level": "low",    "internal": true, "description": "Accessibility snapshot — best for acting on page state." },
+    "playwright__browser_take_screenshot": { "category": "browser", "danger_level": "low",    "internal": true, "description": "Visual screenshot." },
+    "playwright__browser_evaluate":        { "category": "browser", "danger_level": "high",   "internal": true, "description": "Evaluate JavaScript on the page." },
+    "playwright__browser_run_code":        { "category": "browser", "danger_level": "high",   "internal": true, "description": "Run a Playwright code snippet." },
+    "playwright__browser_file_upload":     { "category": "browser", "danger_level": "medium", "internal": true, "description": "Upload files via a file input." },
+    "playwright__browser_handle_dialog":   { "category": "browser", "danger_level": "medium", "internal": true, "description": "Accept or dismiss a browser dialog." },
+    "playwright__browser_wait_for":        { "category": "browser", "danger_level": "low",    "internal": true, "description": "Wait for text or a timeout." },
+    "playwright__browser_tabs":            { "category": "browser", "danger_level": "low",    "internal": true, "description": "Manage browser tabs." },
+    "playwright__browser_resize":          { "category": "browser", "danger_level": "low",    "internal": true, "description": "Resize the browser window." },
+    "playwright__browser_console_messages":{ "category": "browser", "danger_level": "low",    "internal": true, "description": "Return browser console messages." },
+    "playwright__browser_network_requests":{ "category": "browser", "danger_level": "low",    "internal": true, "description": "Return network requests since page load." },
+    "playwright__browser_close":           { "category": "browser", "danger_level": "low",    "internal": true, "description": "Close the current browser page." }
   }
 }

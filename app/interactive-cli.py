@@ -10,8 +10,14 @@ import argparse
 import json
 import datetime
 import sys
-from prompt_toolkit import PromptSession
-from prompt_toolkit.history import FileHistory
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import FileHistory
+    _PROMPT_TOOLKIT = True
+except ImportError:
+    PromptSession = None  # type: ignore[assignment,misc]
+    FileHistory = None    # type: ignore[assignment,misc]
+    _PROMPT_TOOLKIT = False
 
 # Ensure the app module can be found
 sys.path.append(".")
@@ -523,15 +529,201 @@ def handle_command(
 
 
 import asyncio
+import secrets
+import re
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
+
+from app.config.first_run import (
+    create_owner_profile,
+    detect_llm_backends,
+    load_owner_profile,
+    recommend_model,
+    seed_demo_tasks,
+    unpack_bundled_roles,
+)
 
 
 def run_setup_wizard():
     """Run smart installer with agents"""
     from app.installer.orchestrator import run_smart_installer
     return run_smart_installer(interactive=True, auto_defaults=False)
+
+
+# ---------------------------------------------------------------------------
+# Simple first-run setup (no LLM required)
+# ---------------------------------------------------------------------------
+
+_DEMO_ROLES = [
+    ("rebecca", "Rebecca — researcher"),
+    ("ahman",   "Ahman   — infrastructure / sysadmin"),
+    ("carl",    "Carl    — code reviewer"),
+]
+
+
+def _prompt(question: str, default: str = "") -> str:
+    """Print a prompt with a visible default and return stripped input."""
+    suffix = f" [{default}]" if default else ""
+    answer = input(f"{question}{suffix}: ").strip()
+    return answer if answer else default
+
+
+def run_first_run_setup(memory_path: Path) -> None:
+    """Pure-Python first-run wizard. No LLM required."""
+    project_root = Path(__file__).resolve().parent.parent
+
+    print()
+    print("┌─────────────────────────────────────────────────────┐")
+    print("│         MoJoAssistant — First-Run Setup             │")
+    print("│  Takes about 60 seconds. Press Enter to accept      │")
+    print("│  defaults shown in [brackets].                      │")
+    print("└─────────────────────────────────────────────────────┘")
+    print()
+
+    # ── 1. Identity ───────────────────────────────────────────────────────
+    print("── Identity ─────────────────────────────────────────")
+    name = _prompt("Your name (assistants will use this)", "Alex")
+    tz   = _prompt("Timezone", "Asia/Taipei")
+    print()
+
+    # ── 2. Roles ──────────────────────────────────────────────────────────
+    print("── Roles ────────────────────────────────────────────")
+    for _id, label in _DEMO_ROLES:
+        print(f"  {_id:<10}  {label}")
+    role_input = _prompt(
+        "Roles to enable (comma-separated ids, or 'all')", "all"
+    ).lower()
+    selected_role_ids = (
+        [r[0] for r in _DEMO_ROLES]
+        if role_input == "all"
+        else [s.strip() for s in role_input.split(",") if s.strip()]
+    )
+    print()
+
+    # ── 3. MCP API key ────────────────────────────────────────────────────
+    print("── Security ─────────────────────────────────────────")
+    env_path = project_root / ".env"
+    existing_key = ""
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith("MCP_API_KEY="):
+                existing_key = line.split("=", 1)[1].strip()
+                break
+
+    if existing_key and existing_key != "demo_key_for_development":
+        print(f"  MCP_API_KEY already set in .env — keeping it.")
+        mcp_api_key = existing_key
+    else:
+        api_key_input = input(
+            "  MCP_API_KEY (leave blank to auto-generate a secure key): "
+        ).strip()
+        mcp_api_key = api_key_input if api_key_input else secrets.token_hex(24)
+    print()
+
+    # ── 4. LLM backend ───────────────────────────────────────────────────
+    print("── LLM Backend ──────────────────────────────────────")
+    print("  Probing common ports (Ollama · LM Studio · llama-server · vLLM)...")
+    detected = detect_llm_backends()
+    llm_base_url = ""
+
+    if detected:
+        backend = detected[0]
+        print(f"  ✓ {backend['label']} detected at {backend['base_url']}")
+        try:
+            vram_gb = int(_prompt("  GPU VRAM in GB (0 = CPU-only)", "0"))
+        except ValueError:
+            vram_gb = 0
+        rec = recommend_model(backend, vram_gb)
+        print(f"  Recommended model: {rec['label']}")
+        if "pull_cmd" in rec:
+            print(f"  To download:       {rec['pull_cmd']}")
+        llm_base_url = backend["base_url"]
+    else:
+        print("  No backend detected — you can start one after setup.")
+        print()
+        print("  Recommended (easiest, works on any OS):")
+        print("    1. Install Ollama:  https://ollama.com")
+        print("    2. Pull starter:    ollama pull qwen3:4b  (~2.5 GB, 8 GB RAM)")
+        print()
+        print("  Other options:  LM Studio · llama-server · vLLM")
+        print("  Set LMSTUDIO_BASE_URL in .env once your backend is running.")
+    print()
+
+    # ── 5. Write files ───────────────────────────────────────────────────
+    print("── Creating files ───────────────────────────────────")
+
+    # Owner profile
+    profile_path = create_owner_profile(
+        memory_path,
+        overrides={
+            "owner_id": name.lower().replace(" ", "_"),
+            "name": name,
+            "preferred_name": name,
+            "timezone": tz,
+        },
+    )
+    print(f"  ✓ Owner profile:  {profile_path}")
+
+    # Roles
+    unpacked = unpack_bundled_roles(memory_path)
+    enabled  = [r for r in unpacked if r in selected_role_ids]
+    skipped  = [r for r in unpacked if r not in selected_role_ids]
+    for role_id in enabled:
+        print(f"  ✓ Role unpacked:  {role_id}")
+    if skipped:
+        print(f"  - Skipped roles:  {', '.join(skipped)}")
+
+    # .env
+    env_example_path = project_root / ".env.example"
+    if not env_path.exists() and env_example_path.exists():
+        import shutil as _shutil
+        _shutil.copy2(env_example_path, env_path)
+        print(f"  ✓ Created .env from .env.example")
+
+    if env_path.exists():
+        content = env_path.read_text(encoding="utf-8")
+        content = re.sub(
+            r"^(MCP_API_KEY\s*=).*$",
+            f"\\g<1>{mcp_api_key}",
+            content, flags=re.MULTILINE,
+        )
+        content = re.sub(
+            r"^(SERVER_PORT\s*=).*$",
+            "\\g<1>8000",
+            content, flags=re.MULTILINE,
+        )
+        if llm_base_url:
+            content = re.sub(
+                r"^#?\s*(LMSTUDIO_BASE_URL\s*=).*$",
+                f"\\g<1>{llm_base_url}",
+                content, flags=re.MULTILINE,
+            )
+        env_path.write_text(content, encoding="utf-8")
+        print(f"  ✓ .env configured  (MCP_API_KEY, SERVER_PORT{', LMSTUDIO_BASE_URL' if llm_base_url else ''})")
+
+    # Demo tasks
+    scheduler_storage = memory_path / "scheduler"
+    seeded = seed_demo_tasks(scheduler_storage)
+    if seeded:
+        print(f"  ✓ Demo tasks seeded: {', '.join(seeded)}")
+    print()
+
+    # ── 6. Summary ───────────────────────────────────────────────────────
+    print("── Ready ────────────────────────────────────────────")
+    print(f"  Name:      {name}")
+    print(f"  Timezone:  {tz}")
+    print(f"  Roles:     {', '.join(selected_role_ids) if selected_role_ids else 'none'}")
+    print(f"  API key:   {'(existing)' if existing_key and existing_key != 'demo_key_for_development' else mcp_api_key[:8] + '...'}")
+    if detected:
+        print(f"  LLM:       {detected[0]['label']} → {detected[0]['base_url']}")
+    else:
+        print( "  LLM:       not configured — set LMSTUDIO_BASE_URL in .env")
+    print()
+    print("  Start the server:  python app/main.py")
+    print("  Dashboard:         http://localhost:8000/dashboard")
+    print("─────────────────────────────────────────────────────")
+    print()
 
 
 def main() -> int:
@@ -566,12 +758,23 @@ def main() -> int:
     parser.add_argument(
         "--setup", action="store_true", help="Run setup wizard with AI guidance"
     )
+    parser.add_argument(
+        "--no-setup",
+        action="store_true",
+        help="Skip automatic first-run setup detection",
+    )
 
     args = parser.parse_args()
 
     # Run setup wizard if requested
     if args.setup:
         return run_setup_wizard()
+
+    # Auto first-run detection (runs before LLM/memory initialisation)
+    if not args.no_setup:
+        memory_path = Path(os.getenv("MEMORY_PATH", str(Path.home() / ".memory")))
+        if not (memory_path / "owner_profile.json").exists():
+            run_first_run_setup(memory_path)
 
     # Initialize logging
     setup_logging(log_level=args.log_level, log_file=args.log_file)
@@ -641,14 +844,20 @@ def main() -> int:
         print_header()
         running = True
 
-        # Create a history object
-        history = FileHistory(".mojo_history")
-        session: PromptSession = PromptSession(history=history)
+        # Create a prompt session (falls back to plain input if prompt_toolkit not installed)
+        if _PROMPT_TOOLKIT:
+            history = FileHistory(".mojo_history")
+            session = PromptSession(history=history)
+            def _get_input():
+                return session.prompt("> ", multiline=True).strip()
+        else:
+            def _get_input():
+                return input("> ").strip()
 
         while running:
             try:
                 # Get user input
-                user_input = session.prompt("> ", multiline=True).strip()
+                user_input = _get_input()
 
                 # Handle special commands
                 if user_input.startswith("/"):

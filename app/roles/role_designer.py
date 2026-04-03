@@ -12,6 +12,7 @@ State machine:
 
 import json
 import os
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
@@ -37,6 +38,8 @@ _STEPS = [
     "social_orientation",
     "adaptability",
     "purpose",
+    "role_type",
+    "tool_access",
     "predict_verify",
     "synthesis",
 ]
@@ -73,9 +76,32 @@ _QUESTIONS = {
         "Where are they rigid and where are they flexible?"
     ),
     "purpose": (
-        "Last dimension: what is **{name}**'s purpose — "
+        "What is **{name}**'s purpose — "
         "why do they exist, what are they ultimately trying to accomplish, "
         "what's the thing they're always working toward?"
+    ),
+    "role_type": (
+        "What best describes **{name}**'s primary function?\n\n"
+        "`researcher` · `coder` · `reviewer` · `ops` · `analyst` · `assistant`\n\n"
+        "Pick one, or type your own."
+    ),
+    "tool_access": (
+        "What tool categories should **{name}** have access to by default?\n\n"
+        "Available categories:\n"
+        "  `memory`        — search and store knowledge (all roles get this)\n"
+        "  `file`          — read, write, search files\n"
+        "  `exec`          — run shell commands\n"
+        "  `web`           — web search and fetch URLs\n"
+        "  `browser`       — headless browser: navigate, click, fill forms, screenshot\n"
+        "  `terminal`      — persistent tmux sessions\n"
+        "  `orchestration` — schedule tasks and dispatch to other agents\n\n"
+        "Examples:\n"
+        "  researcher → `memory, web, file`\n"
+        "  coder      → `memory, file, exec`\n"
+        "  ops        → `memory, file, exec, terminal, web`\n"
+        "  browser operator → `memory, file, exec, web, browser`\n\n"
+        "List the categories **{name}** needs, separated by commas.\n"
+        "Note: individual tasks can always restrict this list further at runtime."
     ),
 }
 
@@ -89,6 +115,33 @@ class RoleDesignSession:
         self.current_step: str = "intro"
         self.answers: Dict[str, str] = {}
         self.name: str = "Character"
+        self.import_source: Optional[str] = None  # agency-agents file path if imported
+
+    @classmethod
+    def from_agency_agent(cls, file_path: str, session_id: str = None) -> "RoleDesignSession":
+        """
+        Create a pre-filled session from an agency-agents role file.
+        The session starts at 'intro' with answers pre-loaded — the user
+        walks through the wizard to confirm/adjust each step.
+        """
+        from app.roles.agency_agents_parser import parse_file
+        from app.roles.agency_agents_bridge import build_prefills, prefills_to_session_answers
+        from pathlib import Path
+
+        entry = parse_file(Path(file_path))
+        if not entry:
+            raise ValueError(f"Could not parse agency-agents file: {file_path}")
+
+        s = cls(session_id=session_id)
+        s.import_source = file_path
+        prefills = build_prefills(entry)
+        s.answers = prefills_to_session_answers(prefills)
+
+        # Extract name from intro prefill so wizard personalises questions
+        if entry.name:
+            s.name = entry.name
+
+        return s
 
     # ── Persistence ──────────────────────────────────────────────────────────
 
@@ -112,16 +165,20 @@ class RoleDesignSession:
         s.current_step = data["current_step"]
         s.answers = data["answers"]
         s.name = data.get("name", "Character")
+        s.import_source = data.get("import_source")
         return s
 
     def _to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "session_id": self.session_id,
             "created_at": self.created_at,
             "current_step": self.current_step,
             "answers": self.answers,
             "name": self.name,
         }
+        if self.import_source:
+            d["import_source"] = self.import_source
+        return d
 
     # ── Conversation flow ─────────────────────────────────────────────────────
 
@@ -205,10 +262,15 @@ class RoleDesignSession:
         purpose = spec.get("purpose", "")
         system_prompt = spec.get("system_prompt", "")
 
+        tool_access = spec.get("tool_access", [])
+        agent_type = spec.get("agent_type", "—")
+        ta_display = ", ".join(f"`{t}`" for t in tool_access) if tool_access else "⚠️ **none** — role cannot use any tools"
+
         return (
             f"## Draft Role: {name}\n\n"
             f"**Nine Chapter score**: {spec['nine_chapter_score']}/100 "
-            f"({'ready to simulate ✅' if spec['nine_chapter_score'] >= 70 else 'needs more definition ⚠️'})\n\n"
+            f"({'ready to simulate ✅' if spec['nine_chapter_score'] >= 70 else 'needs more definition ⚠️'})\n"
+            f"**Type**: `{agent_type}`  |  **Tools**: {ta_display}\n\n"
             f"### Dimensions\n"
             + "\n".join(
                 f"- **{k.replace('_', ' ').title()}** ({int(_WEIGHTS[k]*100)}%): "
@@ -227,7 +289,7 @@ class RoleDesignSession:
     def _build_role_spec(self) -> Dict[str, Any]:
         """Synthesise all collected answers into a role config dict."""
         name = self.name
-        role_id = name.lower().replace(" ", "_")
+        role_id = _slugify_role_id(name)
 
         cv_answer   = self.answers.get("core_values", "")
         er_answer   = self.answers.get("emotional_reaction", "")
@@ -235,6 +297,7 @@ class RoleDesignSession:
         so_answer   = self.answers.get("social_orientation", "")
         ad_answer   = self.answers.get("adaptability", "")
         purpose     = self.answers.get("purpose", "")
+        rt_answer   = self.answers.get("role_type", "")
         pv_answer   = self.answers.get("predict_verify", "")
 
         # Simple dimension scores based on answer length + predict-verify result
@@ -288,19 +351,26 @@ class RoleDesignSession:
             ad=ad_answer, purpose=purpose,
         )
 
-        return {
+        agent_type, agent_type_label = _infer_agent_type(rt_answer)
+        ta_answer = self.answers.get("tool_access", "")
+        tool_access = _parse_tool_access(ta_answer, agent_type)
+
+        spec: Dict[str, Any] = {
             "id": role_id,
             "name": name,
             "archetype": _infer_archetype(cv_score, er_score, cs_score, so_score, ad_score),
+            "agent_type": agent_type,
             "nine_chapter_score": round(overall),
             "dimensions": dimensions,
             "purpose": purpose,
             "system_prompt": system_prompt,
             "model_preference": None,
-            "tools": [],
-            "created_at": self.created_at,
+            "tool_access": tool_access,
             "session_id": self.session_id,
         }
+        if agent_type_label:
+            spec["agent_type_label"] = agent_type_label
+        return spec
 
     def progress(self) -> int:
         """Percentage of steps completed (0–100)."""
@@ -314,16 +384,56 @@ class RoleDesignSession:
 
 def _extract_name(intro_text: str) -> str:
     """Best-effort name extraction from intro answer."""
+    label_patterns = [
+        r"\bname\s*[:\-]\s*([A-Za-z][\w'-]*)",
+        r"\bcalled\s+([A-Za-z][\w'-]*)",
+        r"\bnamed\s+([A-Za-z][\w'-]*)",
+    ]
+    for pattern in label_patterns:
+        match = re.search(pattern, intro_text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip(".,!?\"':;")
+
     words = intro_text.split()
     # Look for capitalised word that isn't a common sentence opener
     stop = {"i", "the", "a", "an", "my", "this", "they", "she", "he", "it",
-            "her", "his", "their", "want", "would", "like", "called", "named"}
+            "her", "his", "their", "want", "would", "like", "called", "named", "name"}
     for w in words:
-        clean = w.strip(".,!?\"'")
+        clean = w.strip(".,!?\"':;()[]{}")
         if clean and clean[0].isupper() and clean.lower() not in stop:
             return clean
     # Fall back to first capitalised word or "Character"
     return "Character"
+
+
+def _slugify_role_id(name: str) -> str:
+    """Convert a display name into a filename-safe role id."""
+    slug = re.sub(r"[^\w]+", "_", name.strip().lower(), flags=re.UNICODE)
+    slug = slug.strip("_")
+    return slug or "character"
+
+
+def _parse_tool_access(answer: str, agent_type: str) -> list:
+    """
+    Parse tool_access answer into a validated list of category names.
+    Unknown categories are silently dropped. Falls back to type-based
+    defaults if the answer is empty or yields nothing valid.
+    Always ensures 'memory' is present.
+    """
+    if answer.strip():
+        # Accept comma/space/semicolon separated tokens
+        tokens = re.split(r"[,;\s]+", answer.lower())
+        parsed = [t.strip() for t in tokens if t.strip() in _VALID_TOOL_CATEGORIES]
+    else:
+        parsed = []
+
+    if not parsed:
+        parsed = list(_DEFAULT_TOOL_ACCESS.get(agent_type, ["memory"]))
+
+    if "memory" not in parsed:
+        parsed = ["memory"] + parsed
+
+    return parsed
 
 
 def _parse_pv(answer: str) -> str:
@@ -354,6 +464,46 @@ def _logic_from_cognitive(cognitive: str) -> str:
     if any(w in lower for w in ["intuit", "pattern", "gut"]):
         return "trust their gut on this"
     return "think it through first"
+
+
+# Default tool_access per agent_type — used when user skips or gives empty answer
+_DEFAULT_TOOL_ACCESS: Dict[str, list] = {
+    "researcher": ["memory", "web", "file"],
+    "coder":      ["memory", "file", "exec"],
+    "reviewer":   ["memory", "file"],
+    "ops":        ["memory", "file", "exec", "terminal", "web"],
+    "analyst":    ["memory", "web", "file"],
+    "assistant":  ["memory", "web"],
+    "custom":     ["memory"],
+}
+
+_VALID_TOOL_CATEGORIES = {
+    "memory", "file", "exec", "web", "browser", "terminal", "orchestration", "comms",
+}
+
+_KNOWN_AGENT_TYPES = {"researcher", "coder", "reviewer", "ops", "analyst", "assistant"}
+
+
+def _infer_agent_type(answer: str) -> tuple[str, str | None]:
+    """Resolve a role_type answer to (agent_type, agent_type_label).
+
+    Rules:
+    - Empty answer           → ("assistant", None)
+    - Matches a known type   → (matched_type, None)   — no label needed
+    - Anything else          → ("custom", answer)      — label preserves user text
+
+    This keeps agent_type as a strict canonical ID used by code and filters,
+    while agent_type_label carries the user-facing display text for custom types.
+    LLM free text never silently becomes the canonical ID.
+    """
+    stripped = answer.strip()
+    if not stripped:
+        return "assistant", None
+    lower = stripped.lower()
+    if lower in _KNOWN_AGENT_TYPES:
+        return lower, None
+    # Custom — preserve user text verbatim as label; canonical ID is "custom"
+    return "custom", stripped
 
 
 def _infer_archetype(cv, er, cs, so, ad) -> str:

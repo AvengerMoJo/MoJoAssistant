@@ -4,3 +4,6 @@
 [submodule "dreaming-memory-pipeline"]
 	path = submodules/dreaming-memory-pipeline
 	url = https://github.com/AvengerMoJo/dreaming-memory-pipeline.git
+[submodule "submodules/agency-agents"]
+	path = submodules/agency-agents
+	url = https://github.com/msitarzewski/agency-agents.git

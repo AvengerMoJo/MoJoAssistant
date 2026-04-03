@@ -29,7 +29,8 @@ class Scheduler:
 
     def __init__(self, storage_path: str = None, tick_interval: int = 60,
                  max_concurrent: int = 3, logger=None, memory_service=None,
-                 sse_notifier=None, mcp_client_manager=None):
+                 sse_notifier=None, mcp_client_manager=None, push_manager=None,
+                 event_log=None):
         """
         Initialize scheduler
 
@@ -41,6 +42,8 @@ class Scheduler:
             memory_service: Optional memory service for agentic tool use
             sse_notifier: Optional SSENotifier for real-time task events
             mcp_client_manager: Shared MCPClientManager for tool dispatch + lifecycle mgmt
+            push_manager: Optional PushAdapterManager for ntfy/push notifications
+            event_log: Optional EventLog — written by _broadcast so push adapters receive events
         """
         self.queue = TaskQueue(storage_path)
         self.memory_service = memory_service
@@ -50,6 +53,8 @@ class Scheduler:
         self.max_concurrent = max_concurrent
         self.logger = logger
         self._sse_notifier = sse_notifier
+        self._push_manager = push_manager
+        self._event_log = event_log
 
         # State
         self.running = False
@@ -63,6 +68,7 @@ class Scheduler:
 
         # Wake signal — set by wake() to interrupt the inter-tick sleep early
         self._wake_event: Optional[asyncio.Event] = None  # Created in start()
+        self._scheduler_loop: Optional[asyncio.AbstractEventLoop] = None  # loop wake() uses
 
         # Statistics
         self.stats = {
@@ -95,6 +101,17 @@ class Scheduler:
                 "error": f"Task '{task_id}' is not waiting for input (status: {task.status.value})",
             }
 
+        # External agent HITL stubs must NOT re-enter the scheduler execution loop.
+        # Route their reply via ext_agent_reply so check_reply() can consume it,
+        # and keep the task in RUNNING state (never PENDING).
+        if task.config.get("ext_agent_hitl"):
+            task.config["ext_agent_reply"] = reply
+            task.pending_question = None
+            task.status = TaskStatus.RUNNING
+            self.queue.update(task)
+            self._log(f"Task {task_id} (ext-agent HITL) received reply")
+            return {"success": True, "task_id": task_id, "status": "running"}
+
         task.config["reply_to_question"] = reply
         task.pending_question = None
         task.status = TaskStatus.PENDING
@@ -107,11 +124,24 @@ class Scheduler:
         """
         Wake the scheduler immediately to process pending work.
 
-        Safe to call from any context (sync or async, before or after start()).
+        Safe to call from any context — sync or async, same thread or different.
+        Uses call_soon_threadsafe when called from outside the scheduler's loop
+        so the asyncio.Event.set() is dispatched on the correct loop.
         No-op if the scheduler has not started yet.
         """
-        if self._wake_event is not None:
+        if self._wake_event is None or self._scheduler_loop is None:
+            return
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is self._scheduler_loop:
+            # Already on the scheduler's loop — set directly
             self._wake_event.set()
+        else:
+            # Called from a different thread/loop — must use threadsafe dispatch
+            self._scheduler_loop.call_soon_threadsafe(self._wake_event.set)
 
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
@@ -134,6 +164,7 @@ class Scheduler:
         self.running = True
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._wake_event = asyncio.Event()
+        self._scheduler_loop = asyncio.get_event_loop()
         self.stats["started_at"] = datetime.now()
         self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
         self._seed_tasks_from_config()
@@ -266,8 +297,33 @@ class Scheduler:
 
     async def _execute_task_concurrent(self, task: Task):
         """Wrapper that acquires the semaphore before executing a task."""
-        async with self._semaphore:
-            await self._execute_task(task)
+        try:
+            async with self._semaphore:
+                await self._execute_task(task)
+        except BaseException as e:
+            # CancelledError inherits from BaseException (not Exception) in Python 3.8+.
+            # If it escapes _execute_task's own try/except, the task is left in RUNNING
+            # forever (zombie). Catch here and force it to FAILED so the queue is clean.
+            if task.status.value == "running":
+                self._log(
+                    f"Task {task.id} died unexpectedly ({type(e).__name__}): {e}", "error"
+                )
+                task.mark_failed(f"{type(e).__name__}: {e}")
+                self.stats["tasks_failed"] += 1
+                self.queue.update(task)
+                try:
+                    await self._broadcast({
+                        "event_type": "task_failed",
+                        "task_id": task.id,
+                        "task_type": task.type.value,
+                        "error": f"{type(e).__name__}: {e}",
+                        "severity": "error",
+                        "title": f"Task {task.id} died unexpectedly",
+                        "notify_user": True,
+                    })
+                except Exception:
+                    pass
+            raise  # re-raise so asyncio marks the Task as cancelled/failed
 
     def _task_routing_fields(self, task: "Task") -> Dict[str, int]:
         """Return urgency/importance fields for broadcast events (omit when None)."""
@@ -279,10 +335,20 @@ class Scheduler:
         return out
 
     async def _broadcast(self, event: dict):
-        """Broadcast an SSE event if notifier is available."""
+        """Broadcast an event to SSE clients and the persistent event log (push adapters).
+
+        SSENotifier.broadcast() already writes to the EventLog when one is wired.
+        The fallback path (no SSE notifier) writes directly so events are never lost.
+        """
         if self._sse_notifier:
             try:
                 await self._sse_notifier.broadcast(event)
+            except Exception:
+                pass  # non-critical
+        elif self._event_log:
+            # No SSE notifier — write directly so push adapters still receive the event
+            try:
+                await self._event_log.append(event)
             except Exception:
                 pass  # non-critical
 

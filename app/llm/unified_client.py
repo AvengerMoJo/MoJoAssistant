@@ -9,8 +9,9 @@ Key resolution order (env beats config, runtime override beats codebase):
 """
 from __future__ import annotations
 
+import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
@@ -152,6 +153,12 @@ class UnifiedLLMClient:
             }
             if tools:
                 payload["tools"] = tools
+                # Ask the model to issue one tool call per response.
+                # Prevents runaway parallel-call batches (e.g. Gemma 4 issuing
+                # 88 identical bash_exec calls in a single response).
+                # Most OpenAI-compatible backends honour this; local servers
+                # that ignore it are covered by the dedup in _execute_tool_calls.
+                payload["parallel_tool_calls"] = False
         return payload
 
     @staticmethod
@@ -201,6 +208,62 @@ class UnifiedLLMClient:
 
         data["_selected_model"] = model
         return data
+
+    async def call_stream_async(
+        self,
+        messages: List[Dict],
+        resource_config: Dict[str, Any],
+        model_override: Optional[str] = None,
+    ) -> AsyncIterator[str]:
+        """
+        Async streaming LLM call. Yields text chunks as they arrive.
+
+        Only supports text generation (no tool calls — use call_async for those).
+        Uses OpenAI-compatible SSE format: data: {...}\n\n lines.
+        Yields decoded content strings only; caller receives plain text chunks.
+        """
+        base_url = resource_config.get("base_url", "").rstrip("/")
+        message_format = resource_config.get("message_format", "openai")
+        output_limit = resource_config.get("output_limit", 8192)
+        model = model_override or resource_config.get("model", "")
+        headers = self._build_headers(resource_config)
+
+        payload = self._build_payload(messages, model, output_limit, message_format, tools=None)
+        payload["stream"] = True
+
+        if message_format == "anthropic":
+            url = f"{base_url}/messages"
+        else:
+            url = f"{base_url}/chat/completions"
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if raw == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(raw)
+                    except Exception:
+                        continue
+
+                    if message_format == "anthropic":
+                        # Anthropic stream: content_block_delta events
+                        delta = chunk.get("delta", {})
+                        text = delta.get("text", "")
+                    else:
+                        # OpenAI stream: choices[0].delta.content
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta", {})
+                        text = delta.get("content") or ""
+
+                    if text:
+                        yield text
 
     def call_sync(
         self,

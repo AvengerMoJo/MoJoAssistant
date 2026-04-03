@@ -1560,7 +1560,10 @@ class OpenCodeManager(BaseAgentManager):
         Returns:
             Dictionary with cleanup results
         """
-        import psutil
+        try:
+            import psutil
+        except ImportError:
+            return {"status": "skipped", "reason": "psutil not installed — pip install psutil"}
 
         try:
             git_urls = self.state_manager.list_projects()

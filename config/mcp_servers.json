@@ -1,5 +1,21 @@
 {
-  "comment": "External MCP servers — tools from each server are auto-registered into the agent tool pool. Roles declare tool_access by category (e.g. 'browser') to receive matching tools.",
+  "comment": [
+    "External MCP server registry — two transport models:",
+    "",
+    "  stdio  — MoJo spawns the process (npx, python, binary).",
+    "           Required: id, name, transport='stdio', command, args.",
+    "           Optional: env (extra env vars), category.",
+    "",
+    "  http   — Server already running; MoJo registers how to reach it.",
+    "           Required: id, name, transport='http', and one of:",
+    "             mcp_http_url (full URL, e.g. 'http://localhost:3100/mcp')",
+    "             port         (shorthand → http://localhost:{port}/mcp)",
+    "           Optional: pid (informational), authorization (Bearer token),",
+    "                     authorization_env (env var name holding the token).",
+    "",
+    "  category links to tool_catalog.json — roles declare tool_access by category.",
+    "  Personal overrides: ~/.memory/config/mcp_servers.json (same schema, same id overrides system entry)."
+  ],
   "servers": [
     {
       "id": "playwright",
@@ -9,6 +25,50 @@
       "args": ["@playwright/mcp@latest", "--headless"],
       "category": "browser",
       "enabled": true
+    },
+    {
+      "id": "tmux",
+      "name": "tmux MCP (nickgnd/tmux-mcp)",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "tmux-mcp"],
+      "category": "terminal",
+      "enabled": false,
+      "comment": "Persistent tmux session management. Set enabled=true when tmux is available."
     }
-  ]
+  ],
+  "examples": {
+    "comment": "These are reference examples — copy to 'servers' array (or personal config) to enable.",
+    "http_service_registration": {
+      "id": "opencode",
+      "name": "OpenCode MCP",
+      "transport": "http",
+      "mcp_http_url": "http://localhost:3100/mcp",
+      "pid": null,
+      "authorization": null,
+      "category": "exec",
+      "enabled": false,
+      "comment": "Register OpenCode's MCP server after it's running. pid is informational only."
+    },
+    "http_with_auth": {
+      "id": "github",
+      "name": "GitHub MCP",
+      "transport": "http",
+      "mcp_http_url": "https://api.githubcopilot.com/mcp/",
+      "authorization_env": "GITHUB_TOKEN",
+      "category": "file",
+      "enabled": false,
+      "comment": "authorization_env → reads token from environment variable at connect time."
+    },
+    "google_workspace": {
+      "id": "gws",
+      "name": "Google Workspace MCP",
+      "transport": "http",
+      "port": 3200,
+      "authorization_env": "GWS_MCP_TOKEN",
+      "category": "google",
+      "enabled": false,
+      "comment": "port shorthand → http://localhost:3200/mcp. Start the gws MCP server separately."
+    }
+  }
 }

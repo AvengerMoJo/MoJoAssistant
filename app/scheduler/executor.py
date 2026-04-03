@@ -704,6 +704,14 @@ class TaskExecutor:
 
         try:
             config = task.config or {}
+
+            # External agent HITL stubs — do nothing; the coding agent drives its own loop.
+            # These tasks should never reach the scheduler executor, but guard defensively
+            # in case resume_task_with_reply races with the scheduler tick.
+            if config.get("ext_agent_hitl"):
+                self._log(f"Agent task {task.id}: ext_agent_hitl stub — no-op")
+                return TaskResult(success=True, metrics={"note": "ext_agent_hitl stub"})
+
             agent_type = config.get("agent_type", "opencode")
             operation = config.get("operation")
             identifier = (

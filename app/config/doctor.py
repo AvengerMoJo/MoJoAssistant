@@ -153,6 +153,7 @@ class ConfigDoctor:
         report = DoctorReport()
         self._check_resources(report)
         self._check_roles(report)
+        self._check_nine_chapter_scores(report)
         self._check_scheduler_tasks(report)
         self._check_policy_patterns(report)
         self._check_memory_path(report)
@@ -300,12 +301,14 @@ class ConfigDoctor:
             available_models = {
                 res_id: r.model for res_id, r in rm._resources.items() if r.model
             }
-            free_resources_exist = any(
-                r.tier.value == "free" for r in rm._resources.values()
+            # A usable free resource must be both tier=free AND enabled=True
+            free_resources_usable = any(
+                r.tier.value == "free" and r.enabled
+                for r in rm._resources.values()
             )
         except Exception:
             available_models = {}
-            free_resources_exist = True  # unknown — don't false-alarm
+            free_resources_usable = True  # unknown — don't false-alarm
 
         try:
             from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
@@ -338,13 +341,13 @@ class ConfigDoctor:
                     ))
 
             # Check local_only roles have a free-tier resource (v1.2.6+)
-            if role.get("local_only") and not free_resources_exist:
+            if role.get("local_only") and not free_resources_usable:
                 report.add(CheckResult(
                     category="role", id=role_id, field="local_only",
                     value=True,
                     status="error",
                     message=(
-                        "Role has local_only=true but no 'free' tier resource is configured. "
+                        "Role has local_only=true but no enabled 'free' tier resource is configured. "
                         "This role will never be assigned an LLM."
                     ),
                 ))
@@ -605,7 +608,11 @@ class ConfigDoctor:
     # ------------------------------------------------------------------
 
     def _check_scheduler_config(self, report: DoctorReport) -> None:
-        """Verify scheduler_config.json exists and all referenced roles are known."""
+        """Verify scheduler_config.json exists and all referenced roles are known.
+
+        Reads through both config layers (project config/ and ~/.memory/config/)
+        so runtime overrides are visible to the doctor.
+        """
         project_root = Path(__file__).parent.parent.parent
         sched_path = project_root / "config" / "scheduler_config.json"
 
@@ -619,13 +626,14 @@ class ConfigDoctor:
             return
 
         try:
-            data = json.loads(sched_path.read_text())
+            from app.config.config_loader import load_layered_json_config
+            data = load_layered_json_config(str(sched_path))
         except Exception as e:
             report.add(CheckResult(
                 category="scheduler", id="scheduler_config", field="file",
                 value=str(sched_path),
                 status="error",
-                message=f"Invalid JSON: {e}",
+                message=f"Failed to load scheduler config: {e}",
             ))
             return
 
@@ -664,4 +672,82 @@ class ConfigDoctor:
                     value=cron,
                     status="pass",
                     message=f"Cron schedule is set",
+                ))
+
+    # ------------------------------------------------------------------
+    # NineChapter score validation (v1.2.11)
+    # ------------------------------------------------------------------
+
+    _NC_WEIGHTS = {
+        "core_values":        0.30,
+        "emotional_reaction": 0.25,
+        "cognitive_style":    0.20,
+        "social_orientation": 0.15,
+        "adaptability":       0.10,
+    }
+
+    def _check_nine_chapter_scores(self, report: DoctorReport) -> None:
+        """Verify that each role's nine_chapter_score matches the weighted average
+        of its dimension scores.  Flags roles where the stored score drifts from
+        what role_designer would compute — usually caused by manual edits."""
+        try:
+            from app.roles.role_manager import RoleManager
+            rm = RoleManager()
+            # list_roles() returns summaries without dimensions — load each role fully
+            summaries = rm.list_roles()
+            roles = []
+            for s in summaries:
+                full = rm.get(s["id"])
+                if full:
+                    roles.append(full)
+        except Exception as e:
+            report.add(CheckResult(
+                category="nine_chapter", id="roles", field="load",
+                value=None, status="error",
+                message=f"Could not load roles for NineChapter validation: {e}",
+            ))
+            return
+
+        for role in roles:
+            role_id = role.get("id", "?")
+            stored = role.get("nine_chapter_score")
+            dims = role.get("dimensions")
+
+            if stored is None:
+                report.add(CheckResult(
+                    category="nine_chapter", id=role_id, field="nine_chapter_score",
+                    value=None, status="warn",
+                    message="nine_chapter_score is missing — role was not created by role_designer",
+                ))
+                continue
+
+            if not dims:
+                report.add(CheckResult(
+                    category="nine_chapter", id=role_id, field="dimensions",
+                    value=None, status="warn",
+                    message="dimensions block is missing — cannot validate nine_chapter_score",
+                ))
+                continue
+
+            expected = round(sum(
+                dims.get(dim, {}).get("score", 0) * weight
+                for dim, weight in self._NC_WEIGHTS.items()
+            ))
+
+            if expected != stored:
+                report.add(CheckResult(
+                    category="nine_chapter", id=role_id, field="nine_chapter_score",
+                    value=stored,
+                    status="warn",
+                    message=(
+                        f"nine_chapter_score={stored} but weighted dimension average={expected}. "
+                        f"Role may have been manually edited. Re-run role_designer to recompute."
+                    ),
+                ))
+            else:
+                report.add(CheckResult(
+                    category="nine_chapter", id=role_id, field="nine_chapter_score",
+                    value=stored,
+                    status="pass",
+                    message=f"nine_chapter_score={stored} matches weighted dimension average",
                 ))

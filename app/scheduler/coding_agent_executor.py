@@ -683,8 +683,14 @@ class CodingAgentExecutor:
 
     def _get_registry(self) -> Any:
         """Return the cached BackendRegistry, loading config on first call."""
-        from coding_agent_mcp.backends import BackendRegistry
-        from coding_agent_mcp.config.loader import load_config
+        try:
+            from coding_agent_mcp.backends import BackendRegistry
+            from coding_agent_mcp.config.loader import load_config
+        except ImportError:
+            raise RuntimeError(
+                "coding-agent-mcp-tool not installed. "
+                "Run: pip install -e submodules/coding-agent-mcp-tool/"
+            )
 
         if self._registry is None:
             cfg = load_config()

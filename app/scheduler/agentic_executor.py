@@ -19,6 +19,9 @@ from app.scheduler.session_storage import SessionMessage, SessionStorage, TaskSe
 from app.scheduler.planning_prompt_manager import PlanningPromptManager
 from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
 from app.scheduler.safety_policy import SafetyPolicy
+from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
+from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context, build_capability_summary
+from app.roles.owner_context import load_owner_profile, infer_context_tier, build_owner_context_slice
 
 DEFAULT_SYSTEM_PROMPT = """\
 You are an autonomous assistant running as a scheduled task. Your owner can help \
@@ -81,6 +84,155 @@ BUILTIN_TOOLS = {
             },
         },
     },
+    # Individual browser tools — Qwen handles one-tool-one-action better than enum dispatch.
+    # These all route through _execute_browser_facade which calls the playwright MCP server.
+    "browser_navigate": {
+        "type": "function",
+        "function": {
+            "name": "browser_navigate",
+            "description": "Open a URL in the headless browser. Call before any page interactions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Full URL to navigate to."},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    "browser_snapshot": {
+        "type": "function",
+        "function": {
+            "name": "browser_snapshot",
+            "description": (
+                "Get an accessibility snapshot of the current page — text content, "
+                "element roles, and refs. Use this BEFORE clicking or typing to find "
+                "the correct selector/ref for the target element."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    "browser_screenshot": {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "Take a visual screenshot of the current page. Use to verify page state visually.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    "browser_click": {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": (
+                "Click an element on the page. "
+                "Use the 'ref' value from browser_snapshot output (e.g. ref='e21'). "
+                "Also provide 'element' as a short human description of what you're clicking."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref":     {"type": "string", "description": "Element ref from browser_snapshot (e.g. 'e21')."},
+                    "element": {"type": "string", "description": "Human description of the element (e.g. 'Login button')."},
+                },
+                "required": ["ref"],
+            },
+        },
+    },
+    "browser_type": {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": (
+                "Type text into an input field. "
+                "Use the 'ref' value from browser_snapshot output (e.g. ref='e16'). "
+                "Also provide 'element' as a short human description of the field."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref":     {"type": "string", "description": "Element ref from browser_snapshot (e.g. 'e16')."},
+                    "element": {"type": "string", "description": "Human description of the input (e.g. 'Username field')."},
+                    "text":    {"type": "string", "description": "Text to type into the field."},
+                },
+                "required": ["ref", "text"],
+            },
+        },
+    },
+    "browser_press_key": {
+        "type": "function",
+        "function": {
+            "name": "browser_press_key",
+            "description": "Press a keyboard key (e.g. Enter to submit a form, Tab to move focus, Escape to dismiss).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Key name: 'Enter', 'Tab', 'Escape', 'Space', etc."},
+                },
+                "required": ["key"],
+            },
+        },
+    },
+    "google_calendar_list": {
+        "type": "function",
+        "function": {
+            "name": "google_calendar_list",
+            "description": (
+                "List events from Google Calendar for a given date range. "
+                "Use to check Alex's schedule for today, this week, or any date range. "
+                "Returns event titles, start/end times, and descriptions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start of date range. ISO date or datetime, e.g. '2026-04-02' or '2026-04-02T00:00:00'.",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End of date range (exclusive). ISO date or datetime, e.g. '2026-04-09'.",
+                    },
+                    "calendar_id": {
+                        "type": "string",
+                        "description": "Calendar to read from. Default: 'primary' (Alex's main calendar).",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of events to return. Default: 20.",
+                    },
+                },
+                "required": ["start_date", "end_date"],
+            },
+        },
+    },
+    "google_calendar_create": {
+        "type": "function",
+        "function": {
+            "name": "google_calendar_create",
+            "description": (
+                "Create a new event on Google Calendar. "
+                "Only use for the ops calendar (MoJo operational tasks) unless Alex explicitly "
+                "asks for an event on his primary calendar."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Event title/summary."},
+                    "start_at": {"type": "string", "description": "Event start as ISO datetime, e.g. '2026-04-03T10:00:00'."},
+                    "end_at": {"type": "string", "description": "Event end as ISO datetime. Optional — uses duration_minutes if absent."},
+                    "details": {"type": "string", "description": "Event description or notes."},
+                    "calendar_id": {
+                        "type": "string",
+                        "description": "Calendar to write to. Default: 'primary'. Use 'mojo_assistant_ops' for operational tasks.",
+                    },
+                    "timezone": {"type": "string", "description": "Timezone, e.g. 'Asia/Taipei'. Default: 'Asia/Taipei'."},
+                    "duration_minutes": {"type": "integer", "description": "Duration in minutes if end_at not provided. Default: 30."},
+                },
+                "required": ["title", "start_at"],
+            },
+        },
+    },
 }
 
 CONTINUE_PROMPT = (
@@ -90,13 +242,16 @@ CONTINUE_PROMPT = (
 
 NEAR_LIMIT_PROMPT = (
     "⚠ ITERATION BUDGET WARNING: You are on iteration {current} of {max} — only {remaining} iteration(s) left.\n\n"
-    "You MUST stop using tools and produce a <FINAL_ANSWER> NOW, even if the work is incomplete.\n\n"
-    "Your FINAL_ANSWER should:\n"
-    "1. Summarise everything you have discovered or accomplished so far.\n"
-    "2. Clearly state what remains unfinished and what additional cycles would be needed to complete it.\n"
-    "3. Give the client enough context to resume this task in a future run.\n\n"
-    "Do NOT call any more tools. Synthesise what you know and wrap up."
+    "Pick exactly one option:\n\n"
+    "**Option A — Task is complete:** produce <FINAL_ANSWER> now.\n\n"
+    "**Option B — Task is NOT complete:** write this exact text:\n"
+    "  BUDGET_EXTENSION_REQUEST: Need N more iterations. Done: [what you finished]. Remaining: [what's left].\n"
+    "  The system will grant more cycles automatically.\n\n"
+    "Do NOT produce a partial FINAL_ANSWER if you are not done. Write Option B text instead."
 )
+
+_BUDGET_EXTENSION_PREFIX = "BUDGET_EXTENSION_REQUEST:"
+_BUDGET_EXTENSION_MAX_GRANT = 20  # cap per extension to avoid runaway loops
 
 
 class AgenticExecutor:
@@ -164,6 +319,7 @@ class AgenticExecutor:
         self._waiting_for_input_choices: Optional[list] = None
         self._tool_calls_made: int = 0          # non-ask_user tool calls this execution
         self._consecutive_no_tool: int = 0      # iterations with tools available but unused
+        self._budget_extension_granted: int = 0  # extra iterations granted via BUDGET_EXTENSION_REQUEST
         self._exhausts_tools_before_asking: bool = False
         self._requires_tool_use: bool = False   # reject final answer if no tools called yet
         # Task id stored so _execute_single_tool can inject per-task tmux socket
@@ -192,6 +348,7 @@ class AgenticExecutor:
                 level="warning",
             )
         self._data_boundary: dict = {}  # role-level data boundary constraints
+        role = None  # populated below if role_id resolves
         if role_id:
             try:
                 from app.roles.role_manager import RoleManager
@@ -248,11 +405,30 @@ class AgenticExecutor:
                 f"Using default system prompt (no planning prompt found: {planning_prompt_name})"
             )
 
-        # Combine: role personality first, then workflow instructions
+        # Combine: mode overlay + role personality + workflow instructions.
+        # Mode overlay is role-specific if defined in mode_overlays, else contract default.
+        mode_contract = get_mode_contract(InteractionMode.SCHEDULER_AGENTIC_TASK)
+        role_overlay = (role.get("mode_overlays") or {}).get(
+            InteractionMode.SCHEDULER_AGENTIC_TASK.value
+        ) if role else None
+        mode_overlay = role_overlay if role_overlay else mode_contract.prompt_overlay
+
+        ninechapter_overlay = build_behavioral_overlay(role) if role else ""
+        task_context = build_task_context(role) if role else ""
+        capability_summary = build_capability_summary(role) if role else ""
+
         if role_prefix:
-            system_prompt = role_prefix + "\n\n---\n\n" + workflow_prompt
+            system_prompt = (
+                mode_overlay
+                + ninechapter_overlay
+                + task_context
+                + capability_summary
+                + role_prefix
+                + "\n\n---\n\n"
+                + workflow_prompt
+            )
         else:
-            system_prompt = workflow_prompt
+            system_prompt = mode_overlay + workflow_prompt
 
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get(
@@ -273,6 +449,15 @@ class AgenticExecutor:
         else:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
 
+        # Owner context — inject filtered slice based on whether we may call external LLMs.
+        _owner_profile = load_owner_profile()
+        if _owner_profile:
+            _context_tier = infer_context_tier(tier_preference)
+            _owner_slice = build_owner_context_slice(_owner_profile, _context_tier)
+            if _owner_slice:
+                system_prompt = system_prompt + _owner_slice
+                self._log(f"Owner context injected (tier={_context_tier})")
+
         # Lazy-connect external MCP servers and register their tools on first use.
         if not self._mcp_tools_discovered and self._mcp_client_manager.has_servers():
             try:
@@ -289,7 +474,9 @@ class AgenticExecutor:
         # ask_user is always included — it's the HITL escape hatch for any blocker.
         explicit_tools = config.get("available_tools")
         if explicit_tools is not None:
-            enabled_tool_names = list(explicit_tools)
+            # available_tools may be category names (e.g. "browser") or explicit tool
+            # names. Expand categories via the catalog so the LLM sees real tool defs.
+            enabled_tool_names = self._resolve_tools_from_role({"tool_access": explicit_tools})
         elif role:
             enabled_tool_names = self._resolve_tools_from_role(role)
         else:
@@ -385,12 +572,29 @@ class AgenticExecutor:
         iteration_log: List[Dict[str, Any]] = []
         start_time = time.time()
         final_answer: Optional[str] = None
+        auto_extracted: bool = False  # provenance flag for fallback completion
+
+        # Tracked across iterations for fallback completion recovery
+        _last_response_text: str = ""
+        _last_turn_had_tool_calls: bool = False
 
         self._log(
             f"Starting agentic loop for task {task.id} (max {max_iterations} iterations)"
         )
 
-        for iteration in range(1, max_iterations + 1):
+        iteration = 0
+        while True:
+            iteration += 1
+            # Apply any budget extension granted by BUDGET_EXTENSION_REQUEST ask_user calls
+            if self._budget_extension_granted > 0:
+                max_iterations += self._budget_extension_granted
+                self._log(
+                    f"Task {task.id}: budget extended +{self._budget_extension_granted} "
+                    f"iterations (new max: {max_iterations})"
+                )
+                self._budget_extension_granted = 0
+            if iteration > max_iterations:
+                break
             abs_iteration = start_iteration + iteration
             elapsed = time.time() - start_time
             if elapsed >= max_duration:
@@ -411,7 +615,13 @@ class AgenticExecutor:
                 config=config,
                 iteration_log=iteration_log,
             )
-            if role_resource_requirements:
+            pinned_resource_id = config.get("pinned_resource")
+            if pinned_resource_id:
+                resource = self._rm.acquire_by_id(pinned_resource_id)
+                if resource is None:
+                    self._log(f"Pinned resource '{pinned_resource_id}' unavailable, falling back to tier selection")
+                    resource = self._rm.acquire(tier_preference=iter_tiers)
+            elif role_resource_requirements:
                 resource = self._rm.acquire_by_requirements(role_resource_requirements)
                 if resource is None:
                     # Fall back to tier-only acquire if requirements can't be fully satisfied
@@ -518,6 +728,10 @@ class AgenticExecutor:
             response_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
             tool_calls = message.get("tool_calls")
 
+            # Track last substantive assistant turn for fallback completion recovery
+            _last_response_text = response_text
+            _last_turn_had_tool_calls = bool(tool_calls)
+
             # Handle tool calls if present
             if tool_calls:
                 self._consecutive_no_tool = 0  # reset drift counter on actual tool use
@@ -585,6 +799,20 @@ class AgenticExecutor:
             # Append assistant response
             messages.append({"role": "assistant", "content": response_text})
             self._record(task.id, "assistant", response_text, iteration=abs_iteration)
+
+            # Detect plain-text BUDGET_EXTENSION_REQUEST (agent wrote it as text, not a tool call)
+            if _BUDGET_EXTENSION_PREFIX in response_text and self._budget_extension_granted == 0:
+                import re as _re
+                match = _re.search(r"Need\s+(\d+)\s+more", response_text, _re.IGNORECASE)
+                grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
+                max_iterations += grant
+                self._log(
+                    f"Task {task.id}: plain-text budget extension detected, granted +{grant} "
+                    f"(new max: {max_iterations})"
+                )
+                messages.append({"role": "user", "content": f"Budget extended by {grant} iterations. Continue your work."})
+                self._record(task.id, "user", f"Budget extended by {grant} iterations. Continue your work.", iteration=abs_iteration)
+                continue
 
             # Check for final answer
             candidate_final_answer = self._parse_final_answer(response_text)
@@ -655,6 +883,13 @@ class AgenticExecutor:
                     "completed",
                     final_answer=final_answer,
                 )
+                if get_mode_contract(InteractionMode.SCHEDULER_AGENTIC_TASK).stores_completion_artifact:
+                    self._store_completion_artifact(
+                        task=task,
+                        role_id=config.get("role_id"),
+                        goal=goal,
+                        final_answer=final_answer,
+                    )
                 break
             if final_validation_error:
                 correction_prompt = (
@@ -715,6 +950,43 @@ class AgenticExecutor:
                 },
             )
 
+        # ── Fallback completion recovery ──────────────────────────────────────
+        # If the agent finished its work but forgot to write <FINAL_ANSWER> tags,
+        # auto-extract the last response rather than sending the user a HITL question
+        # for a task that's effectively done.
+        #
+        # Conditions (all must hold):
+        #   - no final_answer found by tag parsing
+        #   - no pending waiting_for_input (model didn't ask a question)
+        #   - last turn had NO tool calls (model was writing, not acting)
+        #   - last response is substantive (length + no in-progress patterns)
+        #
+        # This is a recovery mechanism, not the primary path. A proper
+        # forced-finalization phase on the last iteration should be added later.
+        if (
+            final_answer is None
+            and not self._waiting_for_input_question
+            and not _last_turn_had_tool_calls
+        ):
+            text = _last_response_text.strip()
+            _IN_PROGRESS_PATTERNS = [
+                "let me continue", "i'll now", "i will now", "next i will",
+                "next, i", "i need more information", "i need to", "i'll need to",
+                "let me check", "let me look", "i should", "i'll start",
+                "first, i", "first i'll",
+            ]
+            _looks_complete = (
+                len(text) > 150
+                and not any(p in text.lower() for p in _IN_PROGRESS_PATTERNS)
+            )
+            if _looks_complete:
+                final_answer = text
+                auto_extracted = True
+                self._log(
+                    f"Task {task.id}: fallback completion recovery — "
+                    "auto-extracted last response (no FINAL_ANSWER tags found)"
+                )
+
         success = final_answer is not None
 
         # Finalize session status if not already set
@@ -753,17 +1025,58 @@ class AgenticExecutor:
                 },
             )
 
+        metrics: Dict[str, Any] = {
+            "iterations": len(iteration_log),
+            "iteration_log": iteration_log,
+            "duration_seconds": total_elapsed,
+            "final_answer": final_answer,
+            "session_file": session_file,
+        }
+        if auto_extracted:
+            metrics["completion_mode"] = "auto_extracted"
+            metrics["auto_extracted_final_answer"] = True
+
         return TaskResult(
             success=True,
             output_file=session_file,
-            metrics={
-                "iterations": len(iteration_log),
-                "iteration_log": iteration_log,
-                "duration_seconds": total_elapsed,
-                "final_answer": final_answer,
-                "session_file": session_file,
-            },
+            metrics=metrics,
         )
+
+    def _store_completion_artifact(
+        self, task: "Task", role_id: Optional[str], goal: str, final_answer: str
+    ) -> None:
+        """
+        Write a reviewable completion artifact to ~/.memory/task_reports/{task_id}.json.
+
+        Status starts as "pending_review" so the user can inspect and promote
+        the report to the knowledge base.  Called only when the mode contract
+        has stores_completion_artifact=True (i.e. SCHEDULER_AGENTIC_TASK).
+        """
+        import json as _json
+        from datetime import datetime as _dt
+        from pathlib import Path as _Path
+        from app.config.paths import get_memory_subpath
+
+        reports_dir = _Path(get_memory_subpath("task_reports"))
+        try:
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            report = {
+                "task_id": task.id,
+                "role_id": role_id,
+                "goal": goal,
+                "status": "pending_review",
+                "created_at": _dt.now().isoformat(),
+                "content": final_answer,
+            }
+            report_path = reports_dir / f"{task.id}.json"
+            with open(report_path, "w", encoding="utf-8") as f:
+                _json.dump(report, f, indent=2, ensure_ascii=False)
+            self._log(f"Task {task.id}: artifact written → {report_path}")
+        except Exception as e:
+            self._log(
+                f"Task {task.id}: failed to write completion artifact: {e}",
+                level="warning",
+            )
 
     def _load_resume_messages(
         self, task_id: str, system_prompt: str
@@ -929,27 +1242,63 @@ class AgenticExecutor:
 
     async def _execute_tool_calls(self, tool_calls: List[Dict]) -> List[str]:
         """Execute tool calls and return results as strings."""
+        # Defensive dedup: some local models (e.g. Gemma 4) ignore
+        # parallel_tool_calls=false and batch dozens of identical calls.
+        # Keep only the first occurrence of each (name, args) pair so the
+        # model gets one result per unique call instead of 87 errors.
+        _MAX_CALLS_PER_TURN = 10
+        seen_signatures: set = set()
+        deduped: List[Dict] = []
+        for tc in tool_calls:
+            sig = (
+                tc.get("function", {}).get("name", ""),
+                json.dumps(tc.get("function", {}).get("arguments", ""), sort_keys=True),
+            )
+            if sig not in seen_signatures:
+                seen_signatures.add(sig)
+                deduped.append(tc)
+        if len(tool_calls) != len(deduped):
+            self._log(
+                f"Deduped {len(tool_calls)} tool calls → {len(deduped)} unique "
+                "(model ignored parallel_tool_calls=false)",
+                "warning",
+            )
+        if len(deduped) > _MAX_CALLS_PER_TURN:
+            self._log(
+                f"Capping tool calls from {len(deduped)} → {_MAX_CALLS_PER_TURN} per turn",
+                "warning",
+            )
+            deduped = deduped[:_MAX_CALLS_PER_TURN]
+        tool_calls = deduped
+
         results = []
         for tc in tool_calls:
             fn_name = tc["function"]["name"]
             raw_args = tc.get("function", {}).get("arguments", "")
-            try:
-                fn_args = json.loads(raw_args) if raw_args else {}
-            except (json.JSONDecodeError, ValueError) as parse_err:
-                # Return a clear error so the model can self-correct its JSON
-                self._log(
-                    f"Tool {fn_name}: argument JSON parse failed — {parse_err}", "warning"
-                )
-                results.append(
-                    json.dumps({
-                        "error": (
-                            f"Your tool call arguments for '{fn_name}' were not valid JSON "
-                            f"({parse_err}). Please call the tool again with properly "
-                            "formatted JSON arguments."
-                        )
-                    })
-                )
-                continue
+            # Some OpenAI-compatible backends already parse arguments into a dict;
+            # others return a JSON string.  Handle both shapes.
+            if isinstance(raw_args, dict):
+                fn_args = raw_args
+            elif not raw_args:
+                fn_args = {}
+            else:
+                try:
+                    fn_args = json.loads(raw_args)
+                except (json.JSONDecodeError, ValueError, TypeError) as parse_err:
+                    # Return a clear error so the model can self-correct its JSON
+                    self._log(
+                        f"Tool {fn_name}: argument JSON parse failed — {parse_err}", "warning"
+                    )
+                    results.append(
+                        json.dumps({
+                            "error": (
+                                f"Your tool call arguments for '{fn_name}' were not valid JSON "
+                                f"({parse_err}). Please call the tool again with properly "
+                                "formatted JSON arguments."
+                            )
+                        })
+                    )
+                    continue
 
             try:
                 result = await self._execute_single_tool(fn_name, fn_args)
@@ -1033,6 +1382,23 @@ class AgenticExecutor:
                 }
             question = args.get("question", "")
             choices = args.get("choices")
+
+            # Budget extension request: agent signals it needs more cycles rather
+            # than a genuine HITL blocker. Grant automatically up to the cap.
+            if question.strip().startswith(_BUDGET_EXTENSION_PREFIX):
+                import re as _re
+                match = _re.search(r"Need\s+(\d+)\s+more", question, _re.IGNORECASE)
+                grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
+                self._budget_extension_granted += grant
+                self._log(
+                    f"Task {self._current_task_id}: budget extension granted (+{grant} iterations). "
+                    f"Message: {question[:120]}"
+                )
+                return {
+                    "success": True,
+                    "message": f"Budget extended by {grant} iterations. Continue your work.",
+                }
+
             self._waiting_for_input_question = question
             self._waiting_for_input_choices = choices if isinstance(choices, list) else None
             result_msg = f"Question submitted to user: {question}"
@@ -1058,8 +1424,11 @@ class AgenticExecutor:
                     operation="execute", tool_name=name, success=True
                 )
                 return result
-            # Preserve concrete tool error for the LLM instead of masking it.
-            return {"error": result.get("error", f"Tool '{name}' failed")}
+            # "Tool not found" means it's a builtin — fall through to builtin handlers.
+            # Any other failure is a real error — return it to the LLM.
+            err = result.get("error", "")
+            if not (err.endswith("not found") or "not found" in err):
+                return {"error": err or f"Tool '{name}' failed"}
         except Exception as e:
             self._log(f"Dynamic tool {name} failed: {e}", "error")
 
@@ -1071,7 +1440,129 @@ class AgenticExecutor:
             )
             return {"query": query, "results": results, "count": len(results)}
 
+        if name.startswith("browser_") or name == "browser":
+            return await self._execute_browser_facade(name, args)
+
+        if name in ("google_calendar_list", "google_calendar_create"):
+            return await self._execute_google_calendar(name, args)
+
         return {"error": f"Unknown or unavailable tool: {name}"}
+
+    # --- Google Calendar bridge -------------------------------------------------
+
+    async def _execute_google_calendar(self, name: str, args: Dict) -> Dict:
+        """Dispatch google_calendar_list / google_calendar_create to the gws bridge."""
+        from app.scheduler.google_calendar_bridge import (
+            calendar_list_events,
+            calendar_create_event,
+        )
+        if name == "google_calendar_list":
+            return await calendar_list_events(
+                start_date=args.get("start_date", ""),
+                end_date=args.get("end_date", ""),
+                calendar_id=args.get("calendar_id", "primary"),
+                max_results=int(args.get("max_results", 20)),
+            )
+        if name == "google_calendar_create":
+            return await calendar_create_event(
+                title=args.get("title", ""),
+                start_at=args.get("start_at", ""),
+                end_at=args.get("end_at"),
+                details=args.get("details", ""),
+                calendar_id=args.get("calendar_id", "primary"),
+                timezone=args.get("timezone", "Asia/Taipei"),
+                duration_minutes=int(args.get("duration_minutes", 30)),
+            )
+        return {"error": f"Unknown google calendar tool: {name}"}
+
+    # --- browser facade ---------------------------------------------------------
+
+    _BROWSER_ROUTES: Dict[str, tuple] = {
+        "navigate":   ("browser_navigate",        lambda a: {"url": a.get("url", "")}),
+        "back":       ("browser_navigate_back",   lambda a: {}),
+        "click":      ("browser_click",  lambda a: {
+            "ref": a.get("ref") or a.get("selector", ""),
+            "element": a.get("element", a.get("ref") or a.get("selector", "")),
+        }),
+        "hover":      ("browser_hover",  lambda a: {
+            "ref": a.get("ref") or a.get("selector", ""),
+            "element": a.get("element", a.get("ref") or a.get("selector", "")),
+        }),
+        "type":       ("browser_type",   lambda a: {
+            "ref": a.get("ref") or a.get("selector", ""),
+            "element": a.get("element", a.get("ref") or a.get("selector", "")),
+            "text": a.get("text", ""),
+        }),
+        "fill_form":  ("browser_fill_form",       lambda a: {"fields": a.get("fields", {})}),
+        "select":     ("browser_select_option",   lambda a: {"selector": a.get("selector", ""), "value": a.get("value", "")}),
+        "press_key":  ("browser_press_key",       lambda a: {"key": a.get("key", "")}),
+        "snapshot":   ("browser_snapshot",        lambda a: {}),
+        "screenshot": ("browser_take_screenshot", lambda a: {}),
+        "wait_for":   ("browser_wait_for",        lambda a: {k: v for k, v in {
+            "text": a.get("text_to_wait"), "timeout": a.get("timeout_ms")}.items() if v is not None}),
+        "tabs":       ("browser_tabs",            lambda a: {k: v for k, v in {
+            "action": a.get("tab_action"), "tab_id": a.get("tab_id")}.items() if v is not None}),
+        "evaluate":   ("browser_evaluate",        lambda a: {"expression": a.get("expression", "")}),
+        "console":    ("browser_console_messages",lambda a: {}),
+        "network":    ("browser_network_requests",lambda a: {}),
+        "close":      ("browser_close",           lambda a: {}),
+    }
+
+    async def _execute_browser_facade(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Route browser_* tools (and legacy browser(action=...) facade) to the playwright MCP server.
+
+        Individual tools: browser_navigate, browser_snapshot, browser_screenshot,
+                          browser_click, browser_type, browser_press_key
+        Legacy facade:    browser(action='navigate', ...)
+        """
+        # Map tool name → (playwright tool name suffix, arg_builder)
+        # Playwright MCP uses 'ref' (from snapshot) + 'element' (human label), not 'selector'.
+        # Individual tools use the tool name directly; legacy facade uses action param.
+        _INDIVIDUAL_MAP: Dict[str, tuple] = {
+            "browser_navigate":   ("browser_navigate",        lambda a: {"url": a.get("url", "")}),
+            "browser_snapshot":   ("browser_snapshot",        lambda a: {}),
+            "browser_screenshot": ("browser_take_screenshot", lambda a: {}),
+            "browser_click":      ("browser_click",           lambda a: {
+                "ref": a.get("ref") or a.get("selector", ""),
+                "element": a.get("element", a.get("ref") or a.get("selector", "")),
+            }),
+            "browser_type":       ("browser_type",            lambda a: {
+                "ref": a.get("ref") or a.get("selector", ""),
+                "element": a.get("element", a.get("ref") or a.get("selector", "")),
+                "text": a.get("text", ""),
+            }),
+            "browser_press_key":  ("browser_press_key",       lambda a: {"key": a.get("key", "")}),
+        }
+
+        if name in _INDIVIDUAL_MAP:
+            pw_tool, arg_builder = _INDIVIDUAL_MAP[name]
+        elif name == "browser":
+            # Legacy enum facade
+            action = args.get("action", "")
+            if action not in self._BROWSER_ROUTES:
+                return {"error": f"Unknown browser action '{action}'. Valid: {sorted(self._BROWSER_ROUTES)}"}
+            pw_tool, arg_builder = self._BROWSER_ROUTES[action]
+        else:
+            return {"error": f"Unknown browser tool: {name}"}
+
+        built_args = arg_builder(args)
+
+        # Try via mcp_client_manager (playwright server)
+        if self._mcp_client_manager:
+            try:
+                result = await self._mcp_client_manager.call_tool("playwright", pw_tool, built_args)
+                return result
+            except Exception as e:
+                return {"error": f"{name} via playwright MCP failed: {e}"}
+
+        # Fallback: try the registry directly (playwright__ prefix)
+        reg_name = f"playwright__{pw_tool}"
+        try:
+            result = await self._tool_registry.execute_tool(reg_name, built_args)
+            return result
+        except Exception as e:
+            return {"error": f"{name} failed: playwright MCP not available. {e}"}
 
     async def _emit_policy_violation(
         self,
@@ -1153,12 +1644,19 @@ class AgenticExecutor:
                     continue
                 if tool_meta.get("always_injected"):
                     continue
+                if tool_meta.get("internal"):  # facade-only; never expose raw to LLM
+                    continue
                 if tool_meta.get("category") in tool_access:
                     names.append(tool_name)
                     seen.add(tool_name)
             # Registry-defined tools (e.g. external MCP tools with a category field)
             for t_name, t_def in self._tool_registry._tools.items():
                 if t_name in seen:
+                    continue
+                # Skip internal/raw tools registered by MCP servers that have
+                # a catalog entry marked internal (e.g. playwright__ tools)
+                cat_meta = tool_entries.get(t_name, {})
+                if isinstance(cat_meta, dict) and cat_meta.get("internal"):
                     continue
                 if t_def.category and t_def.category in tool_access:
                     names.append(t_name)

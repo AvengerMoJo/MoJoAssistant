@@ -24,10 +24,13 @@ User / External World
 | v1.2.5 | PII + Computer-Use groundwork | ✅ Shipped | PII scanner, attention routing, tmux isolation, MCPClientManager fixes |
 | v1.2.6 | Policy enforcement + agentic hardening | ✅ Shipped | PolicyMonitor pipeline, data boundary, behavioral_patterns, local_only |
 | v1.2.7 | Security depth + Role Chat + Sub-agents | ✅ Shipped | Security Sentinel, Role Chat interface, dispatch_subtask, HITL budget, MEMORY_PATH fixes |
-| **v1.2.8** | **Bug hardening + ConfigDoctor** | 🔄 In progress | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
-| v1.2.9 | Quality gates + coding agent bridge | 📋 Planned | Smoke suite (`tests/smoke/`), dependency resilience audit, INSTALL.md, coding agent HITL bridge (OpenCode/Claude Code → inbox), per-source attention routing rules |
-| v1.2.10 | First-run experience + catalog architecture | 📋 Planned | Setup wizard polish, 4 bundled demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view, resource pool unification, tool registry catalog + `list_tools()` discovery |
-| v1.2.11 | Computer-use + config completeness | 📋 Planned | Terminal tools (`terminal_exec`, `terminal_read`), HttpAgentExecutor (ZeroClaw/MAP protocol), `mcp_servers.json` config tool coverage, ConfigDoctor NineChapter score validation |
+| v1.2.8 | Bug hardening + ConfigDoctor | ✅ Shipped | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
+| **v1.2.9** | **Quality gates + coding agent bridge** | ✅ Shipped | Smoke suite (133 tests), NineChapter, InteractionMode contracts, physical knowledge isolation, completion artifacts, dependency resilience audit, INSTALL.md, coding agent HITL bridge, per-source attention routing rules |
+| **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile, demo roles (Rebecca/Ahman/Carl) bundled, first-run wizard (auto-detect, config gen, role selection, LLM backend detection + model ladder), 3 demo tasks seeded, 158 smoke tests |
+| **v1.2.11** | **Terminal + config completeness** | ✅ Shipped | Terminal tools via nickgnd/tmux-mcp (13 tools registered in tool_catalog + mcp_servers.json, enabled=false until tmux available), ConfigDoctor NineChapter score validation (weighted dimension drift detection), HttpAgentExecutor deferred (needs protocol spec) |
+| **v1.2.12** | **Owner identity — active layer** | 📋 Planned | Owner context filtered injection (mode overlay → filtered prompt slice per role/mode), sensitive-domain watchdog (system roles scan operations against `sensitive_domains` in owner profile) |
+| **v1.2.13** | **agency-agents import bridge** | 📋 Planned | `agency-agents` reference library integration — parse markdown personas, map to Nine Chapter wizard pre-fills, "Import from library" path in role designer, GUI operator role as first candidate |
+| **v1.2.14** | **Owner relationships + policy coupling** | 📋 Planned | `assistant_relationships` auto-update via dreaming pipeline, policy/role/relationship coupling model design + enforcement groundwork |
 | v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
 | v1.3.1 | Agent Learning Loop | 📋 Planned | Failure→lesson pipeline, memory context injection, per-role silo memory, cross-agent queries |
 | v1.3.2 | Agent Orchestration + Role Chat Full | 📋 Planned | Agent type classification, workflow templates, OpenAI-compat proxy, cross-role referral |
@@ -399,7 +402,7 @@ sub-task to the right role and wait for the result:
 
 ## Priority Matrix — Urgent / Important
 
-_Last updated: 2026-03-28 (wip_1.2.8)_
+_Last updated: 2026-03-30 (v1.2.11 shipped)_
 
 | Item | Urgent | Important | Target | Status | Why |
 |------|--------|-----------|--------|--------|-----|
@@ -414,11 +417,14 @@ _Last updated: 2026-03-28 (wip_1.2.8)_
 | MEMORY_PATH consistency | 🟡 Medium | 🔴 High | v1.2.7 | ✅ Done | `JsonFileBackend` all call sites pass `storage_path`; doctor verifies |
 | ConfigDoctor v1.2.6/v1.2.7 checks | 🟡 Medium | 🟡 Medium | v1.2.8 | ✅ Done | Policy patterns, MEMORY_PATH writability, scheduler config, `local_only` resource check |
 | Urgency + importance → attention routing | 🟡 Medium | 🔴 High | v1.2.4 | ✅ Done | Fields on task model; drive `hitl_level` floor via urgency×importance |
-| Dependency resilience (optional imports) | 🔴 High | 🔴 High | v2.0.0 gate | 🟡 Partial | `sentence_transformers` soft-import fixed; `prompt_toolkit` skipped in CI; full audit of optional deps needed |
-| Smoke suite — one command, clean install | 🔴 High | 🔴 High | v2.0.0 gate | ❌ Open | `tests/smoke/` directory does not exist; blocks public release |
-| First-run experience / installer (Gate 7) | 🟡 Medium | 🔴 High | v2.0.0 gate | 🟡 Partial | `app/interactive-cli.py` exists; needs wizard polish, demo roles (Alex/Rebecca/Ahman/Carl), 5 demo tasks, privacy report view |
-| Release definition — documented supported path | 🟡 Medium | 🔴 High | v2.0.0 gate | 🟡 Partial | README rewritten v1.2.7; INSTALL.md with supported OS/Python/model/env-var table still needed |
-| ConfigDoctor NineChapter score validation | 🟢 Low | 🟡 Medium | v1.2.4 | ❌ Open | Validate `nine_chapter_score` matches dimension average; deferred from v1.2.4 |
+| Dependency resilience (optional imports) | 🔴 High | 🔴 High | v1.2.9 | ✅ Done | All optional imports (`prompt_toolkit`, `psutil`, `coding_agent_mcp`, `sentence_transformers`) wrapped with graceful fallbacks |
+| Smoke suite — one command, clean install | 🔴 High | 🔴 High | v1.2.9 | ✅ Done | 133 tests across mode contracts, chat mode, NineChapter, role isolation, attention routing, HITL bridge |
+| First-run experience / installer (Gate 7) | 🟡 Medium | 🔴 High | v1.2.10 | ✅ Done | wizard UX polish, LLM backend detection, 3 demo tasks seeded, end-to-end idempotent smoke test — all done in v1.2.10 |
+| Resource pool unification | 🔴 High | 🔴 High | v1.2.10 | ✅ Done | Unified ResourceManager, tier system, rate limiting, budget tracking |
+| Tool registry catalog + `list_tools()` | 🔴 High | 🔴 High | v1.2.10 | ✅ Done | 112+ tools, system catalog + dynamic registry, `list_tools` MCP tool exposed |
+| Privacy report view | 🟢 Low | 🟡 Medium | v1.2.12 | ❌ Open | Aggregated view of data locations, memory retention, role/tool access audit — deferred from v1.2.10 |
+| Release definition — documented supported path | 🟡 Medium | 🔴 High | v1.2.9 | ✅ Done | README rewritten v1.2.7; INSTALL.md with supported OS/Python/model/env-var table — done |
+| ConfigDoctor NineChapter score validation | 🟢 Low | 🟡 Medium | v1.2.11 | ✅ Done | Weighted dimension drift detection; flags manually-edited roles |
 | Hybrid memory search (BM25 + embedding) | 🟢 Low | 🔴 High | v1.2.5 | ❌ Open | Semantic-only search misses structural/domain connections for research roles |
 | BehavioralMonitor + ContainmentEngine | 🟢 Low | 🔴 High | v1.3.0 | ❌ Open | Critical for autonomous AI world; not urgent until pre-public |
 | Agent learning loop (failure→lesson→injection) | 🟢 Low | 🔴 High | v1.3.1 | ❌ Open | Agents learn from mistakes without human intervention |
@@ -429,6 +435,13 @@ _Last updated: 2026-03-28 (wip_1.2.8)_
 | One-on-one role channel + OpenAI-compat proxy | 🟢 Low | 🟡 Medium | v1.3.1 | ❌ Open | UX polish, post-v2.0.0 |
 | Inbox → Dreaming → Knowledge | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Institutional memory; valuable but not blocking |
 | Message passing + containerization | 🟢 Low | 🟢 Low | v2.x | ❌ Open | Architecture evolution, long horizon |
+| Owner profile (`~/.memory/owner_profile.json`) | 🟡 Medium | 🔴 High | v1.2.10 | ✅ Done | Canonical human identity anchor; created on first-run; `policy_authority`, `assistant_relationships`, `communication_preferences` |
+| Owner context filtered injection | 🟡 Medium | 🔴 High | v1.2.12 | ❌ Open | Mode overlay declares which owner profile fields each role/mode can see; prompt builder assembles filtered slice; backend channel assumed safe until mechanism is designed |
+| Sensitive-domain watchdog (monitor + data watchdog roles) | 🟡 Medium | 🔴 High | v1.2.12 | ❌ Open | Two system roles proactively scan operations against `sensitive_domains` list in owner profile; blocks or flags policy violations before they reach memory or external tools |
+| agency-agents reference library integration | 🟢 Low | 🟡 Medium | v1.2.13 | ❌ Open | Vendor/clone agency-agents; markdown parser extracts persona fields; mapper pre-fills Nine Chapter wizard; "Import from library" UI path in role designer |
+| GUI operator role (browser/web UI interaction) | 🟢 Low | 🟡 Medium | v1.2.13 | ❌ Open | First role created via agency-agents bridge; focused on browser tools, web UI navigation, Portainer-style ops |
+| `assistant_relationships` auto-update via dreaming | 🟢 Low | 🟡 Medium | v1.2.14 | ❌ Open | Dreaming pipeline consolidates interaction history into owner profile `assistant_relationships`; authored values are v1 seed; long-term values grow from memory |
+| Policy/role/relationship coupling model | 🟡 Medium | 🔴 High | v1.2.14 | ❌ Open | policy, role, and relationship definitions are interdependent; coupling model needs design before enforcement layer can be finalized |
 
 **Reading the matrix:**
 - 🔴🔴 = do next, blocks v2.0.0 or is the linchpin
@@ -448,10 +461,14 @@ v1.3.0 releases when:
 1. **Trust layer is real** (v1.2.4): audit trail, §21 enforcement, inbox distillation
 2. **Computer-use is complete** (v1.2.5): browser + terminal + external agents
 3. **Safety foundation holds** (v1.2.6): PII classification, data boundary enforcement
+4. **Owner identity layer is active** (v1.2.12): filtered context injection, sensitive-domain watchdog
+5. **Role creation enriched** (v1.2.13): agency-agents import bridge live, GUI operator role shipped
+6. **Relationship coupling model designed** (v1.2.14): policy/role/relationship coupling model
 
 The graduation promise: a user can run MoJoAssistant with agents touching real
 data, point to the audit log, and say "here is exactly what left my device and
-when — and here is proof nothing else did."
+when — and here is proof nothing else did." The owner identity layer adds: "and
+every agent knew who it was working for and what it was not allowed to touch."
 
 ---
 

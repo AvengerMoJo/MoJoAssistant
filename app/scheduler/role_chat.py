@@ -3,8 +3,14 @@ Role Chat Interface — conversational mode for assistant roles.
 
 Provides direct, personality-aware conversation with a role using its
 accumulated knowledge units as context. Runs a mini agentic loop (up to
-MAX_CHAT_ITERATIONS) so the role can call tools (memory_search, web_search,
-fetch_url) based on its tool_access configuration.
+MAX_CHAT_ITERATIONS) so the role can call tools (memory_search, task_search)
+based on its tool_access configuration.
+
+Chat mode is a **private recall/debrief** surface — read-only memory tools
+only. Web search, browser, and orchestration tools are not available here.
+A chat-mode addendum is injected into every system prompt to make this
+contract explicit to the model and prevent it from planning for tools it
+does not have.
 
 Session history persists at ~/.memory/roles/{role_id}/chat_history/{session_id}.json
 """
@@ -15,10 +21,13 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from app.config.paths import get_memory_subpath
 from app.roles.role_manager import RoleManager
+from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
+from app.scheduler.ninechapter import build_behavioral_overlay
+from app.roles.owner_context import load_owner_profile, build_owner_context_slice
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +36,11 @@ MAX_KU_ITEMS = 8          # knowledge units injected as context
 MAX_KU_QUOTE_CHARS = 200  # truncate long KU quotes
 MAX_CHAT_ITERATIONS = 5   # max tool-call iterations per exchange
 
-# memory and task_search are always available in chat for roles with memory access
+# Maps tool catalog categories → concrete tool names available in chat mode.
+# Filtered at runtime by the active mode contract's allowed_tool_categories.
 _CHAT_TOOL_ACCESS: Dict[str, List[str]] = {
     "memory": ["memory_search", "task_search"],
+    "knowledge": ["knowledge_search"],
 }
 
 # OpenAI-format tool definitions for each supported chat tool
@@ -95,6 +106,33 @@ _TOOL_DEFS: Dict[str, Dict] = {
             },
         },
     },
+    "knowledge_search": {
+        "type": "function",
+        "function": {
+            "name": "knowledge_search",
+            "description": (
+                "Search your own personal knowledge base — your distilled knowledge units "
+                "and your own completed research reports. This is your private knowledge, "
+                "scoped only to you. Other assistants cannot see it and you cannot see theirs. "
+                "Use this to retrieve your own findings, analysis, and prior research in full. "
+                "More complete than task_search: returns full content, not just a summary snippet."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords to match against task goals and report content.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max reports to return (default 5).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 }
 
 _FINAL_TOOL_LOOP_PROMPT = (
@@ -103,6 +141,75 @@ _FINAL_TOOL_LOOP_PROMPT = (
     "Using only the conversation and tool results already available, "
     "answer the user directly now."
 )
+
+# Hollow phrases that indicate the model failed to produce a real answer.
+_HOLLOW_PATTERNS = (
+    "let me search",
+    "i'll search",
+    "let me look",
+    "searching for",
+    "i'll look into",
+    "let me find",
+    "i need to search",
+)
+
+
+def _ensure_response_quality(response: str, role_name: str) -> str:
+    """
+    Safety net for blocked/hollow chat responses.
+
+    If the model returns empty output or a hollow placeholder phrase instead
+    of a real answer, substitute a structured fallback that tells the user
+    what happened and how to proceed.  The prompt overlay handles most cases;
+    this catches the remainder.
+    """
+    text = response.strip()
+    if not text:
+        return (
+            f"**What I found:** nothing in my current memory on this topic.\n"
+            f"**What I could not confirm:** the full answer — I do not have "
+            f"enough context in this session.\n"
+            f"**To investigate further:** Route this as a scheduled research "
+            f"task through MoJo's task flow and I can give you a complete answer."
+        )
+    lower = text.lower()
+    if any(lower.startswith(p) for p in _HOLLOW_PATTERNS) and len(text) < 120:
+        return (
+            f"**What I found:** nothing conclusive in my current memory.\n"
+            f"**What I could not confirm:** the full answer requires a fresh "
+            f"investigation beyond what's available in this debrief session.\n"
+            f"**To investigate further:** Route this as a scheduled research "
+            f"task through MoJo's task flow."
+        )
+    return response
+
+# The default chat-mode overlay is sourced from the DASHBOARD_CHAT mode contract.
+# Roles may override it via mode_overlays.dashboard_chat in their config.
+# Kept as a module-level alias for backwards compatibility with any callers that
+# reference it directly.
+_CHAT_MODE_ADDENDUM = get_mode_contract(InteractionMode.DASHBOARD_CHAT).prompt_overlay
+
+# Sections in a role's full agentic system_prompt that describe tools unavailable
+# in chat mode.  Stripping them prevents the model from planning for tools it
+# doesn't have (e.g. trying to call `knowledge` after reading the how-to section).
+_CHAT_MODE_STRIP_SECTIONS = [
+    "## How you use tools",
+    "## Accessing MoJoAssistant's own codebase and docs",
+    "## When a tool is unavailable",
+]
+
+
+def _strip_tool_sections(prompt: str) -> str:
+    """Remove agentic tool-instruction sections from a system prompt for chat mode."""
+    import re
+    for heading in _CHAT_MODE_STRIP_SECTIONS:
+        # Match from the heading line up to (but not including) the next ## heading
+        # or end of string.  re.DOTALL so . matches newlines.
+        pattern = re.escape(heading) + r".*?(?=\n## |\Z)"
+        prompt = re.sub(pattern, "", prompt, flags=re.DOTALL)
+    # Collapse runs of 3+ blank lines left behind by the removal
+    prompt = re.sub(r"\n{3,}", "\n\n", prompt)
+    return prompt.strip()
 
 
 class RoleChatSession:
@@ -117,8 +224,14 @@ class RoleChatSession:
     agentic loop so the role can look things up before answering.
     """
 
-    def __init__(self, role_id: str, session_id: Optional[str] = None):
+    def __init__(
+        self,
+        role_id: str,
+        session_id: Optional[str] = None,
+        mode: InteractionMode = InteractionMode.DASHBOARD_CHAT,
+    ):
         self.role_id = role_id
+        self.mode = mode
         self.session_id = (
             session_id
             or f"chat_{role_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -375,16 +488,116 @@ class RoleChatSession:
     # Tool definitions & execution                                         #
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _get_chat_tools(tool_access: List[str]) -> List[Dict]:
-        """Return OpenAI tool definitions for the categories in tool_access."""
+    def _get_chat_tools(self, tool_access: List[str]) -> List[Dict]:
+        """Return OpenAI tool definitions allowed in the current mode.
+
+        Intersects the role's tool_access categories with the mode contract's
+        allowed_tool_categories so the model only sees tools the mode permits.
+        """
+        contract = get_mode_contract(self.mode)
         names: List[str] = []
         for category in tool_access:
-            names.extend(_CHAT_TOOL_ACCESS.get(category, []))
+            if category in contract.allowed_tool_categories:
+                names.extend(_CHAT_TOOL_ACCESS.get(category, []))
         return [_TOOL_DEFS[n] for n in names if n in _TOOL_DEFS]
+
+    def _search_knowledge(self, query: str = "", limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Search this role's personal knowledge — scoped exclusively to self.role_id.
+
+        Sources (both role-scoped):
+          1. ~/.memory/roles/{role_id}/knowledge_units/ — distilled knowledge entries
+          2. ~/.memory/task_reports/{task_id}.json where role_id == self.role_id
+
+        Knowledge from other roles is never returned. Each assistant maintains
+        their own personal knowledge base independently.
+        """
+        query_lower = query.strip().lower() if query else ""
+        limit = min(int(limit or 5), 20)
+        results: List[Dict[str, Any]] = []
+
+        # --- Source 1: role's distilled knowledge units ---
+        ku_dir = Path(get_memory_subpath("roles")) / self.role_id / "knowledge_units"
+        if ku_dir.exists():
+            for subdir in sorted(ku_dir.iterdir(), reverse=True):
+                if not subdir.is_dir():
+                    continue
+                archive_files = sorted(subdir.glob("archive_v*.json"), reverse=True)
+                for archive_file in archive_files[:1]:
+                    try:
+                        with open(archive_file, encoding="utf-8") as f:
+                            archive = json.load(f)
+                    except Exception:
+                        continue
+                    for ku in archive.get("knowledge_units", []):
+                        meaning = (ku.get("core_meaning") or "").strip()
+                        quote = (ku.get("quote") or "").strip()
+                        source = (ku.get("source") or "").strip()
+                        if not meaning:
+                            continue
+                        text = meaning + (f' — "{quote}"' if quote and quote != meaning else "")
+                        if query_lower and query_lower not in text.lower() and query_lower not in source.lower():
+                            continue
+                        results.append({
+                            "type": "knowledge_unit",
+                            "source": source,
+                            "content": text,
+                            "created_at": (ku.get("created_at") or archive.get("created_at") or "")[:19],
+                        })
+                        if len(results) >= limit:
+                            break
+                if len(results) >= limit:
+                    break
+
+        # --- Source 2: this role's task completion reports ---
+        if len(results) < limit:
+            reports_dir = Path(get_memory_subpath("task_reports"))
+            if reports_dir.exists():
+                for report_file in sorted(
+                    reports_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+                ):
+                    try:
+                        with open(report_file, encoding="utf-8") as f:
+                            report = json.load(f)
+                    except Exception:
+                        continue
+                    # Enforce role isolation
+                    if report.get("role_id") != self.role_id:
+                        continue
+                    if query_lower:
+                        goal = (report.get("goal") or "").lower()
+                        content = (report.get("content") or "").lower()
+                        if query_lower not in goal and query_lower not in content:
+                            continue
+                    results.append({
+                        "type": "task_report",
+                        "task_id": report.get("task_id", ""),
+                        "goal": report.get("goal", ""),
+                        "status": report.get("status", ""),
+                        "created_at": (report.get("created_at") or "")[:19],
+                        "content": report.get("content", ""),
+                    })
+                    if len(results) >= limit:
+                        break
+
+        return results
 
     async def _execute_tool(self, name: str, args: Dict[str, Any]) -> str:
         """Execute a single chat tool and return its result as a JSON string."""
+        # knowledge_search and task_search are handled locally
+        if name == "knowledge_search":
+            try:
+                results = self._search_knowledge(
+                    query=args.get("query", ""),
+                    limit=args.get("limit", 5),
+                )
+                return json.dumps(
+                    {"success": True, "count": len(results), "reports": results},
+                    ensure_ascii=False,
+                )
+            except Exception as e:
+                return json.dumps({"success": False, "error": str(e)})
+
         # task_search is handled locally — no external registry needed
         if name == "task_search":
             try:
@@ -536,9 +749,21 @@ class RoleChatSession:
                 "session_id": self.session_id,
             }
 
-        system_prompt = role.get(
+        base_prompt = role.get(
             "system_prompt", f"You are {role.get('name', self.role_id)}."
         )
+        # Resolve mode overlay: role-specific override > contract default.
+        # Prepend at highest priority (model reads top-down) and strip any
+        # tool-instruction sections that describe tools unavailable in this mode.
+        contract = get_mode_contract(self.mode)
+        role_overlay = (role.get("mode_overlays") or {}).get(self.mode.value)
+        mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
+        ninechapter_overlay = build_behavioral_overlay(role)
+        system_prompt = mode_overlay + ninechapter_overlay + _strip_tool_sections(base_prompt)
+        _owner_slice = build_owner_context_slice(load_owner_profile(), "minimal")
+        if _owner_slice:
+            system_prompt = system_prompt + _owner_slice
+
         session = self._load_session()
         ku_context = self._load_ku_context()
         activity_context = self._load_recent_activity()
@@ -578,10 +803,25 @@ class RoleChatSession:
                     for tc in tool_calls:
                         fn = tc.get("function") or {}
                         tool_name = fn.get("name", "")
+                        raw_args = fn.get("arguments") or "{}"
                         try:
-                            args = json.loads(fn.get("arguments") or "{}")
+                            args = json.loads(raw_args)
                         except Exception:
-                            args = {}
+                            snippet = raw_args[:120]
+                            parse_error = (
+                                f"Tool arguments could not be parsed as JSON: {snippet!r}. "
+                                "Please retry with valid JSON."
+                            )
+                            logger.warning(
+                                f"[role_chat] malformed tool args for '{tool_name}': {snippet!r}"
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", ""),
+                                "content": json.dumps({"success": False, "error": parse_error}),
+                            })
+                            total_tool_calls += 1
+                            continue
                         logger.debug(f"[role_chat] tool call: {tool_name}({args})")
                         result_str = await self._execute_tool(tool_name, args)
                         messages.append({
@@ -614,6 +854,7 @@ class RoleChatSession:
             logger.error(f"RoleChatSession.exchange failed for {self.role_id}: {e}")
             response = f"(Error generating response: {e})"
 
+        response = _ensure_response_quality(response, role_name=role.get("name", self.role_id))
         self._save_session(session, message, response)
 
         return {
@@ -626,6 +867,190 @@ class RoleChatSession:
                 "tool_calls": total_tool_calls,
             },
         }
+
+
+    async def exchange_stream(
+        self,
+        message: str,
+        resource_manager: Optional[Any] = None,
+    ) -> AsyncIterator[str]:
+        """
+        Streaming variant of exchange().
+
+        Yields SSE-formatted lines:
+          data: {"type": "tool",  "name": "<tool_name>"}      — tool call in progress
+          data: {"type": "token", "text": "<chunk>"}           — LLM text token
+          data: {"type": "done",  "session_id": "...", "tool_calls": N}  — complete
+
+        Tool-call iterations run to completion before streaming begins.
+        Only the final text response is streamed token-by-token.
+        """
+        role = RoleManager().get(self.role_id)
+        if role is None:
+            yield f'data: {json.dumps({"type": "error", "message": f"Role {self.role_id!r} not found"})}\n\n'
+            return
+
+        base_prompt = role.get(
+            "system_prompt", f"You are {role.get('name', self.role_id)}."
+        )
+        contract = get_mode_contract(self.mode)
+        role_overlay = (role.get("mode_overlays") or {}).get(self.mode.value)
+        mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
+        ninechapter_overlay = build_behavioral_overlay(role)
+        system_prompt = mode_overlay + ninechapter_overlay + _strip_tool_sections(base_prompt)
+        _owner_slice = build_owner_context_slice(load_owner_profile(), "minimal")
+        if _owner_slice:
+            system_prompt = system_prompt + _owner_slice
+
+        session = self._load_session()
+        ku_context = self._load_ku_context()
+        activity_context = self._load_recent_activity()
+        history = session.get("exchanges", [])
+
+        messages = self._build_messages(system_prompt, ku_context, activity_context, history, message)
+
+        tool_access = role.get("tool_access") or []
+        chat_tools = self._get_chat_tools(tool_access) if resource_manager else []
+
+        total_tool_calls = 0
+        response_text = ""
+
+        try:
+            if resource_manager is None:
+                # No resource manager — fall back to blocking LLM interface
+                response_text = await self._call_via_llm_interface(messages)
+                for chunk in _split_chunks(response_text):
+                    yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+            else:
+                # --- Tool-call iterations (non-streaming) ---
+                msg: Dict[str, Any] = {}
+                ready_to_stream = False
+                for _iteration in range(MAX_CHAT_ITERATIONS):
+                    data = await self._call_raw(
+                        messages, resource_manager,
+                        tools=chat_tools if chat_tools else None,
+                    )
+                    msg = (data.get("choices") or [{}])[0].get("message") or {}
+                    tool_calls = msg.get("tool_calls")
+
+                    if not tool_calls:
+                        # No more tool calls — stream this response
+                        ready_to_stream = True
+                        break
+
+                    # Execute tools, yield status events so the UI shows progress
+                    messages.append(msg)
+                    for tc in tool_calls:
+                        fn = tc.get("function") or {}
+                        tool_name = fn.get("name", "")
+                        yield f'data: {json.dumps({"type": "tool", "name": tool_name})}\n\n'
+                        raw_args = fn.get("arguments") or "{}"
+                        try:
+                            args = json.loads(raw_args)
+                        except Exception:
+                            snippet = raw_args[:120]
+                            parse_error = (
+                                f"Tool arguments could not be parsed as JSON: {snippet!r}. "
+                                "Please retry with valid JSON."
+                            )
+                            logger.warning(
+                                f"[role_chat] malformed tool args for '{tool_name}': {snippet!r}"
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", ""),
+                                "content": json.dumps({"success": False, "error": parse_error}),
+                            })
+                            total_tool_calls += 1
+                            continue
+                        result_str = await self._execute_tool(tool_name, args)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": result_str,
+                        })
+                        total_tool_calls += 1
+                else:
+                    # Budget exhausted — force a final text-only call, then stream it
+                    messages.append({"role": "system", "content": _FINAL_TOOL_LOOP_PROMPT})
+                    ready_to_stream = True
+
+                # --- Stream the final text response ---
+                if ready_to_stream and msg.get("tool_calls") is None and msg.get("content"):
+                    # Non-streaming final response already in `msg` (no tool calls, got text)
+                    content = msg.get("content") or ""
+                    if "<think>" in content and "</think>" in content:
+                        content = content.split("</think>", 1)[-1].strip() or content
+                    response_text = content
+                    for chunk in _split_chunks(response_text):
+                        yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+                else:
+                    # Use streaming for the final LLM call
+                    resource = resource_manager.acquire()
+                    if resource is None:
+                        err = "(No LLM resource available for streaming)"
+                        yield f'data: {json.dumps({"type": "token", "text": err})}\n\n'
+                        response_text = err
+                    else:
+                        model = resource.model or ""
+                        resource_config = {
+                            "base_url": resource.base_url,
+                            "model": model,
+                            "api_key": resource.api_key,
+                            "output_limit": min(resource.output_limit or 8192, 8192),
+                            "message_format": "openai",
+                            "provider": resource.provider,
+                        }
+                        from app.llm.unified_client import UnifiedLLMClient
+                        client = UnifiedLLMClient()
+                        try:
+                            async for chunk in client.call_stream_async(
+                                messages, resource_config, model_override=model
+                            ):
+                                # Strip <think> prefix before streaming
+                                if not response_text and chunk.startswith("<think>"):
+                                    continue
+                                response_text += chunk
+                                yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+                            # Post-process: strip any <think>...</think> block
+                            if "<think>" in response_text and "</think>" in response_text:
+                                response_text = response_text.split("</think>", 1)[-1].strip()
+                        except Exception as stream_err:
+                            logger.warning(f"[role_chat] stream failed, falling back: {stream_err}")
+                            # Fallback to blocking call
+                            fallback_data = await self._call_raw(messages, resource_manager, tools=None)
+                            fallback_msg = (fallback_data.get("choices") or [{}])[0].get("message") or {}
+                            content = fallback_msg.get("content") or ""
+                            if "<think>" in content and "</think>" in content:
+                                content = content.split("</think>", 1)[-1].strip() or content
+                            response_text = content
+                            for chunk in _split_chunks(response_text):
+                                yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+
+        except Exception as e:
+            logger.error(f"RoleChatSession.exchange_stream failed for {self.role_id}: {e}")
+            err = f"(Error: {e})"
+            yield f'data: {json.dumps({"type": "token", "text": err})}\n\n'
+            response_text = err
+
+        # Apply the same quality gate as the non-streaming path.
+        # If the raw streamed text is hollow/empty, emit a corrective token
+        # and save the corrected text instead of the bad output.
+        quality_checked = _ensure_response_quality(
+            response_text, role_name=role.get("name", self.role_id)
+        )
+        if quality_checked != response_text:
+            yield f'data: {json.dumps({"type": "token", "text": quality_checked})}\n\n'
+            response_text = quality_checked
+
+        self._save_session(session, message, response_text)
+
+        yield f'data: {json.dumps({"type": "done", "session_id": self.session_id, "tool_calls": total_tool_calls})}\n\n'
+
+
+def _split_chunks(text: str, size: int = 4) -> List[str]:
+    """Split a complete text string into small chunks for simulated streaming."""
+    return [text[i:i + size] for i in range(0, len(text), size)] if text else []
 
 
 def list_chat_sessions(role_id: str) -> List[Dict[str, Any]]:

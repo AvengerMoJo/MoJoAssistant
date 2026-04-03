@@ -136,7 +136,7 @@ class PolicyMonitor:
             data_boundary.setdefault("allow_external_mcp", False)
             data_boundary.setdefault("allowed_tiers", ["free"])
 
-        checker_names: List[str] = policy.get("checkers", ["static", "content"])
+        checker_names: List[str] = policy.get("checkers", ["static", "content", "sensitive_domain"])
 
         checkers: List[PolicyChecker] = []
         for name in checker_names:

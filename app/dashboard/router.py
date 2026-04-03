@@ -11,8 +11,9 @@ Routes:
   GET  /dashboard/events           — full event log
   GET  /dashboard/roles            — roles overview
   GET  /dashboard/chat             — list roles available for chat
-  GET  /dashboard/chat/{role_id}   — chat UI for a role (optional ?session_id=)
-  POST /dashboard/chat/{role_id}   — send message, redirect back
+  GET  /dashboard/chat/{role_id}         — chat UI for a role (optional ?session_id=)
+  GET  /dashboard/chat/{role_id}/stream  — SSE stream: ?message=&session_id=
+  POST /dashboard/chat/{role_id}         — send message, redirect back (non-JS fallback)
 """
 
 import html
@@ -22,8 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Cookie, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from app.dashboard.auth import COOKIE_NAME, check_password, make_token, verify_token
 from app.config.paths import get_memory_path
@@ -86,7 +87,9 @@ _NAV = """
   <a href="/dashboard/tasks">Tasks</a>
   <a href="/dashboard/events">Events</a>
   <a href="/dashboard/roles">Roles</a>
+  <a href="/dashboard/library">Library</a>
   <a href="/dashboard/chat">Chat</a>
+  <a href="/dashboard/privacy">Privacy</a>
   <a href="/dashboard/logout" style="float:right;color:#888">logout</a>
 </nav>
 """
@@ -529,7 +532,9 @@ async def roles_view(mojo_dash: Optional[str] = Cookie(default=None)):
         role = _load_json(rf, {})
         rid = rf.stem
         name = role.get("name", rid)
-        agent_type = role.get("agent_type", "—")
+        _at = role.get("agent_type", "—")
+        _at_label = role.get("agent_type_label")
+        agent_type = f'{_at_label} <span style="color:#555;font-size:10px">({_at})</span>' if _at_label else _at
         tool_access = ", ".join(role.get("tool_access", []))
         # Count tasks for this role
         role_tasks = [t for t in tasks if t.get("config", {}).get("role_id") == rid]
@@ -554,6 +559,264 @@ async def roles_view(mojo_dash: Optional[str] = Cookie(default=None)):
   <tr><th>Name / ID</th><th>Type</th><th>Tools</th><th>Completed</th><th>Failed</th><th>Private Memory</th></tr>
   {rows}
 </table>
+""")
+
+
+# ---------------------------------------------------------------------------
+# Privacy report
+# ---------------------------------------------------------------------------
+
+@router.get("/privacy", response_class=HTMLResponse)
+async def privacy_report(mojo_dash: Optional[str] = Cookie(default=None)):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    import html as _html
+    from app.roles.owner_context import load_owner_profile
+    from app.config.paths import get_memory_path
+
+    owner = load_owner_profile()
+    mem_root = Path(get_memory_path())
+
+    # ── Owner profile summary ────────────────────────────────────────────
+    if owner:
+        name = owner.get("preferred_name") or owner.get("name") or "—"
+        tz = owner.get("timezone") or "—"
+        langs = ", ".join(owner.get("languages", [])) or "—"
+        sensitive = owner.get("privacy_preferences", {}).get("sensitive_domains", [])
+        prefer_local = owner.get("privacy_preferences", {}).get("prefer_local_when_possible", False)
+        goals = owner.get("core_goals", [])
+
+        sensitive_html = "".join(
+            f'<span style="background:#3a1a1a;color:#e37e7e;padding:2px 7px;border-radius:3px;margin:2px;display:inline-block">{_html.escape(d)}</span>'
+            for d in sensitive
+        ) or '<span style="color:#555">none declared</span>'
+
+        goals_html = "".join(f"<li>{_html.escape(g)}</li>" for g in goals) or "<li style='color:#555'>none</li>"
+
+        owner_html = f"""
+<div style="background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:16px;margin-bottom:20px">
+  <table style="width:auto;border:none">
+    <tr><td style="color:#888;padding:4px 12px 4px 0;border:none">Name</td><td style="border:none"><b>{_html.escape(name)}</b></td></tr>
+    <tr><td style="color:#888;padding:4px 12px 4px 0;border:none">Timezone</td><td style="border:none">{_html.escape(tz)}</td></tr>
+    <tr><td style="color:#888;padding:4px 12px 4px 0;border:none">Languages</td><td style="border:none">{_html.escape(langs)}</td></tr>
+    <tr><td style="color:#888;padding:4px 12px 4px 0;border:none">Prefer local</td><td style="border:none">{'<span style="color:#7ec87e">yes</span>' if prefer_local else '<span style="color:#888">no</span>'}</td></tr>
+  </table>
+  <div style="margin-top:10px"><span style="color:#888">Sensitive domains:</span><br><div style="margin-top:6px">{sensitive_html}</div></div>
+  <div style="margin-top:10px"><span style="color:#888">Goals:</span><ul style="margin:6px 0 0 18px;color:#d4d4d4">{goals_html}</ul></div>
+</div>"""
+    else:
+        owner_html = '<p style="color:#888">No owner profile found at ~/.memory/owner_profile.json. Run the setup wizard to create one.</p>'
+
+    # ── Role → tool access ───────────────────────────────────────────────
+    roles_dir = mem_root / "roles"
+    role_rows = ""
+    if roles_dir.exists():
+        for rf in sorted(roles_dir.glob("*.json")):
+            role = _load_json(rf, {})
+            if not role.get("id"):
+                continue
+            rname = role.get("name", rf.stem)
+            rtype = role.get("agent_type", "—")
+            tools = ", ".join(role.get("tool_access", role.get("tools", []))) or '<span style="color:#555">none</span>'
+            local_only = role.get("local_only", False)
+            local_badge = '<span style="color:#7ec87e">local_only</span>' if local_only else ""
+            role_rows += f"""<tr>
+              <td><b>{_html.escape(rname)}</b><br><span style="color:#555">{rf.stem}</span></td>
+              <td style="color:#888">{_html.escape(rtype)}</td>
+              <td style="font-size:11px">{tools}</td>
+              <td>{local_badge}</td>
+            </tr>"""
+
+    # ── Memory storage locations ─────────────────────────────────────────
+    mem_locations = [
+        ("Conversations", mem_root / "conversations"),
+        ("Knowledge base", mem_root / "knowledge"),
+        ("Role knowledge", mem_root / "roles"),
+        ("Scheduler tasks", mem_root / "scheduler"),
+        ("Dreams", mem_root / "dreams"),
+        ("Event log", mem_root / "events.json"),
+    ]
+    mem_rows = ""
+    for label, path in mem_locations:
+        exists = path.exists()
+        size = ""
+        if exists and path.is_file():
+            size = f"{path.stat().st_size // 1024} KB"
+        elif exists and path.is_dir():
+            files = list(path.rglob("*"))
+            size = f"{len(files)} files"
+        status = f'<span style="color:#7ec87e">✓</span> {size}' if exists else '<span style="color:#555">—</span>'
+        mem_rows += f"""<tr>
+          <td>{_html.escape(label)}</td>
+          <td style="color:#888;font-size:11px">{_html.escape(str(path))}</td>
+          <td>{status}</td>
+        </tr>"""
+
+    # ── External services (resource pool) ────────────────────────────────
+    ext_rows = ""
+    try:
+        from app.scheduler.resource_pool import ResourceManager
+        import logging
+        rm = ResourceManager(logger=logging.getLogger(__name__))
+        status = rm.get_status()
+        for rid, info in status.get("resources", {}).items():
+            rtype = info.get("type", "?")
+            model = info.get("model", "—")
+            tier = info.get("tier", "—")
+            base_url = info.get("base_url", "")
+            is_ext = rtype == "api"
+            ext_badge = '<span style="color:#e3a87e">external</span>' if is_ext else '<span style="color:#7ec87e">local</span>'
+            ext_rows += f"""<tr>
+              <td>{_html.escape(rid)}</td>
+              <td>{ext_badge}</td>
+              <td style="color:#888;font-size:11px">{_html.escape(model)}</td>
+              <td style="color:#888;font-size:11px">{_html.escape(tier)}</td>
+              <td style="color:#555;font-size:11px">{_html.escape(base_url)}</td>
+            </tr>"""
+    except Exception:
+        ext_rows = '<tr><td colspan="5" style="color:#555">Resource pool unavailable</td></tr>'
+
+    return _page("Privacy Report", f"""
+<h1>Privacy Report</h1>
+
+<h2>Owner Profile</h2>
+{owner_html}
+
+<h2>Role Tool Access</h2>
+<table>
+  <tr><th>Role</th><th>Type</th><th>Tool Categories</th><th>Restrictions</th></tr>
+  {role_rows or '<tr><td colspan="4" style="color:#555">No roles found</td></tr>'}
+</table>
+
+<h2>Memory Storage</h2>
+<table>
+  <tr><th>Store</th><th>Path</th><th>Status</th></tr>
+  {mem_rows}
+</table>
+
+<h2>LLM Backends</h2>
+<p style="color:#888;font-size:11px;margin-bottom:8px">
+  Local backends receive full owner context. External (API) backends receive minimal context only.
+</p>
+<table>
+  <tr><th>Resource ID</th><th>Locality</th><th>Model</th><th>Tier</th><th>Base URL</th></tr>
+  {ext_rows}
+</table>
+""")
+
+
+# ---------------------------------------------------------------------------
+# Agency-agents Library
+# ---------------------------------------------------------------------------
+
+@router.get("/library", response_class=HTMLResponse)
+async def library_browse(
+    q: str = "",
+    mojo_dash: Optional[str] = Cookie(default=None),
+):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    import html as _html
+    from app.roles.agency_agents_parser import list_roles, search_roles, _SUBMODULE_PATH
+
+    available = _SUBMODULE_PATH.exists()
+
+    if not available:
+        return _page("Role Library", """
+<h1>Role Library</h1>
+<p style="color:#888">agency-agents submodule not found at <code>submodules/agency-agents</code>.</p>
+<p style="color:#555">Run: <code>git submodule update --init submodules/agency-agents</code></p>
+""")
+
+    roles = search_roles(q) if q.strip() else list_roles()
+    total = len(list_roles()) if q.strip() else len(roles)
+
+    # Group by division
+    from collections import defaultdict
+    by_division: dict = defaultdict(list)
+    for r in roles:
+        by_division[r.division].append(r)
+
+    rows_html = ""
+    for division in sorted(by_division):
+        rows_html += f'<tr><td colspan="5" style="background:#1a1a1a;color:#888;padding:6px 10px;font-size:11px;letter-spacing:1px">{_html.escape(division.upper())}</td></tr>\n'
+        for r in by_division[division]:
+            emoji = _html.escape(r.emoji or "")
+            name = _html.escape(r.name)
+            desc = _html.escape(r.description[:90] + ("…" if len(r.description) > 90 else ""))
+            atype = _html.escape(r.agent_type_hint)
+            fname = Path(r.file_path).name
+            import_href = f"/dashboard/library/import?file={_html.escape(r.file_path)}"
+            rows_html += f"""<tr>
+  <td>{emoji} <b>{name}</b><br><span style="color:#555;font-size:11px">{fname}</span></td>
+  <td style="color:#888;font-size:11px">{_html.escape(r.division)}</td>
+  <td style="color:#7ec87e;font-size:11px">{atype}</td>
+  <td style="color:#aaa;font-size:11px">{desc}</td>
+  <td><a href="{import_href}" style="color:#7ec8c8;font-size:11px;white-space:nowrap">Import →</a></td>
+</tr>"""
+
+    search_val = _html.escape(q)
+    count_label = f"{len(roles)} of {total}" if q.strip() else str(total)
+
+    return _page("Role Library", f"""
+<h1>Role Library <span style="font-size:14px;color:#555;font-weight:normal">({count_label} roles)</span></h1>
+<p style="color:#888;font-size:12px">
+  Pre-built role personas from <a href="https://github.com/msitarzewski/agency-agents" style="color:#7ec8c8">agency-agents</a>.
+  Browse and import into the Nine Chapter wizard to create a role faster.
+</p>
+<form method="get" style="margin-bottom:16px">
+  <input name="q" value="{search_val}" placeholder="Search roles…"
+         style="background:#111;color:#d4d4d4;border:1px solid #333;padding:6px 10px;border-radius:4px;width:280px">
+  <button type="submit" style="margin-left:6px;background:#2a2a2a;color:#d4d4d4;border:1px solid #444;padding:6px 12px;border-radius:4px;cursor:pointer">Search</button>
+  {'<a href="/dashboard/library" style="margin-left:8px;color:#888;font-size:12px">clear</a>' if q else ''}
+</form>
+<table>
+  <tr><th>Role</th><th>Division</th><th>Type hint</th><th>Description</th><th></th></tr>
+  {rows_html or '<tr><td colspan="5" style="color:#555">No roles found</td></tr>'}
+</table>
+""")
+
+
+@router.get("/library/import", response_class=HTMLResponse)
+async def library_import(
+    file: str = "",
+    mojo_dash: Optional[str] = Cookie(default=None),
+):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    import html as _html
+
+    if not file:
+        return _page("Import Role", "<p style='color:#888'>No file specified.</p>")
+
+    try:
+        from app.roles.role_designer import RoleDesignSession
+        session = RoleDesignSession.from_agency_agent(file)
+        session.save()
+        sid = _html.escape(session.session_id)
+        name = _html.escape(session.name)
+        fname = _html.escape(Path(file).name)
+        return _page("Import Role", f"""
+<h1>Role imported: {name}</h1>
+<p style="color:#888;font-size:12px">Source: <code>{fname}</code></p>
+<p>A Nine Chapter wizard session has been pre-filled with answers from this role.<br>
+Continue the interview via MCP to review and adjust each step, then save.</p>
+<table style="margin-top:16px">
+  <tr><th>Session ID</th><td><code>{sid}</code></td></tr>
+  <tr><th>Next step</th><td><code>role(action="design_answer", session_id="{sid}", answer="...")</code></td></tr>
+</table>
+<p style="margin-top:16px">
+  <a href="/dashboard/library" style="color:#7ec8c8;font-size:12px">← Back to library</a>
+</p>
+""")
+    except Exception as e:
+        return _page("Import Role", f"""
+<h1>Import failed</h1>
+<p style="color:#e06c75">{_html.escape(str(e))}</p>
+<p><a href="/dashboard/library" style="color:#7ec8c8;font-size:12px">← Back to library</a></p>
 """)
 
 
@@ -585,7 +848,9 @@ async def chat_list(mojo_dash: Optional[str] = Cookie(default=None)):
         rid = rf.stem
         name = role.get("name", rid)
         agent_type = role.get("agent_type", "")
-        type_label = f'<span style="color:#555;font-size:11px">{html.escape(agent_type)}</span>' if agent_type else ""
+        _at_label = role.get("agent_type_label", "")
+        _display = _at_label if _at_label else agent_type
+        type_label = f'<span style="color:#555;font-size:11px">{html.escape(_display)}</span>' if _display else ""
         # Count past sessions
         session_dir = _mem("roles", rid, "chat_history")
         session_count = len(list(session_dir.glob("*.json"))) if session_dir.exists() else 0
@@ -626,6 +891,48 @@ async def chat_view(
     role_file = _mem("roles", f"{role_id}.json")
     role = _load_json(role_file, {})
     role_name = role.get("name", role_id) if role else role_id
+
+    # Build capability strip from mode contract + role tool_access
+    from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
+    _CAT_LABEL = {
+        "memory": "memory",
+        "knowledge": "personal knowledge",
+        "web": "external search",
+        "browser": "browser",
+        "file": "file access",
+        "code": "code execution",
+        "exec": "code execution",
+        "orchestration": "run tasks",
+        "comms": "messaging",
+    }
+    chat_contract = get_mode_contract(InteractionMode.DASHBOARD_CHAT)
+    role_tool_access = role.get("tool_access", []) if role else []
+    available_cats = chat_contract.allowed_tool_categories
+    unavailable_cats = [c for c in role_tool_access if c not in available_cats]
+    if not unavailable_cats:
+        unavailable_cats = ["external search", "run tasks", "write"]
+
+    def _pill(label: str, kind: str) -> str:
+        colors = {
+            "available": "background:#1a3a1a;color:#6fcf6f;border:1px solid #2d5a2d",
+            "unavailable": "background:#2a1a1a;color:#666;border:1px solid #3a2a2a;text-decoration:line-through",
+        }
+        return f'<span style="font-size:10px;padding:2px 7px;border-radius:10px;{colors[kind]}">{html.escape(label)}</span>'
+
+    avail_pills = " ".join(_pill(_CAT_LABEL.get(c, c), "available") for c in available_cats)
+    unavail_pills = " ".join(
+        _pill(_CAT_LABEL.get(c, c) if c in _CAT_LABEL else c, "unavailable")
+        for c in unavailable_cats
+    )
+    capability_strip = (
+        f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;'
+        f'padding:6px 10px;background:#111;border-radius:6px;margin-bottom:14px;font-size:10px">'
+        f'<span style="background:#1a2a3a;color:#4a9eff;border:1px solid #2a4a6a;'
+        f'padding:2px 8px;border-radius:10px;font-weight:600">🔒 Private Debrief</span>'
+        f'<span style="color:#555">can use:</span>{avail_pills}'
+        f'<span style="color:#555;margin-left:4px">cannot:</span>{unavail_pills}'
+        f'</div>'
+    )
 
     # Load session list
     sessions = list_chat_sessions(role_id)
@@ -683,10 +990,10 @@ async def chat_view(
     form_session = active_session_id or ""
 
     return _page(f"Chat — {role_name}", f"""
-<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px">
   <h1><a href="/dashboard/chat" style="color:#888;font-weight:normal">Chat</a> / {html.escape(role_name)}</h1>
-  <span style="color:#555;font-size:11px">read-only · no task assignments accepted</span>
 </div>
+{capability_strip}
 <div class="chat-layout">
   <div class="chat-sidebar">
     {sidebar_html}
@@ -695,25 +1002,188 @@ async def chat_view(
     <div class="chat-history" id="chat-history">
       {bubbles_html}
     </div>
-    <form class="chat-input-area" method="post" action="/dashboard/chat/{html.escape(role_id)}" id="chat-form">
-      <input type="hidden" name="session_id" value="{html.escape(form_session)}">
-      <textarea name="message" id="msg-input" placeholder="Message {html.escape(role_name)}…" autofocus
-                onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){{this.form.submit();}}"></textarea>
-      <button type="submit" class="chat-send-btn" id="send-btn">Send</button>
-    </form>
+    <div class="chat-input-area">
+      <textarea id="msg-input" placeholder="Message {html.escape(role_name)}… (Ctrl+Enter to send)" autofocus></textarea>
+      <button class="chat-send-btn" id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
   </div>
 </div>
 <script>
-  // Scroll chat to bottom on load
-  const h = document.getElementById('chat-history');
-  if (h) h.scrollTop = h.scrollHeight;
-  // Disable send while submitting
-  document.getElementById('chat-form').addEventListener('submit', function() {{
-    document.getElementById('send-btn').disabled = true;
-    document.getElementById('send-btn').textContent = 'Sending…';
+  const ROLE_ID    = {json.dumps(role_id)};
+  const ROLE_NAME  = {json.dumps(role_name)};
+  let   sessionId  = {json.dumps(form_session)};
+
+  const chatLog  = document.getElementById('chat-history');
+  const input    = document.getElementById('msg-input');
+  const sendBtn  = document.getElementById('send-btn');
+
+  // Scroll to bottom helper
+  function scrollDown() {{ chatLog.scrollTop = chatLog.scrollHeight; }}
+  scrollDown();
+
+  // Ctrl+Enter sends
+  input.addEventListener('keydown', e => {{
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {{ e.preventDefault(); sendMessage(); }}
   }});
+
+  function appendBubble(role, text, meta) {{
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-bubble ' + role;
+    const label = document.createElement('div');
+    label.className = 'bubble-label';
+    label.textContent = role === 'user' ? 'you' : ROLE_NAME;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble-text';
+    bubble.textContent = text;
+    wrap.appendChild(label);
+    wrap.appendChild(bubble);
+    if (meta) {{
+      const m = document.createElement('div');
+      m.className = 'chat-meta';
+      m.textContent = meta;
+      wrap.appendChild(m);
+    }}
+    chatLog.appendChild(wrap);
+    scrollDown();
+    return bubble;
+  }}
+
+  function appendToolStatus(name) {{
+    const el = document.createElement('div');
+    el.className = 'chat-meta';
+    el.style.paddingLeft = '8px';
+    el.textContent = '⚙ ' + name + '…';
+    chatLog.appendChild(el);
+    scrollDown();
+    return el;
+  }}
+
+  async function sendMessage() {{
+    const msg = input.value.trim();
+    if (!msg) return;
+
+    input.value = '';
+    sendBtn.disabled = true;
+    sendBtn.textContent = '…';
+
+    // Show user bubble immediately
+    appendBubble('user', msg, new Date().toLocaleTimeString());
+
+    // Placeholder for assistant response
+    const asstBubble = appendBubble('assistant', '', null);
+    asstBubble.textContent = '';
+    asstBubble.style.color = '#555';
+    asstBubble.textContent = 'thinking…';
+
+    const params = new URLSearchParams({{ message: msg, session_id: sessionId }});
+    const url = '/dashboard/chat/' + encodeURIComponent(ROLE_ID) + '/stream?' + params;
+
+    let toolIndicator = null;
+    let responseText  = '';
+    let streaming     = false;
+
+    try {{
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+      const reader = resp.body.getReader();
+      const dec    = new TextDecoder();
+      let   buf    = '';
+
+      while (true) {{
+        const {{ done, value }} = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, {{ stream: true }});
+
+        // Process complete SSE lines
+        let nl;
+        while ((nl = buf.indexOf('\\n\\n')) !== -1) {{
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 2);
+          if (!line.startsWith('data:')) continue;
+          let evt;
+          try {{ evt = JSON.parse(line.slice(5).trim()); }} catch {{ continue; }}
+
+          if (evt.type === 'tool') {{
+            if (!toolIndicator) {{
+              if (toolIndicator) toolIndicator.remove();
+            }}
+            if (toolIndicator) toolIndicator.remove();
+            toolIndicator = appendToolStatus(evt.name);
+            asstBubble.style.color = '#555';
+            asstBubble.textContent = 'searching…';
+
+          }} else if (evt.type === 'token') {{
+            if (!streaming) {{
+              if (toolIndicator) {{ toolIndicator.remove(); toolIndicator = null; }}
+              asstBubble.style.color = '';
+              asstBubble.textContent = '';
+              streaming = true;
+            }}
+            responseText += evt.text;
+            asstBubble.textContent = responseText;
+            scrollDown();
+
+          }} else if (evt.type === 'done') {{
+            if (toolIndicator) {{ toolIndicator.remove(); toolIndicator = null; }}
+            if (!responseText) asstBubble.textContent = '(no response)';
+            if (evt.session_id) {{
+              sessionId = evt.session_id;
+              // Update URL without reload so Back button works
+              const newUrl = '/dashboard/chat/' + encodeURIComponent(ROLE_ID) + '?session_id=' + encodeURIComponent(evt.session_id);
+              history.replaceState(null, '', newUrl);
+            }}
+          }} else if (evt.type === 'error') {{
+            asstBubble.style.color = '#c44';
+            asstBubble.textContent = evt.message || '(error)';
+          }}
+        }}
+      }}
+    }} catch (err) {{
+      asstBubble.style.color = '#c44';
+      asstBubble.textContent = 'Error: ' + err.message;
+    }}
+
+    sendBtn.disabled = false;
+    sendBtn.textContent = 'Send';
+    input.focus();
+  }}
 </script>
 """)
+
+
+@router.get("/chat/{role_id}/stream")
+async def chat_stream(
+    role_id: str,
+    message: str = Query(...),
+    session_id: str = Query(default=""),
+    mojo_dash: Optional[str] = Cookie(default=None),
+):
+    """SSE endpoint — streams the role's reply token-by-token."""
+    if _require_auth(mojo_dash):
+        async def _auth_error():
+            yield 'data: {"type":"error","message":"Not authenticated"}\n\n'
+        return StreamingResponse(_auth_error(), media_type="text/event-stream")
+
+    from app.scheduler.role_chat import RoleChatSession
+
+    message = message.strip()
+    if not message:
+        async def _empty():
+            yield 'data: {"type":"error","message":"Empty message"}\n\n'
+        return StreamingResponse(_empty(), media_type="text/event-stream")
+
+    session = RoleChatSession(role_id=role_id, session_id=session_id or None)
+    rm = _get_resource_manager()
+
+    return StreamingResponse(
+        session.exchange_stream(message=message, resource_manager=rm),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering if behind a proxy
+        },
+    )
 
 
 @router.post("/chat/{role_id}")
