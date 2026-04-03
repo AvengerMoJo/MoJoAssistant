@@ -142,4 +142,25 @@ Apprise as unified notification layer.
   without writing `<FINAL_ANSWER>`, causing no notification and `final_answer: null`.
 - **Apprise integration** — wire Apprise as Python notification layer over self-hosted ntfy
   for unified multi-channel support.
-- **notifications_config.json** — update ntfy endpoint from `ntfy.sh` to self-hosted instance.
+
+---
+
+## Post-session fixes (same day)
+
+### Double push notification per task completion
+
+Every task completion fired **two** push notifications. Root cause: two separate writes to
+`EventLog` per broadcast event.
+
+- `SSENotifier.broadcast()` already writes to `EventLog` (always has).
+- The push notification fix (`_broadcast` → `event_log.append`) added a **second** write on top.
+
+`scheduler.core._broadcast` was also accumulating duplicate scheduler daemon threads across
+`daemon_restart` calls — two live threads meant two broadcasts per event at the scheduler level,
+which doubled again on the EventLog write.
+
+**Fix:** Changed `_broadcast` to write to `EventLog` only in the fallback path (no SSE notifier).
+When SSE notifier is wired it owns the EventLog write. Full backend restart required to clear
+stale daemon threads; `daemon_restart` alone did not reliably stop the old thread.
+
+**Validated:** 1 notification per task completion after clean restart.
