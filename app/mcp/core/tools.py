@@ -716,8 +716,8 @@ class ToolRegistry:
                 "description": (
                     "Scheduler management hub. Call with no action for help menu.\n\n"
                     "action='add',    task_id, type, goal, role_id?, available_tools?, ... — schedule a task\n"
-                    "action='list',   status?, priority?, limit? — list tasks\n"
-                    "action='get',    task_id                    — task detail\n"
+                    "action='list',   status?, priority?, limit? — compact task summary (id, status, goal snippet, times)\n"
+                    "action='get',    task_id                    — full task detail (config, result, metrics, iteration_log)\n"
                     "action='remove', task_id                    — remove a task\n"
                     "action='purge',  before_date?               — bulk remove old completed/failed tasks\n"
                     "action='status'                             — daemon + queue stats\n"
@@ -2573,10 +2573,29 @@ Agent resumes within seconds.
                 status=status_filter, priority=priority_filter, limit=limit
             )
 
-            # Convert to dict
-            tasks_data = [task.to_dict() for task in tasks]
+            # Compact summary rows — full detail available via action='get', task_id=...
+            def _summarise(task) -> Dict[str, Any]:
+                config = task.config or {}
+                goal = config.get("goal", "")
+                result = task.result
+                return {
+                    "id": task.id,
+                    "status": task.status.value,
+                    "type": task.type.value,
+                    "priority": task.priority.value,
+                    "role_id": config.get("role_id"),
+                    "goal": goal[:120] + ("…" if len(goal) > 120 else ""),
+                    "created_at": task.created_at.isoformat(),
+                    "started_at": task.started_at.isoformat() if task.started_at else None,
+                    "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+                    "pending_question": task.pending_question,
+                    "success": result.success if result else None,
+                    "completion_mode": (result.metrics or {}).get("completion_mode") if result else None,
+                }
 
-            return {"status": "success", "tasks": tasks_data, "total": len(tasks_data)}
+            tasks_data = [_summarise(t) for t in tasks]
+            return {"status": "success", "tasks": tasks_data, "total": len(tasks_data),
+                    "hint": "Use action='get', task_id=... for full detail including result and metrics."}
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to list tasks: {str(e)}"}
