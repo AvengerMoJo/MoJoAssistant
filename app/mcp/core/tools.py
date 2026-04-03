@@ -228,6 +228,8 @@ class ToolRegistry:
             "role_create",
             "role_list",
             "role_get",
+            # Dialog → belongs in web dashboard UI, not MCP
+            "dialog",
         }
 
         # Standardized user prompt templates for LLM usability
@@ -776,41 +778,6 @@ class ToolRegistry:
                         "quality": {"type": "string", "description": "Quality level (process action)."},
                         "version": {"type": "string", "description": "Archive version (get action)."},
                         "target_quality": {"type": "string", "description": "Target quality (upgrade action)."},
-                    },
-                    "required": [],
-                },
-            },
-            # Dialog — direct conversation with a role
-            {
-                "name": "dialog",
-                "description": (
-                    "Talk directly to an assistant role in conversational mode.\n\n"
-                    "The role responds with its full personality and knowledge from "
-                    "its private research memory. This is NOT a task — the role will "
-                    "NOT accept new task assignments here. Use scheduler to assign work.\n\n"
-                    "action='chat',    role_id, message, session_id? — send a message\n"
-                    "action='history', role_id, session_id?          — view session history\n"
-                    "action='sessions',role_id                       — list all sessions for a role"
-                ),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "description": "Operation: 'chat' (default), 'history', or 'sessions'.",
-                        },
-                        "role_id": {
-                            "type": "string",
-                            "description": "Which role to talk to (e.g. 'rebecca').",
-                        },
-                        "message": {
-                            "type": "string",
-                            "description": "Your message to the role (chat action).",
-                        },
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID for continuity. Omit to start a new session.",
-                        },
                     },
                     "required": [],
                 },
@@ -1508,8 +1475,6 @@ Agent resumes within seconds.
             return await self._execute_scheduler_hub(args)
         elif name == "dream":
             return await self._execute_dream(args)
-        elif name == "dialog":
-            return await self._execute_dialog(args)
         elif name == "agent":
             return await self._execute_agent_hub(args)
         elif name == "external_agent":
