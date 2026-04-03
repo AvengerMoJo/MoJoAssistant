@@ -1494,6 +1494,17 @@ Agent resumes within seconds.
             return await self._execute_agent_hub(args)
         elif name == "external_agent":
             return await self._execute_external_agent(args)
+        # Role tool direct aliases (also reachable via role hub action=...)
+        elif name == "role_design_start":
+            return await self._execute_role_design_start(args)
+        elif name == "role_design_answer":
+            return await self._execute_role_design_answer(args)
+        elif name == "role_create":
+            return await self._execute_role_create(args)
+        elif name == "role_list":
+            return await self._execute_role_list(args)
+        elif name == "role_get":
+            return await self._execute_role_get(args)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
