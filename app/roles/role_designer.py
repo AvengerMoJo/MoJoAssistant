@@ -128,7 +128,15 @@ class RoleDesignSession:
         from app.roles.agency_agents_bridge import build_prefills, prefills_to_session_answers
         from pathlib import Path
 
-        entry = parse_file(Path(file_path))
+        # Restrict to the agency-agents submodule — no arbitrary file reads.
+        _allowed_root = (Path(__file__).parent.parent.parent / "submodules" / "agency-agents").resolve()
+        _resolved = Path(file_path).resolve()
+        if not str(_resolved).startswith(str(_allowed_root)):
+            raise ValueError(
+                f"Import path must be inside submodules/agency-agents/. Got: {file_path}"
+            )
+
+        entry = parse_file(_resolved)
         if not entry:
             raise ValueError(f"Could not parse agency-agents file: {file_path}")
 

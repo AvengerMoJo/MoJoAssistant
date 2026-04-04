@@ -42,6 +42,7 @@
   "agent_type": "reviewer",
   "tool_access": [
     "memory",
+    "knowledge",
     "file"
   ],
   "model_preference": null,
