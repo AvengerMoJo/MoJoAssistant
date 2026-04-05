@@ -610,6 +610,9 @@ class ToolRegistry:
                     "action='sync_local_models', resource_id             → sync models from local server\n\n"
                     "# Resource pool (runtime LLM state)\n"
                     "action='resource_status'                            → all resources + approval state\n"
+                    "action='resource_add',       resource_id, type, provider, base_url, model, tier,\n"
+                    "                             context_limit, output_limit, input_limit?, ...  → add resource\n"
+                    "action='resource_edit',      resource_id + fields to update               → edit resource\n"
                     "action='resource_approve',   resource_id            → approve a resource for use\n"
                     "action='resource_revoke',    resource_id            → revoke a resource\n"
                     "action='resource_smoke_test',resource_id            → test connectivity\n"
@@ -3398,6 +3401,118 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"audit_get failed: {e}"}
 
+    async def _execute_resource_add_or_edit(
+        self, args: Dict[str, Any], edit: bool = False
+    ) -> Dict[str, Any]:
+        """Add or edit a resource in llm_config.json.
+
+        Required fields are validated. context_limit, input_limit, and output_limit
+        must be supplied explicitly — no auto-discovery, values come from the user.
+        """
+        resource_id = args.get("resource_id")
+        if not resource_id:
+            return {
+                "status": "error",
+                "message": (
+                    "resource_id is required.\n\n"
+                    "To add a resource:\n"
+                    "  config(action='resource_add', resource_id='my_resource', type='local'|'api',\n"
+                    "         provider='openai', base_url='http://...', model='model-id',\n"
+                    "         tier='free'|'free_api'|'paid',\n"
+                    "         context_limit=32768, output_limit=8192, input_limit=null,\n"
+                    "         api_key='...'|null, description='...')\n\n"
+                    "context_limit  — total context window in tokens (check model card)\n"
+                    "output_limit   — max tokens the model can generate per response\n"
+                    "input_limit    — max input tokens per request if different from\n"
+                    "                 context_limit - output_limit (e.g. free-tier APIs)\n"
+                    "                 Leave null to derive from context_limit - output_limit."
+                ),
+            }
+
+        # Load current llm_config
+        llm_cfg_meta = self._config_modules.get("llm")
+        if not llm_cfg_meta:
+            return {"status": "error", "message": "llm config module not found"}
+        llm_cfg = self._load_config_file(llm_cfg_meta["file"])
+
+        # Determine which section to write to
+        section = "api_models" if args.get("type", "local") == "api" else "local_models"
+        target_section = llm_cfg.setdefault(section, {})
+
+        if edit and resource_id not in target_section:
+            # Try the other section
+            other = "local_models" if section == "api_models" else "api_models"
+            if resource_id in llm_cfg.get(other, {}):
+                section = other
+                target_section = llm_cfg[section]
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Resource '{resource_id}' not found. Use resource_status to list resources.",
+                }
+
+        # Required for new resources
+        REQUIRED_NEW = ["context_limit", "output_limit"]
+        if not edit:
+            missing = [f for f in REQUIRED_NEW if args.get(f) is None]
+            if missing:
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Missing required fields: {missing}\n\n"
+                        "context_limit and output_limit must be provided explicitly.\n"
+                        "Check the model card for the correct values.\n"
+                        "  context_limit — total context window in tokens\n"
+                        "  output_limit  — max output tokens per response\n"
+                        "  input_limit   — max input tokens (null = context_limit - output_limit)"
+                    ),
+                }
+
+        # Build the entry — start from existing if editing
+        entry = dict(target_section.get(resource_id, {})) if edit else {}
+
+        FIELDS = [
+            "type", "provider", "base_url", "model", "api_key", "tier",
+            "priority", "enabled", "description", "account_group",
+            "context_limit", "output_limit", "input_limit",
+            "agentic_capable", "dynamic_discovery",
+        ]
+        for field in FIELDS:
+            if field in args:
+                val = args[field]
+                if val is None and field == "input_limit":
+                    entry.pop(field, None)  # null input_limit = omit (derive at runtime)
+                elif val is not None:
+                    entry[field] = val
+
+        target_section[resource_id] = entry
+
+        try:
+            self._save_config_file(llm_cfg_meta["file"], llm_cfg)
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to save config: {e}"}
+
+        # Reload resource manager
+        try:
+            self._on_llm_config_updated()
+        except Exception as e:
+            return {
+                "status": "warning",
+                "message": f"Config saved but resource manager reload failed: {e}",
+                "resource_id": resource_id,
+            }
+
+        verb = "updated" if edit else "added"
+        return {
+            "status": "success",
+            "message": f"Resource '{resource_id}' {verb} and resource manager reloaded.",
+            "resource_id": resource_id,
+            "section": section,
+            "context_limit": entry.get("context_limit"),
+            "output_limit": entry.get("output_limit"),
+            "input_limit": entry.get("input_limit"),
+        }
+
     async def _execute_resource_pool_status(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -3835,6 +3950,8 @@ Agent resumes within seconds.
                 return {"status": "error", "message": str(e)}
 
         # --- resource pool actions ---
+        if action == "resource_add" or action == "resource_edit":
+            return await self._execute_resource_add_or_edit(args, edit=(action == "resource_edit"))
         if action == "resource_status":
             return await self._execute_resource_pool_status({})
         if action == "resource_approve":
@@ -3894,6 +4011,8 @@ Agent resumes within seconds.
                         "modules":               "List all config modules",
                         "sync_local_models":     "Sync models from local server — params: resource_id",
                         "resource_status":       "All resources + approval state",
+                        "resource_add":          "Add a new resource — params: resource_id, type, provider, base_url, model, tier, context_limit, output_limit, input_limit?, ...",
+                        "resource_edit":         "Edit an existing resource — params: resource_id + any fields to update",
                         "resource_approve":      "Approve a resource — params: resource_id",
                         "resource_revoke":       "Revoke a resource — params: resource_id",
                         "resource_smoke_test":   "Test resource connectivity — params: resource_id",
