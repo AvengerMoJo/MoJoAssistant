@@ -48,6 +48,7 @@
   },
   "tool_access": [
     "memory",
+    "knowledge",
     "file",
     "exec"
   ],
