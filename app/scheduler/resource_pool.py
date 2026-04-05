@@ -60,6 +60,7 @@ class LLMResource:
     api_key_env: Optional[str] = None
     context_limit: int = 32768
     output_limit: int = 8192
+    input_limit: Optional[int] = None  # explicit per-request input cap (e.g. free-tier APIs)
     description: str = ""
     account_group: Optional[str] = None
     capabilities: List[str] = field(default_factory=list)
@@ -360,6 +361,7 @@ class ResourceManager:
             api_key_env=api_key_env,
             context_limit=conf.get("context_limit", 32768),
             output_limit=conf.get("output_limit", 8192),
+            input_limit=conf.get("input_limit"),
             description=conf.get("description", ""),
             account_group=conf.get("account_group"),
             capabilities=conf.get("capabilities", []),

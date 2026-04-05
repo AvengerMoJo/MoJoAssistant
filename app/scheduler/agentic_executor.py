@@ -23,6 +23,45 @@ from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context, build_capability_summary
 from app.roles.owner_context import load_owner_profile, infer_context_tier, build_owner_context_slice
 
+def _estimate_tokens(messages: List[Dict]) -> int:
+    """Fast token estimate: ~4 chars per token + 10 overhead per message."""
+    total = 0
+    for m in messages:
+        content = m.get("content") or ""
+        if isinstance(content, list):
+            content = " ".join(
+                c.get("text", "") for c in content if isinstance(c, dict)
+            )
+        total += len(str(content)) // 4 + 10
+        for tc in m.get("tool_calls", []):
+            total += len(json.dumps(tc)) // 4 + 5
+    return total
+
+
+def _trim_to_context_budget(
+    messages: List[Dict],
+    input_budget: int,
+) -> tuple:
+    """Trim middle messages until estimated tokens fit within input_budget.
+
+    Protected: system prompt (index 0), first user/goal message (index 1),
+    and the last 4 messages. Everything in between is dropped oldest-first.
+
+    Returns (trimmed_messages, was_trimmed).
+    """
+    if _estimate_tokens(messages) <= input_budget:
+        return messages, False
+
+    protected_head = messages[:2]
+    protected_tail = messages[-4:] if len(messages) > 6 else messages[2:]
+    trimmable = messages[2: len(messages) - 4] if len(messages) > 6 else []
+
+    while trimmable and _estimate_tokens(protected_head + trimmable + protected_tail) > input_budget:
+        trimmable.pop(0)
+
+    return protected_head + trimmable + protected_tail, True
+
+
 DEFAULT_SYSTEM_PROMPT = """\
 You are an autonomous assistant running as a scheduled task. Your owner can help \
 if you hit a blocker you cannot resolve on your own.
@@ -672,10 +711,25 @@ class AgenticExecutor:
                     ),
                 )
 
+            # Context budget guard — trim history before it overflows the model window.
+            _context_limit = getattr(resource, "context_limit", 32768)
+            _output_limit  = getattr(resource, "output_limit", 8192)
+            _input_limit   = getattr(resource, "input_limit", None)  # explicit cap if set
+            _input_budget  = int((_input_limit or (_context_limit - _output_limit)) * 0.85)
+            _estimated_tokens = _estimate_tokens(messages)
+            messages, _was_trimmed = _trim_to_context_budget(messages, _input_budget)
+            if _was_trimmed:
+                self._log(
+                    f"Context trim: ~{_estimated_tokens}t estimated, budget={_input_budget}t "
+                    f"({_context_limit}t window). Oldest messages dropped.",
+                    "warning",
+                )
+
             # Call LLM
             effective_model = role_model_preference or resource.model
             self._log(
-                f"Iteration {iteration}: calling {effective_model} via {resource.id}"
+                f"Iteration {iteration}: calling {effective_model} via {resource.id} "
+                f"(~{_estimate_tokens(messages)}t input)"
             )
             iter_start = time.time()
             try:
@@ -858,23 +912,25 @@ class AgenticExecutor:
                     final_answer = candidate_final_answer
                 else:
                     final_validation_error = validation_error
-            iteration_log.append(
-                {
-                    "iteration": iteration,
-                    "resource": resource.id,
-                    "model": used_model,
-                    "tier_preference": [t.value for t in iter_tiers],
-                    "selection_reason": selection_reason,
-                    "status": (
-                        "final"
-                        if final_answer
-                        else ("final_rejected" if final_validation_error else "continue")
-                    ),
-                    "response_length": len(response_text),
-                    "validation_error": final_validation_error,
-                    "elapsed_s": round(time.time() - iter_start, 1),
-                }
-            )
+            _iter_entry: Dict[str, Any] = {
+                "iteration": iteration,
+                "resource": resource.id,
+                "model": used_model,
+                "tier_preference": [t.value for t in iter_tiers],
+                "selection_reason": selection_reason,
+                "status": (
+                    "final"
+                    if final_answer
+                    else ("final_rejected" if final_validation_error else "continue")
+                ),
+                "response_length": len(response_text),
+                "validation_error": final_validation_error,
+                "estimated_input_tokens": _estimate_tokens(messages),
+                "elapsed_s": round(time.time() - iter_start, 1),
+            }
+            if _was_trimmed:
+                _iter_entry["context_trimmed"] = True
+            iteration_log.append(_iter_entry)
 
             if final_answer:
                 self._log(f"Task {task.id}: got final answer at iteration {iteration}")
