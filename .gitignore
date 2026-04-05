@@ -156,10 +156,10 @@ config/scheduler_config.json
 config/notifications_config.json
 config/roles/*.json
 # Bundled demo templates are committed
-!config/roles/rebecca.json
-!config/roles/ahman.json
-!config/roles/carl.json
-!config/roles/popo.json
+!config/roles/researcher.json
+!config/roles/network_admin.json
+!config/roles/code_reviewer.json
+!config/roles/developer.json
 
 # MoJoAssistant specific - sensitive files
 .mojo_history
