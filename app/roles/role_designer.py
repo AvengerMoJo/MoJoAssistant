@@ -88,7 +88,8 @@ _QUESTIONS = {
     "tool_access": (
         "What tool categories should **{name}** have access to by default?\n\n"
         "Available categories:\n"
-        "  `memory`        — search and store knowledge (all roles get this)\n"
+        "  `memory`        — search and store owner memory (all roles get this)\n"
+        "  `knowledge`     — search and save role-scoped knowledge base\n"
         "  `file`          — read, write, search files\n"
         "  `exec`          — run shell commands\n"
         "  `web`           — web search and fetch URLs\n"
@@ -96,7 +97,7 @@ _QUESTIONS = {
         "  `terminal`      — persistent tmux sessions\n"
         "  `orchestration` — schedule tasks and dispatch to other agents\n\n"
         "Examples:\n"
-        "  researcher → `memory, web, file`\n"
+        "  researcher → `memory, knowledge, web, file`\n"
         "  coder      → `memory, file, exec`\n"
         "  ops        → `memory, file, exec, terminal, web`\n"
         "  browser operator → `memory, file, exec, web, browser`\n\n"
@@ -366,7 +367,7 @@ class RoleDesignSession:
         spec: Dict[str, Any] = {
             "id": role_id,
             "name": name,
-            "archetype": _infer_archetype(cv_score, er_score, cs_score, so_score, ad_score),
+            "archetype": _infer_archetype(cv_score, er_score, cs_score, so_score, ad_score, agent_type_label),
             "agent_type": agent_type,
             "nine_chapter_score": round(overall),
             "dimensions": dimensions,
@@ -486,7 +487,7 @@ _DEFAULT_TOOL_ACCESS: Dict[str, list] = {
 }
 
 _VALID_TOOL_CATEGORIES = {
-    "memory", "file", "exec", "web", "browser", "terminal", "orchestration", "comms",
+    "memory", "knowledge", "file", "exec", "web", "browser", "terminal", "orchestration", "comms",
 }
 
 _KNOWN_AGENT_TYPES = {"researcher", "coder", "reviewer", "ops", "analyst", "assistant"}
@@ -514,7 +515,10 @@ def _infer_agent_type(answer: str) -> tuple[str, str | None]:
     return "custom", stripped
 
 
-def _infer_archetype(cv, er, cs, so, ad) -> str:
+def _infer_archetype(cv, er, cs, so, ad, agent_type_label: str | None = None) -> str:
+    # Custom agent types carry their own identity — use the label directly as archetype.
+    if agent_type_label:
+        return agent_type_label.lower().replace(" ", "_")
     if cs >= 75 and er <= 70:
         return "analytical_pragmatist"
     if so >= 75 and er >= 75:
