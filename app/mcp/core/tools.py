@@ -3420,11 +3420,14 @@ Agent resumes within seconds.
     async def _execute_resource_add_or_edit(
         self, args: Dict[str, Any], edit: bool = False
     ) -> Dict[str, Any]:
-        """Add or edit a resource in llm_config.json.
+        """Add or edit a resource in ~/.memory/config/resource_pool.json (user personal layer).
 
-        Required fields are validated. context_limit, input_limit, and output_limit
-        must be supplied explicitly — no auto-discovery, values come from the user.
+        All writes go to the personal layer — it wins over the system config/resource_pool.json
+        via the layered config merge. Context limits must be supplied explicitly.
         """
+        from pathlib import Path
+        from app.config.config_loader import MEMORY_CONFIG_DIR
+
         resource_id = args.get("resource_id")
         if not resource_id:
             return {
@@ -3439,57 +3442,49 @@ Agent resumes within seconds.
                     "         api_key='...'|null, description='...')\n\n"
                     "context_limit  — total context window in tokens (check model card)\n"
                     "output_limit   — max tokens the model can generate per response\n"
-                    "input_limit    — max input tokens per request if different from\n"
-                    "                 context_limit - output_limit (e.g. free-tier APIs)\n"
+                    "input_limit    — max input tokens per request if asymmetric (e.g. free-tier APIs)\n"
                     "                 Leave null to derive from context_limit - output_limit."
                 ),
             }
 
-        # Load current llm_config
-        llm_cfg_meta = self._config_modules.get("llm")
-        if not llm_cfg_meta:
-            return {"status": "error", "message": "llm config module not found"}
-        llm_cfg = self._load_config_file(llm_cfg_meta["file"])
+        # Always write to the personal override file — wins over system config via layered merge
+        personal_path = Path(MEMORY_CONFIG_DIR) / "resource_pool.json"
+        try:
+            if personal_path.exists():
+                import json as _json
+                personal_cfg = _json.loads(personal_path.read_text(encoding="utf-8"))
+            else:
+                personal_cfg = {"resources": {}}
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to load personal resource_pool.json: {e}"}
 
-        # Locate the entry — handles both flat and nested group structures.
-        # Flat:   api_models.lmstudio_qwen35b   → resource_id = "lmstudio_qwen35b"
-        # Nested: api_models.openrouter.avengermojo → resource_id = "openrouter_avengermojo"
-        #         api_models.gemini.elmntri        → resource_id = "gemini_elmntri"
-        target_section = None  # dict that directly contains the entry
-        entry_key = resource_id  # key within target_section
-
-        def _find_entry(cfg: dict):
-            """Return (parent_dict, key) for resource_id, or (None, None)."""
-            for sec in ("api_models", "local_models"):
-                block = cfg.get(sec, {})
-                if resource_id in block:
-                    return block, resource_id
-                # Try nested groups: openrouter_avengermojo → openrouter / avengermojo
-                for group_key, group_val in block.items():
-                    if isinstance(group_val, dict) and "model" not in group_val:
-                        # Likely a group (not a direct resource entry)
-                        candidate = resource_id[len(group_key) + 1:]  # strip "group_"
-                        if resource_id.startswith(group_key + "_") and candidate in group_val:
-                            return group_val, candidate
-            return None, None
+        resources = personal_cfg.setdefault("resources", {})
 
         if edit:
-            target_section, entry_key = _find_entry(llm_cfg)
-            if target_section is None:
+            # For edit, also check system config so we can read the current full entry
+            system_path = Path("config/resource_pool.json")
+            system_resources = {}
+            try:
+                if system_path.exists():
+                    import json as _json
+                    system_cfg = _json.loads(system_path.read_text(encoding="utf-8"))
+                    system_resources = system_cfg.get("resources", {})
+            except Exception:
+                pass
+
+            if resource_id not in resources and resource_id not in system_resources:
                 return {
                     "status": "error",
                     "message": f"Resource '{resource_id}' not found. Use resource_status to list resources.",
                 }
+            # Start from personal override if it exists, then fall back to system entry
+            existing = dict(resources.get(resource_id) or system_resources.get(resource_id) or {})
         else:
-            # New resource — write to api_models or local_models top level
-            sec = "api_models" if args.get("type", "local") == "api" else "local_models"
-            target_section = llm_cfg.setdefault(sec, {})
-            entry_key = resource_id
+            existing = {}
 
-        # Required for new resources
-        REQUIRED_NEW = ["context_limit", "output_limit"]
+        # Required fields for new resources
         if not edit:
-            missing = [f for f in REQUIRED_NEW if args.get(f) is None]
+            missing = [f for f in ("context_limit", "output_limit") if args.get(f) is None]
             if missing:
                 return {
                     "status": "error",
@@ -3503,33 +3498,36 @@ Agent resumes within seconds.
                     ),
                 }
 
-        # Build the entry — start from existing if editing
-        entry = dict(target_section.get(entry_key, {})) if edit else {}
-
         FIELDS = [
-            "type", "provider", "base_url", "model", "api_key", "tier",
+            "type", "provider", "base_url", "model", "api_key", "api_key_env", "tier",
             "priority", "enabled", "description", "account_group",
             "context_limit", "output_limit", "input_limit",
             "agentic_capable", "dynamic_discovery",
         ]
-        for field in FIELDS:
-            if field in args:
-                val = args[field]
-                if val is None and field == "input_limit":
-                    entry.pop(field, None)  # null input_limit = omit (derive at runtime)
+        entry = dict(existing)
+        for f in FIELDS:
+            if f in args:
+                val = args[f]
+                if val is None and f == "input_limit":
+                    entry.pop(f, None)  # null input_limit = omit (derive at runtime)
                 elif val is not None:
-                    entry[field] = val
+                    entry[f] = val
 
-        target_section[entry_key] = entry
+        resources[resource_id] = entry
 
         try:
-            self._save_config_file(llm_cfg_meta["file"], llm_cfg)
+            import json as _json
+            personal_path.parent.mkdir(parents=True, exist_ok=True)
+            personal_path.write_text(
+                _json.dumps(personal_cfg, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
         except Exception as e:
-            return {"status": "error", "message": f"Failed to save config: {e}"}
+            return {"status": "error", "message": f"Failed to save personal resource_pool.json: {e}"}
 
         # Reload resource manager
         try:
-            self._on_llm_config_change()
+            self._on_resource_pool_config_change()
         except Exception as e:
             return {
                 "status": "warning",
@@ -3540,12 +3538,13 @@ Agent resumes within seconds.
         verb = "updated" if edit else "added"
         return {
             "status": "success",
-            "message": f"Resource '{resource_id}' {verb} and resource manager reloaded.",
+            "message": f"Resource '{resource_id}' {verb} in personal config and resource manager reloaded.",
             "resource_id": resource_id,
-            "section": section,
+            "saved_to": str(personal_path),
             "context_limit": entry.get("context_limit"),
             "output_limit": entry.get("output_limit"),
             "input_limit": entry.get("input_limit"),
+            "model": entry.get("model"),
         }
 
     async def _execute_resource_pool_status(
