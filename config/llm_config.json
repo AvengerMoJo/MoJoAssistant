@@ -1,5 +1,5 @@
 {
-  "comment": "Unified LLM Configuration \u2014 single source of truth for both LLM interfaces and resource pool. Runtime overrides live in ~/.memory/config/llm_config.json.",
+  "comment": "Unified LLM Configuration — single source of truth for both LLM interfaces and resource pool. Runtime overrides live in ~/.memory/config/llm_config.json.",
   "tier_policy": {
     "free": {
       "auto_approve": true
@@ -58,13 +58,13 @@
       "base_url": "http://localhost:8080/v1",
       "api_key": "sk-lm-your-lmstudio-key",
       "model": null,
-      "context_limit": 32768,
+      "context_limit": 131072,
       "output_limit": 8192,
       "type": "local",
       "tier": "free",
       "priority": 1,
       "enabled": true,
-      "description": "Local LMStudio server \u2014 model auto-detected from /v1/models at runtime",
+      "description": "Local LMStudio server — model auto-detected from /v1/models at runtime",
       "dynamic_discovery": true
     },
     "openrouter": {

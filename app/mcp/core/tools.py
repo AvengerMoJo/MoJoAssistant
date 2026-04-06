@@ -616,7 +616,8 @@ class ToolRegistry:
                     "action='resource_approve',   resource_id            → approve a resource for use\n"
                     "action='resource_revoke',    resource_id            → revoke a resource\n"
                     "action='resource_smoke_test',resource_id            → test connectivity\n"
-                    "action='llm_models',         resource_id            → list live models from server\n\n"
+                    "action='llm_models',         resource_id            → list live models from server\n"
+                    "action='registry_refresh'                           → refresh public model registry (LiteLLM + OpenRouter)\n\n"
                     "# Validation\n"
                     "action='doctor'                                     → full config pre-flight report"
                 ),
@@ -3401,6 +3402,21 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"audit_get failed: {e}"}
 
+    async def _execute_registry_refresh(self) -> Dict[str, Any]:
+        """Refresh the public model registry cache from LiteLLM + OpenRouter."""
+        try:
+            from app.scheduler.model_registry import get_registry
+            registry = get_registry()
+            count = await asyncio.get_event_loop().run_in_executor(None, registry.refresh)
+            return {
+                "status": "success",
+                "message": f"Model registry refreshed: {count} models cached.",
+                "updated_at": registry.updated_at_iso(),
+                "count": count,
+            }
+        except Exception as exc:
+            return {"status": "error", "message": f"Registry refresh failed: {exc}"}
+
     async def _execute_resource_add_or_edit(
         self, args: Dict[str, Any], edit: bool = False
     ) -> Dict[str, Any]:
@@ -3435,21 +3451,40 @@ Agent resumes within seconds.
             return {"status": "error", "message": "llm config module not found"}
         llm_cfg = self._load_config_file(llm_cfg_meta["file"])
 
-        # Determine which section to write to
-        section = "api_models" if args.get("type", "local") == "api" else "local_models"
-        target_section = llm_cfg.setdefault(section, {})
+        # Locate the entry — handles both flat and nested group structures.
+        # Flat:   api_models.lmstudio_qwen35b   → resource_id = "lmstudio_qwen35b"
+        # Nested: api_models.openrouter.avengermojo → resource_id = "openrouter_avengermojo"
+        #         api_models.gemini.elmntri        → resource_id = "gemini_elmntri"
+        target_section = None  # dict that directly contains the entry
+        entry_key = resource_id  # key within target_section
 
-        if edit and resource_id not in target_section:
-            # Try the other section
-            other = "local_models" if section == "api_models" else "api_models"
-            if resource_id in llm_cfg.get(other, {}):
-                section = other
-                target_section = llm_cfg[section]
-            else:
+        def _find_entry(cfg: dict):
+            """Return (parent_dict, key) for resource_id, or (None, None)."""
+            for sec in ("api_models", "local_models"):
+                block = cfg.get(sec, {})
+                if resource_id in block:
+                    return block, resource_id
+                # Try nested groups: openrouter_avengermojo → openrouter / avengermojo
+                for group_key, group_val in block.items():
+                    if isinstance(group_val, dict) and "model" not in group_val:
+                        # Likely a group (not a direct resource entry)
+                        candidate = resource_id[len(group_key) + 1:]  # strip "group_"
+                        if resource_id.startswith(group_key + "_") and candidate in group_val:
+                            return group_val, candidate
+            return None, None
+
+        if edit:
+            target_section, entry_key = _find_entry(llm_cfg)
+            if target_section is None:
                 return {
                     "status": "error",
                     "message": f"Resource '{resource_id}' not found. Use resource_status to list resources.",
                 }
+        else:
+            # New resource — write to api_models or local_models top level
+            sec = "api_models" if args.get("type", "local") == "api" else "local_models"
+            target_section = llm_cfg.setdefault(sec, {})
+            entry_key = resource_id
 
         # Required for new resources
         REQUIRED_NEW = ["context_limit", "output_limit"]
@@ -3469,7 +3504,7 @@ Agent resumes within seconds.
                 }
 
         # Build the entry — start from existing if editing
-        entry = dict(target_section.get(resource_id, {})) if edit else {}
+        entry = dict(target_section.get(entry_key, {})) if edit else {}
 
         FIELDS = [
             "type", "provider", "base_url", "model", "api_key", "tier",
@@ -3485,7 +3520,7 @@ Agent resumes within seconds.
                 elif val is not None:
                     entry[field] = val
 
-        target_section[resource_id] = entry
+        target_section[entry_key] = entry
 
         try:
             self._save_config_file(llm_cfg_meta["file"], llm_cfg)
@@ -3494,7 +3529,7 @@ Agent resumes within seconds.
 
         # Reload resource manager
         try:
-            self._on_llm_config_updated()
+            self._on_llm_config_change()
         except Exception as e:
             return {
                 "status": "warning",
@@ -3974,6 +4009,8 @@ Agent resumes within seconds.
             if not resource_id:
                 return {"status": "error", "message": "Parameter 'resource_id' is required."}
             return await self._execute_llm_list_available_models({"resource_id": resource_id})
+        if action == "registry_refresh":
+            return await self._execute_registry_refresh()
 
         # --- doctor ---
         if action == "doctor":
@@ -4017,6 +4054,7 @@ Agent resumes within seconds.
                         "resource_revoke":       "Revoke a resource — params: resource_id",
                         "resource_smoke_test":   "Test resource connectivity — params: resource_id",
                         "llm_models":            "List live models from server — params: resource_id",
+                        "registry_refresh":      "Refresh public model registry cache (LiteLLM + OpenRouter) — auto-populates context/token limits for known models",
                         "doctor":                "Full config pre-flight report",
                     },
                     "example": 'config(action="resource_status")',

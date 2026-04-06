@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 from app.config.paths import get_memory_subpath
 from app.scheduler.models import DEFAULT_TIER_PREFERENCE
+from app.scheduler.model_registry import get_registry, lookup_model
 
 
 class ResourceTier(Enum):
@@ -177,6 +178,7 @@ class ResourceManager:
         self._config_mtime_ns = codebase_path.stat().st_mtime_ns if codebase_path.exists() else None
         self._runtime_mtime_ns = runtime_path.stat().st_mtime_ns if runtime_path.exists() else None
 
+        self._loaded_config = data  # keep reference for model_registry lookups
         if use_flat:
             self._parse_flat_resources(data)
             self._auto_sync_flat_servers(data)
@@ -554,6 +556,9 @@ class ResourceManager:
                 "total_calls": usage.total_calls,
                 "consecutive_errors": usage.consecutive_errors,
                 "description": resource.description,
+                "context_limit": resource.context_limit,
+                "output_limit": resource.output_limit,
+                "input_limit": resource.input_limit,
             }
         return result
 
@@ -615,9 +620,44 @@ class ResourceManager:
 
             # Create one entry per model
             base_priority = template.priority + 1  # slightly lower priority than template
+            # User-supplied per-model overrides (explicit wins over registry)
+            user_registry = self._loaded_config.get("model_registry", {})
+            # Ensure public registry is loaded (no network call if cache is fresh)
+            pub_registry = get_registry()
             for i, model_id in enumerate(model_ids):
                 slug = "".join(c if c.isalnum() else "_" for c in model_id).strip("_")
                 rid = f"{prefix}{slug}"
+
+                # Precedence: user config → public registry cache → template default
+                user_spec = user_registry.get(model_id, {})
+                pub_spec  = pub_registry.lookup(model_id)
+
+                def _resolve(field, user_val, pub_val, template_val):
+                    if user_val is not None:
+                        return user_val
+                    if pub_val is not None:
+                        return pub_val
+                    return template_val
+
+                ctx_limit = _resolve(
+                    "context_limit",
+                    user_spec.get("context_limit"),
+                    pub_spec.context_limit if pub_spec else None,
+                    template.context_limit,
+                )
+                out_limit = _resolve(
+                    "output_limit",
+                    user_spec.get("output_limit"),
+                    pub_spec.output_limit if pub_spec else None,
+                    template.output_limit,
+                )
+                inp_limit = _resolve(
+                    "input_limit",
+                    user_spec.get("input_limit"),
+                    pub_spec.input_limit if pub_spec else None,
+                    template.input_limit,
+                )
+
                 resource = LLMResource(
                     id=rid,
                     provider=template.provider,
@@ -625,8 +665,9 @@ class ResourceManager:
                     api_key=template.api_key,
                     api_key_env=template.api_key_env,
                     model=model_id,
-                    context_limit=template.context_limit,
-                    output_limit=template.output_limit,
+                    context_limit=ctx_limit,
+                    output_limit=out_limit,
+                    input_limit=inp_limit,
                     type=template.type,
                     tier=template.tier,
                     priority=base_priority + i,
