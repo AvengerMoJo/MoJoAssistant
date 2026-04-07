@@ -1706,20 +1706,19 @@ Agent resumes within seconds.
                 sessions.append({
                     "task_id": task.id,
                     "status": "running",
-                    "title": task.description or task.id,
+                    "title": task.description or None,
                     "role": task.config.get("role_id") if task.config else None,
-                    "pending_question": None,
                     "created_at": task.created_at.isoformat(),
                 })
 
-            # Tasks waiting for input
+            # Tasks waiting for input — omit pending_question (already in attention.blocking)
             for task in self.scheduler.list_tasks(status=TaskStatus.WAITING_FOR_INPUT):
                 sessions.append({
                     "task_id": task.id,
                     "status": "waiting_for_input",
-                    "title": task.description or task.id,
+                    "title": task.description or None,
                     "role": task.config.get("role_id") if task.config else None,
-                    "pending_question": task.pending_question,
+                    "has_question": bool(task.pending_question),
                     "created_at": task.created_at.isoformat(),
                 })
 
@@ -1738,9 +1737,8 @@ Agent resumes within seconds.
                         sessions.append({
                             "task_id": task.id,
                             "status": "completed",
-                            "title": task.description or task.id,
+                            "title": task.description or None,
                             "role": task.config.get("role_id") if task.config else None,
-                            "pending_question": None,
                             "created_at": task.created_at.isoformat(),
                         })
             except Exception:
