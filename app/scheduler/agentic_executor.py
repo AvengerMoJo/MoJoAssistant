@@ -1366,6 +1366,22 @@ class AgenticExecutor:
 
     async def _execute_single_tool(self, name: str, args: Dict) -> Any:
         """Execute a single tool from dynamic registry or built-in tools."""
+        # Enforce tool_access: reject calls to tools not in the enabled list.
+        # ask_user is always permitted (HITL escape hatch injected unconditionally).
+        enabled = getattr(self, "_enabled_tool_names", None)
+        if enabled is not None and name != "ask_user" and name not in enabled:
+            self._log(
+                f"Tool '{name}' blocked: not in role/task tool_access list "
+                f"({len(enabled)} tools enabled)",
+                "warning",
+            )
+            return {
+                "error": (
+                    f"Tool '{name}' is not available for this role/task. "
+                    f"Available tools: {sorted(enabled)}"
+                )
+            }
+
         # Get tool from registry for policy check
         tool = self._tool_registry.get_tool(name)
 
