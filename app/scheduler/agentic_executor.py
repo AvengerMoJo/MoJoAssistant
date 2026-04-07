@@ -1690,10 +1690,14 @@ class AgenticExecutor:
 
     def _resolve_tools_from_role(self, role: dict) -> List[str]:
         """
-        Expand role.tool_access categories into tool names via tool_catalog.json.
+        Expand role.tool_access into tool names via tool_catalog.json.
+
+        tool_access entries may be:
+          - a category name  (e.g. "web", "memory") — all tools in that category are included
+          - an explicit tool name (e.g. "curl_request", "get_verge_tech_news") — included directly
 
         Precedence:
-          1. role.tool_access (list of category names) — new catalog-based path
+          1. role.tool_access (categories or explicit tool names) — catalog-based path
           2. role.tools (list of explicit tool names) — legacy path
           3. ["memory_search"] — default fallback
         """
@@ -1708,9 +1712,24 @@ class AgenticExecutor:
             except Exception:
                 catalog = {}
             tool_entries = catalog.get("tools", {})
+
+            # Partition tool_access into known categories vs explicit tool names
+            known_categories = {
+                meta.get("category")
+                for meta in tool_entries.values()
+                if isinstance(meta, dict) and meta.get("category")
+            }
+            # Also include categories from the dynamic registry
+            for t_def in self._tool_registry._tools.values():
+                if t_def.category:
+                    known_categories.add(t_def.category)
+
+            access_categories = {e for e in tool_access if e in known_categories}
+            access_explicit = {e for e in tool_access if e not in known_categories}
+
             names = []
             seen = set()
-            # Catalog-defined tools
+            # Catalog-defined tools — include by category match
             for tool_name, tool_meta in tool_entries.items():
                 if not isinstance(tool_meta, dict):
                     continue
@@ -1718,10 +1737,10 @@ class AgenticExecutor:
                     continue
                 if tool_meta.get("internal"):  # facade-only; never expose raw to LLM
                     continue
-                if tool_meta.get("category") in tool_access:
+                if tool_meta.get("category") in access_categories:
                     names.append(tool_name)
                     seen.add(tool_name)
-            # Registry-defined tools (e.g. external MCP tools with a category field)
+            # Registry-defined tools — include by category match or explicit name
             for t_name, t_def in self._tool_registry._tools.items():
                 if t_name in seen:
                     continue
@@ -1730,7 +1749,14 @@ class AgenticExecutor:
                 cat_meta = tool_entries.get(t_name, {})
                 if isinstance(cat_meta, dict) and cat_meta.get("internal"):
                     continue
-                if t_def.category and t_def.category in tool_access:
+                if (t_def.category and t_def.category in access_categories) or t_name in access_explicit:
+                    names.append(t_name)
+                    seen.add(t_name)
+            # Explicit names not yet resolved — include directly if they exist in either catalog or registry
+            for t_name in access_explicit:
+                if t_name in seen:
+                    continue
+                if t_name in tool_entries or self._tool_registry.get_tool(t_name):
                     names.append(t_name)
             return names
         elif legacy_tools is not None:
