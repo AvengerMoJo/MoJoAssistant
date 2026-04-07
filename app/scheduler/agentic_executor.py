@@ -509,15 +509,15 @@ class AgenticExecutor:
                 self._log(f"External MCP discovery failed (continuing): {e}", level="warning")
                 self._mcp_tools_discovered = True  # don't retry on every task
 
-        # Load tools: task config.available_tools > role tool_access/tools > default.
+        # Load tools: task config.available_tools > role capabilities > default.
         # ask_user is always included — it's the HITL escape hatch for any blocker.
         explicit_tools = config.get("available_tools")
         if explicit_tools is not None:
             # available_tools may be category names (e.g. "browser") or explicit tool
             # names. Expand categories via the catalog so the LLM sees real tool defs.
-            enabled_tool_names = self._resolve_tools_from_role({"tool_access": explicit_tools})
+            enabled_tool_names = self._resolve_capabilities({"capabilities": explicit_tools})
         elif role:
-            enabled_tool_names = self._resolve_tools_from_role(role)
+            enabled_tool_names = self._resolve_capabilities(role)
         else:
             enabled_tool_names = ["memory_search"]
         if "ask_user" not in enabled_tool_names:
@@ -1366,12 +1366,12 @@ class AgenticExecutor:
 
     async def _execute_single_tool(self, name: str, args: Dict) -> Any:
         """Execute a single tool from dynamic registry or built-in tools."""
-        # Enforce tool_access: reject calls to tools not in the enabled list.
+        # Enforce capabilities: reject calls to tools not in the enabled list.
         # ask_user is always permitted (HITL escape hatch injected unconditionally).
         enabled = getattr(self, "_enabled_tool_names", None)
         if enabled is not None and name != "ask_user" and name not in enabled:
             self._log(
-                f"Tool '{name}' blocked: not in role/task tool_access list "
+                f"Tool '{name}' blocked: not in role/task capabilities list "
                 f"({len(enabled)} tools enabled)",
                 "warning",
             )
@@ -1688,32 +1688,30 @@ class AgenticExecutor:
             return text[start:].strip()
         return text[start:end].strip()
 
-    def _resolve_tools_from_role(self, role: dict) -> List[str]:
+    def _resolve_capabilities(self, role: dict) -> List[str]:
         """
-        Expand role.tool_access into tool names via tool_catalog.json.
+        Expand role.capabilities into executable tool names via capability_catalog.json.
 
-        tool_access entries may be:
+        capabilities entries may be:
           - a category name  (e.g. "web", "memory") — all tools in that category are included
           - an explicit tool name (e.g. "curl_request", "get_verge_tech_news") — included directly
 
         Precedence:
-          1. role.tool_access (categories or explicit tool names) — catalog-based path
-          2. role.tools (list of explicit tool names) — legacy path
-          3. ["memory_search"] — default fallback
+          1. role.capabilities (categories or explicit tool names) — catalog-based path
+          2. ["memory_search"] — default fallback
         """
         from app.config.config_loader import load_layered_json_config
 
-        tool_access = role.get("tool_access")
-        legacy_tools = role.get("tools")
+        capabilities = role.get("capabilities")
 
-        if tool_access is not None:
+        if capabilities is not None:
             try:
-                catalog = load_layered_json_config("config/tool_catalog.json")
+                catalog = load_layered_json_config("config/capability_catalog.json")
             except Exception:
                 catalog = {}
             tool_entries = catalog.get("tools", {})
 
-            # Partition tool_access into known categories vs explicit tool names
+            # Partition capabilities into known categories vs explicit tool names
             known_categories = {
                 meta.get("category")
                 for meta in tool_entries.values()
@@ -1724,8 +1722,8 @@ class AgenticExecutor:
                 if t_def.category:
                     known_categories.add(t_def.category)
 
-            access_categories = {e for e in tool_access if e in known_categories}
-            access_explicit = {e for e in tool_access if e not in known_categories}
+            access_categories = {e for e in capabilities if e in known_categories}
+            access_explicit = {e for e in capabilities if e not in known_categories}
 
             names = []
             seen = set()
@@ -1759,8 +1757,6 @@ class AgenticExecutor:
                 if t_name in tool_entries or self._tool_registry.get_tool(t_name):
                     names.append(t_name)
             return names
-        elif legacy_tools is not None:
-            return list(legacy_tools)
         else:
             return ["memory_search"]
 

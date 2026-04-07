@@ -14,6 +14,30 @@ from app.config.paths import get_memory_subpath
 ROLES_DIR = get_memory_subpath("roles")
 
 
+def _migrate_role(role: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalise legacy field names to current schema.
+
+    tool_access / tools  →  capabilities
+      Both are folded into 'capabilities'. 'tools' was the original explicit-name list;
+      'tool_access' was the category-based list. They are now unified under 'capabilities'
+      which accepts both category names and explicit tool names.
+    """
+    legacy_tool_access = role.pop("tool_access", None)
+    legacy_tools = role.pop("tools", None)
+
+    existing = set(role.get("capabilities") or [])
+    if legacy_tool_access:
+        existing.update(legacy_tool_access)
+    if legacy_tools:
+        existing.update(legacy_tools)
+
+    if existing or legacy_tool_access is not None or legacy_tools is not None:
+        role["capabilities"] = list(existing)
+
+    return role
+
+
 class RoleManager:
 
     def __init__(self, roles_dir: str = ROLES_DIR):
@@ -25,6 +49,7 @@ class RoleManager:
         role_id = role.get("id")
         if not role_id:
             raise ValueError("Role must have an 'id' field")
+        role = _migrate_role(dict(role))  # normalise before writing
         role["updated_at"] = datetime.now().isoformat()
         path = os.path.join(self._dir, f"{role_id}.json")
         with open(path, "w", encoding="utf-8") as f:
@@ -38,7 +63,8 @@ class RoleManager:
         if not os.path.exists(path):
             return None
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            role = json.load(f)
+        return _migrate_role(role)
 
     def list_roles(self) -> List[Dict[str, Any]]:
         """Return summary dicts for all saved roles (no system_prompt to keep it brief)."""
@@ -48,7 +74,7 @@ class RoleManager:
                 continue
             try:
                 with open(os.path.join(self._dir, fname), "r", encoding="utf-8") as f:
-                    role = json.load(f)
+                    role = _migrate_role(json.load(f))
                 roles.append({
                     "id": role.get("id"),
                     "name": role.get("name"),

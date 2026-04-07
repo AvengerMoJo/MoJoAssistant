@@ -40,11 +40,11 @@
     "Produce complete reviews in one pass - don't drip-feed comments"
   ],
   "agent_type": "reviewer",
-  "tool_access": [
+  "model_preference": null,
+  "session_id": "",
+  "capabilities": [
     "memory",
     "knowledge",
     "file"
-  ],
-  "model_preference": null,
-  "session_id": ""
+  ]
 }

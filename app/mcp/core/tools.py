@@ -113,9 +113,9 @@ class ToolRegistry:
                 "sensitive_keys": [],
                 "on_change": self._on_resource_pool_config_change,
             },
-            "tool_catalog": {
-                "file": "config/tool_catalog.json",
-                "description": "Tool catalog — maps tool names to categories (memory, file, web, exec, comms). Roles declare tool_access by category. User custom tools live in ~/.memory/config/tool_catalog.json.",
+            "capability_catalog": {
+                "file": "config/capability_catalog.json",
+                "description": "Capability catalog — maps tool names to categories (memory, file, web, exec, comms). Assistant roles declare capabilities by category or explicit tool name. User custom entries live in ~/.memory/config/capability_catalog.json.",
                 "sensitive_keys": [],
                 "on_change": self._on_tool_catalog_change,
             },
@@ -618,11 +618,11 @@ class ToolRegistry:
                     "action='resource_smoke_test',resource_id            → test connectivity\n"
                     "action='llm_models',         resource_id            → list live models from server\n"
                     "action='registry_refresh'                           → refresh public model registry (LiteLLM + OpenRouter)\n\n"
-                    "# Custom user tools\n"
-                    "action='tool_list'                                  → list all tools (system + user)\n"
-                    "action='tool_get',   tool_name                      → get tool definition\n"
-                    "action='tool_add',   tool_name, description, parameters?, executor?, danger_level?, category? → register custom tool\n"
-                    "action='tool_remove',tool_name                      → remove a user-created tool\n\n"
+                    "# Custom assistant capabilities (user-defined tools)\n"
+                    "action='capability_list'                                  → list all capabilities (system + user)\n"
+                    "action='capability_get',   tool_name                      → get capability definition\n"
+                    "action='capability_add',   tool_name, description, parameters?, executor?, danger_level?, category? → register custom capability\n"
+                    "action='capability_remove',tool_name                      → remove a user-created capability\n\n"
                     "# Validation\n"
                     "action='doctor'                                     → full config pre-flight report"
                 ),
@@ -770,9 +770,9 @@ class ToolRegistry:
                             "items": {"type": "string"},
                             "description": (
                                 "Runtime tool override for this specific task (add action, type='assistant'). "
-                                "Overrides the role's default tool_access for this run only. "
+                                "Overrides the role's default capabilities for this run only. "
                                 "Use to restrict (e.g. read-only task: ['memory','file']) or extend (e.g. add 'browser' for one-off web task). "
-                                "If omitted, the role's tool_access categories are used. "
+                                "If omitted, the role's capabilities are used. "
                                 "Call action='list_tools' to see all available tool names."
                             ),
                         },
@@ -903,17 +903,17 @@ class ToolRegistry:
                     "action='list'                                    → list all saved roles\n"
                     "action='get',           role_id                  → full role spec + system prompt\n"
                     "action='create',        session_id? | role?      → save a finalised role to the library\n"
-                    "action='edit',          role_id, tool_access_add?=[...], tool_access_remove?=[...], tool_access?=[...], model_preference?, description? → patch existing role\n"
+                    "action='edit',          role_id, capabilities_add?=[...], capabilities_remove?=[...], capabilities?=[...], model_preference?, description? → patch existing role\n"
                     "action='design_start',  description?             → begin Nine Chapter interview (returns Q1 + session_id)\n"
                     "action='design_start',  file_path=<path>         → import from agency-agents file, pre-fills wizard answers\n"
                     "action='design_answer', session_id, answer       → submit answer → next question or synthesis\n\n"
-                    "TOOL ACCESS — two-layer model:\n"
-                    "  1. Role default (tool_access): categories the role can use in any task.\n"
-                    "     e.g. ['memory', 'file', 'exec', 'browser'] — set at role creation time.\n"
+                    "CAPABILITIES — two-layer model:\n"
+                    "  1. Role default (capabilities): categories or explicit tool names the role can use in any task.\n"
+                    "     e.g. ['memory', 'file', 'exec', 'curl_request'] — set at role creation time.\n"
                     "     Valid categories: memory, file, exec, web, browser, terminal, orchestration\n"
                     "  2. Task runtime override (available_tools in scheduler): restricts or extends\n"
                     "     the role default for one specific task run.\n\n"
-                    "Always set tool_access when creating a role — an empty list means the role can do nothing.\n\n"
+                    "Always set capabilities when creating a role — an empty list means the role can do nothing.\n\n"
                     "Design flow: design_start → design_answer × N → synthesis → user confirms → create"
                 ),
                 "inputSchema": {
@@ -926,9 +926,9 @@ class ToolRegistry:
                         "description": {"type": "string"},
                         "file_path": {"type": "string"},
                         "role": {"type": "object"},
-                        "tool_access": {"type": "array", "items": {"type": "string"}},
-                        "tool_access_add": {"type": "array", "items": {"type": "string"}},
-                        "tool_access_remove": {"type": "array", "items": {"type": "string"}},
+                        "capabilities": {"type": "array", "items": {"type": "string"}},
+                        "capabilities_add": {"type": "array", "items": {"type": "string"}},
+                        "capabilities_remove": {"type": "array", "items": {"type": "string"}},
                         "model_preference": {"type": "string"},
                         "notify_on_completion": {"type": "boolean"},
                         "policy": {"type": "object"},
@@ -2893,7 +2893,7 @@ Agent resumes within seconds.
             from app.config.config_loader import load_layered_json_config
             from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
 
-            catalog = load_layered_json_config("config/tool_catalog.json")
+            catalog = load_layered_json_config("config/capability_catalog.json")
             catalog_entries = catalog.get("tools", {})
             categories_meta = catalog.get("categories", {})
             category_filter = args.get("category")
@@ -2936,7 +2936,7 @@ Agent resumes within seconds.
                 "tools": result,
                 "categories": categories_meta,
                 "usage": (
-                    "Roles declare tool_access by category (e.g. [\"memory\", \"file\"]). "
+                    "Roles declare capabilities by category or explicit name (e.g. [\"memory\", \"file\", \"curl_request\"]). "
                     "Pass explicit tool names in task config.available_tools to override."
                 ),
             }
@@ -3494,7 +3494,7 @@ Agent resumes within seconds.
         except AttributeError:
             return {"status": "error", "message": "Tool registry not available."}
 
-        if action == "tool_list":
+        if action == "capability_list":
             system_tools = [t.to_dict() for t in registry.list_all_tools() if t.created_by == "system"]
             user_tools = [t.to_dict() for t in registry.list_user_tools()]
             return {
@@ -3505,7 +3505,7 @@ Agent resumes within seconds.
                 "user": user_tools,
             }
 
-        if action == "tool_get":
+        if action == "capability_get":
             tool_name = args.get("tool_name")
             if not tool_name:
                 return {"status": "error", "message": "tool_name is required."}
@@ -3514,7 +3514,7 @@ Agent resumes within seconds.
                 return {"status": "error", "message": f"Tool '{tool_name}' not found."}
             return {"status": "success", "tool": tool.to_dict()}
 
-        if action == "tool_add":
+        if action == "capability_add":
             from app.scheduler.dynamic_tool_registry import ToolDefinition
             tool_name = args.get("tool_name")
             description = args.get("description")
@@ -3536,7 +3536,7 @@ Agent resumes within seconds.
                 "tool": tool.to_dict(),
             }
 
-        if action == "tool_remove":
+        if action == "capability_remove":
             tool_name = args.get("tool_name")
             if not tool_name:
                 return {"status": "error", "message": "tool_name is required."}
@@ -3544,7 +3544,7 @@ Agent resumes within seconds.
             if not tool:
                 return {"status": "error", "message": f"Tool '{tool_name}' not found."}
             if tool.created_by == "system":
-                return {"status": "error", "message": f"'{tool_name}' is a system tool and cannot be removed. Restrict it via role tool_access instead."}
+                return {"status": "error", "message": f"'{tool_name}' is a system capability and cannot be removed. Restrict it via role capabilities instead."}
             removed = registry.remove_tool(tool_name)
             return {
                 "status": "success" if removed else "error",
@@ -3832,14 +3832,14 @@ Agent resumes within seconds.
             "actions": {
                 "list":          "List all saved roles",
                 "get":           "Full role spec — params: role_id",
-                "create":        "Save role — params: session_id? | role?, tool_access?, model_preference?, policy?, notify_on_completion?",
-                "edit":          "Patch an existing role — params: role_id, tool_access? (replaces), tool_access_add? (appends), tool_access_remove? (removes), model_preference?, description?, notify_on_completion?, policy?",
+                "create":        "Save role — params: session_id? | role?, capabilities?, model_preference?, policy?, notify_on_completion?",
+                "edit":          "Patch an existing role — params: role_id, capabilities? (replaces), capabilities_add? (appends), capabilities_remove? (removes), model_preference?, description?, notify_on_completion?, policy?",
                 "design_start":  "Begin Nine Chapter interview — params: description?",
                 "design_answer": "Submit answer / advance interview — params: session_id, answer",
             },
             "flow": "design_start → design_answer × N → synthesis → user confirms → create",
-            "tool_access_categories": ["memory", "file", "exec", "web", "browser", "terminal", "orchestration"],
-            "example": 'role(action="edit", role_id="rebecca", tool_access_add=["pubmed_mcp"])',
+            "capability_categories": ["memory", "file", "exec", "web", "browser", "terminal", "orchestration"],
+            "example": 'role(action="edit", role_id="rebecca", capabilities_add=["pubmed_mcp"])',
         }
 
     # ── Role System Tools ────────────────────────────────────────────
@@ -3924,10 +3924,10 @@ Agent resumes within seconds.
         # Apply optional overrides
         if args.get("model_preference") is not None:
             role_data["model_preference"] = args["model_preference"]
-        if args.get("tool_access") is not None:
-            role_data["tool_access"] = args["tool_access"]
-        elif args.get("tools") is not None:  # backwards compat
-            role_data["tool_access"] = args["tools"]
+        if args.get("capabilities") is not None:
+            role_data["capabilities"] = args["capabilities"]
+        elif args.get("tool_access") is not None:  # backwards compat
+            role_data["capabilities"] = args["tool_access"]
         if args.get("notify_on_completion") is not None:
             role_data["notify_on_completion"] = args["notify_on_completion"]
         if args.get("policy") is not None:
@@ -3951,23 +3951,23 @@ Agent resumes within seconds.
         if role_data is None:
             return {"status": "error", "message": f"Role '{role_id}' not found"}
 
-        # tool_access: full replace
-        if args.get("tool_access") is not None:
-            role_data["tool_access"] = list(args["tool_access"])
+        # capabilities: full replace
+        if args.get("capabilities") is not None:
+            role_data["capabilities"] = list(args["capabilities"])
 
-        # tool_access_add: append without duplicates
-        if args.get("tool_access_add"):
-            current = list(role_data.get("tool_access") or [])
-            for t in args["tool_access_add"]:
+        # capabilities_add: append without duplicates
+        if args.get("capabilities_add"):
+            current = list(role_data.get("capabilities") or [])
+            for t in args["capabilities_add"]:
                 if t not in current:
                     current.append(t)
-            role_data["tool_access"] = current
+            role_data["capabilities"] = current
 
-        # tool_access_remove: remove entries
-        if args.get("tool_access_remove"):
-            remove_set = set(args["tool_access_remove"])
-            role_data["tool_access"] = [
-                t for t in (role_data.get("tool_access") or [])
+        # capabilities_remove: remove entries
+        if args.get("capabilities_remove"):
+            remove_set = set(args["capabilities_remove"])
+            role_data["capabilities"] = [
+                t for t in (role_data.get("capabilities") or [])
                 if t not in remove_set
             ]
 
@@ -3980,7 +3980,7 @@ Agent resumes within seconds.
         return {
             "status": "success",
             "role_id": role_id,
-            "tool_access": role_data.get("tool_access"),
+            "capabilities": role_data.get("capabilities"),
             "path": path,
         }
 
@@ -4091,8 +4091,8 @@ Agent resumes within seconds.
             pass  # non-critical
 
     def _on_tool_catalog_change(self) -> None:
-        """Hook called after tool_catalog config is modified — no in-memory state to reload."""
-        pass  # tool_catalog.json is read on each tool-resolution call; no cache to invalidate
+        """Hook called after capability_catalog config is modified — no in-memory state to reload."""
+        pass  # capability_catalog.json is read on each capability-resolution call; no cache to invalidate
 
     def _on_agentic_tools_change(self) -> None:
         """Hook called after agentic_tools config is modified — reloads tool registry."""
@@ -4193,7 +4193,7 @@ Agent resumes within seconds.
             return await self._execute_registry_refresh()
 
         # --- custom tool management ---
-        if action in ("tool_list", "tool_get", "tool_add", "tool_remove"):
+        if action in ("capability_list", "capability_get", "capability_add", "capability_remove"):
             return await self._execute_tool_manage(action, args)
 
         # --- doctor ---
@@ -4239,13 +4239,13 @@ Agent resumes within seconds.
                         "resource_smoke_test":   "Test resource connectivity — params: resource_id",
                         "llm_models":            "List live models from server — params: resource_id",
                         "registry_refresh":      "Refresh public model registry cache (LiteLLM + OpenRouter) — auto-populates context/token limits for known models",
-                        "tool_list":             "List all tools (system built-ins + user custom)",
-                        "tool_get":              "Get full tool definition — params: tool_name",
-                        "tool_add":              "Register a custom tool to personal layer — params: tool_name, description, parameters?, executor?, danger_level?, category?",
-                        "tool_remove":           "Remove a user-created tool — params: tool_name (system tools are protected)",
+                        "capability_list":       "List all capabilities (system built-ins + user custom)",
+                        "capability_get":        "Get full capability definition — params: tool_name",
+                        "capability_add":        "Register a custom capability to personal layer — params: tool_name, description, parameters?, executor?, danger_level?, category?",
+                        "capability_remove":     "Remove a user-created capability — params: tool_name (system capabilities are protected)",
                         "doctor":                "Full config pre-flight report",
                     },
-                    "example": 'config(action="tool_list")',
+                    "example": 'config(action="capability_list")',
                 }
             # Show specific module structure
             if module_name not in self._config_modules:

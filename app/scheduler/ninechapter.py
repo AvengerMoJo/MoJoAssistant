@@ -16,7 +16,7 @@ Three public functions:
       Tells the model what "done well" looks like and exactly when to escalate.
 
   build_capability_summary(role)
-      Converts role.tool_access category names into a human-readable
+      Converts role.capabilities category names into a human-readable
       capability block injected at task start.  Tells the assistant exactly
       what it can and cannot do before the first tool call — no runtime
       discovery needed, no loop risk.
@@ -180,44 +180,44 @@ def build_task_context(role: Dict[str, Any]) -> str:
 # Capability summary
 # ---------------------------------------------------------------------------
 
-_TOOL_CATALOG_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "config", "tool_catalog.json"
+_CAPABILITY_CATALOG_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "config", "capability_catalog.json"
 )
-_tool_catalog_cache: Dict[str, Any] = {}
+_capability_catalog_cache: Dict[str, Any] = {}
 
 
-def _load_tool_catalog() -> Dict[str, Any]:
-    global _tool_catalog_cache
-    if _tool_catalog_cache:
-        return _tool_catalog_cache
+def _load_capability_catalog() -> Dict[str, Any]:
+    global _capability_catalog_cache
+    if _capability_catalog_cache:
+        return _capability_catalog_cache
     try:
-        with open(_TOOL_CATALOG_PATH) as f:
-            _tool_catalog_cache = json.load(f)
+        with open(_CAPABILITY_CATALOG_PATH) as f:
+            _capability_catalog_cache = json.load(f)
     except Exception:
-        _tool_catalog_cache = {}
-    return _tool_catalog_cache
+        _capability_catalog_cache = {}
+    return _capability_catalog_cache
 
 
 def build_capability_summary(role: Dict[str, Any]) -> str:
     """
-    Return a capability summary block derived from role.tool_access and
-    tool_catalog.json category descriptions.
+    Return a capability summary block derived from role.capabilities and
+    capability_catalog.json category descriptions.
 
     Injected into the system prompt at task start so the assistant knows
     exactly what it can do before making any tool calls.  Static — no LLM
     call, no loop risk.
 
-    Returns empty string if the role has no tool_access.
+    Returns empty string if the role has no capabilities.
     """
-    tool_access: List[str] = role.get("tool_access") or []
-    if not tool_access:
+    capabilities: List[str] = role.get("capabilities") or []
+    if not capabilities:
         return ""
 
-    catalog = _load_tool_catalog()
+    catalog = _load_capability_catalog()
     categories = catalog.get("categories", {})
 
     lines: List[str] = []
-    for cat in tool_access:
+    for cat in capabilities:
         desc = categories.get(cat, {}).get("description", cat)
         lines.append(f"- **{cat}**: {desc}")
 

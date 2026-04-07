@@ -36,13 +36,6 @@
     ],
     "min_context": 65536
   },
-  "tool_access": [
-    "memory",
-    "knowledge",
-    "web",
-    "file"
-  ],
-  "tools": [],
   "session_id": "",
   "behavior_rules": {
     "exhausts_tools_before_asking": true
@@ -69,5 +62,11 @@
       "A source is paywalled or unavailable — find an alternative source",
       "You need more context to give a perfect answer — give the best answer you can and note the gap"
     ]
-  }
+  },
+  "capabilities": [
+    "web",
+    "knowledge",
+    "file",
+    "memory"
+  ]
 }

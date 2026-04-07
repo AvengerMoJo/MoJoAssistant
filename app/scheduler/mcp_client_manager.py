@@ -5,7 +5,7 @@ Any MCP server listed in config/mcp_servers.json is connected at executor
 startup. Each server's tools are auto-registered in the DynamicToolRegistry
 with executor type "external_mcp" and the server's category (e.g. "browser").
 
-Roles that declare tool_access: ["browser"] automatically receive all tools
+Roles that declare capabilities: ["browser"] automatically receive all tools
 discovered from servers in that category — no manual registration needed.
 
 Two transport models are supported:

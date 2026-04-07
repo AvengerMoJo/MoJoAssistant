@@ -535,7 +535,7 @@ async def roles_view(mojo_dash: Optional[str] = Cookie(default=None)):
         _at = role.get("agent_type", "—")
         _at_label = role.get("agent_type_label")
         agent_type = f'{_at_label} <span style="color:#555;font-size:10px">({_at})</span>' if _at_label else _at
-        tool_access = ", ".join(role.get("tool_access", []))
+        cap_display = ", ".join(role.get("capabilities", role.get("tool_access", [])))
         # Count tasks for this role
         role_tasks = [t for t in tasks if t.get("config", {}).get("role_id") == rid]
         completed = sum(1 for t in role_tasks if t.get("status") == "completed")
@@ -547,7 +547,7 @@ async def roles_view(mojo_dash: Optional[str] = Cookie(default=None)):
         rows += f"""<tr>
           <td><b>{name}</b><br><span style="color:#555">{rid}</span></td>
           <td>{agent_type}</td>
-          <td style="color:#888;font-size:11px">{tool_access}</td>
+          <td style="color:#888;font-size:11px">{cap_display}</td>
           <td style="color:#7ec8e3">{completed}</td>
           <td style="color:#e37e7e">{failed}</td>
           <td>{mem_badge}</td>
@@ -618,7 +618,7 @@ async def privacy_report(mojo_dash: Optional[str] = Cookie(default=None)):
                 continue
             rname = role.get("name", rf.stem)
             rtype = role.get("agent_type", "—")
-            tools = ", ".join(role.get("tool_access", role.get("tools", []))) or '<span style="color:#555">none</span>'
+            tools = ", ".join(role.get("capabilities", role.get("tool_access", role.get("tools", [])))) or '<span style="color:#555">none</span>'
             local_only = role.get("local_only", False)
             local_badge = '<span style="color:#7ec87e">local_only</span>' if local_only else ""
             role_rows += f"""<tr>
@@ -892,7 +892,7 @@ async def chat_view(
     role = _load_json(role_file, {})
     role_name = role.get("name", role_id) if role else role_id
 
-    # Build capability strip from mode contract + role tool_access
+    # Build capability strip from mode contract + role capabilities
     from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
     _CAT_LABEL = {
         "memory": "memory",
@@ -906,9 +906,9 @@ async def chat_view(
         "comms": "messaging",
     }
     chat_contract = get_mode_contract(InteractionMode.DASHBOARD_CHAT)
-    role_tool_access = role.get("tool_access", []) if role else []
+    role_capabilities = role.get("capabilities", []) if role else []
     available_cats = chat_contract.allowed_tool_categories
-    unavailable_cats = [c for c in role_tool_access if c not in available_cats]
+    unavailable_cats = [c for c in role_capabilities if c not in available_cats]
     if not unavailable_cats:
         unavailable_cats = ["external search", "run tasks", "write"]
 

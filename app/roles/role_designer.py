@@ -39,7 +39,7 @@ _STEPS = [
     "adaptability",
     "purpose",
     "role_type",
-    "tool_access",
+    "capabilities",
     "predict_verify",
     "synthesis",
 ]
@@ -85,7 +85,7 @@ _QUESTIONS = {
         "`researcher` · `coder` · `reviewer` · `ops` · `analyst` · `assistant`\n\n"
         "Pick one, or type your own."
     ),
-    "tool_access": (
+    "capabilities": (
         "What tool categories should **{name}** have access to by default?\n\n"
         "Available categories:\n"
         "  `memory`        — search and store owner memory (all roles get this)\n"
@@ -271,9 +271,9 @@ class RoleDesignSession:
         purpose = spec.get("purpose", "")
         system_prompt = spec.get("system_prompt", "")
 
-        tool_access = spec.get("tool_access", [])
+        capabilities = spec.get("capabilities", [])
         agent_type = spec.get("agent_type", "—")
-        ta_display = ", ".join(f"`{t}`" for t in tool_access) if tool_access else "⚠️ **none** — role cannot use any tools"
+        ta_display = ", ".join(f"`{t}`" for t in capabilities) if capabilities else "⚠️ **none** — role cannot use any tools"
 
         return (
             f"## Draft Role: {name}\n\n"
@@ -361,8 +361,8 @@ class RoleDesignSession:
         )
 
         agent_type, agent_type_label = _infer_agent_type(rt_answer)
-        ta_answer = self.answers.get("tool_access", "")
-        tool_access = _parse_tool_access(ta_answer, agent_type)
+        ta_answer = self.answers.get("capabilities", "")
+        capabilities = _parse_capabilities(ta_answer, agent_type)
 
         spec: Dict[str, Any] = {
             "id": role_id,
@@ -374,7 +374,7 @@ class RoleDesignSession:
             "purpose": purpose,
             "system_prompt": system_prompt,
             "model_preference": None,
-            "tool_access": tool_access,
+            "capabilities": capabilities,
             "session_id": self.session_id,
         }
         if agent_type_label:
@@ -422,9 +422,9 @@ def _slugify_role_id(name: str) -> str:
     return slug or "character"
 
 
-def _parse_tool_access(answer: str, agent_type: str) -> list:
+def _parse_capabilities(answer: str, agent_type: str) -> list:
     """
-    Parse tool_access answer into a validated list of category names.
+    Parse capabilities answer into a validated list of category names.
     Unknown categories are silently dropped. Falls back to type-based
     defaults if the answer is empty or yields nothing valid.
     Always ensures 'memory' is present.
@@ -437,7 +437,7 @@ def _parse_tool_access(answer: str, agent_type: str) -> list:
         parsed = []
 
     if not parsed:
-        parsed = list(_DEFAULT_TOOL_ACCESS.get(agent_type, ["memory"]))
+        parsed = list(_DEFAULT_CAPABILITIES.get(agent_type, ["memory"]))
 
     if "memory" not in parsed:
         parsed = ["memory"] + parsed
@@ -475,8 +475,8 @@ def _logic_from_cognitive(cognitive: str) -> str:
     return "think it through first"
 
 
-# Default tool_access per agent_type — used when user skips or gives empty answer
-_DEFAULT_TOOL_ACCESS: Dict[str, list] = {
+# Default capabilities per agent_type — used when user skips or gives empty answer
+_DEFAULT_CAPABILITIES: Dict[str, list] = {
     "researcher": ["memory", "web", "file"],
     "coder":      ["memory", "file", "exec"],
     "reviewer":   ["memory", "file"],

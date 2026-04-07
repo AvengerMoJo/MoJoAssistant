@@ -321,7 +321,7 @@ class DynamicToolRegistry:
                     "goal":       {"type": "string", "description": "Full goal/instructions for the new task"},
                     "available_tools": {
                         "type": "array", "items": {"type": "string"},
-                        "description": "Tools the new task may use. Defaults to role's tool_access."
+                        "description": "Tools the new task may use. Defaults to role's capabilities."
                     },
                     "max_iterations": {"type": "integer", "description": "Max iterations (default 10)"},
                     "priority":   {"type": "string", "enum": ["low", "normal", "high"], "description": "Task priority"},
@@ -344,7 +344,7 @@ class DynamicToolRegistry:
                     "goal":            {"type": "string", "description": "Full goal/instructions for the sub-task"},
                     "available_tools": {
                         "type": "array", "items": {"type": "string"},
-                        "description": "Tools the sub-task may use. Defaults to role's tool_access."
+                        "description": "Tools the sub-task may use. Defaults to role's capabilities."
                     },
                     "max_iterations":  {"type": "integer", "description": "Max iterations for sub-task (default 10)"},
                     "timeout_s":       {"type": "integer", "description": "Seconds to wait for result (default 300)"},
@@ -443,7 +443,7 @@ class DynamicToolRegistry:
         if not tool:
             return False
         if tool.created_by == "system":
-            return False  # system tools are protected; disable via category/tool_access instead
+            return False  # system tools are protected; disable via role capabilities instead
         del self._tools[name]
         self._save_registry()
         return True

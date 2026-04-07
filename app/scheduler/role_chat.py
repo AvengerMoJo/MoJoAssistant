@@ -4,7 +4,7 @@ Role Chat Interface — conversational mode for assistant roles.
 Provides direct, personality-aware conversation with a role using its
 accumulated knowledge units as context. Runs a mini agentic loop (up to
 MAX_CHAT_ITERATIONS) so the role can call tools (memory_search, task_search)
-based on its tool_access configuration.
+based on its capabilities configuration.
 
 Chat mode is a **private recall/debrief** surface — read-only memory tools
 only. Web search, browser, and orchestration tools are not available here.
@@ -220,7 +220,7 @@ class RoleChatSession:
     history and returns the assistant's response. The role's personality
     (system prompt) and recent knowledge units are prepended as context.
 
-    If the role has tool_access (memory, web), exchange() runs a mini
+    If the role has capabilities (memory, web), exchange() runs a mini
     agentic loop so the role can look things up before answering.
     """
 
@@ -488,15 +488,15 @@ class RoleChatSession:
     # Tool definitions & execution                                         #
     # ------------------------------------------------------------------ #
 
-    def _get_chat_tools(self, tool_access: List[str]) -> List[Dict]:
+    def _get_chat_tools(self, capabilities: List[str]) -> List[Dict]:
         """Return OpenAI tool definitions allowed in the current mode.
 
-        Intersects the role's tool_access categories with the mode contract's
+        Intersects the role's capabilities categories with the mode contract's
         allowed_tool_categories so the model only sees tools the mode permits.
         """
         contract = get_mode_contract(self.mode)
         names: List[str] = []
-        for category in tool_access:
+        for category in capabilities:
             if category in contract.allowed_tool_categories:
                 names.extend(_CHAT_TOOL_ACCESS.get(category, []))
         return [_TOOL_DEFS[n] for n in names if n in _TOOL_DEFS]
@@ -772,8 +772,8 @@ class RoleChatSession:
 
         messages = self._build_messages(system_prompt, ku_context, activity_context, history, message)
 
-        tool_access = role.get("tool_access") or []
-        chat_tools = self._get_chat_tools(tool_access) if resource_manager else []
+        capabilities = role.get("capabilities") or []
+        chat_tools = self._get_chat_tools(capabilities) if resource_manager else []
 
         response = ""
         total_tool_calls = 0
@@ -909,8 +909,8 @@ class RoleChatSession:
 
         messages = self._build_messages(system_prompt, ku_context, activity_context, history, message)
 
-        tool_access = role.get("tool_access") or []
-        chat_tools = self._get_chat_tools(tool_access) if resource_manager else []
+        capabilities = role.get("capabilities") or []
+        chat_tools = self._get_chat_tools(capabilities) if resource_manager else []
 
         total_tool_calls = 0
         response_text = ""
