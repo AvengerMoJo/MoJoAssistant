@@ -3459,7 +3459,7 @@ Agent resumes within seconds.
     async def _execute_tool_manage(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Manage user custom tools in the dynamic tool registry (personal layer)."""
         try:
-            registry = self.scheduler.executor._tool_registry
+            registry = self.scheduler.executor._get_agentic_executor()._tool_registry
         except AttributeError:
             return {"status": "error", "message": "Tool registry not available."}
 
