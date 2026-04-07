@@ -981,25 +981,10 @@ class ToolRegistry:
 
         # Agent tools are always present — agent_type validation happens at execution time
 
-        # Append user custom tools from personal registry file directly
-        # (avoids dependency on scheduler/agentic executor at tools/list time)
-        try:
-            import json as _json
-            from app.config.paths import get_memory_path as _get_memory_path
-            from pathlib import Path as _Path
-            personal_registry = _Path(_get_memory_path()) / "config" / "dynamic_tools.json"
-            if personal_registry.exists():
-                data = _json.loads(personal_registry.read_text(encoding="utf-8"))
-                builtin_names = {t["name"] for t in self.tools}
-                for tool_data in data.get("tools", []):
-                    if tool_data.get("name") not in builtin_names:
-                        available_tools.append({
-                            "name": tool_data["name"],
-                            "description": tool_data.get("description", ""),
-                            "inputSchema": tool_data.get("parameters", {"type": "object", "properties": {}, "required": []}),
-                        })
-        except Exception:
-            pass  # never crash tools/list
+        # NOTE: user custom tools (dynamic_tools.json) are NOT exposed here.
+        # They are scheduler execution capabilities for autonomous agents — not MCP
+        # management tools for the operator. Use config(action='capability_list') to
+        # inspect them, and role.capabilities to grant them to an assistant.
 
         return available_tools
 
