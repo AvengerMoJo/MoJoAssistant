@@ -978,6 +978,18 @@ class ToolRegistry:
 
         # Agent tools are always present — agent_type validation happens at execution time
 
+        # Append user custom tools from DynamicToolRegistry (personal layer)
+        try:
+            dyn_registry = self.scheduler.executor._get_agentic_executor()._tool_registry
+            for tool_def in dyn_registry.list_user_tools():
+                available_tools.append({
+                    "name": tool_def.name,
+                    "description": tool_def.description,
+                    "inputSchema": tool_def.parameters,
+                })
+        except AttributeError:
+            pass  # scheduler not yet initialised — skip
+
         return available_tools
 
     def get_tools_lean(self) -> List[Dict[str, Any]]:
@@ -1554,6 +1566,14 @@ Agent resumes within seconds.
         elif name == "role_get":
             return await self._execute_role_get(args)
         else:
+            # Fallback: try user custom tools in DynamicToolRegistry
+            try:
+                dyn_registry = self.scheduler.executor._get_agentic_executor()._tool_registry
+                tool_def = dyn_registry.get_tool(name)
+                if tool_def and tool_def.created_by != "system":
+                    return await dyn_registry.execute_tool(name, args)
+            except AttributeError:
+                pass
             raise ValueError(f"Unknown tool: {name}")
 
     async def _execute_get_memory_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
