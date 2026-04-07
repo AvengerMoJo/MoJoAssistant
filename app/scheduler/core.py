@@ -375,8 +375,39 @@ class Scheduler:
                 **self._task_routing_fields(task),
             })
 
-            # Execute via executor
-            result = await self.executor.execute(task)
+            # Execute via executor — enforce wall-clock timeout so a hung LLM
+            # call can't leave the task stuck in RUNNING forever.
+            # Default cap: 30 minutes for tasks with no max_duration_seconds set.
+            _DEFAULT_TASK_TIMEOUT = 1800
+            max_duration = (
+                task.resources.max_duration_seconds
+                if task.resources and task.resources.max_duration_seconds
+                else _DEFAULT_TASK_TIMEOUT
+            )
+            try:
+                result = await asyncio.wait_for(
+                    self.executor.execute(task),
+                    timeout=max_duration,
+                )
+            except asyncio.TimeoutError:
+                self._log(
+                    f"Task {task.id} exceeded max duration ({max_duration}s) — marking failed",
+                    "error",
+                )
+                task.mark_failed(f"Task timed out after {max_duration}s")
+                self.stats["tasks_failed"] += 1
+                self.queue.update(task)
+                await self._broadcast({
+                    "event_type": "task_failed",
+                    "task_id": task.id,
+                    "task_type": task.type.value,
+                    "error": f"Task timed out after {max_duration}s",
+                    "severity": "error",
+                    "title": f"Task {task.id} timed out",
+                    "notify_user": True,
+                    **self._task_routing_fields(task),
+                })
+                return
 
             # Agent paused — waiting for user input
             if result.waiting_for_input:
