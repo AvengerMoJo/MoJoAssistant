@@ -903,6 +903,7 @@ class ToolRegistry:
                     "action='list'                                    → list all saved roles\n"
                     "action='get',           role_id                  → full role spec + system prompt\n"
                     "action='create',        session_id? | role?      → save a finalised role to the library\n"
+                    "action='edit',          role_id, tool_access_add?=[...], tool_access_remove?=[...], tool_access?=[...], model_preference?, description? → patch existing role\n"
                     "action='design_start',  description?             → begin Nine Chapter interview (returns Q1 + session_id)\n"
                     "action='design_start',  file_path=<path>         → import from agency-agents file, pre-fills wizard answers\n"
                     "action='design_answer', session_id, answer       → submit answer → next question or synthesis\n\n"
@@ -926,6 +927,8 @@ class ToolRegistry:
                         "file_path": {"type": "string"},
                         "role": {"type": "object"},
                         "tool_access": {"type": "array", "items": {"type": "string"}},
+                        "tool_access_add": {"type": "array", "items": {"type": "string"}},
+                        "tool_access_remove": {"type": "array", "items": {"type": "string"}},
                         "model_preference": {"type": "string"},
                         "notify_on_completion": {"type": "boolean"},
                         "policy": {"type": "object"},
@@ -3807,6 +3810,8 @@ Agent resumes within seconds.
             return await self._execute_role_get({"role_id": role_id})
         if action == "create":
             return await self._execute_role_create(args)
+        if action == "edit":
+            return await self._execute_role_edit(args)
         if action == "design_start":
             return await self._execute_role_design_start({
                 "description": args.get("description", "")
@@ -3828,12 +3833,13 @@ Agent resumes within seconds.
                 "list":          "List all saved roles",
                 "get":           "Full role spec — params: role_id",
                 "create":        "Save role — params: session_id? | role?, tool_access?, model_preference?, policy?, notify_on_completion?",
+                "edit":          "Patch an existing role — params: role_id, tool_access? (replaces), tool_access_add? (appends), tool_access_remove? (removes), model_preference?, description?, notify_on_completion?, policy?",
                 "design_start":  "Begin Nine Chapter interview — params: description?",
                 "design_answer": "Submit answer / advance interview — params: session_id, answer",
             },
             "flow": "design_start → design_answer × N → synthesis → user confirms → create",
             "tool_access_categories": ["memory", "file", "exec", "web", "browser", "terminal", "orchestration"],
-            "example": 'role(action="list")',
+            "example": 'role(action="edit", role_id="rebecca", tool_access_add=["pubmed_mcp"])',
         }
 
     # ── Role System Tools ────────────────────────────────────────────
@@ -3933,6 +3939,48 @@ Agent resumes within seconds.
             "role_id": role_data.get("id"),
             "name": role_data.get("name"),
             "nine_chapter_score": role_data.get("nine_chapter_score"),
+            "path": path,
+        }
+
+    async def _execute_role_edit(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Patch an existing role in-place — only supplied fields are changed."""
+        role_id = args.get("role_id")
+        if not role_id:
+            return {"status": "error", "message": "role_id is required for action=edit"}
+        role_data = self._role_manager.get(role_id)
+        if role_data is None:
+            return {"status": "error", "message": f"Role '{role_id}' not found"}
+
+        # tool_access: full replace
+        if args.get("tool_access") is not None:
+            role_data["tool_access"] = list(args["tool_access"])
+
+        # tool_access_add: append without duplicates
+        if args.get("tool_access_add"):
+            current = list(role_data.get("tool_access") or [])
+            for t in args["tool_access_add"]:
+                if t not in current:
+                    current.append(t)
+            role_data["tool_access"] = current
+
+        # tool_access_remove: remove entries
+        if args.get("tool_access_remove"):
+            remove_set = set(args["tool_access_remove"])
+            role_data["tool_access"] = [
+                t for t in (role_data.get("tool_access") or [])
+                if t not in remove_set
+            ]
+
+        # other patchable fields
+        for field in ("model_preference", "description", "notify_on_completion", "policy"):
+            if args.get(field) is not None:
+                role_data[field] = args[field]
+
+        path = self._role_manager.save(role_data)
+        return {
+            "status": "success",
+            "role_id": role_id,
+            "tool_access": role_data.get("tool_access"),
             "path": path,
         }
 
