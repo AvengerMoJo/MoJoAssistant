@@ -618,6 +618,11 @@ class ToolRegistry:
                     "action='resource_smoke_test',resource_id            → test connectivity\n"
                     "action='llm_models',         resource_id            → list live models from server\n"
                     "action='registry_refresh'                           → refresh public model registry (LiteLLM + OpenRouter)\n\n"
+                    "# Custom user tools\n"
+                    "action='tool_list'                                  → list all tools (system + user)\n"
+                    "action='tool_get',   tool_name                      → get tool definition\n"
+                    "action='tool_add',   tool_name, description, parameters?, executor?, danger_level?, category? → register custom tool\n"
+                    "action='tool_remove',tool_name                      → remove a user-created tool\n\n"
                     "# Validation\n"
                     "action='doctor'                                     → full config pre-flight report"
                 ),
@@ -644,20 +649,26 @@ class ToolRegistry:
                             "description": "For LLM model changes: validate the model is loaded in the server before applying (default: true)",
                         },
                         "resource_id": {"type": "string", "description": "Resource ID (resource_* and llm_models actions)."},
-                        "model": {"type": "string", "description": "Model ID for resource_add/resource_edit."},
-                        "type": {"type": "string", "description": "Resource type: 'local' or 'api'. For resource_add."},
-                        "provider": {"type": "string", "description": "Provider name (e.g. 'openai', 'google'). For resource_add/resource_edit."},
-                        "base_url": {"type": "string", "description": "API base URL. For resource_add/resource_edit."},
-                        "api_key_env": {"type": "string", "description": "Env var name holding the API key. For resource_add/resource_edit."},
-                        "tier": {"type": "string", "description": "Resource tier: 'free', 'free_api', or 'paid'. For resource_add/resource_edit."},
-                        "priority": {"type": "integer", "description": "Selection priority — lower number = higher priority. For resource_add/resource_edit."},
-                        "enabled": {"type": "boolean", "description": "Enable or disable this resource. For resource_add/resource_edit."},
-                        "context_limit": {"type": "integer", "description": "Total context window in tokens. For resource_add/resource_edit."},
-                        "output_limit": {"type": "integer", "description": "Max output tokens per response. For resource_add/resource_edit."},
-                        "input_limit": {"type": "integer", "description": "Max input tokens per request (null = derive from context_limit - output_limit). For resource_add/resource_edit."},
-                        "description": {"type": "string", "description": "Human-readable description. For resource_add/resource_edit."},
-                        "account_group": {"type": "string", "description": "Round-robin group name for load balancing. For resource_add/resource_edit."},
-                        "agentic_capable": {"type": "boolean", "description": "Whether this resource has been verified for agentic (tool-calling) tasks."},
+                        "model": {"type": "string"},
+                        "type": {"type": "string", "enum": ["local", "api"]},
+                        "provider": {"type": "string"},
+                        "base_url": {"type": "string"},
+                        "api_key_env": {"type": "string", "description": "Env var name holding the API key."},
+                        "tier": {"type": "string", "enum": ["free", "free_api", "paid"]},
+                        "priority": {"type": "integer", "description": "Lower = higher priority."},
+                        "enabled": {"type": "boolean"},
+                        "context_limit": {"type": "integer", "description": "Total context window (tokens)."},
+                        "output_limit": {"type": "integer", "description": "Max output tokens."},
+                        "input_limit": {"type": "integer", "description": "Per-request input cap (null = context_limit - output_limit)."},
+                        "description": {"type": "string"},
+                        "account_group": {"type": "string"},
+                        "agentic_capable": {"type": "boolean"},
+                        # custom tool management params
+                        "tool_name": {"type": "string"},
+                        "parameters": {"type": "object"},
+                        "executor": {"type": "object"},
+                        "danger_level": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                        "category": {"type": "string"},
                     },
                     "required": [],
                 },
@@ -854,30 +865,27 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "description": "Action to perform. Omit for help menu."},
-                        # HITL bridge params
-                        "task_id": {"type": "string", "description": "Unique session/task ID (ask_user, check_reply, run_task)."},
-                        "question": {"type": "string", "description": "Question to ask the user (ask_user)."},
-                        "options": {"type": "array", "items": {"type": "string"}, "description": "Optional answer choices (ask_user)."},
-                        "prompt": {"type": "string", "description": "Task prompt for headless Claude Code (run_task)."},
-                        "working_dir": {"type": "string", "description": "Working directory for headless Claude Code (run_task)."},
-                        "model": {"type": "string", "description": "Model override for headless Claude Code (run_task)."},
-                        # Backend params
-                        "server_id": {"type": "string", "description": "Backend server ID (backend actions). Omit for default server."},
-                        "session_id": {"type": "string", "description": "Session ID (backend session actions)."},
-                        "content": {"type": "string", "description": "Message content (backend_session_message)."},
-                        # Google params
-                        "service": {"type": "string", "description": "Google service (google action): calendar, drive, sheets, gmail, docs, people."},
-                        "resource": {"type": "string", "description": "API resource (google action)."},
-                        "method": {"type": "string", "description": "API method (google action): list, get, create, update, delete."},
+                        "action": {"type": "string"},
+                        "task_id": {"type": "string"},
+                        "question": {"type": "string"},
+                        "options": {"type": "array", "items": {"type": "string"}},
+                        "prompt": {"type": "string"},
+                        "working_dir": {"type": "string"},
+                        "model": {"type": "string"},
+                        "server_id": {"type": "string"},
+                        "session_id": {"type": "string"},
+                        "content": {"type": "string"},
+                        "service": {"type": "string", "enum": ["calendar", "drive", "sheets", "gmail", "docs", "people"]},
+                        "resource": {"type": "string"},
+                        "method": {"type": "string", "enum": ["list", "get", "create", "update", "delete"]},
                         "sub_resource": {"type": "string"},
                         "params": {"type": "object"},
                         "json_body": {"type": "object"},
-                        "format": {"type": "string", "enum": ["json", "table", "yaml", "csv"], "default": "json"},
+                        "format": {"type": "string", "enum": ["json", "table", "yaml", "csv"]},
                         "api_version": {"type": "string"},
-                        "page_all": {"type": "boolean", "default": False},
-                        "page_limit": {"type": "integer", "minimum": 1},
-                        "page_delay": {"type": "integer", "minimum": 0},
+                        "page_all": {"type": "boolean"},
+                        "page_limit": {"type": "integer"},
+                        "page_delay": {"type": "integer"},
                         "upload_path": {"type": "string"},
                         "output_path": {"type": "string"},
                     },
@@ -910,51 +918,17 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {
-                            "type": "string",
-                            "description": "Operation. Omit for help menu.",
-                        },
-                        "role_id": {
-                            "type": "string",
-                            "description": "Role ID — required for action=get.",
-                        },
-                        "session_id": {
-                            "type": "string",
-                            "description": "Design session ID — required for design_answer; optional for create.",
-                        },
-                        "answer": {
-                            "type": "string",
-                            "description": "User's answer to current design question (design_answer).",
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "Optional initial character description to pre-fill the intro step (design_start).",
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": "Import from agency-agents file path (design_start). Pre-fills wizard answers from the file. Get paths from /dashboard/library or search_memory.",
-                        },
-                        "role": {
-                            "type": "object",
-                            "description": "Complete role spec dict — alternative to session_id for create.",
-                        },
-                        "tool_access": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Tool categories for create: memory, file, exec, web, browser, terminal, orchestration.",
-                        },
-                        "model_preference": {
-                            "type": "string",
-                            "description": "Preferred LLM model for the role (create).",
-                        },
-                        "notify_on_completion": {
-                            "type": "boolean",
-                            "description": "Push notification when a task using this role completes (create).",
-                        },
-                        "policy": {
-                            "type": "object",
-                            "description": "Runtime permission policy (create). Fields: allowed_tools, denied_tools, require_confirmation_for, max_bash_exec_per_task, sandbox_paths_only.",
-                        },
+                        "action": {"type": "string"},
+                        "role_id": {"type": "string"},
+                        "session_id": {"type": "string"},
+                        "answer": {"type": "string"},
+                        "description": {"type": "string"},
+                        "file_path": {"type": "string"},
+                        "role": {"type": "object"},
+                        "tool_access": {"type": "array", "items": {"type": "string"}},
+                        "model_preference": {"type": "string"},
+                        "notify_on_completion": {"type": "boolean"},
+                        "policy": {"type": "object"},
                     },
                     "required": [],
                 },
@@ -1005,6 +979,57 @@ class ToolRegistry:
         # Agent tools are always present — agent_type validation happens at execution time
 
         return available_tools
+
+    def get_tools_lean(self) -> List[Dict[str, Any]]:
+        """
+        Lean version of get_tools(): same schema shape but all inputSchema property
+        `description` fields stripped and tool descriptions truncated to first line.
+        Reduces MCP payload size ~40-50% for clients that hit 413 limits.
+        """
+        import copy
+
+        def _strip_schema(schema: dict) -> dict:
+            s = copy.deepcopy(schema)
+            for prop in s.get("properties", {}).values():
+                prop.pop("description", None)
+                prop.pop("default", None)
+                # Recurse into array items
+                if "items" in prop and isinstance(prop["items"], dict):
+                    prop["items"].pop("description", None)
+                # Recurse into object properties
+                if "properties" in prop:
+                    for sub in prop["properties"].values():
+                        sub.pop("description", None)
+            return s
+
+        lean = []
+        for tool in self.get_tools():
+            t = {
+                "name": tool["name"],
+                "description": tool["description"].split("\n")[0],
+                "inputSchema": _strip_schema(tool.get("inputSchema", {})),
+            }
+            lean.append(t)
+        return lean
+
+    def get_tools_lean_json_size(self) -> dict:
+        """Compare full vs lean tool payload sizes. Useful for diagnosing 413 errors."""
+        import json
+        full = json.dumps(self.get_tools())
+        lean = json.dumps(self.get_tools_lean())
+        return {
+            "full_bytes": len(full.encode()),
+            "lean_bytes": len(lean.encode()),
+            "reduction_pct": round(100 * (1 - len(lean) / len(full)), 1),
+            "per_tool": {
+                t["name"]: len(json.dumps(t).encode())
+                for t in self.get_tools()
+            },
+            "per_tool_lean": {
+                t["name"]: len(json.dumps(t).encode())
+                for t in self.get_tools_lean()
+            },
+        }
 
     def get_user_prompt_template(self, tool_name: str) -> Dict[str, Any] | None:
         """Get user prompt template for a specific tool"""
@@ -3431,6 +3456,72 @@ Agent resumes within seconds.
         except Exception as exc:
             return {"status": "error", "message": f"Registry refresh failed: {exc}"}
 
+    async def _execute_tool_manage(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Manage user custom tools in the dynamic tool registry (personal layer)."""
+        try:
+            registry = self.scheduler.executor._tool_registry
+        except AttributeError:
+            return {"status": "error", "message": "Tool registry not available."}
+
+        if action == "tool_list":
+            system_tools = [t.to_dict() for t in registry.list_all_tools() if t.created_by == "system"]
+            user_tools = [t.to_dict() for t in registry.list_user_tools()]
+            return {
+                "status": "success",
+                "system_tools": len(system_tools),
+                "user_tools": len(user_tools),
+                "system": [{"name": t["name"], "category": t.get("category",""), "description": t["description"][:80]} for t in system_tools],
+                "user": user_tools,
+            }
+
+        if action == "tool_get":
+            tool_name = args.get("tool_name")
+            if not tool_name:
+                return {"status": "error", "message": "tool_name is required."}
+            tool = registry.get_tool(tool_name)
+            if not tool:
+                return {"status": "error", "message": f"Tool '{tool_name}' not found."}
+            return {"status": "success", "tool": tool.to_dict()}
+
+        if action == "tool_add":
+            from app.scheduler.dynamic_tool_registry import ToolDefinition
+            tool_name = args.get("tool_name")
+            description = args.get("description")
+            if not tool_name or not description:
+                return {"status": "error", "message": "tool_name and description are required."}
+            tool = ToolDefinition(
+                name=tool_name,
+                description=description,
+                parameters=args.get("parameters") or {"type": "object", "properties": {}, "required": []},
+                executor=args.get("executor") or {"type": "builtin"},
+                danger_level=args.get("danger_level") or "low",
+                category=args.get("category") or "",
+                created_by="user",
+            )
+            registry.add_tool(tool)
+            return {
+                "status": "success",
+                "message": f"Tool '{tool_name}' registered in personal tool layer (~/.memory/config/dynamic_tools.json).",
+                "tool": tool.to_dict(),
+            }
+
+        if action == "tool_remove":
+            tool_name = args.get("tool_name")
+            if not tool_name:
+                return {"status": "error", "message": "tool_name is required."}
+            tool = registry.get_tool(tool_name)
+            if not tool:
+                return {"status": "error", "message": f"Tool '{tool_name}' not found."}
+            if tool.created_by == "system":
+                return {"status": "error", "message": f"'{tool_name}' is a system tool and cannot be removed. Restrict it via role tool_access instead."}
+            removed = registry.remove_tool(tool_name)
+            return {
+                "status": "success" if removed else "error",
+                "message": f"Tool '{tool_name}' removed." if removed else f"Failed to remove '{tool_name}'.",
+            }
+
+        return {"status": "error", "message": f"Unknown tool action: {action}"}
+
     async def _execute_resource_add_or_edit(
         self, args: Dict[str, Any], edit: bool = False
     ) -> Dict[str, Any]:
@@ -4025,6 +4116,10 @@ Agent resumes within seconds.
         if action == "registry_refresh":
             return await self._execute_registry_refresh()
 
+        # --- custom tool management ---
+        if action in ("tool_list", "tool_get", "tool_add", "tool_remove"):
+            return await self._execute_tool_manage(action, args)
+
         # --- doctor ---
         if action == "doctor":
             return await self._execute_config_doctor({})
@@ -4068,9 +4163,13 @@ Agent resumes within seconds.
                         "resource_smoke_test":   "Test resource connectivity — params: resource_id",
                         "llm_models":            "List live models from server — params: resource_id",
                         "registry_refresh":      "Refresh public model registry cache (LiteLLM + OpenRouter) — auto-populates context/token limits for known models",
+                        "tool_list":             "List all tools (system built-ins + user custom)",
+                        "tool_get":              "Get full tool definition — params: tool_name",
+                        "tool_add":              "Register a custom tool to personal layer — params: tool_name, description, parameters?, executor?, danger_level?, category?",
+                        "tool_remove":           "Remove a user-created tool — params: tool_name (system tools are protected)",
                         "doctor":                "Full config pre-flight report",
                     },
-                    "example": 'config(action="resource_status")',
+                    "example": 'config(action="tool_list")',
                 }
             # Show specific module structure
             if module_name not in self._config_modules:

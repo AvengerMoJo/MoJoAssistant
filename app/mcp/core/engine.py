@@ -102,8 +102,12 @@ class MCPEngine:
         )
 
     async def _handle_tools_list(self, request: MCPRequest) -> MCPResponse:
-        """Handle tools/list"""
-        tools = self.tool_registry.get_tools()
+        """Handle tools/list. Set MOJO_LEAN_MCP=1 for compact schemas (fixes 413 errors)."""
+        import os
+        if os.environ.get("MOJO_LEAN_MCP", "").strip() == "1":
+            tools = self.tool_registry.get_tools_lean()
+        else:
+            tools = self.tool_registry.get_tools()
         return MCPResponse.success(request.request_id, {"tools": tools})
 
     async def _handle_tool_call(self, request: MCPRequest) -> MCPResponse:

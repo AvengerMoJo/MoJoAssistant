@@ -149,11 +149,22 @@ class ToolDefinition:
 
 
 class DynamicToolRegistry:
-    """Dynamic tool registry that can be updated at runtime."""
+    """Dynamic tool registry that can be updated at runtime.
+
+    Two-layer loading — system layer first, personal layer second (wins on conflict):
+      1. config/dynamic_tools.json          — system defaults (repo, read-only)
+      2. ~/.memory/config/dynamic_tools.json — user custom tools (personal, writable)
+
+    add_tool() / remove_tool() always write to the personal layer so user changes
+    survive git pulls and are never mixed into the repo.
+    """
 
     def __init__(self, registry_path: str = None):
         config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "config")
         self.registry_path = registry_path or os.path.join(config_dir, "dynamic_tools.json")
+        self.personal_registry_path = os.path.join(
+            get_memory_path(), "config", "dynamic_tools.json"
+        )
         self.example_registry_path = os.path.join(
             config_dir, "examples", "dynamic_tools.example.json"
         )
@@ -184,7 +195,8 @@ class DynamicToolRegistry:
             print(f"Failed to seed tool registry from template: {e}")
 
     def _load_registry(self):
-        """Load tools from registry file."""
+        """Load tools from system layer then personal layer (personal wins on conflict)."""
+        # Layer 1: system defaults
         if os.path.exists(self.registry_path):
             try:
                 with open(self.registry_path, "r") as f:
@@ -193,20 +205,40 @@ class DynamicToolRegistry:
                         tool = ToolDefinition.from_dict(tool_data)
                         self._tools[tool.name] = tool
             except Exception as e:
-                print(f"Failed to load tool registry: {e}")
+                print(f"Failed to load system tool registry: {e}")
+
+        # Layer 2: personal user tools (~/.memory/config/dynamic_tools.json)
+        if os.path.exists(self.personal_registry_path):
+            try:
+                with open(self.personal_registry_path, "r") as f:
+                    data = json.load(f)
+                    for tool_data in data.get("tools", []):
+                        tool = ToolDefinition.from_dict(tool_data)
+                        tool.created_by = tool_data.get("created_by", "user")
+                        self._tools[tool.name] = tool  # overrides system if same name
+            except Exception as e:
+                print(f"Failed to load personal tool registry: {e}")
 
     def _save_registry(self):
-        """Save tools to registry file."""
+        """Save user-created tools to the personal layer only.
+
+        System tools (created_by='system') are never written back — they live
+        in config/dynamic_tools.json and are managed via git.
+        """
         try:
-            os.makedirs(os.path.dirname(self.registry_path), exist_ok=True)
-            with open(self.registry_path, "w") as f:
-                data = {
-                    "last_updated": datetime.now().isoformat(),
-                    "tools": [tool.to_dict() for tool in self._tools.values()],
-                }
+            os.makedirs(os.path.dirname(self.personal_registry_path), exist_ok=True)
+            user_tools = [
+                t.to_dict() for t in self._tools.values()
+                if t.created_by != "system"
+            ]
+            data = {
+                "last_updated": datetime.now().isoformat(),
+                "tools": user_tools,
+            }
+            with open(self.personal_registry_path, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"Failed to save tool registry: {e}")
+            print(f"Failed to save personal tool registry: {e}")
 
     def _register_builtins(self):
         """Register built-in tools."""
@@ -398,18 +430,31 @@ class DynamicToolRegistry:
         return self._tools.get(name)
 
     def add_tool(self, tool: ToolDefinition) -> bool:
-        """Add or update a tool."""
+        """Add or update a user tool. Always saved to the personal layer."""
+        if tool.created_by == "system":
+            tool.created_by = "user"  # user-added tools are never system tools
         self._tools[tool.name] = tool
         self._save_registry()
         return True
 
     def remove_tool(self, name: str) -> bool:
-        """Remove a tool."""
-        if name in self._tools:
-            del self._tools[name]
-            self._save_registry()
-            return True
-        return False
+        """Remove a user tool. System built-in tools cannot be removed."""
+        tool = self._tools.get(name)
+        if not tool:
+            return False
+        if tool.created_by == "system":
+            return False  # system tools are protected; disable via category/tool_access instead
+        del self._tools[name]
+        self._save_registry()
+        return True
+
+    def list_user_tools(self) -> List[ToolDefinition]:
+        """Return only user-created tools (personal layer)."""
+        return [t for t in self._tools.values() if t.created_by != "system"]
+
+    def list_all_tools(self) -> List[ToolDefinition]:
+        """Return all tools (system + user)."""
+        return list(self._tools.values())
 
     async def execute_tool(
         self,
