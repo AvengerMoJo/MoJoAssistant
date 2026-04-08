@@ -235,8 +235,19 @@ class TaskExecutor:
                         error_message=results.get("error", "Unknown error during document dreaming"),
                     )
 
-            # Get pipeline
+            # Get pipeline; if role_id is set, scope the storage to that role
             pipeline = self._get_dreaming_pipeline(quality_level)
+            conv_role_id = task.config.get("role_id")
+            if conv_role_id:
+                try:
+                    from app.config.paths import get_memory_subpath
+                    from dreaming.storage.json_backend import JsonFileBackend
+                    role_storage_path = (
+                        Path(get_memory_subpath("roles")) / conv_role_id / "knowledge_units"
+                    )
+                    pipeline.storage = JsonFileBackend(storage_path=role_storage_path)
+                except Exception as _e:
+                    self._log(f"Could not set role-scoped storage for dreaming: {_e}", "warning")
 
             # Process conversation through A→B→C→D pipeline
             results = await pipeline.process_conversation(

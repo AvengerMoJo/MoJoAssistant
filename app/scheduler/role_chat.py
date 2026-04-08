@@ -567,15 +567,21 @@ class RoleChatSession:
                     if query_lower:
                         goal = (report.get("goal") or "").lower()
                         content = (report.get("content") or "").lower()
-                        if query_lower not in goal and query_lower not in content:
+                        summary = (report.get("summary") or "").lower()
+                        if query_lower not in goal and query_lower not in content and query_lower not in summary:
                             continue
+                    # Prefer v2 summary; fall back to legacy content for old reports
+                    snippet = report.get("summary") or report.get("content", "")
                     results.append({
                         "type": "task_report",
                         "task_id": report.get("task_id", ""),
                         "goal": report.get("goal", ""),
                         "status": report.get("status", ""),
                         "created_at": (report.get("created_at") or "")[:19],
-                        "content": report.get("content", ""),
+                        "content": snippet,
+                        "completed": report.get("completed", []),
+                        "findings": report.get("findings", []),
+                        "schema_version": report.get("schema_version", "v1"),
                     })
                     if len(results) >= limit:
                         break

@@ -23,6 +23,12 @@ from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context, build_capability_summary
 from app.roles.owner_context import load_owner_profile, infer_context_tier, build_owner_context_slice
 
+# Tools whose output commonly bloats context (bash stdout, file reads).
+# Results longer than this cap are truncated before being added to messages.
+_TOOL_OUTPUT_CAP_CHARS = 4000
+_TOOL_OUTPUT_LARGE_TOOLS = {"bash_exec", "read_file", "file_read", "list_files", "search_in_files"}
+
+
 def _estimate_tokens(messages: List[Dict]) -> int:
     """Fast token estimate: ~4 chars per token + 10 overhead per message."""
     total = 0
@@ -60,6 +66,63 @@ def _trim_to_context_budget(
         trimmable.pop(0)
 
     return protected_head + trimmable + protected_tail, True
+
+
+def _parse_final_answer_sections(text: str) -> Dict[str, Any]:
+    """
+    Extract structured sections from a FINAL_ANSWER that follows the contract:
+      **Completed:** bullet list
+      **Findings:** bullet list
+      **Incomplete:** bullet list
+      **Resume hint:** single line or bullet list
+
+    Returns a dict with keys: completed, findings, incomplete, resume_hint.
+    Any missing section is an empty list (or empty string for resume_hint).
+    """
+    section_keys = {
+        "completed": re.compile(r"\*\*Completed[:\*]*\*\*", re.IGNORECASE),
+        "findings": re.compile(r"\*\*Findings[:\*]*\*\*", re.IGNORECASE),
+        "incomplete": re.compile(r"\*\*Incomplete[:\*]*\*\*", re.IGNORECASE),
+        "resume_hint": re.compile(r"\*\*Resume hint[:\*]*\*\*", re.IGNORECASE),
+    }
+    ordered = ["completed", "findings", "incomplete", "resume_hint"]
+
+    # Find start positions of each section
+    positions: Dict[str, int] = {}
+    for key, pattern in section_keys.items():
+        m = pattern.search(text)
+        if m:
+            positions[key] = m.end()
+
+    result: Dict[str, Any] = {k: [] for k in ordered}
+    result["resume_hint"] = ""
+
+    for i, key in enumerate(ordered):
+        if key not in positions:
+            continue
+        start = positions[key]
+        # End = start of the next section that appears later in the text
+        end = len(text)
+        for other in ordered[i + 1:]:
+            if other in positions and positions[other] > start:
+                end = min(end, positions[other] - 1)
+                break
+        block = text[start:end].strip()
+        if key == "resume_hint":
+            # Single value — strip bullet marker if present
+            result["resume_hint"] = re.sub(r"^[-*•]\s*", "", block.split("\n")[0]).strip()
+        else:
+            bullets = []
+            for line in block.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # Accept lines starting with -, *, •, or a digit+dot
+                if re.match(r"^[-*•]|^\d+\.", line):
+                    bullets.append(re.sub(r"^[-*•\d.]\s*", "", line).strip())
+            result[key] = bullets
+
+    return result
 
 
 DEFAULT_SYSTEM_PROMPT = """\
@@ -612,6 +675,9 @@ class AgenticExecutor:
         start_time = time.time()
         final_answer: Optional[str] = None
         auto_extracted: bool = False  # provenance flag for fallback completion
+        _context_trim_count: int = 0
+        _last_resource_id: Optional[str] = None
+        _last_used_model: Optional[str] = None
 
         # Tracked across iterations for fallback completion recovery
         _last_response_text: str = ""
@@ -719,6 +785,7 @@ class AgenticExecutor:
             _estimated_tokens = _estimate_tokens(messages)
             messages, _was_trimmed = _trim_to_context_budget(messages, _input_budget)
             if _was_trimmed:
+                _context_trim_count += 1
                 self._log(
                     f"Context trim: ~{_estimated_tokens}t estimated, budget={_input_budget}t "
                     f"({_context_limit}t window). Oldest messages dropped.",
@@ -774,6 +841,8 @@ class AgenticExecutor:
 
             message = response["choices"][0]["message"]
             used_model = response.get("_selected_model", resource.model)
+            _last_resource_id = resource.id
+            _last_used_model = used_model
             # Thinking models (e.g. Qwen3) return reasoning in reasoning_content
             # with content empty. Fall back so the executor can see the response.
             response_text = message.get("content", "") or message.get("reasoning_content", "") or ""
@@ -820,18 +889,20 @@ class AgenticExecutor:
                         tool_name=tc["function"]["name"],
                     )
 
-                iteration_log.append(
-                    {
-                        "iteration": iteration,
-                        "resource": resource.id,
-                        "model": used_model,
-                        "tier_preference": [t.value for t in iter_tiers],
-                        "selection_reason": selection_reason,
-                        "status": "tool_use",
-                        "tool_calls": [tc["function"]["name"] for tc in tool_calls],
-                        "elapsed_s": round(time.time() - iter_start, 1),
-                    }
-                )
+                _tool_iter_entry: Dict[str, Any] = {
+                    "iteration": iteration,
+                    "resource": resource.id,
+                    "model": used_model,
+                    "tier_preference": [t.value for t in iter_tiers],
+                    "selection_reason": selection_reason,
+                    "status": "tool_use",
+                    "tool_calls": [tc["function"]["name"] for tc in tool_calls],
+                    "estimated_input_tokens": _estimated_tokens,
+                    "elapsed_s": round(time.time() - iter_start, 1),
+                }
+                if _was_trimmed:
+                    _tool_iter_entry["context_trimmed"] = True
+                iteration_log.append(_tool_iter_entry)
                 # If agent called ask_user, pause the loop here
                 if waiting:
                     self._log(
@@ -945,6 +1016,11 @@ class AgenticExecutor:
                         role_id=config.get("role_id"),
                         goal=goal,
                         final_answer=final_answer,
+                        iteration_log=iteration_log,
+                        duration_seconds=round(time.time() - start_time, 1),
+                        auto_extracted=False,
+                        resource_id=_last_resource_id,
+                        model=_last_used_model,
                     )
                 break
             if final_validation_error:
@@ -1087,6 +1163,7 @@ class AgenticExecutor:
             "duration_seconds": total_elapsed,
             "final_answer": final_answer,
             "session_file": session_file,
+            "total_context_trims": _context_trim_count,
         }
         if auto_extracted:
             metrics["completion_mode"] = "auto_extracted"
@@ -1099,10 +1176,23 @@ class AgenticExecutor:
         )
 
     def _store_completion_artifact(
-        self, task: "Task", role_id: Optional[str], goal: str, final_answer: str
+        self,
+        task: "Task",
+        role_id: Optional[str],
+        goal: str,
+        final_answer: str,
+        iteration_log: Optional[List[Dict]] = None,
+        duration_seconds: float = 0.0,
+        auto_extracted: bool = False,
+        resource_id: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> None:
         """
-        Write a reviewable completion artifact to ~/.memory/task_reports/{task_id}.json.
+        Write a task_report_v2 artifact to ~/.memory/task_reports/{task_id}.json.
+
+        The v2 schema carries structured sections (completed/findings/incomplete),
+        execution metrics, provenance, and a promotion block, while keeping the
+        legacy `content` field for backwards-compatible readers.
 
         Status starts as "pending_review" so the user can inspect and promote
         the report to the knowledge base.  Called only when the mode contract
@@ -1116,18 +1206,79 @@ class AgenticExecutor:
         reports_dir = _Path(get_memory_subpath("task_reports"))
         try:
             reports_dir.mkdir(parents=True, exist_ok=True)
+
+            # Parse structured sections from the FINAL_ANSWER text
+            sections = _parse_final_answer_sections(final_answer or "")
+
+            # One-line summary: first sentence up to 150 chars
+            raw = (final_answer or "").strip()
+            summary = re.split(r"(?<=[.!?])\s", raw)[0][:150] if raw else ""
+
+            # Execution metrics from iteration log
+            ilog = iteration_log or []
+            tool_call_count = sum(1 for e in ilog if e.get("status") == "tool_use")
+
+            # Completion mode
+            if auto_extracted:
+                completion_mode = "auto_extracted_last_response"
+            else:
+                completion_mode = "model_final_answer"
+
+            # Paths
+            session_file = str(self._session_storage._path(task.id))
+            report_path = reports_dir / f"{task.id}.json"
+            now = _dt.now().isoformat()
+
             report = {
+                # ── Legacy fields (kept for backwards-compatible readers) ──
                 "task_id": task.id,
                 "role_id": role_id,
                 "goal": goal,
                 "status": "pending_review",
-                "created_at": _dt.now().isoformat(),
+                "created_at": now,
                 "content": final_answer,
+                # ── v2 fields ──
+                "schema_version": "task_report_v2",
+                "report_type": "task_completion",
+                "review_status": "pending_review",
+                "completed_at": now,
+                "summary": summary,
+                "completed": sections["completed"],
+                "findings": sections["findings"],
+                "incomplete": sections["incomplete"],
+                "resume_hint": sections["resume_hint"],
+                "final_answer": {
+                    "raw_text": final_answer,
+                    "completion_mode": completion_mode,
+                    "auto_extracted": auto_extracted,
+                    "validation_notes": [],
+                },
+                "artifacts": {
+                    "session_file": session_file,
+                    "report_file": str(report_path),
+                    "output_files": [],
+                    "source_files": [],
+                },
+                "metrics": {
+                    "iterations": len(ilog),
+                    "tool_calls": tool_call_count,
+                    "duration_seconds": duration_seconds,
+                },
+                "provenance": {
+                    "interaction_mode": "scheduler_agentic_task",
+                    "resource_id": resource_id,
+                    "model": model,
+                    "task_type": "assistant",
+                },
+                "promotion": {
+                    "eligible_for_knowledge": True,
+                    "knowledge_doc_id": None,
+                    "promoted_at": None,
+                },
             }
-            report_path = reports_dir / f"{task.id}.json"
             with open(report_path, "w", encoding="utf-8") as f:
                 _json.dump(report, f, indent=2, ensure_ascii=False)
-            self._log(f"Task {task.id}: artifact written → {report_path}")
+            self._log(f"Task {task.id}: task_report_v2 written → {report_path}")
         except Exception as e:
             self._log(
                 f"Task {task.id}: failed to write completion artifact: {e}",
@@ -1358,7 +1509,14 @@ class AgenticExecutor:
 
             try:
                 result = await self._execute_single_tool(fn_name, fn_args)
-                results.append(json.dumps(result, default=str))
+                result_str = json.dumps(result, default=str)
+                # Cap large outputs from file/shell tools to prevent context bloat
+                if fn_name in _TOOL_OUTPUT_LARGE_TOOLS and len(result_str) > _TOOL_OUTPUT_CAP_CHARS:
+                    result_str = (
+                        result_str[:_TOOL_OUTPUT_CAP_CHARS]
+                        + f'... [truncated {len(result_str) - _TOOL_OUTPUT_CAP_CHARS} chars by context guard]'
+                    )
+                results.append(result_str)
             except Exception as e:
                 self._log(f"Tool {fn_name} failed: {e}", "error")
                 results.append(json.dumps({"error": str(e)}))

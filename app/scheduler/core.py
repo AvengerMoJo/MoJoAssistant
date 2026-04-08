@@ -503,6 +503,13 @@ class Scheduler:
                         **self._task_routing_fields(task),
                     })
 
+                    # Dream partial output from failed assistant tasks so the role
+                    # remembers what was attempted (skip if no final answer at all)
+                    if task.type == TaskType.ASSISTANT:
+                        final_ans = (result.metrics or {}).get("final_answer")
+                        if final_ans:
+                            self._schedule_dreaming_for_agentic_task(task)
+
                     # Cron tasks reschedule even after permanent failure
                     if task.cron_expression:
                         from app.scheduler.triggers import CronTrigger
@@ -628,9 +635,11 @@ class Scheduler:
                     "conversation_id": f"sessions/session_{task.id}",
                     "conversation_text": conversation_text,
                     "quality_level": "basic",
+                    "role_id": role_id,  # role-scope the session memory
                     "metadata": {
                         "source": "session_compaction",
                         "original_task_id": task.id,
+                        "role_id": role_id,
                         "goal": goal,
                         "final_answer": final_answer[:500] if final_answer else None,
                         "message_count": iterations,
