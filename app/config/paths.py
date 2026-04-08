@@ -23,7 +23,9 @@ def get_memory_path() -> str:
     was started.
     """
     raw = os.getenv("MEMORY_PATH", str(Path.home() / ".memory"))
-    return str(Path(raw).resolve())
+    # expanduser() must precede resolve() — resolve() does NOT expand ~,
+    # so MEMORY_PATH=~/.memory would resolve to REPO_ROOT/~/.memory otherwise.
+    return str(Path(raw).expanduser().resolve())
 
 
 def get_memory_subpath(*parts: str) -> str:
