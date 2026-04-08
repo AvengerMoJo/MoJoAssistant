@@ -743,7 +743,7 @@ class ToolRegistry:
             {
                 "name": "scheduler",
                 "description": (
-                    "Scheduler management hub. Call with no action for help menu.\n\n"
+                    "Schedule and manage tasks. To assign work to a role: action='add', type='assistant', role_id=<role>, goal=<task>, max_iterations=N.\n\n"
                     "action='add',    task_id, type, goal, role_id?, available_tools?, ... — schedule a task\n"
                     "action='list',   status?, priority?, limit? — compact task summary (id, status, goal snippet, times)\n"
                     "action='get',    task_id                    — full task detail (config, result, metrics, iteration_log)\n"
@@ -760,7 +760,11 @@ class ToolRegistry:
                     "properties": {
                         "action": {"type": "string", "description": "Operation. Omit for help menu."},
                         "task_id": {"type": "string"},
-                        "type": {"type": "string", "description": "Task type (add action)."},
+                        "type": {
+                            "type": "string",
+                            "enum": ["assistant", "custom", "agent", "dreaming", "scheduled"],
+                            "description": "Task type. Use 'assistant' for role-based LLM tasks (add action).",
+                        },
                         "goal": {"type": "string", "description": "Task goal (add action)."},
                         "cron": {"type": "string", "description": "Cron expression (add action)."},
                         "priority": {"type": "string", "enum": ["low", "normal", "high"]},
