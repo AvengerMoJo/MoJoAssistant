@@ -833,7 +833,7 @@ class AgenticExecutor:
                         "status": "error",
                         "tier_preference": [t.value for t in iter_tiers],
                         "selection_reason": selection_reason,
-                        "error": str(e),
+                        "error": str(e) or type(e).__name__,
                         "elapsed_s": round(time.time() - iter_start, 1),
                     }
                 )
