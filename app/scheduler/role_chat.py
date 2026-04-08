@@ -286,17 +286,26 @@ class RoleChatSession:
         if not ku_dir.exists():
             return ""
 
+        # Collect archive files at any nesting depth (handles both flat subdirs
+        # like auto_dream_* and nested paths like reports/rebecca/report_id/).
+        # Sort newest-first by mtime, take up to 3 distinct archives.
         archives: list[dict] = []
-        for subdir in sorted(ku_dir.iterdir(), reverse=True):
-            if not subdir.is_dir():
+        all_archive_files = sorted(
+            ku_dir.rglob("archive_v*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        seen_parents: set = set()
+        for archive_file in all_archive_files:
+            parent = archive_file.parent
+            if parent in seen_parents:
+                continue  # already loaded the latest for this conversation
+            seen_parents.add(parent)
+            try:
+                with open(archive_file, encoding="utf-8") as f:
+                    archives.append(json.load(f))
+            except Exception:
                 continue
-            archive_files = sorted(subdir.glob("archive_v*.json"), reverse=True)
-            if archive_files:
-                try:
-                    with open(archive_files[0], encoding="utf-8") as f:
-                        archives.append(json.load(f))
-                except Exception:
-                    continue
             if len(archives) >= 3:
                 break
 
@@ -517,37 +526,44 @@ class RoleChatSession:
         results: List[Dict[str, Any]] = []
 
         # --- Source 1: role's distilled knowledge units ---
+        # Use rglob to handle nested archive paths (reports/, sessions/, flat auto_dream_*)
         ku_dir = Path(get_memory_subpath("roles")) / self.role_id / "knowledge_units"
         if ku_dir.exists():
-            for subdir in sorted(ku_dir.iterdir(), reverse=True):
-                if not subdir.is_dir():
-                    continue
-                archive_files = sorted(subdir.glob("archive_v*.json"), reverse=True)
-                for archive_file in archive_files[:1]:
-                    try:
-                        with open(archive_file, encoding="utf-8") as f:
-                            archive = json.load(f)
-                    except Exception:
-                        continue
-                    for ku in archive.get("knowledge_units", []):
-                        meaning = (ku.get("core_meaning") or "").strip()
-                        quote = (ku.get("quote") or "").strip()
-                        source = (ku.get("source") or "").strip()
-                        if not meaning:
-                            continue
-                        text = meaning + (f' — "{quote}"' if quote and quote != meaning else "")
-                        if query_lower and query_lower not in text.lower() and query_lower not in source.lower():
-                            continue
-                        results.append({
-                            "type": "knowledge_unit",
-                            "source": source,
-                            "content": text,
-                            "created_at": (ku.get("created_at") or archive.get("created_at") or "")[:19],
-                        })
-                        if len(results) >= limit:
-                            break
+            all_archives = sorted(
+                ku_dir.rglob("archive_v*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            seen_ku_parents: set = set()
+            for archive_file in all_archives:
                 if len(results) >= limit:
                     break
+                parent = archive_file.parent
+                if parent in seen_ku_parents:
+                    continue
+                seen_ku_parents.add(parent)
+                try:
+                    with open(archive_file, encoding="utf-8") as f:
+                        archive = json.load(f)
+                except Exception:
+                    continue
+                for ku in archive.get("knowledge_units", []):
+                    meaning = (ku.get("core_meaning") or "").strip()
+                    quote = (ku.get("quote") or "").strip()
+                    source = (ku.get("source") or "").strip()
+                    if not meaning:
+                        continue
+                    text = meaning + (f' — "{quote}"' if quote and quote != meaning else "")
+                    if query_lower and query_lower not in text.lower() and query_lower not in source.lower():
+                        continue
+                    results.append({
+                        "type": "knowledge_unit",
+                        "source": source,
+                        "content": text,
+                        "created_at": (ku.get("created_at") or archive.get("created_at") or "")[:19],
+                    })
+                    if len(results) >= limit:
+                        break
 
         # --- Source 2: this role's task completion reports ---
         if len(results) < limit:
