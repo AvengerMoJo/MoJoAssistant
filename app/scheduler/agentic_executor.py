@@ -87,12 +87,14 @@ def _parse_final_answer_sections(text: str) -> Dict[str, Any]:
     }
     ordered = ["completed", "findings", "incomplete", "resume_hint"]
 
-    # Find start positions of each section
-    positions: Dict[str, int] = {}
+    # Find start/end positions of each section header
+    # positions[key] = (header_start, header_end) — content begins at header_end,
+    # and the block for key ends at header_start of the next section.
+    positions: Dict[str, tuple] = {}
     for key, pattern in section_keys.items():
         m = pattern.search(text)
         if m:
-            positions[key] = m.end()
+            positions[key] = (m.start(), m.end())
 
     result: Dict[str, Any] = {k: [] for k in ordered}
     result["resume_hint"] = ""
@@ -100,14 +102,15 @@ def _parse_final_answer_sections(text: str) -> Dict[str, Any]:
     for i, key in enumerate(ordered):
         if key not in positions:
             continue
-        start = positions[key]
-        # End = start of the next section that appears later in the text
+        _hdr_start, content_start = positions[key]
+        # End = START of the next section header (not its end), so the header
+        # text of the next section is never included in this block.
         end = len(text)
         for other in ordered[i + 1:]:
-            if other in positions and positions[other] > start:
-                end = min(end, positions[other] - 1)
+            if other in positions and positions[other][0] > content_start:
+                end = min(end, positions[other][0])
                 break
-        block = text[start:end].strip()
+        block = text[content_start:end].strip()
         if key == "resume_hint":
             # Single value — strip bullet marker if present
             result["resume_hint"] = re.sub(r"^[-*•]\s*", "", block.split("\n")[0]).strip()
@@ -117,9 +120,12 @@ def _parse_final_answer_sections(text: str) -> Dict[str, Any]:
                 line = line.strip()
                 if not line:
                     continue
-                # Accept lines starting with -, *, •, or a digit+dot
-                if re.match(r"^[-*•]|^\d+\.", line):
-                    bullets.append(re.sub(r"^[-*•\d.]\s*", "", line).strip())
+                # Accept bullet-prefixed lines (-, *, •, digit+dot)
+                if re.match(r"^[-•]|^\d+\.", line):
+                    bullets.append(re.sub(r"^[-•\d.]\s*", "", line).strip())
+                elif not line.startswith("*"):
+                    # Paragraph-style line (no bullet prefix, not a markdown bold marker)
+                    bullets.append(line)
             result[key] = bullets
 
     return result
@@ -1211,9 +1217,11 @@ class AgenticExecutor:
         execution metrics, provenance, and a promotion block, while keeping the
         legacy `content` field for backwards-compatible readers.
 
-        Status starts as "pending_review" so the user can inspect and promote
-        the report to the knowledge base.  Called only when the mode contract
-        has stores_completion_artifact=True (i.e. SCHEDULER_AGENTIC_TASK).
+        In task_report_v2, `status` records execution outcome (for example
+        completed or completed_fallback) and `review_status` starts as
+        pending_review so the user can inspect and promote the report to the
+        knowledge base. Called only when the mode contract has
+        stores_completion_artifact=True (i.e. SCHEDULER_AGENTIC_TASK).
         """
         import json as _json
         from datetime import datetime as _dt
@@ -1246,12 +1254,15 @@ class AgenticExecutor:
             report_path = reports_dir / f"{task.id}.json"
             now = _dt.now().isoformat()
 
+            # Execution outcome status
+            exec_status = "completed_fallback" if auto_extracted else "completed"
+
             report = {
                 # ── Legacy fields (kept for backwards-compatible readers) ──
                 "task_id": task.id,
                 "role_id": role_id,
                 "goal": goal,
-                "status": "pending_review",
+                "status": exec_status,
                 "created_at": now,
                 "content": final_answer,
                 # ── v2 fields ──

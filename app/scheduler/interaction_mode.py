@@ -44,7 +44,9 @@ class ModeContract:
     # Empty string means no overlay (e.g. direct MCP commands rely on caller context).
     prompt_overlay: str
     # Whether a completed task should write a reviewable artifact to
-    # ~/.memory/task_reports/{task_id}.json with status "pending_review".
+    # ~/.memory/task_reports/{task_id}.json.
+    # In task_report_v2, execution outcome lives in `status` while the
+    # review workflow state lives in `review_status` (initially pending_review).
     stores_completion_artifact: bool = False
 
 
