@@ -445,9 +445,11 @@ class TestRoleChatSessionAsync(unittest.IsolatedAsyncioTestCase):
 
     def _make_session(self, role_id="test_role", session_id="test_session_001"):
         from app.scheduler.role_chat import RoleChatSession
+        from app.scheduler.interaction_mode import InteractionMode
         session = RoleChatSession.__new__(RoleChatSession)
         session.role_id = role_id
         session.session_id = session_id
+        session.mode = InteractionMode.DASHBOARD_CHAT
         session._session_dir = Path(self.tmp) / "roles" / role_id / "chat_history"
         session._session_dir.mkdir(parents=True, exist_ok=True)
         session._session_file = session._session_dir / f"{session_id}.json"

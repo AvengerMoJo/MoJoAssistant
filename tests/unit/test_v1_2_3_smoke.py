@@ -335,7 +335,7 @@ class TestToolCatalogResolve(unittest.TestCase):
     def test_tool_access_file_category(self):
         ex = self._make_executor()
         with patch("app.config.config_loader.load_layered_json_config", return_value=self.CATALOG):
-            tools = ex._resolve_tools_from_role({"tool_access": ["file"]})
+            tools = ex._resolve_capabilities({"capabilities": ["file"]})
         self.assertIn("read_file", tools)
         self.assertIn("write_file", tools)
         self.assertIn("search_in_files", tools)
@@ -345,27 +345,30 @@ class TestToolCatalogResolve(unittest.TestCase):
     def test_tool_access_multiple_categories(self):
         ex = self._make_executor()
         with patch("app.config.config_loader.load_layered_json_config", return_value=self.CATALOG):
-            tools = ex._resolve_tools_from_role({"tool_access": ["memory", "web"]})
+            tools = ex._resolve_capabilities({"capabilities": ["memory", "web"]})
         self.assertIn("memory_search", tools)
         self.assertIn("web_search", tools)
         self.assertNotIn("read_file", tools)
 
     def test_legacy_tools_fallback(self):
         ex = self._make_executor()
-        role = {"tools": ["read_file", "memory_search"]}
-        tools = ex._resolve_tools_from_role(role)
-        self.assertEqual(tools, ["read_file", "memory_search"])
+        # Explicit tool names passed as capabilities list
+        role = {"capabilities": ["read_file", "memory_search"]}
+        with patch("app.config.config_loader.load_layered_json_config", return_value=self.CATALOG):
+            tools = ex._resolve_capabilities(role)
+        self.assertIn("read_file", tools)
+        self.assertIn("memory_search", tools)
 
     def test_no_tools_field_defaults_to_memory_search(self):
         ex = self._make_executor()
-        tools = ex._resolve_tools_from_role({})
+        tools = ex._resolve_capabilities({})
         self.assertEqual(tools, ["memory_search"])
 
     def test_ask_user_always_injected_by_caller(self):
-        """Simulate the caller logic: ask_user added after _resolve_tools_from_role."""
+        """Simulate the caller logic: ask_user added after _resolve_capabilities."""
         ex = self._make_executor()
         with patch("app.config.config_loader.load_layered_json_config", return_value=self.CATALOG):
-            tools = ex._resolve_tools_from_role({"tool_access": ["file"]})
+            tools = ex._resolve_capabilities({"capabilities": ["file"]})
         # Caller injects ask_user
         if "ask_user" not in tools:
             tools = list(tools) + ["ask_user"]
@@ -374,7 +377,7 @@ class TestToolCatalogResolve(unittest.TestCase):
     def test_empty_tool_access_list(self):
         ex = self._make_executor()
         with patch("app.config.config_loader.load_layered_json_config", return_value=self.CATALOG):
-            tools = ex._resolve_tools_from_role({"tool_access": []})
+            tools = ex._resolve_capabilities({"capabilities": []})
         # No categories → no tools (ask_user still injected by caller)
         self.assertNotIn("memory_search", tools)
         self.assertNotIn("web_search", tools)

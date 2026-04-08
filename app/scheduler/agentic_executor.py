@@ -1157,6 +1157,23 @@ class AgenticExecutor:
                 },
             )
 
+        # Write completion artifact for auto-extracted completions too.
+        # The clean FINAL_ANSWER path writes inside the loop (line above the break).
+        # Auto-extracted completions fall through the loop without hitting that path.
+        if success and auto_extracted:
+            if get_mode_contract(InteractionMode.SCHEDULER_AGENTIC_TASK).stores_completion_artifact:
+                self._store_completion_artifact(
+                    task=task,
+                    role_id=config.get("role_id"),
+                    goal=goal,
+                    final_answer=final_answer,
+                    iteration_log=iteration_log,
+                    duration_seconds=total_elapsed,
+                    auto_extracted=True,
+                    resource_id=_last_resource_id,
+                    model=_last_used_model,
+                )
+
         metrics: Dict[str, Any] = {
             "iterations": len(iteration_log),
             "iteration_log": iteration_log,
