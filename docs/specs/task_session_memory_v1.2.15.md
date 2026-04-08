@@ -155,3 +155,10 @@ Failed tasks with `final_answer: null` (runaway/timeout with no output) should b
 
 - **Token budget for transcripts:** long tasks (25 iterations) produce large transcripts.
   Recommendation: cap transcript at ~8,000 tokens; summarise older iterations if needed.
+
+## Related Spec
+
+- [task_report_v2.md](/home/alex/Development/Personal/MoJoAssistant/docs/specs/task_report_v2.md)
+  defines the normalized completion artifact written to `~/.memory/task_reports/`.
+  This spec remains focused on task-session-to-memory conversion, while `task_report_v2`
+  covers dashboard / notification / structured completion-record use cases.
