@@ -165,6 +165,7 @@ class DynamicToolRegistry:
         self.personal_registry_path = os.path.join(
             get_memory_path(), "config", "dynamic_tools.json"
         )
+        self.memory_path = get_memory_path()
         self.example_registry_path = os.path.join(
             config_dir, "examples", "dynamic_tools.example.json"
         )
@@ -277,9 +278,9 @@ class DynamicToolRegistry:
                 danger_level="low",
                 category="file",
                 parameters={"type": "object", "properties": {
-                    "pattern": {"type": "string", "description": "Text or regex pattern to search for"},
+                    "query": {"type": "string", "description": "Text or regex query to search for"},
                     "path": {"type": "string", "description": "Directory or file to search in"},
-                }, "required": ["pattern"]},
+                }, "required": ["query"]},
             ),
             ToolDefinition(
                 name="bash_exec",
@@ -358,6 +359,37 @@ class DynamicToolRegistry:
                 parameters={"type": "object", "properties": {
                     "query": {"type": "string", "description": "Search query to find relevant context"},
                 }, "required": ["query"]},
+            ),
+            ToolDefinition(
+                name="task_session_read",
+                description=(
+                    "Read a scheduler task session from ~/.memory/task_sessions by task_id. "
+                    "Use this instead of raw filesystem probing when you need iteration logs, "
+                    "tool usage, or final answers from prior assistant tasks."
+                ),
+                danger_level="low",
+                category="memory",
+                parameters={"type": "object", "properties": {
+                    "task_id": {"type": "string", "description": "Task id whose session should be loaded"},
+                    "include_metadata": {
+                        "type": "boolean",
+                        "description": "Include per-message metadata when true",
+                        "default": False,
+                    },
+                }, "required": ["task_id"]},
+            ),
+            ToolDefinition(
+                name="task_report_read",
+                description=(
+                    "Read a normalized task report from ~/.memory/task_reports by task_id. "
+                    "Use this when you need the structured completion record instead of the "
+                    "full session transcript."
+                ),
+                danger_level="low",
+                category="memory",
+                parameters={"type": "object", "properties": {
+                    "task_id": {"type": "string", "description": "Task id whose report should be loaded"},
+                }, "required": ["task_id"]},
             ),
             ToolDefinition(
                 name="ask_user",
@@ -493,6 +525,10 @@ class DynamicToolRegistry:
                     return await self._search_in_files(args)
                 elif name == "bash_exec":
                     return await self._bash_exec(args)
+                elif name == "task_session_read":
+                    return await self._task_session_read(args)
+                elif name == "task_report_read":
+                    return await self._task_report_read(args)
                 elif name == "scheduler_add_task":
                     return await self._scheduler_add_task(args)
                 elif name == "dispatch_subtask":
@@ -592,7 +628,10 @@ class DynamicToolRegistry:
 
     async def _search_in_files(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Search for text in files."""
-        query = args.get("query")
+        # Backward-compatible alias: older schemas/prompts used "pattern".
+        # Canonical model-facing schema is now "query" so capability->tool
+        # translation matches the runtime handler.
+        query = args.get("query") or args.get("pattern")
         path = args.get("path", ".")
         if not query:
             return {"success": False, "error": "Missing 'query' parameter"}
@@ -635,6 +674,70 @@ class DynamicToolRegistry:
             return {"success": False, "error": "ripgrep (rg) not installed"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    async def _task_session_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read a task session by task_id."""
+        try:
+            from app.scheduler.session_storage import SessionStorage
+
+            task_id = args.get("task_id")
+            include_metadata = bool(args.get("include_metadata", False))
+            if not task_id:
+                return {"success": False, "error": "Missing 'task_id' parameter"}
+
+            storage = SessionStorage()
+            session = storage.load_session(task_id)
+            if session is None:
+                return {"success": False, "error": f"No session found for task '{task_id}'"}
+
+            messages = []
+            for msg in session.messages:
+                entry = {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "timestamp": msg.timestamp,
+                    "iteration": msg.iteration,
+                }
+                if msg.tool_call_id:
+                    entry["tool_call_id"] = msg.tool_call_id
+                if msg.tool_name:
+                    entry["tool_name"] = msg.tool_name
+                if include_metadata and msg.metadata:
+                    entry["metadata"] = msg.metadata
+                messages.append(entry)
+
+            return {
+                "success": True,
+                "task_id": session.task_id,
+                "session_status": session.status,
+                "started_at": session.started_at,
+                "completed_at": session.completed_at,
+                "final_answer": session.final_answer,
+                "error_message": session.error_message,
+                "message_count": len(messages),
+                "messages": messages,
+                "metadata": session.metadata,
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Failed to read task session: {e}"}
+
+    async def _task_report_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read a task report by task_id."""
+        try:
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"success": False, "error": "Missing 'task_id' parameter"}
+
+            report_path = Path(self.memory_path) / "task_reports" / f"{task_id}.json"
+            if not report_path.exists():
+                return {"success": False, "error": f"No report found for task '{task_id}'"}
+
+            with open(report_path, encoding="utf-8") as f:
+                report = json.load(f)
+
+            return {"success": True, "task_id": task_id, "report": report}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to read task report: {e}"}
 
     async def _scheduler_add_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Schedule a new task for another agent role."""

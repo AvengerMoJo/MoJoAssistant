@@ -223,10 +223,13 @@ def build_capability_summary(role: Dict[str, Any]) -> str:
 
     summary = (
         "## Your Capabilities\n"
-        "You have access to the following tool categories:\n"
+        "You have access to the following capability categories:\n"
         + "\n".join(lines)
         + "\n\n"
+        "Capabilities are policy/runtime abstractions, not direct function-call names. "
+        "The scheduler translates these capabilities into concrete tool definitions "
+        "for the model at execution time.\n\n"
         "If a task requires a capability not listed above, use `ask_user` to escalate "
-        "— do not attempt to work around or fabricate missing tools.\n"
+        "— do not attempt to work around or fabricate missing capabilities or tool names.\n"
     )
     return summary + "\n"

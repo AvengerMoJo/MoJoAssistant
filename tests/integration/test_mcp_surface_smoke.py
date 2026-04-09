@@ -559,7 +559,7 @@ class TestExternalAgentHub:
 class TestPlaceholderTools:
     RETIRED = [
         "get_memory_context", "get_current_day", "get_current_time",
-        "get_recent_events", "get_attention_summary", "task_session_read",
+        "get_recent_events", "get_attention_summary",
         "scheduler_resume_task", "get_memory_stats",
         "end_conversation", "toggle_multi_model",
         "list_recent_conversations", "remove_conversation_message",
@@ -586,6 +586,7 @@ class TestPlaceholderTools:
 class TestToolSurface:
     EXPECTED_VISIBLE = {
         "get_context", "search_memory", "add_conversation", "reply_to_task",
+        "task_session_read", "task_report_read",
         "web_search", "memory", "knowledge", "config", "scheduler",
         "dream", "agent", "external_agent",
     }
@@ -600,3 +601,15 @@ class TestToolSurface:
         retired = set(TestPlaceholderTools.RETIRED)
         leaked = visible & retired
         assert not leaked, f"Retired tools are still visible in tool surface: {leaked}"
+
+    def test_scheduler_description_teaches_capability_translation(self, registry):
+        scheduler = next(t for t in registry.get_tools() if t["name"] == "scheduler")
+        desc = scheduler["description"]
+        available = scheduler["inputSchema"]["properties"]["available_tools"]["description"]
+
+        assert "Assistant task example" in desc
+        assert "task_sessions" in desc
+        assert "task_reports" in desc
+        assert "capability categories" in available
+        assert "explicit tool names" in available
+        assert "expands capabilities into concrete tool definitions" in available

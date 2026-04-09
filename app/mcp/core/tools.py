@@ -115,7 +115,7 @@ class ToolRegistry:
             },
             "capability_catalog": {
                 "file": "config/capability_catalog.json",
-                "description": "Capability catalog — maps tool names to categories (memory, file, web, exec, comms). Assistant roles declare capabilities by category or explicit tool name. User custom entries live in ~/.memory/config/capability_catalog.json.",
+                "description": "Capability catalog — maps concrete tool names to capability categories (memory, file, web, exec, comms). Assistant roles declare capabilities by category or explicit tool name; the scheduler translates capabilities into model-facing tool-call schemas at execution time. User custom entries live in ~/.memory/config/capability_catalog.json.",
                 "sensitive_keys": [],
                 "on_change": self._on_tool_catalog_change,
             },
@@ -167,7 +167,6 @@ class ToolRegistry:
             "get_memory_stats",            # Now under memory(action='stats')
             "get_recent_events",           # Now get_context(type='events')
             "get_attention_summary",       # Now get_context(type='attention')
-            "task_session_read",           # Now get_context(type='task_session')
             "scheduler_resume_task",       # Retired — use reply_to_task
             # Memory management → memory hub
             "end_conversation",
@@ -744,6 +743,9 @@ class ToolRegistry:
                 "name": "scheduler",
                 "description": (
                     "Schedule and manage tasks. To assign work to a role: action='add', type='assistant', role_id=<role>, goal=<task>, max_iterations=N.\n\n"
+                    "Assistant task example:\n"
+                    "  scheduler(action='add', type='assistant', role_id='rebecca', goal='Review the latest task report', max_iterations=8)\n"
+                    "  Result artifacts: ~/.memory/task_sessions/<task_id>.json and ~/.memory/task_reports/<task_id>.json\n\n"
                     "action='add',    task_id, type, goal, role_id?, available_tools?, ... — schedule a task\n"
                     "action='list',   status?, priority?, limit? — compact task summary (id, status, goal snippet, times)\n"
                     "action='get',    task_id                    — full task detail (config, result, metrics, iteration_log)\n"
@@ -775,9 +777,11 @@ class ToolRegistry:
                             "description": (
                                 "Runtime tool override for this specific task (add action, type='assistant'). "
                                 "Overrides the role's default capabilities for this run only. "
-                                "Use to restrict (e.g. read-only task: ['memory','file']) or extend (e.g. add 'browser' for one-off web task). "
-                                "If omitted, the role's capabilities are used. "
-                                "Call action='list_tools' to see all available tool names."
+                                "Entries may be capability categories (for example ['memory', 'file']) "
+                                "or explicit tool names (for example ['task_session_read', 'task_report_read']). "
+                                "The scheduler expands capabilities into concrete tool definitions before the LLM call. "
+                                "If omitted, the role's saved capabilities are used. "
+                                "Call action='list_tools' to inspect concrete tool names."
                             ),
                         },
                         "max_iterations": {
@@ -942,6 +946,40 @@ class ToolRegistry:
             },
             # LLM Server Discovery (not a config operation — queries external service)
             # Task Session Tools
+            {
+                "name": "task_session_read",
+                "description": (
+                    "Read a scheduler task session by task_id. "
+                    "Returns the full message trail, final answer, status, and metadata "
+                    "from ~/.memory/task_sessions/<task_id>.json."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID to read"},
+                        "include_metadata": {
+                            "type": "boolean",
+                            "description": "Include per-message metadata when true",
+                            "default": False,
+                        },
+                    },
+                    "required": ["task_id"],
+                },
+            },
+            {
+                "name": "task_report_read",
+                "description": (
+                    "Read a normalized task report by task_id from "
+                    "~/.memory/task_reports/<task_id>.json."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID to read"},
+                    },
+                    "required": ["task_id"],
+                },
+            },
             {
                 "name": "reply_to_task",
                 "description": (
@@ -1523,6 +1561,8 @@ Agent resumes within seconds.
         # Task Session Tools
         elif name == "task_session_read":
             return await self._execute_task_session_read(args)
+        elif name == "task_report_read":
+            return await self._execute_task_report_read(args)
         elif name == "scheduler_resume_task":
             return await self._execute_scheduler_resume_task(args)
         elif name == "reply_to_task":
@@ -1619,6 +1659,7 @@ Agent resumes within seconds.
         type='attention':             grouped inbox with cursor (get_attention_summary).
         type='events':                raw event log (get_recent_events).
         type='task_session':          full task output (task_session_read).
+        type='task_report':           normalized completion record (task_report_read).
         """
         ctx_type = args.get("type", "orientation")
 
@@ -1641,6 +1682,12 @@ Agent resumes within seconds.
             if not task_id:
                 return {"status": "error", "message": "task_id is required for type='task_session'"}
             return await self._execute_task_session_read({"task_id": task_id})
+
+        if ctx_type == "task_report":
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required for type='task_report'"}
+            return await self._execute_task_report_read({"task_id": task_id})
 
         # Default: orientation
         from datetime import datetime
@@ -2924,6 +2971,7 @@ Agent resumes within seconds.
                 "categories": categories_meta,
                 "usage": (
                     "Roles declare capabilities by category or explicit name (e.g. [\"memory\", \"file\", \"curl_request\"]). "
+                    "The scheduler translates those capabilities into concrete model-facing tool-call schemas at execution time. "
                     "Pass explicit tool names in task config.available_tools to override."
                 ),
             }
@@ -3163,6 +3211,36 @@ Agent resumes within seconds.
             return {
                 "status": "error",
                 "message": f"Failed to read task session: {str(e)}",
+            }
+
+    async def _execute_task_report_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute task_report_read tool"""
+        try:
+            import json
+            from pathlib import Path
+            from app.config.paths import get_memory_subpath
+
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required"}
+
+            report_path = Path(get_memory_subpath("task_reports")) / f"{task_id}.json"
+            if not report_path.exists():
+                return {
+                    "status": "error",
+                    "message": f"No report found for task '{task_id}'",
+                }
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            return {
+                "status": "success",
+                "task_id": task_id,
+                "report": report,
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to read task report: {str(e)}",
             }
 
     async def _execute_scheduler_resume_task(

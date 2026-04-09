@@ -6,6 +6,7 @@ using resources from the ResourceManager.
 """
 
 import json
+import os
 import re
 import time
 from datetime import datetime
@@ -2062,6 +2063,68 @@ class AgenticExecutor:
         # Guard against leaking planning boilerplate into final answer for "exact" asks.
         if exact_text and ("## Phase" in answer or "Phase 1:" in answer):
             return False, "final answer contains planning boilerplate"
+
+        semantic_ok, semantic_error = self._validate_semantic_completion(
+            final_answer=answer,
+            goal=goal,
+            config=config,
+        )
+        if not semantic_ok:
+            return False, semantic_error
+
+        return True, None
+
+    def _validate_semantic_completion(
+        self, final_answer: str, goal: str, config: Dict[str, Any]
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Catch semantically bogus "completed" answers that claim blocker/tool
+        limitations despite available tools never being attempted.
+
+        This is intentionally narrow and conservative: it only triggers when
+        the answer itself claims an availability/blocker problem while the
+        current task had relevant tools enabled and the model made zero tool
+        calls during this execution.
+        """
+        lower = final_answer.lower()
+        enabled = set(getattr(self, "_enabled_tool_names", []) or [])
+
+        blocker_markers = [
+            "tool constraints",
+            "tool limitation",
+            "tool limitations",
+            "filesystem access",
+            "file system access",
+            "unavailable tool",
+            "unknown or unavailable tool",
+            "cannot read actual task session",
+            "need filesystem access",
+            "mcp tool integration",
+        ]
+        mentions_blocker = any(marker in lower for marker in blocker_markers)
+
+        has_relevant_tools = bool(
+            {"read_file", "list_files", "search_in_files", "task_session_read", "task_report_read"} & enabled
+        )
+
+        if mentions_blocker and has_relevant_tools and self._tool_calls_made == 0:
+            return (
+                False,
+                "final answer claims missing/unavailable file or task-session access "
+                "without attempting the available tools",
+            )
+
+        # Optional task-level contract for callers that need stricter semantics.
+        contract = config.get("result_contract") or {}
+        if contract.get("requires_tool_use") and self._tool_calls_made == 0:
+            return False, "result_contract requires at least one successful tool attempt"
+
+        if contract.get("requires_output_file"):
+            output_files = contract.get("expected_output_files") or []
+            if output_files:
+                missing = [p for p in output_files if not os.path.exists(os.path.expanduser(p))]
+                if missing:
+                    return False, f"required output files not written: {missing}"
 
         return True, None
 
