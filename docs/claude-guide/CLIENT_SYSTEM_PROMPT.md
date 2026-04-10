@@ -37,14 +37,28 @@ worth keeping. Skip trivial replies ("ok", "thanks", navigation).
 When switching to a completely different topic, call:
   memory(action="end_conversation")
 
+## Dispatching Work to Roles
+
+To assign a task to an assistant role (Scott, Ahman, etc.):
+  scheduler(action="add", type="assistant", role_id="<role>",
+            goal="<what to do>", max_iterations=10, priority="medium")
+
+Priority values: low / medium / high / critical.
+
+Roles declare capabilities (memory, web, file, terminal, exec, knowledge,
+browser). The executor resolves capabilities to concrete tools at runtime —
+you never enumerate tool names in a role's goal, only describe the work.
+
 ## Responding to Agent Questions (HITL Inbox)
 
 When get_context() shows attention.blocking items, an agent has paused
 and is waiting for input. Reply with:
   reply_to_task(task_id="...", reply="your answer")
 
-The agent resumes within seconds. Check get_context(type="task_session",
-task_id="...") first if you need the full context before replying.
+The agent resumes within seconds. To read the full session trail before
+replying:
+  task_session_read(task_id="...")   — full message history + final answer
+  task_report_read(task_id="...")    — structured report (findings, status)
 
 ## Management & Configuration
 
@@ -52,14 +66,20 @@ Each hub tool shows a help menu when called without arguments:
 
   memory(action)         — conversations, documents, archive, stats
   knowledge(action)      — git repository access
-  config(action)         — LLM resources, roles, diagnostics, smoke tests
-  scheduler(action)      — schedule tasks, daemon management
+  role(action)           — list, get, create, edit roles and their capabilities
+  config(action)         — LLM resources, capability catalog, diagnostics
+  scheduler(action)      — schedule tasks, list/cancel/inspect, daemon management
   dream(action)          — memory consolidation archives
   agent(action)          — coding agent lifecycle
   external_agent(action) — Google and other external services
 
 Call any hub with no action to discover what it can do. You never need
 to guess sub-commands — a wrong call returns the help menu.
+
+Key config actions for capability management:
+  config(action="capability_list")                     — all registered capabilities
+  config(action="capability_add", tool_name="...", …)  — register a custom capability
+  config(action="capability_remove", tool_name="…")    — remove a custom capability
 
 ## Checking Recent Events
 
@@ -79,17 +99,17 @@ For raw event history (failures, config changes, etc.):
 
 ---
 
-## What Changed from the Previous Prompt
+## What Changed from Previous Versions
 
 | Old | New | Why |
 |-----|-----|-----|
-| `MCP>MEMORY_search` alias scheme | Actual tool names | 12 clean tools don't need aliases |
 | `get_memory_context(query=...)` | `get_context()` then `search_memory(query=...)` | Orientation separate from search |
 | `get_current_day` | Included in `get_context()` | One call, not two |
+| `ToolDefinition` / tool enumeration in roles | `CapabilityDefinition` / capability categories | Roles declare what they need; executor resolves to tools at runtime |
+| `role(action)` missing | Added to hub list | Role and capability management is a first-class operation |
+| No task inspection tools | `task_session_read`, `task_report_read` | Read full session trail or structured report before replying to HITL |
+| `config(action)` — LLM only | `config(action)` — LLM + capability catalog | Custom capabilities registered and removed via config hub |
 | `offload_to_large_llm` | Removed | Not part of this system |
-| ERR_MCP_400/403/404… codes | Removed | Hubs self-correct via help menu |
-| 15-step workflow template | 6-section prompt | Simpler architecture needs simpler guidance |
-| Tool enumeration table | Hub discovery pattern | Hubs self-document via `action` param |
 
 ## Minimal Prompt (if token budget is tight)
 
@@ -105,7 +125,9 @@ Rules:
    Reply with reply_to_task(task_id=..., reply=...).
 3. Use search_memory(query=...) to find past context.
 4. Call add_conversation(user_message, assistant_message) after important exchanges.
-5. For management tasks, call the hub with no args to see what it can do:
-   memory() / config() / scheduler() / agent() / dream() / external_agent()
-6. Respond in the user's language. Use markdown when helpful.
+5. Dispatch work to roles: scheduler(action="add", type="assistant",
+   role_id="<role>", goal="...", max_iterations=10)
+6. For management tasks, call the hub with no args to see what it can do:
+   memory() / role() / config() / scheduler() / agent() / dream() / external_agent()
+7. Respond in the user's language. Use markdown when helpful.
 ```
