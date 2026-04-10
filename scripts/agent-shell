@@ -10,7 +10,12 @@
 # Capability directory: $MEMORY_PATH/capability  (default: ~/.memory/capability)
 # To override: set MEMORY_PATH in your environment before starting MoJoAssistant.
 
-AGENT_CAP_DIR="${MEMORY_PATH:-$HOME/.memory}/capability"
+_mem="${MEMORY_PATH:-$HOME/.memory}"
+# Expand leading ~ if MEMORY_PATH was set with a literal tilde (bash does not
+# expand ~ inside double-quoted variable values).
+_mem="${_mem/#\~/$HOME}"
+
+AGENT_CAP_DIR="$_mem/capability"
 
 # Create the capability dir if it doesn't exist yet (first run).
 mkdir -p "$AGENT_CAP_DIR"
