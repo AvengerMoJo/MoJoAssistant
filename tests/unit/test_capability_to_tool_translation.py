@@ -34,13 +34,19 @@ class TestCapabilityToToolTranslation(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertGreaterEqual(result["count"], 1)
 
-    def test_capability_summary_explains_translation(self):
+    def test_capability_summary_lists_capabilities(self):
         from app.scheduler.ninechapter import build_capability_summary
 
         summary = build_capability_summary({"capabilities": ["file", "memory"]})
 
-        self.assertIn("Capabilities are policy/runtime abstractions", summary)
-        self.assertIn("translates these capabilities into concrete tool definitions", summary)
+        # Summary lists the capability names
+        self.assertIn("file", summary)
+        self.assertIn("memory", summary)
+        # Summary directs agent to the tool schema for specifics
+        self.assertIn("tool schema", summary)
+        # No static tool names — agent discovers those from the schema
+        self.assertNotIn("read_file", summary)
+        self.assertNotIn("memory_search", summary)
 
     def test_task_session_read_schema_matches_runtime(self):
         from app.scheduler.capability_registry import CapabilityRegistry

@@ -5,6 +5,8 @@ Autonomous think-act loop that drives LLM conversations to completion
 using resources from the ResourceManager.
 """
 
+import asyncio
+import inspect
 import json
 import os
 import re
@@ -20,6 +22,7 @@ from app.scheduler.session_storage import SessionMessage, SessionStorage, TaskSe
 from app.scheduler.planning_prompt_manager import PlanningPromptManager
 from app.scheduler.capability_registry import CapabilityRegistry
 from app.scheduler.safety_policy import SafetyPolicy
+from app.scheduler.security_gate import SecurityGate, Decision as SecurityDecision
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context, build_capability_summary
 from app.roles.owner_context import load_owner_profile, infer_context_tier, build_owner_context_slice
@@ -388,6 +391,7 @@ class AgenticExecutor:
             self._tool_registry.set_scheduler(scheduler)
         self._mcp_tools_discovered = False
         self._policy = SafetyPolicy()
+        self._gate = SecurityGate(safety_policy=self._policy)
         self._openrouter_model_cache: Dict[str, Dict[str, Any]] = {}
         self._openrouter_model_cache_ttl_seconds = 600
         self._role_id: Optional[str] = None
@@ -435,6 +439,8 @@ class AgenticExecutor:
         self._current_task_id: Optional[str] = task.id
         # Propagate task context to registry for sub-agent dispatch linkage
         self._tool_registry.set_task_context(task.id, task.dispatch_depth)
+        # Reset SecurityGate danger budget for this task
+        self._gate.reset_task(task.id)
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -525,7 +531,7 @@ class AgenticExecutor:
         ninechapter_overlay = build_behavioral_overlay(role) if role else ""
         task_context = build_task_context(role) if role else ""
 
-        # Resolve tool names early so capability_summary can list them explicitly.
+        # Resolve tool names from role capabilities → used for LLM tool schema + gate enforcement.
         explicit_tools = config.get("available_tools")
         if explicit_tools is not None:
             enabled_tool_names = self._resolve_capabilities({"capabilities": explicit_tools})
@@ -537,7 +543,7 @@ class AgenticExecutor:
             enabled_tool_names = list(enabled_tool_names) + ["ask_user"]
         self._enabled_tool_names = enabled_tool_names
 
-        capability_summary = build_capability_summary(role, enabled_tool_names) if role else ""
+        capability_summary = build_capability_summary(role) if role else ""
 
         from datetime import datetime, timezone
         _now = datetime.now(timezone.utc).astimezone()
@@ -656,13 +662,20 @@ class AgenticExecutor:
             messages: List[Dict[str, str]] = [
                 {"role": "system", "content": system_prompt},
             ]
-            # Build first user message with goal + optional context
+            # ORIENT: search memory for relevant past procedures/context before the loop
+            orient_block = ""
+            if not resume_from:
+                orient_block = await self._orient_from_memory(goal, role_id)
+
+            # Build first user message with goal + optional context + orientation
             user_content = f"Goal: {goal}"
             context = config.get("context")
             if context:
                 user_content += (
                     f"\n\nContext:\n{json.dumps(context, indent=2, default=str)}"
                 )
+            if orient_block:
+                user_content += orient_block
             messages.append({"role": "user", "content": user_content})
 
         # --- Create session ---
@@ -1202,6 +1215,15 @@ class AgenticExecutor:
             metrics["completion_mode"] = "auto_extracted"
             metrics["auto_extracted_final_answer"] = True
 
+        # REFLECT: write task learnings back to memory (non-blocking, errors swallowed)
+        if success and final_answer:
+            await self._reflect_to_memory(
+                goal=goal,
+                role_id=config.get("role_id"),
+                final_answer=final_answer,
+                iteration_log=iteration_log,
+            )
+
         return TaskResult(
             success=True,
             output_file=session_file,
@@ -1485,6 +1507,135 @@ class AgenticExecutor:
             return sorted(set(zero_price_ids))[0]
         return None
 
+    # ------------------------------------------------------------------
+    # ORIENT — Phase 1: search memory for relevant past context
+    # ------------------------------------------------------------------
+
+    async def _orient_from_memory(self, goal: str, role_id: Optional[str]) -> str:
+        """
+        Search memory for relevant past procedures and context before the loop starts.
+
+        Two searches are run in parallel:
+          - Global context search across all tiers (conversations, active, archival, knowledge)
+          - Role-private knowledge search (if role_id is set and the memory service supports it)
+
+        Returns a formatted orientation block, or "" if nothing useful is found or
+        the memory service is unavailable.  Never raises.
+        """
+        if not self._memory_service:
+            return ""
+        try:
+            # Global context search
+            global_hits = await self._memory_service.get_context_for_query_async(goal, max_items=5)
+
+            # Role-scoped knowledge search (HybridMemoryService supports role_id)
+            role_hits: List[Dict[str, Any]] = []
+            if role_id:
+                try:
+                    sig = inspect.signature(self._memory_service._search_knowledge_base_async)
+                    if "role_id" in sig.parameters:
+                        role_hits = await self._memory_service._search_knowledge_base_async(
+                            goal, max_items=5, role_id=role_id
+                        )
+                except Exception:
+                    pass
+
+            # Merge: role-specific knowledge first (higher relevance), then global hits
+            # that aren't already covered by the knowledge search
+            knowledge_sources = {h.get("id") for h in role_hits if h.get("id")}
+            merged = list(role_hits) + [
+                h for h in global_hits if h.get("id") not in knowledge_sources
+            ]
+
+            if not merged:
+                return ""
+
+            lines: List[str] = []
+            for h in merged[:6]:
+                content = (h.get("content") or h.get("text") or "").strip()[:400]
+                source = h.get("source", "memory")
+                if content:
+                    lines.append(f"[{source}] {content}")
+
+            if not lines:
+                return ""
+
+            self._log(f"ORIENT: injecting {len(lines)} memory hits for task")
+            return (
+                "\n\n## Orientation (from memory)\n"
+                "Relevant context from past sessions — review before planning:\n"
+                + "\n---\n".join(lines)
+                + "\n"
+            )
+        except Exception as e:
+            self._log(f"Memory orientation failed (continuing): {e}", "warning")
+            return ""
+
+    # ------------------------------------------------------------------
+    # REFLECT — Phase 5: write learnings back to memory after completion
+    # ------------------------------------------------------------------
+
+    async def _reflect_to_memory(
+        self,
+        goal: str,
+        role_id: Optional[str],
+        final_answer: str,
+        iteration_log: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Write a procedural reflection into memory after a successful task.
+
+        Extracts:
+          - Ordered list of tools used (de-duplicated, first-occurrence order)
+          - A condensed outcome summary from the FINAL_ANSWER
+
+        Writes to the role-private knowledge store when role_id is set
+        (and the memory service supports it), otherwise to the shared store.
+        Fire-and-forget — all errors are logged, never surfaced.
+        """
+        if not self._memory_service:
+            return
+        try:
+            # Ordered unique tool sequence from the iteration log
+            seen: Dict[str, int] = {}
+            for entry in iteration_log:
+                for t in entry.get("tool_calls", []):
+                    if t not in seen:
+                        seen[t] = len(seen)
+            tools_used = sorted(seen, key=lambda t: seen[t])
+
+            lines = [f"Goal: {goal[:200]}"]
+            if tools_used:
+                lines.append(f"Tools used (in order): {', '.join(tools_used[:15])}")
+            answer_excerpt = (final_answer or "").strip()[:500]
+            if answer_excerpt:
+                lines.append(f"Outcome:\n{answer_excerpt}")
+
+            document = "\n".join(lines)
+            metadata: Dict[str, Any] = {
+                "type": "task_reflection",
+                "role": role_id,
+                "goal_prefix": goal[:100],
+                "tools_used": tools_used[:15],
+            }
+
+            # Route to role-private store when supported
+            try:
+                sig = inspect.signature(self._memory_service.add_to_knowledge_base)
+                if "role_id" in sig.parameters:
+                    self._memory_service.add_to_knowledge_base(document, metadata, role_id=role_id)
+                else:
+                    self._memory_service.add_to_knowledge_base(document, metadata)
+            except TypeError:
+                self._memory_service.add_to_knowledge_base(document, metadata)
+
+            self._log(
+                f"REFLECT: wrote task learnings to memory "
+                f"(role={role_id}, tools={tools_used[:5]})"
+            )
+        except Exception as e:
+            self._log(f"Memory reflection failed (non-fatal): {e}", "warning")
+
     async def _execute_tool_calls(self, tool_calls: List[Dict]) -> List[str]:
         """Execute tool calls and return results as strings."""
         # Defensive dedup: some local models (e.g. Gemma 4) ignore
@@ -1578,33 +1729,35 @@ class AgenticExecutor:
                 )
             }
 
-        # Get tool from registry for policy check
+        # Get tool from registry for policy/gate check
         tool = self._tool_registry.get_tool(name)
 
-        # Check safety policy before execution
-        if tool:
-            policy_check = self._policy.check_tool_execution(name, tool.to_dict(), args)
-            if not policy_check["allowed"]:
-                self._log(
-                    f"Tool {name} blocked by policy: {policy_check['reason']}",
-                    "warning",
-                )
-                self._policy.track_operation(
-                    operation="execute",
-                    tool_name=name,
-                    success=False,
-                    reason=policy_check["reason"],
-                )
-                await self._emit_policy_violation(
-                    task_id=self._current_task_id,
-                    tool_name=name,
-                    layer="safety",
-                    checker="safety",
-                    decision="block",
-                    reason=policy_check["reason"],
-                    severity="error",
-                )
-                return {"error": f"Policy violation: {policy_check['reason']}"}
+        # SecurityGate: composes SafetyPolicy + danger budget + plan scope.
+        gate_result = self._gate.check(
+            task_id=self._current_task_id or "",
+            tool_name=name,
+            tool_def=tool.to_dict() if tool else None,
+            args=args,
+        )
+        if gate_result.decision == SecurityDecision.HARD_STOP:
+            self._log(f"Tool '{name}' hard-blocked by gate: {gate_result.reason}", "warning")
+            await self._emit_policy_violation(
+                task_id=self._current_task_id,
+                tool_name=name,
+                layer="security_gate",
+                checker=gate_result.rule_source or "safety",
+                decision="block",
+                reason=gate_result.reason,
+                severity="error",
+            )
+            return {"error": f"Security gate blocked: {gate_result.reason}"}
+        if gate_result.decision == SecurityDecision.STOP_ASK_USER:
+            self._log(f"Gate escalating '{name}' to ask_user: {gate_result.reason}", "warning")
+            self._waiting_for_input_question = gate_result.ask_question or gate_result.reason
+            self._waiting_for_input_choices = ["continue", "cancel"]
+            return {"success": True, "message": f"Security gate paused: {gate_result.reason}"}
+        if gate_result.decision == SecurityDecision.WARN_ALLOW:
+            self._log(gate_result.warn_message or gate_result.reason, "warning")
 
         # Check role policy (allowed_tools ceiling, denied_tools, per-task limits)
         role_decision = self._policy_monitor.check(name, args)

@@ -198,14 +198,14 @@ def _load_capability_catalog() -> Dict[str, Any]:
     return _capability_catalog_cache
 
 
-def build_capability_summary(role: Dict[str, Any], resolved_tools: Optional[List[str]] = None) -> str:
+def build_capability_summary(role: Dict[str, Any]) -> str:
     """
-    Return a capability summary block showing the role's capabilities and the
-    concrete tool names that were resolved from them.
+    Return a capability summary block — what this role can do.
 
-    resolved_tools — the actual list of tool names injected into the LLM at
-    this task invocation. When provided, each capability line lists its tools
-    so the agent knows exactly what to call without guessing.
+    Lists capability categories with their descriptions only.
+    The agent discovers concrete tool names from the tool schema injected
+    by the executor; repeating them here creates a fragile static list that
+    diverges the moment tools are added or renamed.
 
     Returns empty string if the role has no capabilities.
     """
@@ -215,50 +215,17 @@ def build_capability_summary(role: Dict[str, Any], resolved_tools: Optional[List
 
     catalog = _load_capability_catalog()
     categories = catalog.get("categories", {})
-    catalog_tools = catalog.get("tools", {})
 
-    # Build a map: category → [tool_name, ...]  from the resolved set
-    cat_to_tools: Dict[str, List[str]] = {}
-    if resolved_tools:
-        for tool_name in resolved_tools:
-            if tool_name == "ask_user":
-                continue  # always-injected, not a capability tool
-            # Look up category from catalog, then registry name prefix heuristic
-            cat = None
-            if tool_name in catalog_tools and isinstance(catalog_tools[tool_name], dict):
-                cat = catalog_tools[tool_name].get("category")
-            if cat is None:
-                # Infer from name prefix (e.g. tmux__ → terminal, playwright__ → browser)
-                if tool_name.startswith("tmux__"):
-                    cat = "terminal"
-                elif tool_name.startswith("playwright__"):
-                    cat = "browser"
-            if cat:
-                cat_to_tools.setdefault(cat, []).append(tool_name)
-            else:
-                cat_to_tools.setdefault("_other", []).append(tool_name)
+    lines = [
+        f"- **{cap}** — {categories.get(cap, {}).get('description', cap)}"
+        for cap in capabilities
+    ]
 
-    lines: List[str] = []
-    for cap in capabilities:
-        desc = categories.get(cap, {}).get("description", cap)
-        tools_for_cap = cat_to_tools.get(cap, [])
-        if tools_for_cap:
-            # Collapse long lists (e.g. 30 tmux tools) to avoid noise
-            if len(tools_for_cap) <= 6:
-                tool_str = ", ".join(f"`{t}`" for t in sorted(tools_for_cap))
-            else:
-                sample = ", ".join(f"`{t}`" for t in sorted(tools_for_cap)[:5])
-                tool_str = f"{sample} (+{len(tools_for_cap) - 5} more)"
-            lines.append(f"- **{cap}** — {desc}: {tool_str}")
-        else:
-            lines.append(f"- **{cap}** — {desc}")
-
-    summary = (
+    return (
         "## Your Capabilities\n"
-        "These are your available capabilities and the concrete tools resolved for this task:\n"
         + "\n".join(lines)
         + "\n\n"
-        "Use only the tool names listed above. If a task requires a capability not listed, "
-        "use `ask_user` to escalate — do not guess or fabricate tool names.\n"
+        "Discover the specific tools for each capability from the tool schema "
+        "provided with this prompt. If a task requires something not covered "
+        "above, use `ask_user` to escalate.\n\n"
     )
-    return summary + "\n"
