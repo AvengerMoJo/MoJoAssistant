@@ -636,13 +636,15 @@ class AgenticExecutor:
                     error_message=f"Cannot resume: session '{resume_from}' not found",
                 )
             if reply_to_question:
-                # If the pause was a SecurityGate escalation and the user approved,
+                # If the pause was a SecurityGate budget escalation and the user approved,
                 # grant a budget extension so the gate doesn't immediately re-fire.
-                _is_gate_resume = getattr(self, "_gate_escalation_pending", False)
+                # Detection uses task.pending_question (persisted in the scheduler DB)
+                # so it survives executor restarts — no in-memory flag needed.
+                _pending_q = (task.pending_question or "").lower()
+                _is_gate_escalation = "danger budget exhausted" in _pending_q
                 _reply_lower = (reply_to_question or "").strip().lower()
-                if _is_gate_resume and _reply_lower in ("continue", "yes", "ok", "proceed", "go"):
+                if _is_gate_escalation and _reply_lower in ("continue", "yes", "ok", "proceed", "go"):
                     self._gate.grant_override(task.id)
-                    self._gate_escalation_pending = False
                     self._log(
                         f"User override granted for task {task.id} — gate budget extended"
                     )
