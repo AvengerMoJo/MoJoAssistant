@@ -64,7 +64,10 @@ _DANGER_SCORE: Dict[str, int] = {
 
 # Default per-task cumulative danger budget before escalation.
 # Override per-task via SecurityGate.reset_task(task_id, budget=...).
-_DEFAULT_TASK_BUDGET = 40  # ~5 high-danger calls before user check
+# 160 = ~20 high-danger bash calls — enough for typical build/install tasks
+# without interrupting every 5 calls.  The gate still fires on genuinely
+# runaway sessions (30+ calls) or if SafetyPolicy hard-blocks a specific op.
+_DEFAULT_TASK_BUDGET = 160
 
 
 # ---------------------------------------------------------------------------
