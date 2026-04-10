@@ -1578,7 +1578,9 @@ class AgenticExecutor:
             self._log(f"ORIENT: injecting {len(lines)} memory hits for task")
             return (
                 "\n\n## Orientation (from memory)\n"
-                "Relevant context from past sessions — review before planning:\n"
+                "These are COMPLETED past records — historical context only. "
+                "They are not in-progress sessions. Use them to inform your plan, "
+                "avoid repeating past mistakes, and build on what worked:\n"
                 + "\n---\n".join(lines)
                 + "\n"
             )
@@ -1619,7 +1621,12 @@ class AgenticExecutor:
                         seen[t] = len(seen)
             tools_used = sorted(seen, key=lambda t: seen[t])
 
-            lines = [f"Goal: {goal[:200]}"]
+            from datetime import datetime as _dt
+            timestamp = _dt.now().strftime("%Y-%m-%d")
+            lines = [
+                f"[COMPLETED PAST TASK — {timestamp}]",
+                f"Goal: {goal[:200]}",
+            ]
             if tools_used:
                 lines.append(f"Tools used (in order): {', '.join(tools_used[:15])}")
             answer_excerpt = (final_answer or "").strip()[:500]
