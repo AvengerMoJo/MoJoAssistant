@@ -353,7 +353,7 @@ class CapabilityRegistry:
             ),
             CapabilityDefinition(
                 name="memory_search",
-                description="Search user's memory (conversations, documents, knowledge base).",
+                description="Search your own role-scoped knowledge base (past task reflections, procedures, findings). This is your memory — not the user's personal conversations.",
                 danger_level="low",
                 category="memory",
                 parameters={"type": "object", "properties": {
@@ -989,7 +989,14 @@ class CapabilityRegistry:
         }
 
     async def _memory_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Search memory using memory service."""
+        """
+        Search the agent's own role-scoped knowledge.
+
+        Searches the role-private knowledge store when a role is active
+        (set via set_task_context), falling back to the shared knowledge
+        base.  Never searches the user's personal conversation history —
+        that is the user's memory, not the agent's.
+        """
         query = args.get("query", "")
         max_items = args.get("max_items", 5)
 
@@ -997,9 +1004,17 @@ class CapabilityRegistry:
             return {"success": False, "error": "Memory service not available"}
 
         try:
-            results = await self._memory_service.get_context_for_query_async(
-                query, max_items=max_items
-            )
+            role_id = getattr(self, "_current_role_id", None)
+            import inspect as _inspect
+            sig = _inspect.signature(self._memory_service._search_knowledge_base_async)
+            if "role_id" in sig.parameters:
+                results = await self._memory_service._search_knowledge_base_async(
+                    query, max_items=max_items, role_id=role_id
+                )
+            else:
+                results = await self._memory_service._search_knowledge_base_async(
+                    query, max_items=max_items
+                )
             return {
                 "success": True,
                 "query": query,
@@ -1252,10 +1267,11 @@ class CapabilityRegistry:
         """Set the MCPClientManager for external_mcp executor support."""
         self._mcp_client_manager = manager
 
-    def set_task_context(self, task_id: str, dispatch_depth: int = 0) -> None:
+    def set_task_context(self, task_id: str, dispatch_depth: int = 0, role_id: Optional[str] = None) -> None:
         """Set the current task context so dispatch_subtask can link parent→child."""
         self._current_task_id = task_id
         self._current_dispatch_depth = dispatch_depth
+        self._current_role_id = role_id  # used to scope memory_search to the active role
 
     def set_scheduler(self, scheduler) -> None:
         """Set the Scheduler for scheduler_add_task tool support."""

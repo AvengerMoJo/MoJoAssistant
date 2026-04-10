@@ -438,8 +438,9 @@ class AgenticExecutor:
         self._requires_tool_use: bool = False   # reject final answer if no tools called yet
         # Task id stored so _execute_single_tool can inject per-task tmux socket
         self._current_task_id: Optional[str] = task.id
-        # Propagate task context to registry for sub-agent dispatch linkage
-        self._tool_registry.set_task_context(task.id, task.dispatch_depth)
+        # Propagate task context to registry for sub-agent dispatch linkage + role scoping
+        _task_role_id = (task.config or {}).get("role_id") if task.config else None
+        self._tool_registry.set_task_context(task.id, task.dispatch_depth, role_id=_task_role_id)
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -1542,27 +1543,30 @@ class AgenticExecutor:
         if not self._memory_service:
             return ""
         try:
-            # Global context search
-            global_hits = await self._memory_service.get_context_for_query_async(goal, max_items=5)
-
-            # Role-scoped knowledge search (HybridMemoryService supports role_id)
-            role_hits: List[Dict[str, Any]] = []
-            if role_id:
-                try:
-                    sig = inspect.signature(self._memory_service._search_knowledge_base_async)
-                    if "role_id" in sig.parameters:
+            # Search only role-scoped knowledge — never the user's personal conversations.
+            # Role-private store first (Ahman's own past tasks), then shared knowledge base.
+            merged: List[Dict[str, Any]] = []
+            try:
+                sig = inspect.signature(self._memory_service._search_knowledge_base_async)
+                if "role_id" in sig.parameters:
+                    # Role-private hits (higher priority)
+                    if role_id:
                         role_hits = await self._memory_service._search_knowledge_base_async(
                             goal, max_items=5, role_id=role_id
                         )
-                except Exception:
-                    pass
-
-            # Merge: role-specific knowledge first (higher relevance), then global hits
-            # that aren't already covered by the knowledge search
-            knowledge_sources = {h.get("id") for h in role_hits if h.get("id")}
-            merged = list(role_hits) + [
-                h for h in global_hits if h.get("id") not in knowledge_sources
-            ]
+                        merged.extend(role_hits)
+                    # Shared knowledge base (no role filter)
+                    shared_hits = await self._memory_service._search_knowledge_base_async(
+                        goal, max_items=3
+                    )
+                    seen_ids = {h.get("id") for h in merged if h.get("id")}
+                    merged.extend(h for h in shared_hits if h.get("id") not in seen_ids)
+                else:
+                    merged = await self._memory_service._search_knowledge_base_async(
+                        goal, max_items=6
+                    )
+            except Exception:
+                pass
 
             if not merged:
                 return ""
