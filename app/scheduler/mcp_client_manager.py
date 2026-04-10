@@ -30,6 +30,7 @@ import json
 import logging
 import os
 from contextlib import AsyncExitStack
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -106,7 +107,7 @@ class MCPClientManager:
                     transport=srv.get("transport", "stdio"),
                     command=_expand(srv.get("command", "")),
                     args=[_expand(a) for a in srv.get("args", [])],
-                    env=srv.get("env", {}),
+                    env={k: _expand(v) for k, v in srv.get("env", {}).items()},
                     mcp_http_url=srv.get("mcp_http_url"),
                     port=srv.get("port"),
                     pid=srv.get("pid"),
@@ -158,11 +159,25 @@ class MCPClientManager:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
-        env = {**os.environ, **server.env} if server.env else None
+        spawn_env = {**os.environ, **server.env} if server.env else dict(os.environ)
+        # Resolve project root so relative paths in args (e.g. config/tmux-mcp.toml)
+        # work regardless of the process CWD at startup.
+        _project_root = Path(__file__).resolve().parent.parent.parent
+
+        args = list(server.args)
+        # tmux-mcp-rs defaults to a socket named 'default.sock' which differs from
+        # the standard tmux socket 'default'. Inject the correct socket path so agents
+        # see the same sessions as the operator's terminal.
+        if server.category == "terminal" and "--socket" not in args and "-s" not in args:
+            tmux_socket = Path(f"/tmp/tmux-{os.getuid()}/default")
+            if tmux_socket.exists():
+                args += ["--socket", str(tmux_socket)]
+
         params = StdioServerParameters(
             command=server.command,
-            args=server.args,
-            env=env,
+            args=args,
+            env=spawn_env,
+            cwd=str(_project_root),
         )
         read, write = await self._exit_stack.enter_async_context(stdio_client(params))
         session = await self._exit_stack.enter_async_context(ClientSession(read, write))

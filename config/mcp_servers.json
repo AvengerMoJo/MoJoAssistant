@@ -32,9 +32,12 @@
       "transport": "stdio",
       "command": "~/.cargo/bin/tmux-mcp-rs",
       "args": ["--shell-type", "bash", "--config", "config/tmux-mcp.toml"],
+      "env": {
+        "PATH": "~/.memory/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      },
       "category": "terminal",
       "enabled": true,
-      "comment": "Virtual terminal backend. By default this attaches to tmux's normal shared server so agents and operators can see the same sessions. Do not force a private --socket here unless you intentionally want a separate tmux universe. Security denylist: config/tmux-mcp.toml."
+      "comment": "Virtual terminal backend. Socket auto-resolved to /tmp/tmux-UID/default at spawn time (mcp_client_manager.py) so agents see the same sessions as the operator. Do not add --socket here unless you want an isolated agent tmux universe. Security denylist: config/tmux-mcp.toml."
     }
   ],
   "examples": {
