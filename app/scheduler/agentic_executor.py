@@ -430,6 +430,7 @@ class AgenticExecutor:
         # Per-execution state for ask_user
         self._waiting_for_input_question: Optional[str] = None
         self._waiting_for_input_choices: Optional[list] = None
+        self._gate_escalation_pending: bool = False  # True when pause was from SecurityGate
         self._tool_calls_made: int = 0          # non-ask_user tool calls this execution
         self._consecutive_no_tool: int = 0      # iterations with tools available but unused
         self._budget_extension_granted: int = 0  # extra iterations granted via BUDGET_EXTENSION_REQUEST
@@ -439,8 +440,6 @@ class AgenticExecutor:
         self._current_task_id: Optional[str] = task.id
         # Propagate task context to registry for sub-agent dispatch linkage
         self._tool_registry.set_task_context(task.id, task.dispatch_depth)
-        # Reset SecurityGate danger budget for this task
-        self._gate.reset_task(task.id)
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -622,6 +621,11 @@ class AgenticExecutor:
         # --- Resume support ---
         resume_from = config.get("resume_from_task_id")
         reply_to_question = config.pop("reply_to_question", None)
+        # Reset SecurityGate danger budget only on fresh starts.
+        # On resume (HITL reply or retry) the budget carries over so the gate
+        # doesn't re-trigger immediately after the user says "continue".
+        if not resume_from:
+            self._gate.reset_task(task.id)
         if resume_from:
             messages, start_iteration = self._load_resume_messages(
                 resume_from, system_prompt
@@ -632,6 +636,17 @@ class AgenticExecutor:
                     error_message=f"Cannot resume: session '{resume_from}' not found",
                 )
             if reply_to_question:
+                # If the pause was a SecurityGate escalation and the user approved,
+                # grant a budget extension so the gate doesn't immediately re-fire.
+                _is_gate_resume = getattr(self, "_gate_escalation_pending", False)
+                _reply_lower = (reply_to_question or "").strip().lower()
+                if _is_gate_resume and _reply_lower in ("continue", "yes", "ok", "proceed", "go"):
+                    self._gate.grant_override(task.id)
+                    self._gate_escalation_pending = False
+                    self._log(
+                        f"User override granted for task {task.id} — gate budget extended"
+                    )
+
                 # Resume after WAITING_FOR_INPUT: inject the user's reply
                 messages.append(
                     {
@@ -1755,6 +1770,7 @@ class AgenticExecutor:
             self._log(f"Gate escalating '{name}' to ask_user: {gate_result.reason}", "warning")
             self._waiting_for_input_question = gate_result.ask_question or gate_result.reason
             self._waiting_for_input_choices = ["continue", "cancel"]
+            self._gate_escalation_pending = True
             return {"success": True, "message": f"Security gate paused: {gate_result.reason}"}
         if gate_result.decision == SecurityDecision.WARN_ALLOW:
             self._log(gate_result.warn_message or gate_result.reason, "warning")

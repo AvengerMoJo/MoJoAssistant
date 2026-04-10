@@ -165,10 +165,29 @@ class SecurityGate:
     def reset_task(self, task_id: str, budget: Optional[int] = None) -> None:
         """
         Initialize (or reset) per-task danger budget.
-        Call this at the start of each agentic task execution.
+        Call only on fresh task starts — not on resume — so accumulated
+        budget carries over across HITL reply cycles.
         """
         self._tasks[task_id] = _TaskState(
             budget=budget if budget is not None else self._default_budget
+        )
+
+    def grant_override(self, task_id: str, additional: int = 40) -> None:
+        """
+        Extend the danger budget for a task by `additional` points.
+
+        Called when the user explicitly says "continue" (or equivalent) in
+        response to a STOP_ASK_USER gate escalation.  The user's reply is
+        the override authority — this is intentional, not a default bypass.
+
+        Future: replace with a signed token from the client so the override
+        authority is cryptographically tied to a specific user action.
+        """
+        state = self._tasks.setdefault(task_id, _TaskState(budget=self._default_budget))
+        state.budget += additional
+        logger.info(
+            f"Gate override granted for task {task_id}: "
+            f"budget extended by {additional} → {state.budget} total"
         )
 
     def task_summary(self, task_id: str) -> Dict[str, Any]:
