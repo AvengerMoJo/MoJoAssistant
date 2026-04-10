@@ -33,11 +33,11 @@
       "command": "~/.cargo/bin/tmux-mcp-rs",
       "args": ["--shell-type", "bash", "--config", "config/tmux-mcp.toml"],
       "env": {
-        "PATH": "~/.memory/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        "SHELL": "{project_root}/scripts/agent-shell"
       },
       "category": "terminal",
       "enabled": true,
-      "comment": "Virtual terminal backend. Socket auto-resolved to /tmp/tmux-UID/default at spawn time (mcp_client_manager.py) so agents see the same sessions as the operator. Do not add --socket here unless you want an isolated agent tmux universe. Security denylist: config/tmux-mcp.toml."
+      "comment": "Virtual terminal backend. SHELL points to scripts/agent-shell which prepends $MEMORY_PATH/capability to PATH for every agent-created session — no ~/.bashrc pollution. Socket auto-resolved to /tmp/tmux-UID/default at spawn time (mcp_client_manager.py). Security denylist: config/tmux-mcp.toml."
     }
   ],
   "examples": {

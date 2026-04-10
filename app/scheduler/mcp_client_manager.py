@@ -92,7 +92,10 @@ class MCPClientManager:
         if not os.path.exists(path):
             return
 
+        _project_root_str = str(Path(__file__).resolve().parent.parent.parent)
+
         def _expand(s: str) -> str:
+            s = s.replace("{project_root}", _project_root_str)
             return os.path.expanduser(os.path.expandvars(s))
 
         try:
@@ -160,10 +163,7 @@ class MCPClientManager:
         from mcp.client.stdio import stdio_client
 
         spawn_env = {**os.environ, **server.env} if server.env else dict(os.environ)
-        # Resolve project root so relative paths in args (e.g. config/tmux-mcp.toml)
-        # work regardless of the process CWD at startup.
         _project_root = Path(__file__).resolve().parent.parent.parent
-
         args = list(server.args)
         # tmux-mcp-rs defaults to a socket named 'default.sock' which differs from
         # the standard tmux socket 'default'. Inject the correct socket path so agents
