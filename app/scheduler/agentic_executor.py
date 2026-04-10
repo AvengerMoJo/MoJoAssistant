@@ -524,7 +524,20 @@ class AgenticExecutor:
 
         ninechapter_overlay = build_behavioral_overlay(role) if role else ""
         task_context = build_task_context(role) if role else ""
-        capability_summary = build_capability_summary(role) if role else ""
+
+        # Resolve tool names early so capability_summary can list them explicitly.
+        explicit_tools = config.get("available_tools")
+        if explicit_tools is not None:
+            enabled_tool_names = self._resolve_capabilities({"capabilities": explicit_tools})
+        elif role:
+            enabled_tool_names = self._resolve_capabilities(role)
+        else:
+            enabled_tool_names = ["memory_search"]
+        if "ask_user" not in enabled_tool_names:
+            enabled_tool_names = list(enabled_tool_names) + ["ask_user"]
+        self._enabled_tool_names = enabled_tool_names
+
+        capability_summary = build_capability_summary(role, enabled_tool_names) if role else ""
 
         from datetime import datetime, timezone
         _now = datetime.now(timezone.utc).astimezone()
@@ -587,20 +600,8 @@ class AgenticExecutor:
                 self._log(f"External MCP discovery failed (continuing): {e}", level="warning")
                 self._mcp_tools_discovered = True  # don't retry on every task
 
-        # Load tools: task config.available_tools > role capabilities > default.
-        # ask_user is always included — it's the HITL escape hatch for any blocker.
-        explicit_tools = config.get("available_tools")
-        if explicit_tools is not None:
-            # available_tools may be category names (e.g. "browser") or explicit tool
-            # names. Expand categories via the catalog so the LLM sees real tool defs.
-            enabled_tool_names = self._resolve_capabilities({"capabilities": explicit_tools})
-        elif role:
-            enabled_tool_names = self._resolve_capabilities(role)
-        else:
-            enabled_tool_names = ["memory_search"]
-        if "ask_user" not in enabled_tool_names:
-            enabled_tool_names = list(enabled_tool_names) + ["ask_user"]
-        self._enabled_tool_names = enabled_tool_names  # available to _execute_tool_call
+        # Tool names already resolved above (before capability_summary build).
+        # self._enabled_tool_names is set; nothing to re-resolve here.
         tool_defs = []
 
         for tool_name in enabled_tool_names:
