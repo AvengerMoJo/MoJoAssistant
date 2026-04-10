@@ -67,7 +67,7 @@ class SandboxSecurity:
         return size <= self.max_file_size_bytes
 
 
-class ToolDefinition:
+class CapabilityDefinition:
     """
     Defines a tool with metadata, execution logic, and security levels.
 
@@ -133,7 +133,7 @@ class ToolDefinition:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ToolDefinition":
+    def from_dict(cls, data: Dict[str, Any]) -> "CapabilityDefinition":
         return cls(
             name=data["name"],
             description=data["description"],
@@ -176,7 +176,7 @@ class DynamicToolRegistry:
         self._scheduler = None
         self._current_task_id: Optional[str] = None
         self._current_dispatch_depth: int = 0
-        self._tools: Dict[str, ToolDefinition] = {}
+        self._tools: Dict[str, CapabilityDefinition] = {}
         self._ensure_registry_seeded()
         self._load_registry()
         self._register_builtins()
@@ -203,7 +203,7 @@ class DynamicToolRegistry:
                 with open(self.registry_path, "r") as f:
                     data = json.load(f)
                     for tool_data in data.get("tools", []):
-                        tool = ToolDefinition.from_dict(tool_data)
+                        tool = CapabilityDefinition.from_dict(tool_data)
                         self._tools[tool.name] = tool
             except Exception as e:
                 print(f"Failed to load system tool registry: {e}")
@@ -214,7 +214,7 @@ class DynamicToolRegistry:
                 with open(self.personal_registry_path, "r") as f:
                     data = json.load(f)
                     for tool_data in data.get("tools", []):
-                        tool = ToolDefinition.from_dict(tool_data)
+                        tool = CapabilityDefinition.from_dict(tool_data)
                         tool.created_by = tool_data.get("created_by", "user")
                         self._tools[tool.name] = tool  # overrides system if same name
             except Exception as e:
@@ -244,7 +244,7 @@ class DynamicToolRegistry:
     def _register_builtins(self):
         """Register built-in tools."""
         builtins = [
-            ToolDefinition(
+            CapabilityDefinition(
                 name="read_file",
                 description="Read file contents. Returns full text with line numbers.",
                 danger_level="low",
@@ -253,7 +253,7 @@ class DynamicToolRegistry:
                     "path": {"type": "string", "description": "Absolute or relative file path to read"},
                 }, "required": ["path"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="write_file",
                 description="Write content to file. Overwrites existing file. Only allowed in sandbox paths.",
                 danger_level="medium",
@@ -263,7 +263,7 @@ class DynamicToolRegistry:
                     "content": {"type": "string", "description": "Content to write"},
                 }, "required": ["path", "content"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="list_files",
                 description="List files and directories in a path.",
                 danger_level="low",
@@ -272,7 +272,7 @@ class DynamicToolRegistry:
                     "path": {"type": "string", "description": "Directory path to list"},
                 }, "required": ["path"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="search_in_files",
                 description="Search for text across files using grep/ripgrep.",
                 danger_level="low",
@@ -282,7 +282,7 @@ class DynamicToolRegistry:
                     "path": {"type": "string", "description": "Directory or file to search in"},
                 }, "required": ["query"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="bash_exec",
                 description=(
                     "Run shell commands on this machine. Accepts a single command string "
@@ -306,7 +306,7 @@ class DynamicToolRegistry:
                     },
                 }, "required": []},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="scheduler_add_task",
                 description=(
                     "Schedule a new task for another agent. Use this to hand off work to a "
@@ -328,7 +328,7 @@ class DynamicToolRegistry:
                     "priority":   {"type": "string", "enum": ["low", "normal", "high"], "description": "Task priority"},
                 }, "required": ["task_id", "role_id", "goal"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="dispatch_subtask",
                 description=(
                     "Dispatch a task to another agent role and WAIT for its result before continuing. "
@@ -351,7 +351,7 @@ class DynamicToolRegistry:
                     "timeout_s":       {"type": "integer", "description": "Seconds to wait for result (default 300)"},
                 }, "required": ["role_id", "goal"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="memory_search",
                 description="Search user's memory (conversations, documents, knowledge base).",
                 danger_level="low",
@@ -360,7 +360,7 @@ class DynamicToolRegistry:
                     "query": {"type": "string", "description": "Search query to find relevant context"},
                 }, "required": ["query"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="task_session_read",
                 description=(
                     "Read a scheduler task session from ~/.memory/task_sessions by task_id. "
@@ -378,7 +378,7 @@ class DynamicToolRegistry:
                     },
                 }, "required": ["task_id"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="task_report_read",
                 description=(
                     "Read a normalized task report from ~/.memory/task_reports by task_id. "
@@ -391,7 +391,7 @@ class DynamicToolRegistry:
                     "task_id": {"type": "string", "description": "Task id whose report should be loaded"},
                 }, "required": ["task_id"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="ask_user",
                 description=(
                     "Pause the task and ask the user a question. "
@@ -410,7 +410,7 @@ class DynamicToolRegistry:
                     },
                 }, "required": ["question"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="web_search",
                 description=(
                     "Search the web using Google Custom Search. "
@@ -428,7 +428,7 @@ class DynamicToolRegistry:
                     },
                 }, "required": ["query"]},
             ),
-            ToolDefinition(
+            CapabilityDefinition(
                 name="fetch_url",
                 description=(
                     "Fetch and return the plain-text content of a web page. "
@@ -457,11 +457,11 @@ class DynamicToolRegistry:
         """List all tools with metadata."""
         return {name: tool.to_dict() for name, tool in self._tools.items()}
 
-    def get_tool(self, name: str) -> Optional[ToolDefinition]:
+    def get_tool(self, name: str) -> Optional[CapabilityDefinition]:
         """Get tool definition by name."""
         return self._tools.get(name)
 
-    def add_tool(self, tool: ToolDefinition) -> bool:
+    def add_tool(self, tool: CapabilityDefinition) -> bool:
         """Add or update a user tool. Always saved to the personal layer."""
         if tool.created_by == "system":
             tool.created_by = "user"  # user-added tools are never system tools
@@ -480,11 +480,11 @@ class DynamicToolRegistry:
         self._save_registry()
         return True
 
-    def list_user_tools(self) -> List[ToolDefinition]:
+    def list_user_tools(self) -> List[CapabilityDefinition]:
         """Return only user-created tools (personal layer)."""
         return [t for t in self._tools.values() if t.created_by != "system"]
 
-    def list_all_tools(self) -> List[ToolDefinition]:
+    def list_all_tools(self) -> List[CapabilityDefinition]:
         """Return all tools (system + user)."""
         return list(self._tools.values())
 
@@ -1114,7 +1114,7 @@ class DynamicToolRegistry:
         except Exception as e:
             return {"success": False, "error": f"fetch_url failed: {e}"}
 
-    async def _run_shell_executor(self, tool: "ToolDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _run_shell_executor(self, tool: "CapabilityDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Shell executor: passes args as JSON on stdin, reads JSON result from stdout.
 
@@ -1156,7 +1156,7 @@ class DynamicToolRegistry:
         except subprocess.TimeoutExpired:
             return {"success": False, "error": f"Shell tool timed out ({timeout}s)"}
 
-    async def _run_python_executor(self, tool: "ToolDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _run_python_executor(self, tool: "CapabilityDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Python executor: dynamically imports a module and calls a function.
 
@@ -1191,7 +1191,7 @@ class DynamicToolRegistry:
         except Exception as e:
             return {"success": False, "error": f"Python tool '{tool.name}' raised: {e}"}
 
-    async def _run_mcp_proxy_executor(self, tool: "ToolDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _run_mcp_proxy_executor(self, tool: "CapabilityDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
         """
         MCP proxy executor: forwards the tool call to a named MCP tool.
 
@@ -1220,7 +1220,7 @@ class DynamicToolRegistry:
         except Exception as e:
             return {"success": False, "error": f"MCP proxy '{mcp_tool_name}' failed: {e}"}
 
-    async def _run_external_mcp_executor(self, tool: "ToolDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _run_external_mcp_executor(self, tool: "CapabilityDefinition", args: Dict[str, Any]) -> Dict[str, Any]:
         """
         External MCP executor: forwards the call to a server managed by MCPClientManager.
 

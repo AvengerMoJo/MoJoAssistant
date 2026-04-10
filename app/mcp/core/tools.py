@@ -769,7 +769,7 @@ class ToolRegistry:
                         },
                         "goal": {"type": "string", "description": "Task goal (add action)."},
                         "cron": {"type": "string", "description": "Cron expression (add action)."},
-                        "priority": {"type": "string", "enum": ["low", "normal", "high"]},
+                        "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
                         "role_id": {"type": "string", "description": "Role for assistant tasks (add action)."},
                         "available_tools": {
                             "type": "array",
@@ -3580,12 +3580,12 @@ Agent resumes within seconds.
             return {"status": "success", "tool": tool.to_dict()}
 
         if action == "capability_add":
-            from app.scheduler.dynamic_tool_registry import ToolDefinition
+            from app.scheduler.dynamic_tool_registry import CapabilityDefinition
             tool_name = args.get("tool_name")
             description = args.get("description")
             if not tool_name or not description:
                 return {"status": "error", "message": "tool_name and description are required."}
-            tool = ToolDefinition(
+            tool = CapabilityDefinition(
                 name=tool_name,
                 description=description,
                 parameters=args.get("parameters") or {"type": "object", "properties": {}, "required": []},

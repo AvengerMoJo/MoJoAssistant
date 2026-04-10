@@ -200,7 +200,7 @@ class MCPClientManager:
 
         Returns the number of tools newly registered.
         """
-        from app.scheduler.dynamic_tool_registry import ToolDefinition
+        from app.scheduler.dynamic_tool_registry import CapabilityDefinition
 
         server_tools = await self.connect_all()
 
@@ -224,7 +224,7 @@ class MCPClientManager:
                 if not isinstance(schema, dict):
                     schema = {"type": "object", "properties": {}}
 
-                td = ToolDefinition(
+                td = CapabilityDefinition(
                     name=registered_name,
                     description=tool.description or f"{tool.name} (via {server.name})",
                     danger_level="low",
