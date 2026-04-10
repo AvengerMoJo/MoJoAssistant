@@ -18,7 +18,7 @@ from app.scheduler.models import Task, TaskResult
 from app.scheduler.resource_pool import LLMResource, ResourceManager, ResourceTier
 from app.scheduler.session_storage import SessionMessage, SessionStorage, TaskSession
 from app.scheduler.planning_prompt_manager import PlanningPromptManager
-from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+from app.scheduler.capability_registry import CapabilityRegistry
 from app.scheduler.safety_policy import SafetyPolicy
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context, build_capability_summary
@@ -379,7 +379,7 @@ class AgenticExecutor:
         self._memory_service = memory_service
         self._session_storage = SessionStorage()
         self._planning_manager = PlanningPromptManager()
-        self._tool_registry = DynamicToolRegistry()
+        self._tool_registry = CapabilityRegistry()
         self._tool_registry.set_memory_service(memory_service)
         from app.scheduler.mcp_client_manager import MCPClientManager
         self._mcp_client_manager = mcp_client_manager if mcp_client_manager is not None else MCPClientManager()
@@ -526,9 +526,17 @@ class AgenticExecutor:
         task_context = build_task_context(role) if role else ""
         capability_summary = build_capability_summary(role) if role else ""
 
+        from datetime import datetime, timezone
+        _now = datetime.now(timezone.utc).astimezone()
+        runtime_context = (
+            f"## Runtime context\n"
+            f"- Current date and time: {_now.strftime('%Y-%m-%d %H:%M %Z')}\n\n"
+        )
+
         if role_prefix:
             system_prompt = (
                 mode_overlay
+                + runtime_context
                 + ninechapter_overlay
                 + task_context
                 + capability_summary
@@ -537,7 +545,7 @@ class AgenticExecutor:
                 + workflow_prompt
             )
         else:
-            system_prompt = mode_overlay + workflow_prompt
+            system_prompt = mode_overlay + runtime_context + workflow_prompt
 
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get(
@@ -1668,12 +1676,10 @@ class AgenticExecutor:
         # Count non-ask_user tool calls for behavior_rules enforcement
         self._tool_calls_made += 1
 
-        # Per-task tmux isolation: inject a unique socket path so each task runs
-        # against its own tmux daemon. tmux-mcp-rs accepts a per-call 'socket'
-        # override on every tool; omitting it uses the server's default socket
-        # which is shared and causes session collisions under concurrency.
-        if name.startswith("tmux__") and self._current_task_id and "socket" not in args:
-            args = {**args, "socket": f"/tmp/mojo-task-{self._current_task_id}.sock"}
+        # tmux tools may accept a per-call "socket" override, but do not force
+        # one here. The tmux MCP backend may already be configured with a fixed
+        # socket/server in ~/.memory/config/mcp_servers.json, and overriding it
+        # blindly hides real sessions from the agent.
 
         # Try dynamic registry first
         try:

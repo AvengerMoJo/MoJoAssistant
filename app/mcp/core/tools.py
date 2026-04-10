@@ -460,7 +460,7 @@ class ToolRegistry:
 
         Design rule: ONLY user-facing tools live here.
         Agent-layer tools (browser_navigate, bash_exec, memory_search, etc.)
-        belong in agentic_executor.py BUILTIN_TOOLS or the DynamicToolRegistry.
+        belong in agentic_executor.py BUILTIN_TOOLS or the CapabilityRegistry.
         Retired individual tools are in placeholder_tools (handled in execute()).
         """
         return [
@@ -1606,7 +1606,7 @@ Agent resumes within seconds.
         elif name == "role_get":
             return await self._execute_role_get(args)
         else:
-            # Fallback: try user custom tools in DynamicToolRegistry
+            # Fallback: try user custom tools in CapabilityRegistry
             try:
                 dyn_registry = self.scheduler.executor._get_agentic_executor()._tool_registry
                 tool_def = dyn_registry.get_tool(name)
@@ -2901,9 +2901,9 @@ Agent resumes within seconds.
     ) -> Dict[str, Any]:
         """Return all tools available for assignment to agentic tasks."""
         try:
-            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+            from app.scheduler.capability_registry import CapabilityRegistry
 
-            registry = DynamicToolRegistry()
+            registry = CapabilityRegistry()
             tools = registry.list_tools()
             return {
                 "status": "success",
@@ -2925,14 +2925,14 @@ Agent resumes within seconds.
         """Return tools from the catalog, optionally filtered by category."""
         try:
             from app.config.config_loader import load_layered_json_config
-            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+            from app.scheduler.capability_registry import CapabilityRegistry
 
             catalog = load_layered_json_config("config/capability_catalog.json")
             catalog_entries = catalog.get("tools", {})
             categories_meta = catalog.get("categories", {})
             category_filter = args.get("category")
 
-            registry = DynamicToolRegistry()
+            registry = CapabilityRegistry()
             registry_tools = registry.list_tools()
 
             result = []
@@ -3580,7 +3580,7 @@ Agent resumes within seconds.
             return {"status": "success", "tool": tool.to_dict()}
 
         if action == "capability_add":
-            from app.scheduler.dynamic_tool_registry import CapabilityDefinition
+            from app.scheduler.capability_registry import CapabilityDefinition
             tool_name = args.get("tool_name")
             description = args.get("description")
             if not tool_name or not description:
@@ -4165,9 +4165,9 @@ Agent resumes within seconds.
             if hasattr(self, "scheduler") and hasattr(self.scheduler, "executor"):
                 executor = self.scheduler.executor
                 if hasattr(executor, "_tool_registry") and executor._tool_registry:
-                    from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+                    from app.scheduler.capability_registry import CapabilityRegistry
 
-                    executor._tool_registry = DynamicToolRegistry()
+                    executor._tool_registry = CapabilityRegistry()
                     executor._tool_registry.set_memory_service(self.memory_service)
                     self.logger.info("Agentic tools config reloaded")
         except Exception:

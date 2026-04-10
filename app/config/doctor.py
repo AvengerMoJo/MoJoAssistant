@@ -311,8 +311,8 @@ class ConfigDoctor:
             free_resources_usable = True  # unknown — don't false-alarm
 
         try:
-            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
-            registry = DynamicToolRegistry()
+            from app.scheduler.capability_registry import CapabilityRegistry
+            registry = CapabilityRegistry()
             known_tools = set(registry.list_tools().keys())
         except Exception:
             known_tools = set()
@@ -383,8 +383,8 @@ class ConfigDoctor:
             return
 
         try:
-            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
-            registry = DynamicToolRegistry()
+            from app.scheduler.capability_registry import CapabilityRegistry
+            registry = CapabilityRegistry()
             known_tools = set(registry.list_tools().keys())
         except Exception:
             known_tools = set()

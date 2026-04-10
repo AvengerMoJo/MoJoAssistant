@@ -7,9 +7,9 @@ from tempfile import TemporaryDirectory
 
 class TestCapabilityToToolTranslation(unittest.TestCase):
     def test_search_in_files_schema_uses_query(self):
-        from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+        from app.scheduler.capability_registry import CapabilityRegistry
 
-        reg = DynamicToolRegistry()
+        reg = CapabilityRegistry()
         tool = reg._tools["search_in_files"].to_openai_function()
         params = tool["function"]["parameters"]
 
@@ -18,15 +18,15 @@ class TestCapabilityToToolTranslation(unittest.TestCase):
         self.assertEqual(params["required"], ["query"])
 
     def test_search_in_files_runtime_accepts_pattern_alias(self):
-        from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+        from app.scheduler.capability_registry import CapabilityRegistry
 
-        reg = DynamicToolRegistry()
+        reg = CapabilityRegistry()
 
         result = asyncio.run(
             reg._search_in_files(
                 {
-                    "pattern": "DynamicToolRegistry",
-                    "path": "app/scheduler/dynamic_tool_registry.py",
+                    "pattern": "CapabilityRegistry",
+                    "path": "app/scheduler/capability_registry.py",
                 }
             )
         )
@@ -43,9 +43,9 @@ class TestCapabilityToToolTranslation(unittest.TestCase):
         self.assertIn("translates these capabilities into concrete tool definitions", summary)
 
     def test_task_session_read_schema_matches_runtime(self):
-        from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+        from app.scheduler.capability_registry import CapabilityRegistry
 
-        reg = DynamicToolRegistry()
+        reg = CapabilityRegistry()
         tool = reg._tools["task_session_read"].to_openai_function()
         params = tool["function"]["parameters"]
 
@@ -54,9 +54,9 @@ class TestCapabilityToToolTranslation(unittest.TestCase):
         self.assertIn("include_metadata", params["properties"])
 
     def test_task_report_read_schema_matches_runtime(self):
-        from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+        from app.scheduler.capability_registry import CapabilityRegistry
 
-        reg = DynamicToolRegistry()
+        reg = CapabilityRegistry()
         tool = reg._tools["task_report_read"].to_openai_function()
         params = tool["function"]["parameters"]
 
@@ -64,7 +64,7 @@ class TestCapabilityToToolTranslation(unittest.TestCase):
         self.assertIn("task_id", params["properties"])
 
     def test_task_report_read_runtime_loads_report(self):
-        from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+        from app.scheduler.capability_registry import CapabilityRegistry
 
         with TemporaryDirectory() as tmp:
             report_dir = Path(tmp) / "task_reports"
@@ -75,7 +75,7 @@ class TestCapabilityToToolTranslation(unittest.TestCase):
             old_memory = os.environ.get("MEMORY_PATH")
             os.environ["MEMORY_PATH"] = tmp
             try:
-                reg = DynamicToolRegistry()
+                reg = CapabilityRegistry()
                 result = asyncio.run(reg._task_report_read({"task_id": "task-123"}))
             finally:
                 if old_memory is None:

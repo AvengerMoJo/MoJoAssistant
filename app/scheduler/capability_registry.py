@@ -148,7 +148,7 @@ class CapabilityDefinition:
         )
 
 
-class DynamicToolRegistry:
+class CapabilityRegistry:
     """Dynamic tool registry that can be updated at runtime.
 
     Two-layer loading — system layer first, personal layer second (wins on conflict):
@@ -431,8 +431,13 @@ class DynamicToolRegistry:
             CapabilityDefinition(
                 name="fetch_url",
                 description=(
-                    "Fetch and return the plain-text content of a web page. "
-                    "Strips HTML tags. Use after web_search to read the full content of a result URL."
+                    "Fetch and return the plain-text content of a specific web page. "
+                    "Strips HTML tags and returns readable text. "
+                    "Only use on specific article or document URLs — NOT on site homepages, "
+                    "section index pages, or search result pages. Those pages are mostly "
+                    "navigation HTML and return thousands of tokens of unusable content. "
+                    "Typical use: call web_search first, then fetch_url on a specific article "
+                    "URL from the results when you need the full text."
                 ),
                 danger_level="low",
                 category="web",

@@ -141,6 +141,11 @@ flag resets on reconnect; `wait_for` timeout prevents indefinite hangs.
 tmux terminal tools (`tmux__list-sessions`, `tmux__new-session`, etc.) registered
 at startup via `tmux-mcp-rs`. Agents can create and manage tmux sessions directly.
 
+Default operating model:
+- tmux is the shared virtual terminal backend, analogous to Playwright as the shared virtual browser backend
+- operators and agents should normally see the same tmux server state
+- isolation happens via dedicated tmux sessions/windows/panes, not a hidden private socket by default
+
 ---
 
 ## 5. Urgency + Importance → Attention Routing

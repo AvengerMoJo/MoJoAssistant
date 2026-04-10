@@ -2,7 +2,7 @@
 MCPClientManager — connects MoJo's agent executor to external MCP servers.
 
 Any MCP server listed in config/mcp_servers.json is connected at executor
-startup. Each server's tools are auto-registered in the DynamicToolRegistry
+startup. Each server's tools are auto-registered in the CapabilityRegistry
 with executor type "external_mcp" and the server's category (e.g. "browser").
 
 Roles that declare capabilities: ["browser"] automatically receive all tools
@@ -193,14 +193,14 @@ class MCPClientManager:
     async def discover_and_register(self, tool_registry) -> int:
         """
         Connect to all servers, discover their tools, and register them in
-        the DynamicToolRegistry with executor type "external_mcp".
+        the CapabilityRegistry with executor type "external_mcp".
 
         Tool names are prefixed with the server id to avoid collisions:
           playwright + browser_navigate → "playwright__browser_navigate"
 
         Returns the number of tools newly registered.
         """
-        from app.scheduler.dynamic_tool_registry import CapabilityDefinition
+        from app.scheduler.capability_registry import CapabilityDefinition
 
         server_tools = await self.connect_all()
 

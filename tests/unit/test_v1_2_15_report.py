@@ -124,11 +124,11 @@ class TestStoreCompletionArtifact(unittest.TestCase):
 
     def _make_executor(self, tmpdir: str):
         from app.scheduler.agentic_executor import AgenticExecutor
-        from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+        from app.scheduler.capability_registry import CapabilityRegistry
 
         ex = AgenticExecutor.__new__(AgenticExecutor)
         ex._log = lambda msg, level="info": None
-        ex._tool_registry = DynamicToolRegistry()
+        ex._tool_registry = CapabilityRegistry()
 
         # Minimal session storage stub
         storage_stub = MagicMock()

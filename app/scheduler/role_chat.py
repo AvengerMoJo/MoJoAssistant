@@ -635,10 +635,10 @@ class RoleChatSession:
                 return json.dumps({"success": False, "error": str(e)})
 
         try:
-            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+            from app.scheduler.capability_registry import CapabilityRegistry
             from app.services.memory_service import MemoryService
 
-            registry = DynamicToolRegistry()
+            registry = CapabilityRegistry()
             registry.set_memory_service(MemoryService())
             result = await registry.execute_tool(name, args)
             return json.dumps(result, ensure_ascii=False)

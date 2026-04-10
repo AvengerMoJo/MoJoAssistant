@@ -4,7 +4,7 @@
       "id": "scott_daily_news_0600",
       "type": "assistant",
       "cron": "0 6 * * *",
-      "priority": "normal",
+      "priority": "high",
       "description": "Scott daily news briefing — 6 AM every day",
       "config": {
         "role_id": "scott",
