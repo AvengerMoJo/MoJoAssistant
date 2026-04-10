@@ -28,13 +28,13 @@
     },
     {
       "id": "tmux",
-      "name": "tmux MCP (nickgnd/tmux-mcp)",
+      "name": "tmux MCP (tmux-mcp-rs)",
       "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "tmux-mcp"],
+      "command": "~/.cargo/bin/tmux-mcp-rs",
+      "args": ["--shell-type", "bash", "--config", "config/tmux-mcp.toml"],
       "category": "terminal",
-      "enabled": false,
-      "comment": "Persistent tmux session management. Set enabled=true when tmux is available."
+      "enabled": true,
+      "comment": "Virtual terminal backend. By default this attaches to tmux's normal shared server so agents and operators can see the same sessions. Do not force a private --socket here unless you intentionally want a separate tmux universe. Security denylist: config/tmux-mcp.toml."
     }
   ],
   "examples": {

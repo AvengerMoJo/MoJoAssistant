@@ -1,6 +1,20 @@
 {
   "default_tasks": [
     {
+      "id": "scott_daily_news_0600",
+      "type": "assistant",
+      "cron": "0 6 * * *",
+      "priority": "normal",
+      "description": "Scott daily news briefing — 6 AM every day",
+      "config": {
+        "role_id": "scott",
+        "goal": "Collect and synthesize today's tech and AI news briefing. Cover at least 3 independent source categories. Save the briefing to memory with today's date.",
+        "max_iterations": 20,
+        "tier_preference": "free"
+      },
+      "resources": { "requires_gpu": false }
+    },
+    {
       "id": "ahman_weekly_security_review",
       "type": "assistant",
       "cron": "0 4 * * 0",
