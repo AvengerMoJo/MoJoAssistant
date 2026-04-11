@@ -1874,6 +1874,12 @@ class AgenticExecutor:
         # Try dynamic registry first
         try:
             result = await self._tool_registry.execute_tool(name, args)
+            # Registry signals "ask the user" on behalf of the tool (e.g. non-existent role dispatch)
+            if result.get("__ask_user__"):
+                return await self._execute_tool(
+                    "ask_user",
+                    {"question": result["question"], "choices": result.get("choices")},
+                )
             if result.get("success"):
                 self._policy.track_operation(
                     operation="execute", tool_name=name, success=True

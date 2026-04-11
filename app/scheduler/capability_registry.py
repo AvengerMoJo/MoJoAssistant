@@ -762,7 +762,17 @@ class CapabilityRegistry:
         from app.roles.role_manager import RoleManager as _RM
         if _RM().get(role_id) is None:
             available = [r.get("id") for r in (_RM().list() or [])]
-            return {"success": False, "error": f"Role '{role_id}' does not exist. Available roles: {available}"}
+            return {
+                "success": False,
+                "__ask_user__": True,
+                "question": (
+                    f"I tried to dispatch a sub-task to role '{role_id}' but that role does not exist. "
+                    f"Which role should handle this task instead?\n\n"
+                    f"Task goal: {goal}\n\n"
+                    f"Available roles: {available}"
+                ),
+                "choices": available,
+            }
 
         config: Dict[str, Any] = {"goal": goal, "role_id": role_id}
         if args.get("available_tools"):
