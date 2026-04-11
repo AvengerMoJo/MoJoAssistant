@@ -50,8 +50,8 @@ _TOOL_DEFS: Dict[str, Dict] = {
         "function": {
             "name": "memory_search",
             "description": (
-                "Search your memory for relevant information, past conversations, "
-                "documents, and knowledge."
+                "Search your own role-scoped memory — knowledge units, past task reports, "
+                "and documents indexed for this role. Does NOT search the user's personal memory."
             ),
             "parameters": {
                 "type": "object",
@@ -640,6 +640,7 @@ class RoleChatSession:
 
             registry = CapabilityRegistry()
             registry.set_memory_service(MemoryService())
+            registry.set_task_context(task_id=None, dispatch_depth=0, role_id=self.role_id)
             result = await registry.execute_tool(name, args)
             return json.dumps(result, ensure_ascii=False)
         except Exception as e:
