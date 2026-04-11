@@ -1,4 +1,5 @@
 {
+  "_comment": "Example resource pool config. Copy to ~/.memory/config/resource_pool.json and fill in your own account names and env vars. Entries here are merged with config/resource_pool.json at runtime.",
   "resources": {
     "lmstudio_glm4": {
       "type": "local",
@@ -26,11 +27,11 @@
       "output_limit": 32768,
       "description": "Local Qwen 3.5-35B via LMStudio"
     },
-    "openrouter_avengermojo": {
+    "openrouter_account_a": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_AVENGERMOJO",
+      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_A",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 10,
@@ -38,13 +39,13 @@
       "context_limit": 131072,
       "output_limit": 8192,
       "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (avengermojo)"
+      "description": "OpenRouter free-tier routing (account A)"
     },
-    "openrouter_elmntri": {
+    "openrouter_account_b": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ELNTRI",
+      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_B",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 10,
@@ -52,13 +53,13 @@
       "context_limit": 131072,
       "output_limit": 8192,
       "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (elmntri)"
+      "description": "OpenRouter free-tier routing (account B)"
     },
-    "openrouter_tinyi": {
+    "openrouter_account_c": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_TINYI",
+      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_C",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 10,
@@ -66,13 +67,13 @@
       "context_limit": 131072,
       "output_limit": 8192,
       "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (tinyi)"
+      "description": "OpenRouter free-tier routing (account C)"
     },
-    "openrouter_yiai": {
+    "openrouter_account_d": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_YIAI",
+      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_D",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 11,
@@ -80,7 +81,7 @@
       "context_limit": 131072,
       "output_limit": 8192,
       "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (yiai fallback)"
+      "description": "OpenRouter free-tier routing (account D — lower priority fallback)"
     }
   },
   "tier_policy": {

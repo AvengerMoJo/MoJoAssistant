@@ -1,5 +1,6 @@
 {
   "comment": "Unified resource pool — single source of truth for all LLM resources. User overrides live in ~/.memory/config/resource_pool.json. Add new accounts there, not here.",
+  "_example_note": "OpenRouter entries below show the pattern for multi-account free-tier rotation. Replace account_a/b/c with your own OpenRouter account names and matching env vars.",
   "tier_policy": {
     "free":     { "auto_approve": true },
     "free_api": { "auto_approve": true },
@@ -21,11 +22,11 @@
       "output_limit": 8192,
       "description": "Local LMStudio server — model auto-detected from /v1/models at runtime"
     },
-    "openrouter_avengermojo": {
+    "openrouter_account_a": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_AVENGERMOJO",
+      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_A",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 10,
@@ -33,13 +34,13 @@
       "context_limit": 131072,
       "output_limit": 8192,
       "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (avengermojo)"
+      "description": "OpenRouter free-tier routing (account A)"
     },
-    "openrouter_elmntri": {
+    "openrouter_account_b": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ELNTRI",
+      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_B",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 10,
@@ -47,13 +48,13 @@
       "context_limit": 131072,
       "output_limit": 8192,
       "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (elmntri)"
+      "description": "OpenRouter free-tier routing (account B)"
     },
-    "openrouter_tinyi": {
+    "openrouter_account_c": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_TINYI",
+      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_C",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 10,
@@ -61,13 +62,13 @@
       "context_limit": 131072,
       "output_limit": 8192,
       "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (tinyi)"
+      "description": "OpenRouter free-tier routing (account C)"
     },
-    "openrouter_yiai": {
+    "openrouter_account_d": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_YIAI",
+      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_D",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 11,
@@ -75,7 +76,7 @@
       "context_limit": 131072,
       "output_limit": 8192,
       "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (yiai fallback)"
+      "description": "OpenRouter free-tier routing (account D — lower priority fallback)"
     }
   }
 }

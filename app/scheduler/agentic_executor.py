@@ -24,8 +24,10 @@ from app.scheduler.capability_registry import CapabilityRegistry
 from app.scheduler.safety_policy import SafetyPolicy
 from app.scheduler.security_gate import SecurityGate, Decision as SecurityDecision
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
-from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context, build_capability_summary
 from app.roles.owner_context import load_owner_profile, infer_context_tier, build_owner_context_slice
+from app.scheduler.capability_resolver import CapabilityResolver
+from app.scheduler.role_template_engine import RoleTemplateEngine
+from app.scheduler.capability_gap_checker import CapabilityGapChecker
 
 # Tools whose output commonly bloats context (bash stdout, file reads).
 # Results longer than this cap are truncated before being added to messages.
@@ -392,6 +394,9 @@ class AgenticExecutor:
         self._mcp_tools_discovered = False
         self._policy = SafetyPolicy()
         self._gate = SecurityGate(safety_policy=self._policy)
+        self._capability_resolver = CapabilityResolver()
+        self._role_template_engine = RoleTemplateEngine()
+        self._gap_checker = CapabilityGapChecker()
         self._openrouter_model_cache: Dict[str, Dict[str, Any]] = {}
         self._openrouter_model_cache_ttl_seconds = 600
         self._role_id: Optional[str] = None
@@ -450,7 +455,6 @@ class AgenticExecutor:
             )
 
         # Load role personality if role_id is specified
-        role_prefix = ""
         role_model_preference = None
         role_id = config.get("role_id")
         self._role_id = role_id  # make role_id available to tool dispatch
@@ -469,7 +473,6 @@ class AgenticExecutor:
                 from app.roles.role_manager import RoleManager
                 role = RoleManager().get(role_id)
                 if role:
-                    role_prefix = role.get("system_prompt", "")
                     role_model_preference = role.get("model_preference")
                     self._policy_monitor = PolicyMonitor.from_role(role_id, role, task_id=task.id)
                     self._log(f"Loaded role: {role.get('name')} (id={role_id})")
@@ -528,22 +531,11 @@ class AgenticExecutor:
         ) if role else None
         mode_overlay = role_overlay if role_overlay else mode_contract.prompt_overlay
 
-        ninechapter_overlay = build_behavioral_overlay(role) if role else ""
-        task_context = build_task_context(role) if role else ""
-
-        # Resolve tool names from role capabilities → used for LLM tool schema + gate enforcement.
-        explicit_tools = config.get("available_tools")
-        if explicit_tools is not None:
-            enabled_tool_names = self._resolve_capabilities({"capabilities": explicit_tools})
-        elif role:
-            enabled_tool_names = self._resolve_capabilities(role)
-        else:
-            enabled_tool_names = ["memory_search"]
-        if "ask_user" not in enabled_tool_names:
-            enabled_tool_names = list(enabled_tool_names) + ["ask_user"]
+        # Resolve tool names: system defaults + role capabilities + runtime override.
+        enabled_tool_names = self._capability_resolver.resolve(
+            role, config.get("available_tools"), self._tool_registry
+        )
         self._enabled_tool_names = enabled_tool_names
-
-        capability_summary = build_capability_summary(role) if role else ""
 
         from datetime import datetime, timezone
         _now = datetime.now(timezone.utc).astimezone()
@@ -552,14 +544,12 @@ class AgenticExecutor:
             f"- Current date and time: {_now.strftime('%Y-%m-%d %H:%M %Z')}\n\n"
         )
 
-        if role_prefix:
+        character_block = self._role_template_engine.build(role) if role else ""
+        if character_block:
             system_prompt = (
                 mode_overlay
                 + runtime_context
-                + ninechapter_overlay
-                + task_context
-                + capability_summary
-                + role_prefix
+                + character_block
                 + "\n\n---\n\n"
                 + workflow_prompt
             )
@@ -618,6 +608,23 @@ class AgenticExecutor:
             # Fallback to builtins
             elif tool_name in BUILTIN_TOOLS:
                 tool_defs.append(BUILTIN_TOOLS[tool_name])
+
+        # --- Capability gap check (fresh starts only) ---
+        # Run before resume logic so we can bail early on missing-capability blockers.
+        _gap_resume_skip = config.get("resume_from_task_id")
+        if not _gap_resume_skip:
+            gap_result = self._gap_checker.check(goal, enabled_tool_names, role)
+            for w in gap_result.warnings:
+                self._log(f"CapabilityGapChecker warning: {w}", "warning")
+            if gap_result.has_blockers:
+                self._log(
+                    f"CapabilityGapChecker BLOCKER for task {task.id}: {gap_result.blockers}"
+                )
+                return TaskResult(
+                    success=False,
+                    waiting_for_input=gap_result.ask_user_question(),
+                    waiting_for_input_choices=["add capabilities", "proceed anyway"],
+                )
 
         # --- Resume support ---
         resume_from = config.get("resume_from_task_id")
