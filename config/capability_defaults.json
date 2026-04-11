@@ -1,0 +1,23 @@
+{
+  "_description": "System-level capability defaults — what every agent gets regardless of role.",
+  "_version": "1.0.0",
+  "_comment": [
+    "always_available: tool names injected for every agent, non-negotiable.",
+    "  ask_user is the HITL escape hatch — can never be removed.",
+    "",
+    "agent_defaults: capability category names (from capability_catalog.json)",
+    "  that every agent receives on top of their role capabilities.",
+    "  Keep this minimal — memory + task-reading is universally useful.",
+    "  Terminal, exec, browser etc. are role-specific, not defaults.",
+    "",
+    "Personal override: ~/.memory/config/capability_defaults.json",
+    "  Same schema. Keys in personal config are merged/override system values."
+  ],
+  "always_available": [
+    "ask_user"
+  ],
+  "agent_defaults": [
+    "memory",
+    "orchestration"
+  ]
+}

@@ -115,7 +115,7 @@ class ToolRegistry:
             },
             "capability_catalog": {
                 "file": "config/capability_catalog.json",
-                "description": "Capability catalog — maps tool names to categories (memory, file, web, exec, comms). Assistant roles declare capabilities by category or explicit tool name. User custom entries live in ~/.memory/config/capability_catalog.json.",
+                "description": "Capability catalog — maps concrete tool names to capability categories (memory, file, web, exec, comms). Assistant roles declare capabilities by category or explicit tool name; the scheduler translates capabilities into model-facing tool-call schemas at execution time. User custom entries live in ~/.memory/config/capability_catalog.json.",
                 "sensitive_keys": [],
                 "on_change": self._on_tool_catalog_change,
             },
@@ -167,7 +167,6 @@ class ToolRegistry:
             "get_memory_stats",            # Now under memory(action='stats')
             "get_recent_events",           # Now get_context(type='events')
             "get_attention_summary",       # Now get_context(type='attention')
-            "task_session_read",           # Now get_context(type='task_session')
             "scheduler_resume_task",       # Retired — use reply_to_task
             # Memory management → memory hub
             "end_conversation",
@@ -461,7 +460,7 @@ class ToolRegistry:
 
         Design rule: ONLY user-facing tools live here.
         Agent-layer tools (browser_navigate, bash_exec, memory_search, etc.)
-        belong in agentic_executor.py BUILTIN_TOOLS or the DynamicToolRegistry.
+        belong in agentic_executor.py BUILTIN_TOOLS or the CapabilityRegistry.
         Retired individual tools are in placeholder_tools (handled in execute()).
         """
         return [
@@ -743,50 +742,95 @@ class ToolRegistry:
             {
                 "name": "scheduler",
                 "description": (
-                    "Scheduler management hub. Call with no action for help menu.\n\n"
-                    "action='add',    task_id, type, goal, role_id?, available_tools?, ... — schedule a task\n"
-                    "action='list',   status?, priority?, limit? — compact task summary (id, status, goal snippet, times)\n"
-                    "action='get',    task_id                    — full task detail (config, result, metrics, iteration_log)\n"
-                    "action='remove', task_id                    — remove a task\n"
-                    "action='purge',  before_date?               — bulk remove old completed/failed tasks\n"
-                    "action='status'                             — daemon + queue stats\n"
-                    "action='daemon_start'                       — start the scheduler daemon\n"
-                    "action='daemon_stop'                        — stop the scheduler daemon\n"
-                    "action='daemon_restart'                     — restart the scheduler daemon\n"
-                    "action='list_tools'                         — tools available to scheduled agents"
+                    "Schedule and manage tasks.\n\n"
+                    "── DISPATCHING A ROLE TASK ──\n"
+                    "Use type='assistant' to assign work to a named role. The role's capabilities are\n"
+                    "resolved automatically — you do NOT need to pass available_tools unless you want\n"
+                    "to override or extend the role's defaults for this specific run.\n\n"
+                    "Minimal dispatch (role handles the rest):\n"
+                    "  scheduler(action='add', type='assistant', role_id='researcher', goal='Summarise the latest Redis release notes')\n\n"
+                    "Override tools for a single run (optional):\n"
+                    "  scheduler(action='add', type='assistant', role_id='network_admin', goal='Scan home network',\n"
+                    "            available_tools=['+terminal', '+exec'], max_iterations=15)\n"
+                    "  available_tools modifiers: '+category' adds, '-category' removes, plain list replaces role caps.\n\n"
+                    "Result artifacts written to:\n"
+                    "  ~/.memory/task_sessions/<task_id>.json  — full iteration log\n"
+                    "  ~/.memory/task_reports/<task_id>.json   — normalised completion record\n\n"
+                    "── TASK TYPES ──\n"
+                    "  type='assistant' — role-based LLM think-act loop (most common)\n"
+                    "  type='custom'    — single shell command, no LLM\n"
+                    "  type='dreaming'  — memory consolidation pipeline\n"
+                    "  type='agent'     — external agent subprocess (opencode, claude_code)\n\n"
+                    "── ACTIONS ──\n"
+                    "action='add',     type, goal, role_id?, available_tools?, max_iterations?, priority? — schedule\n"
+                    "action='list',    status?, priority?, limit?   — compact task summary\n"
+                    "action='get',     task_id                      — full detail (config, result, metrics)\n"
+                    "action='remove',  task_id                      — delete a task\n"
+                    "action='cleanup', zombie_minutes?, failed_days?, dry_run? — kill stuck tasks, remove stale failures\n"
+                    "action='purge',   before_date?                 — bulk remove old completed/failed tasks\n"
+                    "action='status'                                — daemon + queue stats\n"
+                    "action='daemon_start/stop/restart'             — daemon lifecycle\n"
+                    "action='list_tools'                            — inspect tools available to agents"
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "description": "Operation. Omit for help menu."},
                         "task_id": {"type": "string"},
-                        "type": {"type": "string", "description": "Task type (add action)."},
-                        "goal": {"type": "string", "description": "Task goal (add action)."},
-                        "cron": {"type": "string", "description": "Cron expression (add action)."},
-                        "priority": {"type": "string", "enum": ["low", "normal", "high"]},
-                        "role_id": {"type": "string", "description": "Role for assistant tasks (add action)."},
+                        "type": {
+                            "type": "string",
+                            "enum": ["assistant", "custom", "agent", "dreaming", "scheduled"],
+                            "description": (
+                                "Task type. 'assistant' = role-based LLM task (most common). "
+                                "'custom' = shell command. 'dreaming' = memory pipeline. "
+                                "'agent' = external agent subprocess."
+                            ),
+                        },
+                        "goal": {"type": "string", "description": "What the agent should accomplish (add action)."},
+                        "cron": {"type": "string", "description": "Cron expression for recurring tasks (add action)."},
+                        "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                        "role_id": {
+                            "type": "string",
+                            "description": (
+                                "Role to assign this task to (add action, type='assistant'). "
+                                "The role's saved capabilities are used automatically — available_tools is optional."
+                            ),
+                        },
                         "available_tools": {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "Runtime tool override for this specific task (add action, type='assistant'). "
-                                "Overrides the role's default capabilities for this run only. "
-                                "Use to restrict (e.g. read-only task: ['memory','file']) or extend (e.g. add 'browser' for one-off web task). "
-                                "If omitted, the role's capabilities are used. "
+                                "OPTIONAL runtime capability override (add action, type='assistant'). "
+                                "If omitted, the role's saved capabilities are used — no need to list tools manually. "
+                                "Use modifiers to adjust: '+terminal' adds terminal tools, '-web' removes web tools. "
+                                "Plain entries without +/- replace the role's capability layer entirely. "
+                                "Entries can be category names ('memory', 'file', 'terminal') or exact tool names. "
                                 "Call action='list_tools' to see all available tool names."
                             ),
                         },
                         "max_iterations": {
                             "type": "integer",
-                            "description": "Max think-act iterations before the task fails (add action, default 10).",
+                            "description": "Max think-act iterations (add action, default 10).",
                         },
                         "pinned_resource": {
                             "type": "string",
-                            "description": "Pin this task to a specific resource ID (add action, e.g. 'lmstudio__google_gemma_4_26b_a4b' or 'lmstudio_qwen35b'). Bypasses tier selection. Use resource_status to see available IDs.",
+                            "description": "Pin to a specific LLM resource ID, bypassing tier selection (add action).",
                         },
                         "status": {"type": "string", "description": "Filter by status (list action)."},
-                        "limit": {"type": "integer"},
-                        "before_date": {"type": "string", "description": "ISO date for purge cutoff."},
+                        "limit": {"type": "integer", "description": "Max results to return (list action)."},
+                        "before_date": {"type": "string", "description": "ISO date cutoff (purge action)."},
+                        "zombie_minutes": {
+                            "type": "integer",
+                            "description": "Tasks running longer than this (minutes) are considered zombies (cleanup action, default 120).",
+                        },
+                        "failed_days": {
+                            "type": "integer",
+                            "description": "Failed tasks older than this (days) are removed (cleanup action, default 7).",
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "Report what cleanup would do without making changes (cleanup action, default false).",
+                        },
                     },
                     "required": [],
                 },
@@ -938,6 +982,40 @@ class ToolRegistry:
             },
             # LLM Server Discovery (not a config operation — queries external service)
             # Task Session Tools
+            {
+                "name": "task_session_read",
+                "description": (
+                    "Read a scheduler task session by task_id. "
+                    "Returns the full message trail, final answer, status, and metadata "
+                    "from ~/.memory/task_sessions/<task_id>.json."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID to read"},
+                        "include_metadata": {
+                            "type": "boolean",
+                            "description": "Include per-message metadata when true",
+                            "default": False,
+                        },
+                    },
+                    "required": ["task_id"],
+                },
+            },
+            {
+                "name": "task_report_read",
+                "description": (
+                    "Read a normalized task report by task_id from "
+                    "~/.memory/task_reports/<task_id>.json."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID to read"},
+                    },
+                    "required": ["task_id"],
+                },
+            },
             {
                 "name": "reply_to_task",
                 "description": (
@@ -1519,6 +1597,8 @@ Agent resumes within seconds.
         # Task Session Tools
         elif name == "task_session_read":
             return await self._execute_task_session_read(args)
+        elif name == "task_report_read":
+            return await self._execute_task_report_read(args)
         elif name == "scheduler_resume_task":
             return await self._execute_scheduler_resume_task(args)
         elif name == "reply_to_task":
@@ -1562,7 +1642,7 @@ Agent resumes within seconds.
         elif name == "role_get":
             return await self._execute_role_get(args)
         else:
-            # Fallback: try user custom tools in DynamicToolRegistry
+            # Fallback: try user custom tools in CapabilityRegistry
             try:
                 dyn_registry = self.scheduler.executor._get_agentic_executor()._tool_registry
                 tool_def = dyn_registry.get_tool(name)
@@ -1615,6 +1695,7 @@ Agent resumes within seconds.
         type='attention':             grouped inbox with cursor (get_attention_summary).
         type='events':                raw event log (get_recent_events).
         type='task_session':          full task output (task_session_read).
+        type='task_report':           normalized completion record (task_report_read).
         """
         ctx_type = args.get("type", "orientation")
 
@@ -1637,6 +1718,12 @@ Agent resumes within seconds.
             if not task_id:
                 return {"status": "error", "message": "task_id is required for type='task_session'"}
             return await self._execute_task_session_read({"task_id": task_id})
+
+        if ctx_type == "task_report":
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required for type='task_report'"}
+            return await self._execute_task_report_read({"task_id": task_id})
 
         # Default: orientation
         from datetime import datetime
@@ -2727,6 +2814,93 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Failed to purge tasks: {str(e)}"}
 
+    async def _execute_scheduler_cleanup(
+        self, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Kill zombie tasks + remove stale failed tasks.
+
+        Zombie: task stuck in 'running' status for longer than zombie_minutes.
+        Stale failed: task in 'failed' status whose completed_at (or started_at) is
+        older than failed_days.
+
+        dry_run=True reports what would change without modifying anything.
+        """
+        from datetime import datetime, timedelta
+        from app.scheduler.models import TaskStatus
+
+        try:
+            zombie_minutes = int(args.get("zombie_minutes") or 120)
+            failed_days = int(args.get("failed_days") or 7)
+            dry_run = bool(args.get("dry_run", False))
+
+            now = datetime.now()
+            zombie_cutoff = now - timedelta(minutes=zombie_minutes)
+            failed_cutoff = now - timedelta(days=failed_days)
+
+            all_tasks = self.scheduler.list_tasks()
+
+            zombies_killed = []
+            failed_removed = []
+
+            for task in all_tasks:
+                # --- Zombie detection: running too long ---
+                if task.status == TaskStatus.RUNNING:
+                    started = task.started_at
+                    if started and started < zombie_cutoff:
+                        age_minutes = int((now - started).total_seconds() / 60)
+                        if not dry_run:
+                            task.status = TaskStatus.FAILED
+                            task.last_error = (
+                                f"Zombie: task was stuck in 'running' for {age_minutes}m "
+                                f"(threshold: {zombie_minutes}m). Force-failed by cleanup."
+                            )
+                            task.completed_at = now
+                            self.scheduler.queue.update(task)
+                        zombies_killed.append({
+                            "id": task.id,
+                            "role_id": (task.config or {}).get("role_id"),
+                            "goal": ((task.config or {}).get("goal") or "")[:80],
+                            "started_at": started.isoformat(),
+                            "age_minutes": age_minutes,
+                        })
+
+                # --- Stale failed: old failed tasks ---
+                elif task.status == TaskStatus.FAILED:
+                    ts = task.completed_at or task.started_at or task.created_at
+                    if ts and ts < failed_cutoff:
+                        age_days = int((now - ts).total_seconds() / 86400)
+                        if not dry_run:
+                            self.scheduler.remove_task(task.id)
+                        failed_removed.append({
+                            "id": task.id,
+                            "role_id": (task.config or {}).get("role_id"),
+                            "goal": ((task.config or {}).get("goal") or "")[:80],
+                            "age_days": age_days,
+                        })
+
+            verb = "Would kill" if dry_run else "Killed"
+            verb2 = "Would remove" if dry_run else "Removed"
+            return {
+                "status": "success",
+                "dry_run": dry_run,
+                "zombies": {
+                    "count": len(zombies_killed),
+                    "threshold_minutes": zombie_minutes,
+                    "message": f"{verb} {len(zombies_killed)} zombie task(s)",
+                    "tasks": zombies_killed,
+                },
+                "stale_failed": {
+                    "count": len(failed_removed),
+                    "threshold_days": failed_days,
+                    "message": f"{verb2} {len(failed_removed)} stale failed task(s)",
+                    "tasks": failed_removed,
+                },
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"Cleanup failed: {str(e)}"}
+
     # ========================================================================
     # Scheduler Daemon Control execution methods
     # ========================================================================
@@ -2850,9 +3024,9 @@ Agent resumes within seconds.
     ) -> Dict[str, Any]:
         """Return all tools available for assignment to agentic tasks."""
         try:
-            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+            from app.scheduler.capability_registry import CapabilityRegistry
 
-            registry = DynamicToolRegistry()
+            registry = CapabilityRegistry()
             tools = registry.list_tools()
             return {
                 "status": "success",
@@ -2874,14 +3048,14 @@ Agent resumes within seconds.
         """Return tools from the catalog, optionally filtered by category."""
         try:
             from app.config.config_loader import load_layered_json_config
-            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+            from app.scheduler.capability_registry import CapabilityRegistry
 
             catalog = load_layered_json_config("config/capability_catalog.json")
             catalog_entries = catalog.get("tools", {})
             categories_meta = catalog.get("categories", {})
             category_filter = args.get("category")
 
-            registry = DynamicToolRegistry()
+            registry = CapabilityRegistry()
             registry_tools = registry.list_tools()
 
             result = []
@@ -2920,6 +3094,7 @@ Agent resumes within seconds.
                 "categories": categories_meta,
                 "usage": (
                     "Roles declare capabilities by category or explicit name (e.g. [\"memory\", \"file\", \"curl_request\"]). "
+                    "The scheduler translates those capabilities into concrete model-facing tool-call schemas at execution time. "
                     "Pass explicit tool names in task config.available_tools to override."
                 ),
             }
@@ -3159,6 +3334,36 @@ Agent resumes within seconds.
             return {
                 "status": "error",
                 "message": f"Failed to read task session: {str(e)}",
+            }
+
+    async def _execute_task_report_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute task_report_read tool"""
+        try:
+            import json
+            from pathlib import Path
+            from app.config.paths import get_memory_subpath
+
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required"}
+
+            report_path = Path(get_memory_subpath("task_reports")) / f"{task_id}.json"
+            if not report_path.exists():
+                return {
+                    "status": "error",
+                    "message": f"No report found for task '{task_id}'",
+                }
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            return {
+                "status": "success",
+                "task_id": task_id,
+                "report": report,
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Failed to read task report: {str(e)}",
             }
 
     async def _execute_scheduler_resume_task(
@@ -3498,12 +3703,12 @@ Agent resumes within seconds.
             return {"status": "success", "tool": tool.to_dict()}
 
         if action == "capability_add":
-            from app.scheduler.dynamic_tool_registry import ToolDefinition
+            from app.scheduler.capability_registry import CapabilityDefinition
             tool_name = args.get("tool_name")
             description = args.get("description")
             if not tool_name or not description:
                 return {"status": "error", "message": "tool_name and description are required."}
-            tool = ToolDefinition(
+            tool = CapabilityDefinition(
                 name=tool_name,
                 description=description,
                 parameters=args.get("parameters") or {"type": "object", "properties": {}, "required": []},
@@ -4083,9 +4288,9 @@ Agent resumes within seconds.
             if hasattr(self, "scheduler") and hasattr(self.scheduler, "executor"):
                 executor = self.scheduler.executor
                 if hasattr(executor, "_tool_registry") and executor._tool_registry:
-                    from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+                    from app.scheduler.capability_registry import CapabilityRegistry
 
-                    executor._tool_registry = DynamicToolRegistry()
+                    executor._tool_registry = CapabilityRegistry()
                     executor._tool_registry.set_memory_service(self.memory_service)
                     self.logger.info("Agentic tools config reloaded")
         except Exception:
@@ -4665,6 +4870,7 @@ Agent resumes within seconds.
                 "get":            "Task detail — params: task_id",
                 "remove":         "Remove a task — params: task_id",
                 "purge":          "Bulk remove old tasks — params: before_date?",
+                "cleanup":        "Kill zombies + archive stale failed tasks — params: zombie_minutes?(default 120), failed_days?(default 7), dry_run?(default false)",
                 "status":         "Daemon + queue stats",
                 "daemon_start":   "Start the scheduler daemon",
                 "daemon_stop":    "Stop the scheduler daemon",
@@ -4714,6 +4920,8 @@ Agent resumes within seconds.
             return await self._execute_scheduler_remove_task({"task_id": task_id})
         elif action == "purge":
             return await self._execute_scheduler_purge_tasks({"before_date": args.get("before_date")})
+        elif action == "cleanup":
+            return await self._execute_scheduler_cleanup(args)
         elif action == "status":
             return await self._execute_scheduler_daemon_status({})
         elif action == "daemon_start":

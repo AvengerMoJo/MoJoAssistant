@@ -30,7 +30,8 @@ def _write_report(directory: Path, task_id: str, role_id: str, goal: str, conten
         "task_id": task_id,
         "role_id": role_id,
         "goal": goal,
-        "status": "pending_review",
+        "status": "completed",
+        "review_status": "pending_review",
         "created_at": "2026-03-29T10:00:00",
         "content": content,
     }

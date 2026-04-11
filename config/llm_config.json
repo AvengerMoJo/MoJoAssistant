@@ -1,5 +1,6 @@
 {
   "comment": "Unified LLM Configuration — single source of truth for both LLM interfaces and resource pool. Runtime overrides live in ~/.memory/config/llm_config.json.",
+  "_example_note": "OpenRouter entries show the pattern for multi-account free-tier rotation. Replace account_a/b/c/d with your own OpenRouter account slugs and API keys.",
   "tier_policy": {
     "free": {
       "auto_approve": true
@@ -68,7 +69,7 @@
       "dynamic_discovery": true
     },
     "openrouter": {
-      "avengermojo": {
+      "account_a": {
         "provider": "openai-compatible",
         "base_url": "https://openrouter.ai/api/v1",
         "api_key": "sk-or-v1-your-openrouter-key-account-a",
@@ -82,9 +83,9 @@
         "priority": 10,
         "enabled": true,
         "account_group": "openrouter_free",
-        "description": "OpenRouter free-tier routing (avengermojo)"
+        "description": "OpenRouter free-tier routing (account A)"
       },
-      "elntri": {
+      "account_b": {
         "provider": "openai-compatible",
         "base_url": "https://openrouter.ai/api/v1",
         "api_key": "sk-or-v1-your-openrouter-key-account-b",
@@ -98,9 +99,9 @@
         "priority": 10,
         "enabled": true,
         "account_group": "openrouter_free",
-        "description": "OpenRouter free-tier routing (elntri)"
+        "description": "OpenRouter free-tier routing (account B)"
       },
-      "yiai": {
+      "account_c": {
         "provider": "openai-compatible",
         "base_url": "https://openrouter.ai/api/v1",
         "api_key": "sk-or-v1-your-openrouter-key-account-c",
@@ -114,9 +115,9 @@
         "priority": 11,
         "enabled": true,
         "account_group": "openrouter_free",
-        "description": "OpenRouter free-tier routing (yiai fallback)"
+        "description": "OpenRouter free-tier routing (account C — lower priority fallback)"
       },
-      "tinyi": {
+      "account_d": {
         "provider": "openai-compatible",
         "base_url": "https://openrouter.ai/api/v1",
         "api_key": "sk-or-v1-your-openrouter-key-account-d",
@@ -130,7 +131,7 @@
         "priority": 10,
         "enabled": true,
         "account_group": "openrouter_free",
-        "description": "OpenRouter free-tier routing (tinyi)"
+        "description": "OpenRouter free-tier routing (account D)"
       }
     },
     "openregistry": {}
@@ -142,18 +143,18 @@
     "default": "lmstudio",
     "free_routing_strategy": {
       "default_account_priority": [
-        "avengermojo",
-        "elntri",
-        "tinyi"
+        "account_a",
+        "account_b",
+        "account_d"
       ],
       "model_selection_rule": "auto_choose_free_or_cheapest",
       "failover_enabled": true,
       "account_fallback_order": [
-        "elntri",
-        "tinyi",
-        "yiai"
+        "account_b",
+        "account_d",
+        "account_c"
       ]
     }
   },
-  "default_interface": "openrouter_avengermojo"
+  "default_interface": "openrouter_account_a"
 }

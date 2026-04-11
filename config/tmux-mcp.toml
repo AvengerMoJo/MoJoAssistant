@@ -1,0 +1,42 @@
+# tmux-mcp-rs safety config for MoJoAssistant agents
+#
+# Design model:
+# - tmux is the shared virtual terminal backend, analogous to Playwright as
+#   the shared virtual browser backend
+# - agents get isolation by tmux session/window/pane, not by a hidden socket
+# - operators and agents see the same tmux server state by default
+#
+# Denylist dangerous commands; everything else is allowed.
+# Personal override: copy to ~/.memory/config/tmux-mcp.toml to extend or
+# tighten rules without touching this file.
+
+[security]
+mode = "denylist"
+
+# Block commands that could damage the host or exfiltrate data
+command_patterns = [
+    "rm\\s+-rf",
+    "rm\\s+--no-preserve-root",
+    "dd\\s+.*of=/dev",
+    "mkfs",
+    "fdisk",
+    "parted",
+    ":(){:|:&};:",   # fork bomb
+    "chmod\\s+-R\\s+777\\s+/",
+    "chown\\s+-R.*root",
+    "shutdown",
+    "reboot",
+    "halt",
+    "poweroff",
+    "curl.*\\|.*sh",
+    "wget.*\\|.*sh",
+    "curl.*\\|.*bash",
+    "wget.*\\|.*bash",
+]
+
+# Advanced: uncomment to restrict which tmux sockets agents may attach to.
+# Only needed if you want a fully isolated agent tmux universe separate from
+# your normal terminal sessions.
+#
+# [sockets]
+# allowlist = ["/tmp/mojo-agent.sock"]

@@ -34,8 +34,8 @@ def _run(coro):
 class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
 
     def _make_registry(self, depth=0, scheduler=None):
-        from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
-        reg = DynamicToolRegistry.__new__(DynamicToolRegistry)
+        from app.scheduler.capability_registry import CapabilityRegistry
+        reg = CapabilityRegistry.__new__(CapabilityRegistry)
         reg._tools = {}
         reg._mcp_client_manager = None
         reg._scheduler = scheduler
@@ -46,9 +46,9 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         return reg
 
     async def test_blocks_at_max_depth(self):
-        from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+        from app.scheduler.capability_registry import CapabilityRegistry
         # Must provide a scheduler so the scheduler-check passes and depth-check is reached
-        reg = self._make_registry(depth=DynamicToolRegistry.MAX_DISPATCH_DEPTH, scheduler=MagicMock())
+        reg = self._make_registry(depth=CapabilityRegistry.MAX_DISPATCH_DEPTH, scheduler=MagicMock())
         result = await reg._dispatch_subtask({"role_id": "ahman", "goal": "do something"})
         self.assertFalse(result["success"])
         self.assertIn("Max dispatch depth", result["error"])
@@ -167,8 +167,8 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
 
     async def test_depth_1_still_allowed(self):
         """Depth 1 is below MAX_DISPATCH_DEPTH=2 and should proceed."""
-        from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
-        reg = self._make_registry(depth=DynamicToolRegistry.MAX_DISPATCH_DEPTH - 1)
+        from app.scheduler.capability_registry import CapabilityRegistry
+        reg = self._make_registry(depth=CapabilityRegistry.MAX_DISPATCH_DEPTH - 1)
         reg._scheduler = None  # will fail on scheduler check, but NOT depth check
         result = await reg._dispatch_subtask({"role_id": "ahman", "goal": "do something"})
         self.assertIn("Scheduler not available", result["error"])  # depth check passed
@@ -445,9 +445,11 @@ class TestRoleChatSessionAsync(unittest.IsolatedAsyncioTestCase):
 
     def _make_session(self, role_id="test_role", session_id="test_session_001"):
         from app.scheduler.role_chat import RoleChatSession
+        from app.scheduler.interaction_mode import InteractionMode
         session = RoleChatSession.__new__(RoleChatSession)
         session.role_id = role_id
         session.session_id = session_id
+        session.mode = InteractionMode.DASHBOARD_CHAT
         session._session_dir = Path(self.tmp) / "roles" / role_id / "chat_history"
         session._session_dir.mkdir(parents=True, exist_ok=True)
         session._session_file = session._session_dir / f"{session_id}.json"

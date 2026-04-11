@@ -13,6 +13,7 @@ No external services required.
 
 import asyncio
 import json
+from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -49,6 +50,31 @@ def _make_llm_response(content: str) -> dict:
                     "tool_calls": None,
                 },
                 "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    }
+
+
+def _make_tool_call_response(name: str, arguments: dict) -> dict:
+    return {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(arguments),
+                            },
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
             }
         ],
         "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
@@ -158,3 +184,60 @@ async def test_agent_loop_missing_goal_returns_failure(isolated_memory_path):
     result = await executor.execute(task)
     assert result.success is False
     assert "goal" in (result.error_message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_file_capability_translates_to_working_tool_and_writes_artifacts(
+    isolated_memory_path,
+):
+    """Assistant tasks with file capability should expose concrete file tools,
+    complete one tool call, and write session/report artifacts."""
+    from app.scheduler.agentic_executor import AgenticExecutor
+
+    stub_resource = _make_stub_resource()
+    rm = _make_resource_manager(stub_resource)
+    executor = AgenticExecutor(resource_manager=rm)
+
+    task = Task(
+        id="smoke-agent-file-1",
+        type=TaskType.ASSISTANT,
+        priority=TaskPriority.LOW,
+        config={
+            "goal": "Inspect the current directory and report that you did it",
+            "available_tools": ["file"],
+            "max_iterations": 3,
+        },
+    )
+
+    final_reply = (
+        "<FINAL_ANSWER>\n"
+        "Completed.\n\n"
+        "Summary: I listed the current directory successfully.\n"
+        "</FINAL_ANSWER>"
+    )
+
+    with patch(
+        "app.llm.unified_client.UnifiedLLMClient.call_async",
+        new_callable=AsyncMock,
+        side_effect=[
+            _make_tool_call_response("list_files", {"path": "."}),
+            _make_llm_response(final_reply),
+        ],
+    ):
+        result = await executor.execute(task)
+
+    assert result.success is True
+    assert result.error_message is None
+
+    session_path = Path(isolated_memory_path) / "task_sessions" / "smoke-agent-file-1.json"
+    report_path = Path(isolated_memory_path) / "task_reports" / "smoke-agent-file-1.json"
+
+    assert session_path.exists(), "task session artifact should be written"
+    assert report_path.exists(), "task report artifact should be written"
+
+    session = json.loads(session_path.read_text(encoding="utf-8"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert session["final_answer"] is not None
+    assert report["status"] in {"completed", "completed_fallback"}
+    assert report["metrics"]["tool_calls"] >= 1

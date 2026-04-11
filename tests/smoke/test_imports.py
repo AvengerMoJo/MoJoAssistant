@@ -20,7 +20,7 @@ CORE_MODULES = [
     "app.scheduler.policy.static",
     "app.scheduler.policy.content",
     "app.scheduler.policy.data_boundary_checker",
-    "app.scheduler.dynamic_tool_registry",
+    "app.scheduler.capability_registry",
     "app.memory.simplified_embeddings",
     "app.mcp.adapters.audit_log",
     "app.mcp.adapters.event_log",

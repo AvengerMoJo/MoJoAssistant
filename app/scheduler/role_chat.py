@@ -50,8 +50,8 @@ _TOOL_DEFS: Dict[str, Dict] = {
         "function": {
             "name": "memory_search",
             "description": (
-                "Search your memory for relevant information, past conversations, "
-                "documents, and knowledge."
+                "Search your own memory — knowledge units and past task reports scoped to "
+                "your role. Does NOT access the user's personal conversation history."
             ),
             "parameters": {
                 "type": "object",
@@ -286,17 +286,26 @@ class RoleChatSession:
         if not ku_dir.exists():
             return ""
 
+        # Collect archive files at any nesting depth (handles both flat subdirs
+        # like auto_dream_* and nested paths like reports/rebecca/report_id/).
+        # Sort newest-first by mtime, take up to 3 distinct archives.
         archives: list[dict] = []
-        for subdir in sorted(ku_dir.iterdir(), reverse=True):
-            if not subdir.is_dir():
+        all_archive_files = sorted(
+            ku_dir.rglob("archive_v*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        seen_parents: set = set()
+        for archive_file in all_archive_files:
+            parent = archive_file.parent
+            if parent in seen_parents:
+                continue  # already loaded the latest for this conversation
+            seen_parents.add(parent)
+            try:
+                with open(archive_file, encoding="utf-8") as f:
+                    archives.append(json.load(f))
+            except Exception:
                 continue
-            archive_files = sorted(subdir.glob("archive_v*.json"), reverse=True)
-            if archive_files:
-                try:
-                    with open(archive_files[0], encoding="utf-8") as f:
-                        archives.append(json.load(f))
-                except Exception:
-                    continue
             if len(archives) >= 3:
                 break
 
@@ -517,37 +526,44 @@ class RoleChatSession:
         results: List[Dict[str, Any]] = []
 
         # --- Source 1: role's distilled knowledge units ---
+        # Use rglob to handle nested archive paths (reports/, sessions/, flat auto_dream_*)
         ku_dir = Path(get_memory_subpath("roles")) / self.role_id / "knowledge_units"
         if ku_dir.exists():
-            for subdir in sorted(ku_dir.iterdir(), reverse=True):
-                if not subdir.is_dir():
-                    continue
-                archive_files = sorted(subdir.glob("archive_v*.json"), reverse=True)
-                for archive_file in archive_files[:1]:
-                    try:
-                        with open(archive_file, encoding="utf-8") as f:
-                            archive = json.load(f)
-                    except Exception:
-                        continue
-                    for ku in archive.get("knowledge_units", []):
-                        meaning = (ku.get("core_meaning") or "").strip()
-                        quote = (ku.get("quote") or "").strip()
-                        source = (ku.get("source") or "").strip()
-                        if not meaning:
-                            continue
-                        text = meaning + (f' — "{quote}"' if quote and quote != meaning else "")
-                        if query_lower and query_lower not in text.lower() and query_lower not in source.lower():
-                            continue
-                        results.append({
-                            "type": "knowledge_unit",
-                            "source": source,
-                            "content": text,
-                            "created_at": (ku.get("created_at") or archive.get("created_at") or "")[:19],
-                        })
-                        if len(results) >= limit:
-                            break
+            all_archives = sorted(
+                ku_dir.rglob("archive_v*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            seen_ku_parents: set = set()
+            for archive_file in all_archives:
                 if len(results) >= limit:
                     break
+                parent = archive_file.parent
+                if parent in seen_ku_parents:
+                    continue
+                seen_ku_parents.add(parent)
+                try:
+                    with open(archive_file, encoding="utf-8") as f:
+                        archive = json.load(f)
+                except Exception:
+                    continue
+                for ku in archive.get("knowledge_units", []):
+                    meaning = (ku.get("core_meaning") or "").strip()
+                    quote = (ku.get("quote") or "").strip()
+                    source = (ku.get("source") or "").strip()
+                    if not meaning:
+                        continue
+                    text = meaning + (f' — "{quote}"' if quote and quote != meaning else "")
+                    if query_lower and query_lower not in text.lower() and query_lower not in source.lower():
+                        continue
+                    results.append({
+                        "type": "knowledge_unit",
+                        "source": source,
+                        "content": text,
+                        "created_at": (ku.get("created_at") or archive.get("created_at") or "")[:19],
+                    })
+                    if len(results) >= limit:
+                        break
 
         # --- Source 2: this role's task completion reports ---
         if len(results) < limit:
@@ -567,15 +583,21 @@ class RoleChatSession:
                     if query_lower:
                         goal = (report.get("goal") or "").lower()
                         content = (report.get("content") or "").lower()
-                        if query_lower not in goal and query_lower not in content:
+                        summary = (report.get("summary") or "").lower()
+                        if query_lower not in goal and query_lower not in content and query_lower not in summary:
                             continue
+                    # Prefer v2 summary; fall back to legacy content for old reports
+                    snippet = report.get("summary") or report.get("content", "")
                     results.append({
                         "type": "task_report",
                         "task_id": report.get("task_id", ""),
                         "goal": report.get("goal", ""),
                         "status": report.get("status", ""),
                         "created_at": (report.get("created_at") or "")[:19],
-                        "content": report.get("content", ""),
+                        "content": snippet,
+                        "completed": report.get("completed", []),
+                        "findings": report.get("findings", []),
+                        "schema_version": report.get("schema_version", "v1"),
                     })
                     if len(results) >= limit:
                         break
@@ -598,6 +620,20 @@ class RoleChatSession:
             except Exception as e:
                 return json.dumps({"success": False, "error": str(e)})
 
+        # memory_search is scoped to this role's knowledge — never user personal memory
+        if name == "memory_search":
+            try:
+                results = self._search_knowledge(
+                    query=args.get("query", ""),
+                    limit=args.get("max_items", args.get("limit", 5)),
+                )
+                return json.dumps(
+                    {"success": True, "count": len(results), "results": results},
+                    ensure_ascii=False,
+                )
+            except Exception as e:
+                return json.dumps({"success": False, "error": str(e)})
+
         # task_search is handled locally — no external registry needed
         if name == "task_search":
             try:
@@ -613,11 +649,12 @@ class RoleChatSession:
                 return json.dumps({"success": False, "error": str(e)})
 
         try:
-            from app.scheduler.dynamic_tool_registry import DynamicToolRegistry
+            from app.scheduler.capability_registry import CapabilityRegistry
             from app.services.memory_service import MemoryService
 
-            registry = DynamicToolRegistry()
+            registry = CapabilityRegistry()
             registry.set_memory_service(MemoryService())
+            registry.set_task_context(task_id=None, dispatch_depth=0, role_id=self.role_id)
             result = await registry.execute_tool(name, args)
             return json.dumps(result, ensure_ascii=False)
         except Exception as e:

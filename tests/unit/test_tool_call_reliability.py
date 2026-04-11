@@ -238,6 +238,63 @@ class TestConsecutiveNoToolCounter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2 times", next_msg)
         self.assertEqual(exc._consecutive_no_tool, 0)
 
+
+# ===========================================================================
+# Semantic completion checks
+# ===========================================================================
+
+class TestSemanticCompletionValidation(unittest.TestCase):
+
+    def test_rejects_fake_filesystem_blocker_when_tools_available(self):
+        exc = _make_executor()
+        exc._enabled_tool_names = ["read_file", "search_in_files", "task_session_read"]
+        exc._tool_calls_made = 0
+
+        ok, error = exc._validate_semantic_completion(
+            final_answer=(
+                "I could not complete this because of filesystem access limitations "
+                "and could not read the actual task session."
+            ),
+            goal="Analyze a prior task session",
+            config={},
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("without attempting the available tools", error)
+
+    def test_allows_same_language_after_real_tool_attempt(self):
+        exc = _make_executor()
+        exc._enabled_tool_names = ["read_file", "task_report_read"]
+        exc._tool_calls_made = 1
+
+        ok, error = exc._validate_semantic_completion(
+            final_answer="I hit tool limitations after attempting the available file tools.",
+            goal="Analyze a prior task report",
+            config={},
+        )
+
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+
+    def test_requires_output_files_when_result_contract_declares_them(self):
+        exc = _make_executor()
+        exc._enabled_tool_names = ["write_file"]
+        exc._tool_calls_made = 1
+
+        ok, error = exc._validate_semantic_completion(
+            final_answer="Done.",
+            goal="Write the deliverable file",
+            config={
+                "result_contract": {
+                    "requires_output_file": True,
+                    "expected_output_files": ["/tmp/does_not_exist_report.txt"],
+                }
+            },
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("required output files not written", error)
+
     def test_counter_does_not_increment_when_no_tools_available(self):
         """When no tool_defs, counter is reset to 0 (model can't call tools)."""
         exc = _make_executor()

@@ -201,7 +201,13 @@ class UnifiedLLMClient:
 
         payload = self._build_payload(messages, model, output_limit, message_format, tools)
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        # 300s read timeout: local LLMs (Qwen 35B, Gemma 27B) can take >120s
+        # on a large context. Connect timeout stays short (10s) to fail fast if
+        # the server is down. The task-level wall-clock cap (core.py) is the
+        # ultimate safety net.
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=10.0)
+        ) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()

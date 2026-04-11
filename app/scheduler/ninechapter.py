@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -200,12 +200,12 @@ def _load_capability_catalog() -> Dict[str, Any]:
 
 def build_capability_summary(role: Dict[str, Any]) -> str:
     """
-    Return a capability summary block derived from role.capabilities and
-    capability_catalog.json category descriptions.
+    Return a capability summary block — what this role can do.
 
-    Injected into the system prompt at task start so the assistant knows
-    exactly what it can do before making any tool calls.  Static — no LLM
-    call, no loop risk.
+    Lists capability categories with their descriptions only.
+    The agent discovers concrete tool names from the tool schema injected
+    by the executor; repeating them here creates a fragile static list that
+    diverges the moment tools are added or renamed.
 
     Returns empty string if the role has no capabilities.
     """
@@ -216,17 +216,16 @@ def build_capability_summary(role: Dict[str, Any]) -> str:
     catalog = _load_capability_catalog()
     categories = catalog.get("categories", {})
 
-    lines: List[str] = []
-    for cat in capabilities:
-        desc = categories.get(cat, {}).get("description", cat)
-        lines.append(f"- **{cat}**: {desc}")
+    lines = [
+        f"- **{cap}** — {categories.get(cap, {}).get('description', cap)}"
+        for cap in capabilities
+    ]
 
-    summary = (
+    return (
         "## Your Capabilities\n"
-        "You have access to the following tool categories:\n"
         + "\n".join(lines)
         + "\n\n"
-        "If a task requires a capability not listed above, use `ask_user` to escalate "
-        "— do not attempt to work around or fabricate missing tools.\n"
+        "Discover the specific tools for each capability from the tool schema "
+        "provided with this prompt. If a task requires something not covered "
+        "above, use `ask_user` to escalate.\n\n"
     )
-    return summary + "\n"

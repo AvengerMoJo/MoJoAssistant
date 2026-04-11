@@ -2,7 +2,7 @@
 MCPClientManager — connects MoJo's agent executor to external MCP servers.
 
 Any MCP server listed in config/mcp_servers.json is connected at executor
-startup. Each server's tools are auto-registered in the DynamicToolRegistry
+startup. Each server's tools are auto-registered in the CapabilityRegistry
 with executor type "external_mcp" and the server's category (e.g. "browser").
 
 Roles that declare capabilities: ["browser"] automatically receive all tools
@@ -30,6 +30,7 @@ import json
 import logging
 import os
 from contextlib import AsyncExitStack
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -91,7 +92,10 @@ class MCPClientManager:
         if not os.path.exists(path):
             return
 
+        _project_root_str = str(Path(__file__).resolve().parent.parent.parent)
+
         def _expand(s: str) -> str:
+            s = s.replace("{project_root}", _project_root_str)
             return os.path.expanduser(os.path.expandvars(s))
 
         try:
@@ -106,7 +110,7 @@ class MCPClientManager:
                     transport=srv.get("transport", "stdio"),
                     command=_expand(srv.get("command", "")),
                     args=[_expand(a) for a in srv.get("args", [])],
-                    env=srv.get("env", {}),
+                    env={k: _expand(v) for k, v in srv.get("env", {}).items()},
                     mcp_http_url=srv.get("mcp_http_url"),
                     port=srv.get("port"),
                     pid=srv.get("pid"),
@@ -158,11 +162,22 @@ class MCPClientManager:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
-        env = {**os.environ, **server.env} if server.env else None
+        spawn_env = {**os.environ, **server.env} if server.env else dict(os.environ)
+        _project_root = Path(__file__).resolve().parent.parent.parent
+        args = list(server.args)
+        # tmux-mcp-rs defaults to a socket named 'default.sock' which differs from
+        # the standard tmux socket 'default'. Inject the correct socket path so agents
+        # see the same sessions as the operator's terminal.
+        if server.category == "terminal" and "--socket" not in args and "-s" not in args:
+            tmux_socket = Path(f"/tmp/tmux-{os.getuid()}/default")
+            if tmux_socket.exists():
+                args += ["--socket", str(tmux_socket)]
+
         params = StdioServerParameters(
             command=server.command,
-            args=server.args,
-            env=env,
+            args=args,
+            env=spawn_env,
+            cwd=str(_project_root),
         )
         read, write = await self._exit_stack.enter_async_context(stdio_client(params))
         session = await self._exit_stack.enter_async_context(ClientSession(read, write))
@@ -193,14 +208,14 @@ class MCPClientManager:
     async def discover_and_register(self, tool_registry) -> int:
         """
         Connect to all servers, discover their tools, and register them in
-        the DynamicToolRegistry with executor type "external_mcp".
+        the CapabilityRegistry with executor type "external_mcp".
 
         Tool names are prefixed with the server id to avoid collisions:
           playwright + browser_navigate → "playwright__browser_navigate"
 
         Returns the number of tools newly registered.
         """
-        from app.scheduler.dynamic_tool_registry import ToolDefinition
+        from app.scheduler.capability_registry import CapabilityDefinition
 
         server_tools = await self.connect_all()
 
@@ -224,7 +239,7 @@ class MCPClientManager:
                 if not isinstance(schema, dict):
                     schema = {"type": "object", "properties": {}}
 
-                td = ToolDefinition(
+                td = CapabilityDefinition(
                     name=registered_name,
                     description=tool.description or f"{tool.name} (via {server.name})",
                     danger_level="low",

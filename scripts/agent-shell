@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# agent-shell — wrapper shell for MoJoAssistant agent tmux sessions.
+#
+# tmux-mcp-rs spawns this as the session shell (via SHELL env var injected
+# by mcp_client_manager.py at startup). It prepends the agent capability
+# directory to PATH so any binary installed by an agent is immediately
+# available in every session tmux creates — without touching the user's
+# ~/.bashrc or system shell config.
+#
+# Capability directory: $MEMORY_PATH/capability  (default: ~/.memory/capability)
+# To override: set MEMORY_PATH in your environment before starting MoJoAssistant.
+
+_mem="${MEMORY_PATH:-$HOME/.memory}"
+# Expand leading ~ if MEMORY_PATH was set with a literal tilde (bash does not
+# expand ~ inside double-quoted variable values).
+_mem="${_mem/#\~/$HOME}"
+
+AGENT_CAP_DIR="$_mem/capability"
+
+# Create the capability dir if it doesn't exist yet (first run).
+mkdir -p "$AGENT_CAP_DIR"
+
+export PATH="$AGENT_CAP_DIR:$PATH"
+
+exec bash "$@"

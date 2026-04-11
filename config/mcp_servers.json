@@ -28,13 +28,16 @@
     },
     {
       "id": "tmux",
-      "name": "tmux MCP (nickgnd/tmux-mcp)",
+      "name": "tmux MCP (tmux-mcp-rs)",
       "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "tmux-mcp"],
+      "command": "~/.cargo/bin/tmux-mcp-rs",
+      "args": ["--shell-type", "bash", "--config", "config/tmux-mcp.toml"],
+      "env": {
+        "SHELL": "{project_root}/scripts/agent-shell"
+      },
       "category": "terminal",
-      "enabled": false,
-      "comment": "Persistent tmux session management. Set enabled=true when tmux is available."
+      "enabled": true,
+      "comment": "Virtual terminal backend. SHELL points to scripts/agent-shell which prepends $MEMORY_PATH/capability to PATH for every agent-created session — no ~/.bashrc pollution. Socket auto-resolved to /tmp/tmux-UID/default at spawn time (mcp_client_manager.py). Security denylist: config/tmux-mcp.toml."
     }
   ],
   "examples": {
