@@ -440,7 +440,7 @@ class AgenticExecutor:
         self._consecutive_no_tool: int = 0      # iterations with tools available but unused
         self._budget_extension_granted: int = 0  # extra iterations granted via BUDGET_EXTENSION_REQUEST
         self._exhausts_tools_before_asking: bool = False
-        self._requires_tool_use: bool = True    # reject final answer if no tools called yet (default on)
+        self._requires_tool_use: bool = False   # reject final answer if no tools called yet
         # Task id stored so _execute_single_tool can inject per-task tmux socket
         self._current_task_id: Optional[str] = task.id
         # Propagate task context to registry for sub-agent dispatch linkage + role scoping
@@ -481,7 +481,7 @@ class AgenticExecutor:
                         "exhausts_tools_before_asking", False
                     )
                     self._requires_tool_use = behavior_rules.get(
-                        "requires_tool_use", True
+                        "requires_tool_use", False
                     )
                     # Pull expanded data_boundary from monitor (local_only expansion applied)
                     self._data_boundary = self._policy_monitor.data_boundary
