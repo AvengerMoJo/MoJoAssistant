@@ -658,6 +658,8 @@ class ResourceManager:
                     template.input_limit,
                 )
 
+                # Personal config overrides win over auto-sync defaults
+                per_resource_override = self._loaded_config.get("resources", {}).get(rid, {})
                 resource = LLMResource(
                     id=rid,
                     provider=template.provider,
@@ -670,9 +672,9 @@ class ResourceManager:
                     input_limit=inp_limit,
                     type=template.type,
                     tier=template.tier,
-                    priority=base_priority + i,
-                    enabled=template.enabled,
-                    description=f"{model_id} (via {template_resource_id})",
+                    priority=per_resource_override.get("priority", base_priority + i),
+                    enabled=per_resource_override.get("enabled", template.enabled),
+                    description=per_resource_override.get("description", f"{model_id} (via {template_resource_id})"),
                     account_group=template.account_group,
                     rate_limit=template.rate_limit,
                     budget=template.budget,
