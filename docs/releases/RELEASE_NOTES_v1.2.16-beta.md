@@ -1,4 +1,4 @@
-# Release Notes — v1.2.15-beta
+# Release Notes — v1.2.16-beta
 
 ## Theme: Dynamic Capability Pipeline
 
