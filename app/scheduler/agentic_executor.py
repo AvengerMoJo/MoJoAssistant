@@ -1556,22 +1556,15 @@ class AgenticExecutor:
             try:
                 sig = inspect.signature(self._memory_service._search_knowledge_base_async)
                 if "role_id" in sig.parameters:
-                    # Role-private hits (higher priority)
+                    # Role-scoped knowledge only — never the shared/user knowledge base.
                     if role_id:
-                        role_hits = await self._memory_service._search_knowledge_base_async(
-                            goal, max_items=5, role_id=role_id
+                        merged = await self._memory_service._search_knowledge_base_async(
+                            goal, max_items=6, role_id=role_id
                         )
-                        merged.extend(role_hits)
-                    # Shared knowledge base (no role filter)
-                    shared_hits = await self._memory_service._search_knowledge_base_async(
-                        goal, max_items=3
-                    )
-                    seen_ids = {h.get("id") for h in merged if h.get("id")}
-                    merged.extend(h for h in shared_hits if h.get("id") not in seen_ids)
+                    # No role_id → no knowledge context (safer than leaking user personal docs)
                 else:
-                    merged = await self._memory_service._search_knowledge_base_async(
-                        goal, max_items=6
-                    )
+                    # Legacy signature: no role scoping available — skip to avoid leaking user memory
+                    pass
             except Exception:
                 pass
 
