@@ -481,7 +481,7 @@ class AgenticExecutor:
                         "exhausts_tools_before_asking", False
                     )
                     self._requires_tool_use = behavior_rules.get(
-                        "requires_tool_use", False
+                        "requires_tool_use", True
                     )
                     # Pull expanded data_boundary from monitor (local_only expansion applied)
                     self._data_boundary = self._policy_monitor.data_boundary
