@@ -50,8 +50,8 @@ _TOOL_DEFS: Dict[str, Dict] = {
         "function": {
             "name": "memory_search",
             "description": (
-                "Search your own role-scoped memory — knowledge units, past task reports, "
-                "and documents indexed for this role. Does NOT search the user's personal memory."
+                "Search your own memory — knowledge units and past task reports scoped to "
+                "your role. Does NOT access the user's personal conversation history."
             ),
             "parameters": {
                 "type": "object",
@@ -615,6 +615,20 @@ class RoleChatSession:
                 )
                 return json.dumps(
                     {"success": True, "count": len(results), "reports": results},
+                    ensure_ascii=False,
+                )
+            except Exception as e:
+                return json.dumps({"success": False, "error": str(e)})
+
+        # memory_search is scoped to this role's knowledge — never user personal memory
+        if name == "memory_search":
+            try:
+                results = self._search_knowledge(
+                    query=args.get("query", ""),
+                    limit=args.get("max_items", args.get("limit", 5)),
+                )
+                return json.dumps(
+                    {"success": True, "count": len(results), "results": results},
                     ensure_ascii=False,
                 )
             except Exception as e:
