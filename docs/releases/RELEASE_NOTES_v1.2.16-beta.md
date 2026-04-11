@@ -130,3 +130,25 @@ via `load_layered_json_config` deep-merge.
 | `app/scheduler/role_template_engine.py` | System prompt generation from role character |
 | `app/scheduler/capability_gap_checker.py` | Pre-task capability gap detection |
 | `config/capability_defaults.json` | System-level always_available + agent_defaults |
+
+---
+
+## Bug Fixes
+
+### Role Chat Memory Isolation (`role_chat.py`)
+
+`memory_search` in role chat sessions was querying the **global** LlamaIndex
+`knowledge_manager` — returning results from the user's personal memory instead
+of the role's own knowledge.
+
+**Root cause:** `_execute_tool()` fell through to `CapabilityRegistry.execute_tool()`,
+which calls `MemoryService._search_knowledge_base_async()` — a method with no
+`role_id` parameter that queries the shared vector store.
+
+**Fix:** `memory_search` is now intercepted locally in `_execute_tool()` (same
+pattern as `knowledge_search` and `task_search`) and routed through
+`_search_knowledge()`, which reads directly from:
+- `~/.memory/roles/{role_id}/knowledge_units/` — role-distilled knowledge
+- `~/.memory/task_reports/*.json` filtered by `role_id`
+
+User personal conversation history is never accessible from a role chat session.
