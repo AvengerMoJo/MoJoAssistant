@@ -759,6 +759,11 @@ class CapabilityRegistry:
         if not role_id or not goal:
             return {"success": False, "error": "role_id and goal are required"}
 
+        from app.roles.role_manager import RoleManager as _RM
+        if _RM().get(role_id) is None:
+            available = [r.get("id") for r in (_RM().list() or [])]
+            return {"success": False, "error": f"Role '{role_id}' does not exist. Available roles: {available}"}
+
         config: Dict[str, Any] = {"goal": goal, "role_id": role_id}
         if args.get("available_tools"):
             config["available_tools"] = args["available_tools"]

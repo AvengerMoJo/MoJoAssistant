@@ -2625,6 +2625,19 @@ Agent resumes within seconds.
                             "Use role_list to see available roles, or role_create to make a new one."
                         ),
                     }
+                # Validate role exists before accepting the task
+                from app.roles.role_manager import RoleManager as _RMCheck
+                if _RMCheck().get(role_id) is None:
+                    from app.roles.role_manager import RoleManager as _RMList
+                    available = [r.get("id") for r in (_RMList().list() or [])]
+                    return {
+                        "status": "error",
+                        "message": (
+                            f"Role '{role_id}' does not exist. "
+                            f"Available roles: {available}. "
+                            "Use role_create to create a new role."
+                        ),
+                    }
 
             # Setup-time ceiling: validate available_tools against role policy
             available_tools = config.get("available_tools", []) if isinstance(config, dict) else []
