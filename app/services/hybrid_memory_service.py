@@ -577,16 +577,17 @@ class HybridMemoryService(MemoryService):
                         continue
 
                     hits = []
-                    # Role-private store first (higher priority)
                     if role_id:
+                        # Role-scoped: search role-private store ONLY — never leak shared user docs
                         role_store = self._get_role_storage(role_id)
                         hits.extend(role_store.search_documents(
                             query_embedding, model_key, max_results=max_items
                         ))
-                    # Shared user store
-                    hits.extend(self.multi_model_storage.search_documents(
-                        query_embedding, model_key, max_results=max_items
-                    ))
+                    else:
+                        # No role context: search shared user store only
+                        hits.extend(self.multi_model_storage.search_documents(
+                            query_embedding, model_key, max_results=max_items
+                        ))
 
                     if hits:
                         hits.sort(key=lambda x: x["similarity_score"], reverse=True)
