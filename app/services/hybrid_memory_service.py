@@ -257,9 +257,13 @@ class HybridMemoryService(MemoryService):
         return super().get_context_for_query(query, max_items)
 
     async def get_context_for_query_async(
-        self, query: str, max_items: int = 10
+        self, query: str, max_items: int = 10, role_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Async version - uses multi-model with parallel retrieval if enabled"""
+        """Async version - uses multi-model with parallel retrieval if enabled.
+
+        When role_id is provided, only role-private knowledge is searched —
+        the shared user knowledge base is NEVER included.
+        """
         # Validate input parameters
         if not query or not isinstance(query, str) or query.strip() == "":
             self.logger.warning("Empty or invalid query provided")
@@ -270,6 +274,10 @@ class HybridMemoryService(MemoryService):
                 f"Invalid max_items: {max_items}, using default value 10"
             )
             max_items = 10
+
+        # Role-scoped path: use _search_knowledge_base_async which enforces isolation
+        if role_id:
+            return await self._search_knowledge_base_async(query, max_items, role_id=role_id)
 
         if (
             self.multi_model_enabled
@@ -289,7 +297,7 @@ class HybridMemoryService(MemoryService):
                         f"Multi-model search failed, falling back to single-model: {e2}"
                     )
 
-        # Fall back to parent's async implementation
+        # Fall back to parent's async implementation (user-scoped only, no role_id)
         return await super().get_context_for_query_async(query, max_items)
 
     def _get_multi_model_context(

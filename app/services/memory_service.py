@@ -685,9 +685,17 @@ class MemoryService:
             return await loop.run_in_executor(executor, search_archival)
 
     async def _search_knowledge_base_async(
-        self, query: str, max_items: int
+        self, query: str, max_items: int, role_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Search knowledge base asynchronously"""
+        """Search shared user knowledge base asynchronously.
+
+        This is the shared/user store — NEVER call with role_id from an agent.
+        If role_id is provided, return empty to prevent leaking user docs.
+        """
+        if role_id:
+            # Should never reach here when HybridMemoryService is active,
+            # but guard defensively: never return shared docs to a role agent.
+            return []
 
         def search_knowledge():
             context_items = []

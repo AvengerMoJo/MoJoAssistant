@@ -1653,11 +1653,11 @@ Agent resumes within seconds.
             raise ValueError(f"Unknown tool: {name}")
 
     async def _execute_get_memory_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute memory context search"""
+        """Execute memory context search — user-scoped only, never agent-scoped."""
         query = args.get("query", "")
         max_results = args.get("max_items", 10)
-
-        # Use async version for better performance in async contexts
+        # role_id intentionally NOT passed — this method is for direct user queries only.
+        # Agent contexts must use _search_knowledge_base_async(role_id=...) instead.
         results = await self.memory_service.get_context_for_query_async(
             query, max_items=max_results
         )
