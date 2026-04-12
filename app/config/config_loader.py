@@ -21,12 +21,31 @@ logger = logging.getLogger(__name__)
 MEMORY_CONFIG_DIR = get_memory_subpath("config")
 
 
+def _merge_lists_by_id(base: list, override: list) -> list:
+    """Merge two lists of dicts by their 'id' field. Override entries win; base entries not in override are preserved."""
+    base_by_id = {item["id"]: item for item in base if isinstance(item, dict) and "id" in item}
+    override_by_id = {item["id"]: item for item in override if isinstance(item, dict) and "id" in item}
+    # Items without 'id' in either list are appended as-is
+    no_id_base = [item for item in base if not (isinstance(item, dict) and "id" in item)]
+    no_id_override = [item for item in override if not (isinstance(item, dict) and "id" in item)]
+    merged = {**base_by_id, **override_by_id}  # override wins per id
+    return list(merged.values()) + no_id_base + no_id_override
+
+
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-    """Recursively merge override into base. Override wins on all conflicts."""
+    """Recursively merge override into base. Override wins on all conflicts.
+    Lists of dicts with 'id' fields are merged by id rather than replaced."""
     result = dict(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge(result[key], value)
+        elif (
+            key in result
+            and isinstance(result[key], list)
+            and isinstance(value, list)
+            and any(isinstance(i, dict) and "id" in i for i in result[key] + value)
+        ):
+            result[key] = _merge_lists_by_id(result[key], value)
         else:
             result[key] = value
     return result
