@@ -158,6 +158,7 @@ class ConfigDoctor:
         self._check_policy_patterns(report)
         self._check_memory_path(report)
         self._check_scheduler_config(report)
+        self._check_capabilities(report)
         return report
 
     # ------------------------------------------------------------------
@@ -751,3 +752,272 @@ class ConfigDoctor:
                     status="pass",
                     message=f"nine_chapter_score={stored} matches weighted dimension average",
                 ))
+
+    # ------------------------------------------------------------------
+    # Capability system checks (v1.2.12+)
+    # Validates across all three layers:
+    #   Layer 1 — system + personal capability_defaults.json
+    #   Layer 2 — per-role capabilities list
+    #   Layer 3 — runtime overlay tool name drift
+    # Also simulates full resolution per role to surface dead assignments.
+    # ------------------------------------------------------------------
+
+    def _check_capabilities(self, report: DoctorReport) -> None:
+        import re
+        from app.config.config_loader import load_layered_json_config
+        from app.config.paths import get_memory_path
+
+        project_root = Path(__file__).parent.parent.parent
+        personal_config_dir = Path(get_memory_path()) / "config"
+
+        # ── Load catalog ─────────────────────────────────────────────────
+        try:
+            catalog = load_layered_json_config("config/capability_catalog.json")
+        except Exception as e:
+            report.add(CheckResult(
+                category="capability", id="catalog", field="load",
+                value=None, status="error",
+                message=f"Failed to load capability_catalog.json: {e}",
+            ))
+            return
+
+        known_categories: set = set(catalog.get("categories", {}).keys())
+        catalog_tools: dict = catalog.get("tools", {})
+
+        if not known_categories:
+            report.add(CheckResult(
+                category="capability", id="catalog", field="categories",
+                value=0, status="error",
+                message="capability_catalog.json has no categories defined",
+            ))
+        else:
+            report.add(CheckResult(
+                category="capability", id="catalog", field="categories",
+                value=sorted(known_categories),
+                status="pass",
+                message=f"{len(known_categories)} categories defined: {', '.join(sorted(known_categories))}",
+            ))
+
+        if not catalog_tools:
+            report.add(CheckResult(
+                category="capability", id="catalog", field="tools",
+                value=0, status="warn",
+                message="capability_catalog.json has no tools defined",
+            ))
+
+        # ── Load registry ─────────────────────────────────────────────────
+        try:
+            from app.scheduler.capability_registry import CapabilityRegistry
+            registry = CapabilityRegistry()
+            registry_tools: set = set(registry.list_tools().keys())
+        except Exception as e:
+            report.add(CheckResult(
+                category="capability", id="registry", field="load",
+                value=None, status="error",
+                message=f"Failed to load CapabilityRegistry: {e}",
+            ))
+            registry_tools = set()
+
+        # ── Catalog ↔ Registry cross-check ───────────────────────────────
+        # Tools in catalog but not in registry — they'll silently resolve to nothing
+        for tool_name, meta in catalog_tools.items():
+            if isinstance(meta, dict) and (meta.get("internal") or meta.get("mcp_external")):
+                continue  # mcp_external tools come from MCP server, not capability registry
+            if registry_tools and tool_name not in registry_tools:
+                report.add(CheckResult(
+                    category="capability", id=f"catalog/{tool_name}", field="registry",
+                    value=tool_name, status="warn",
+                    message=f"Tool '{tool_name}' is in catalog but NOT in registry — "
+                            f"roles with category '{meta.get('category', '?')}' won't get it",
+                ))
+
+        # Tools in catalog with unknown category
+        for tool_name, meta in catalog_tools.items():
+            if not isinstance(meta, dict):
+                continue
+            cat = meta.get("category")
+            if cat and cat not in known_categories:
+                report.add(CheckResult(
+                    category="capability", id=f"catalog/{tool_name}", field="category",
+                    value=cat, status="error",
+                    message=f"Tool '{tool_name}' references unknown category '{cat}'",
+                ))
+
+        # ── Layer 1: system capability_defaults.json ─────────────────────
+        try:
+            defaults = load_layered_json_config("config/capability_defaults.json")
+        except Exception as e:
+            report.add(CheckResult(
+                category="capability", id="defaults/system", field="load",
+                value=None, status="error",
+                message=f"Failed to load capability_defaults.json: {e}",
+            ))
+            defaults = {}
+
+        always_available = defaults.get("always_available", [])
+        agent_defaults = defaults.get("agent_defaults", [])
+
+        for tool_name in always_available:
+            if registry_tools and tool_name not in registry_tools:
+                report.add(CheckResult(
+                    category="capability", id="defaults/system", field="always_available",
+                    value=tool_name, status="error",
+                    message=f"always_available tool '{tool_name}' is not in registry — "
+                            f"it will be injected into prompts but will fail when called",
+                ))
+            else:
+                report.add(CheckResult(
+                    category="capability", id="defaults/system", field="always_available",
+                    value=tool_name, status="pass",
+                    message=f"'{tool_name}' is in registry",
+                ))
+
+        for cat in agent_defaults:
+            if cat not in known_categories:
+                report.add(CheckResult(
+                    category="capability", id="defaults/system", field="agent_defaults",
+                    value=cat, status="error",
+                    message=f"agent_defaults category '{cat}' is not in capability_catalog.json",
+                ))
+            else:
+                report.add(CheckResult(
+                    category="capability", id="defaults/system", field="agent_defaults",
+                    value=cat, status="pass",
+                    message=f"Category '{cat}' exists in catalog",
+                ))
+
+        # ── Layer 1: personal capability_defaults.json ────────────────────
+        personal_defaults_path = personal_config_dir / "capability_defaults.json"
+        if personal_defaults_path.exists():
+            try:
+                personal_defaults = json.loads(personal_defaults_path.read_text(encoding="utf-8"))
+                for tool_name in personal_defaults.get("always_available", []):
+                    if registry_tools and tool_name not in registry_tools:
+                        report.add(CheckResult(
+                            category="capability", id="defaults/personal", field="always_available",
+                            value=tool_name, status="error",
+                            message=f"Personal always_available '{tool_name}' is not in registry",
+                        ))
+                for cat in personal_defaults.get("agent_defaults", []):
+                    if cat not in known_categories:
+                        report.add(CheckResult(
+                            category="capability", id="defaults/personal", field="agent_defaults",
+                            value=cat, status="warn",
+                            message=f"Personal agent_defaults category '{cat}' is not in catalog",
+                        ))
+                report.add(CheckResult(
+                    category="capability", id="defaults/personal", field="file",
+                    value=str(personal_defaults_path), status="pass",
+                    message="Personal capability_defaults.json loaded and validated",
+                ))
+            except Exception as e:
+                report.add(CheckResult(
+                    category="capability", id="defaults/personal", field="file",
+                    value=str(personal_defaults_path), status="error",
+                    message=f"Invalid JSON in personal capability_defaults.json: {e}",
+                ))
+        else:
+            report.add(CheckResult(
+                category="capability", id="defaults/personal", field="file",
+                value=str(personal_defaults_path), status="pass",
+                message="No personal capability_defaults.json — system defaults apply",
+            ))
+
+        # ── Layer 2: per-role capabilities ────────────────────────────────
+        try:
+            from app.roles.role_manager import RoleManager
+            roles = RoleManager().list_roles()
+            full_roles = []
+            rm = RoleManager()
+            for s in roles:
+                full = rm.get(s["id"])
+                if full:
+                    full_roles.append(full)
+        except Exception as e:
+            report.add(CheckResult(
+                category="capability", id="roles", field="load",
+                value=None, status="error",
+                message=f"Failed to load roles for capability check: {e}",
+            ))
+            full_roles = []
+
+        # Regex to find backtick-quoted tool-like names in overlay text
+        _tool_name_re = re.compile(r"`([a-z][a-z0-9_]{2,})`")
+
+        for role in full_roles:
+            role_id = role.get("id", "?")
+            caps = role.get("capabilities") or []
+
+            # Each capability should be a known category OR a known tool name
+            for cap in caps:
+                if cap in known_categories:
+                    pass  # valid category
+                elif registry_tools and cap in registry_tools:
+                    pass  # valid explicit tool name
+                elif registry_tools:
+                    report.add(CheckResult(
+                        category="capability", id=f"role/{role_id}", field="capabilities",
+                        value=cap, status="warn",
+                        message=f"Capability '{cap}' is not a known category or tool name",
+                    ))
+
+            # Simulate full resolution and report result
+            try:
+                from app.scheduler.capability_resolver import CapabilityResolver
+                resolver = CapabilityResolver()
+                resolved = resolver.resolve(role, None, registry)
+                if not resolved or resolved == ["ask_user"]:
+                    report.add(CheckResult(
+                        category="capability", id=f"role/{role_id}", field="resolved_tools",
+                        value=resolved, status="warn",
+                        message=f"Role resolves to only {resolved} — effectively no tools beyond HITL",
+                    ))
+                else:
+                    report.add(CheckResult(
+                        category="capability", id=f"role/{role_id}", field="resolved_tools",
+                        value=resolved, status="pass",
+                        message=f"Resolves to {len(resolved)} tools: {', '.join(resolved)}",
+                    ))
+            except Exception as e:
+                report.add(CheckResult(
+                    category="capability", id=f"role/{role_id}", field="resolved_tools",
+                    value=None, status="error",
+                    message=f"Resolution failed: {e}",
+                ))
+
+            # Layer 3 drift: check tool names mentioned in overlay text against registry
+            overlays = role.get("mode_overlays") or {}
+            for overlay_name, overlay_text in overlays.items():
+                if not isinstance(overlay_text, str):
+                    continue
+                mentioned = _tool_name_re.findall(overlay_text)
+                # Only check names that look like tool names (contain underscore, not prose)
+                tool_like = [
+                    n for n in mentioned
+                    if "_" in n and not n.startswith("e.g") and len(n) > 4
+                ]
+                stale = []
+                for name in tool_like:
+                    # Skip if it's a known tool
+                    if name in registry_tools or name in catalog_tools:
+                        continue
+                    # Skip common non-tool patterns
+                    if name in {"ask_user", "web_search", "fetch_url", "memory_search",
+                                "knowledge_search", "task_search", "add_conversation",
+                                "read_file", "write_file", "list_files", "search_in_files",
+                                "bash_exec", "scheduler_add_task", "dispatch_subtask"}:
+                        continue
+                    stale.append(name)
+                if stale:
+                    report.add(CheckResult(
+                        category="capability", id=f"role/{role_id}", field=f"overlay/{overlay_name}",
+                        value=stale, status="warn",
+                        message=f"Overlay mentions tool name(s) not in registry or catalog: {stale}. "
+                                f"May be stale — check against actual executor tool names.",
+                    ))
+                elif tool_like:
+                    report.add(CheckResult(
+                        category="capability", id=f"role/{role_id}", field=f"overlay/{overlay_name}",
+                        value=tool_like, status="pass",
+                        message=f"All {len(tool_like)} tool name(s) in overlay match registry",
+                    ))

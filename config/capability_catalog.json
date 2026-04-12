@@ -1,7 +1,8 @@
 {
   "comment": "System tool catalog — maps tool names to categories and metadata. User custom tools live in ~/.memory/config/tool_catalog.json. Roles declare tool_access by category.",
   "categories": {
-    "memory":       { "description": "Memory and knowledge base access" },
+    "memory":       { "description": "Reserved — user's personal memory is populated by the dreaming pipeline or explicit user action, not by agents directly." },
+    "knowledge":    { "description": "Role-private historical knowledge — the agent's own accumulated task reports, session logs, and research findings. Isolated per role; never crosses into user memory." },
     "file":         { "description": "File read, write, and search operations" },
     "web":          { "description": "Web search and HTTP requests" },
     "exec":         { "description": "Shell commands and code execution" },
@@ -13,14 +14,24 @@
   },
   "tools": {
     "memory_search":   {
-      "category": "memory",
+      "category": "knowledge",
       "danger_level": "low",
-      "description": "Search the user's personal memory — past conversations, archived knowledge, and synthesized insights. Use when the task requires context from prior interactions or stored knowledge."
+      "description": "Search this role's own private knowledge base — past task reflections, procedures, accumulated findings. Role-scoped: you only see your own history, never another role's or the user's personal memory."
+    },
+    "task_report_read": {
+      "category": "knowledge",
+      "danger_level": "low",
+      "description": "Read a structured completion report for a past task by task_id. Use when you need the outcome, findings, or resume hint from a prior task without replaying the full session."
+    },
+    "task_session_read": {
+      "category": "knowledge",
+      "danger_level": "low",
+      "description": "Read the full iteration log for a past task by task_id — every tool call, model response, and intermediate result. Use when you need to understand exactly what happened, not just the final answer."
     },
     "add_conversation": {
-      "category": "memory",
+      "category": "knowledge",
       "danger_level": "low",
-      "description": "Store a new conversation or piece of information into long-term memory. Use after completing a task to preserve findings, decisions, or context for future recall."
+      "description": "Save a dialog exchange or finding to this role's own private knowledge store. The dreaming pipeline will consolidate it later. Use to preserve task context, key decisions, or insights worth remembering across sessions."
     },
     "read_file":       {
       "category": "file",
@@ -125,7 +136,7 @@
     "playwright__browser_network_requests":{ "category": "browser", "danger_level": "low",    "description": "Return network requests since page load." },
     "playwright__browser_close":           { "category": "browser", "danger_level": "low",    "description": "Close the current browser page." },
 
-    "google_calendar_list":   { "category": "google", "danger_level": "low",    "description": "List events from Google Calendar for a date range." },
-    "google_calendar_create": { "category": "google", "danger_level": "medium", "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary." }
+    "google_calendar_list":   { "category": "google", "danger_level": "low",    "mcp_external": true, "description": "List events from Google Calendar for a date range. Provided by the Google Workspace MCP server (gws CLI)." },
+    "google_calendar_create": { "category": "google", "danger_level": "medium", "mcp_external": true, "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary. Provided by the Google Workspace MCP server (gws CLI)." }
   }
 }

@@ -7,7 +7,7 @@
     "",
     "agent_defaults: capability category names (from capability_catalog.json)",
     "  that every agent receives on top of their role capabilities.",
-    "  Keep this minimal — memory + task-reading is universally useful.",
+    "  Keep this minimal — knowledge + orchestration is universally useful.",
     "  Terminal, exec, browser etc. are role-specific, not defaults.",
     "",
     "Personal override: ~/.memory/config/capability_defaults.json",
@@ -17,7 +17,7 @@
     "ask_user"
   ],
   "agent_defaults": [
-    "memory",
+    "knowledge",
     "orchestration"
   ]
 }

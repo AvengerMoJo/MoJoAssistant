@@ -352,10 +352,32 @@ class CapabilityRegistry:
                 }, "required": ["role_id", "goal"]},
             ),
             CapabilityDefinition(
+                name="add_conversation",
+                description=(
+                    "Save a dialog exchange or key finding to this role's own private knowledge store. "
+                    "Use to preserve important task context, decisions, or insights so they can be "
+                    "recalled in future sessions via memory_search. "
+                    "The dreaming pipeline will consolidate this later. "
+                    "This writes to your own role-private store — not the user's personal memory."
+                ),
+                danger_level="low",
+                category="knowledge",
+                parameters={"type": "object", "properties": {
+                    "user_message": {
+                        "type": "string",
+                        "description": "The user-side content of the exchange or the context/question",
+                    },
+                    "assistant_message": {
+                        "type": "string",
+                        "description": "The assistant-side content — findings, decisions, or response worth preserving",
+                    },
+                }, "required": ["user_message", "assistant_message"]},
+            ),
+            CapabilityDefinition(
                 name="memory_search",
                 description="Search your own role-scoped knowledge base (past task reflections, procedures, findings). This is your memory — not the user's personal conversations.",
                 danger_level="low",
-                category="memory",
+                category="knowledge",
                 parameters={"type": "object", "properties": {
                     "query": {"type": "string", "description": "Search query to find relevant context"},
                 }, "required": ["query"]},
@@ -368,7 +390,7 @@ class CapabilityRegistry:
                     "tool usage, or final answers from prior assistant tasks."
                 ),
                 danger_level="low",
-                category="memory",
+                category="knowledge",
                 parameters={"type": "object", "properties": {
                     "task_id": {"type": "string", "description": "Task id whose session should be loaded"},
                     "include_metadata": {
@@ -386,7 +408,7 @@ class CapabilityRegistry:
                     "full session transcript."
                 ),
                 danger_level="low",
-                category="memory",
+                category="knowledge",
                 parameters={"type": "object", "properties": {
                     "task_id": {"type": "string", "description": "Task id whose report should be loaded"},
                 }, "required": ["task_id"]},
@@ -538,6 +560,8 @@ class CapabilityRegistry:
                     return await self._scheduler_add_task(args)
                 elif name == "dispatch_subtask":
                     return await self._dispatch_subtask(args)
+                elif name == "add_conversation":
+                    return await self._add_conversation(args)
                 elif name == "memory_search":
                     return await self._memory_search(args)
                 elif name == "web_search":
@@ -1006,6 +1030,57 @@ class CapabilityRegistry:
             "returncode": 0,
             "executed": len(results),
         }
+
+    async def _add_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Save a dialog exchange to this role's own private knowledge store.
+
+        Writes to the role-private store (not the user's personal memory).
+        The dreaming pipeline will consolidate it later.
+        """
+        user_message = args.get("user_message", "")
+        assistant_message = args.get("assistant_message", "")
+
+        if not self._memory_service:
+            return {"success": False, "error": "Memory service not available"}
+
+        if not user_message and not assistant_message:
+            return {"success": False, "error": "At least one of user_message or assistant_message is required"}
+
+        try:
+            role_id = getattr(self, "_current_role_id", None)
+            import inspect as _inspect
+
+            document = ""
+            if user_message:
+                document += f"[user] {user_message}\n"
+            if assistant_message:
+                document += f"[assistant] {assistant_message}"
+
+            metadata = {"type": "conversation", "role_id": role_id or "unknown"}
+
+            sig = _inspect.signature(self._memory_service.add_to_knowledge_base)
+            if "role_id" in sig.parameters:
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._memory_service.add_to_knowledge_base(
+                        document, metadata, role_id=role_id
+                    ),
+                )
+            else:
+                # Legacy service: fall back to shared store (no role isolation available)
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self._memory_service.add_to_knowledge_base(document, metadata),
+                )
+
+            return {
+                "success": True,
+                "message": "Conversation saved to role-private knowledge store",
+                "role_id": role_id,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     async def _memory_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
