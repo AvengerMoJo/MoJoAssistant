@@ -561,6 +561,7 @@ class CapabilityRegistry:
         if not self.sandbox.is_path_allowed(path):
             return {"success": False, "error": f"Path '{path}' not in sandbox"}
 
+        path = os.path.expanduser(path)
         if not os.path.exists(path):
             return {"success": False, "error": f"File '{path}' not found"}
 
@@ -587,6 +588,7 @@ class CapabilityRegistry:
         if not self.sandbox.is_write_allowed(path):
             return {"success": False, "error": f"Path '{path}' not in write sandbox (only ~/.memory/ allowed)"}
 
+        path = os.path.expanduser(path)
         content_size = len(content.encode())
         if not self.sandbox.is_file_size_allowed(content_size):
             return {
@@ -611,6 +613,7 @@ class CapabilityRegistry:
         if not self.sandbox.is_path_allowed(path):
             return {"success": False, "error": f"Path '{path}' not in sandbox"}
 
+        path = os.path.expanduser(path)
         if not os.path.exists(path):
             return {"success": False, "error": f"Path '{path}' not found"}
 
@@ -644,6 +647,7 @@ class CapabilityRegistry:
         if not self.sandbox.is_path_allowed(path):
             return {"success": False, "error": f"Path '{path}' not in sandbox"}
 
+        path = os.path.expanduser(path)
         try:
             result = subprocess.run(
                 ["rg", "--json", query, path],
