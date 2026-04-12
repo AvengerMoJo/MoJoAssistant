@@ -560,8 +560,12 @@ class HybridMemoryService(MemoryService):
     async def _search_knowledge_base_async(
         self, query: str, max_items: int, role_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Search knowledge base — role-private store + shared store when multi-model enabled."""
+        """Search knowledge base — role-private store only when role_id set, shared store otherwise."""
         if not (self.multi_model_enabled and self.multi_model_storage and self.embedding_models):
+            # Multi-model disabled: role-private store is unavailable.
+            # If role_id is provided, return empty — never leak shared user docs into an agent.
+            if role_id:
+                return []
             return await super()._search_knowledge_base_async(query, max_items)
 
         model_priority = ["bge-m3:1024", "gemma:768", "gemma:256"]

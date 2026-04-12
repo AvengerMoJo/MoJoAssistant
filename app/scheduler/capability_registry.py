@@ -1030,6 +1030,9 @@ class CapabilityRegistry:
                 results = await self._memory_service._search_knowledge_base_async(
                     query, max_items=max_items, role_id=role_id
                 )
+            elif role_id:
+                # Legacy service: no role_id support — never leak shared user docs into an agent
+                results = []
             else:
                 results = await self._memory_service._search_knowledge_base_async(
                     query, max_items=max_items
