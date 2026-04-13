@@ -1048,6 +1048,7 @@ class CapabilityRegistry:
             return {"success": False, "error": "At least one of user_message or assistant_message is required"}
 
         try:
+            import asyncio
             role_id = getattr(self, "_current_role_id", None)
             import inspect as _inspect
 
