@@ -4918,6 +4918,9 @@ Agent resumes within seconds.
             if add_args.get("pinned_resource") and "pinned_resource" not in config:
                 config["pinned_resource"] = add_args["pinned_resource"]
             add_args["config"] = config
+            # Map 'cron' shorthand → 'cron_expression' expected by _execute_scheduler_add_task
+            if add_args.get("cron") and "cron_expression" not in add_args:
+                add_args["cron_expression"] = add_args["cron"]
             return await self._execute_scheduler_add_task(add_args)
         elif action == "list":
             return await self._execute_scheduler_list_tasks(args)
