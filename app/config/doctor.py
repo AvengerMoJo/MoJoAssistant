@@ -18,6 +18,8 @@ Severity levels:
 import json
 import logging
 import os
+import asyncio
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -152,6 +154,7 @@ class ConfigDoctor:
     def run_all_checks(self) -> DoctorReport:
         report = DoctorReport()
         self._check_resources(report)
+        self._check_mcp_servers(report)
         self._check_roles(report)
         self._check_nine_chapter_scores(report)
         self._check_scheduler_tasks(report)
@@ -160,6 +163,119 @@ class ConfigDoctor:
         self._check_scheduler_config(report)
         self._check_capabilities(report)
         return report
+
+    # ------------------------------------------------------------------
+    # MCP server checks
+    # ------------------------------------------------------------------
+
+    def _check_mcp_servers(self, report: DoctorReport) -> None:
+        try:
+            from app.scheduler.mcp_client_manager import MCPClientManager
+            mgr = MCPClientManager()
+        except Exception as e:
+            report.add(CheckResult(
+                category="mcp", id="mcp_servers", field="load",
+                value=None, status="error",
+                message=f"Failed to load MCP server config: {e}",
+            ))
+            return
+
+        if not mgr._servers:
+            report.add(CheckResult(
+                category="mcp", id="mcp_servers", field="entries",
+                value=0, status="warn",
+                message="No enabled MCP servers configured",
+            ))
+            return
+
+        probe_targets: List[str] = []
+        for server_id, server in mgr._servers.items():
+            if server.transport == "stdio":
+                resolved = server.command if os.path.isabs(server.command) else shutil.which(server.command)
+                if resolved:
+                    report.add(CheckResult(
+                        category="mcp", id=server_id, field="command",
+                        value=server.command,
+                        status="pass",
+                        message=f"Command resolves to '{resolved}'",
+                    ))
+                    probe_targets.append(server_id)
+                else:
+                    report.add(CheckResult(
+                        category="mcp", id=server_id, field="command",
+                        value=server.command,
+                        status="error",
+                        message="Command not found on PATH / filesystem",
+                    ))
+            elif server.transport in ("http", "streamable_http"):
+                url = server.mcp_http_url or f"http://localhost:{server.port}/mcp"
+                err = _probe_url(url.replace("/mcp", ""), timeout=5)
+                if err:
+                    report.add(CheckResult(
+                        category="mcp", id=server_id, field="endpoint",
+                        value=url,
+                        status="warn",
+                        message=f"Endpoint not reachable: {err}",
+                    ))
+                else:
+                    report.add(CheckResult(
+                        category="mcp", id=server_id, field="endpoint",
+                        value=url,
+                        status="pass",
+                        message="Endpoint is reachable",
+                    ))
+
+        async def _probe_stdio_connections() -> Dict[str, Dict[str, Any]]:
+            statuses: Dict[str, Dict[str, Any]] = {}
+            try:
+                for server_id in probe_targets:
+                    server = mgr._servers[server_id]
+                    try:
+                        tools = await mgr._connect_server(server)
+                        statuses[server_id] = {
+                            "status": "pass",
+                            "tool_count": len(tools),
+                            "message": f"Connected successfully ({len(tools)} tools)",
+                        }
+                    except Exception as e:
+                        statuses[server_id] = {
+                            "status": "error",
+                            "tool_count": 0,
+                            "message": str(e),
+                        }
+            finally:
+                try:
+                    await mgr.close()
+                except Exception:
+                    pass
+            return statuses
+
+        if probe_targets:
+            try:
+                statuses = asyncio.run(_probe_stdio_connections())
+            except Exception as e:
+                report.add(CheckResult(
+                    category="mcp", id="stdio_probe", field="connect",
+                    value=None, status="error",
+                    message=f"Failed to run MCP stdio probe: {e}",
+                ))
+                return
+
+            for server_id in probe_targets:
+                result = statuses.get(server_id)
+                if not result:
+                    report.add(CheckResult(
+                        category="mcp", id=server_id, field="connect",
+                        value=None, status="error",
+                        message="No probe result returned",
+                    ))
+                    continue
+                report.add(CheckResult(
+                    category="mcp", id=server_id, field="connect",
+                    value=result.get("tool_count", 0),
+                    status=result["status"],
+                    message=result["message"],
+                ))
 
     # ------------------------------------------------------------------
     # Resource checks
