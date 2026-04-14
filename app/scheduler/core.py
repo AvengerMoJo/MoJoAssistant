@@ -5,6 +5,7 @@ Persistent ticker that continuously checks for work and executes tasks.
 """
 
 import asyncio
+import json
 import signal
 import sys
 from datetime import datetime
@@ -59,7 +60,7 @@ class Scheduler:
         # State
         self.running = False
         self.current_task: Optional[Task] = None
-        self._state_lock = asyncio.Lock()  # Thread-safe state access
+        self._state_lock: Optional[asyncio.Lock] = None  # Created in start() — must be loop-bound
         self.tick_count = 0
 
         # Concurrent execution
@@ -78,6 +79,13 @@ class Scheduler:
             "tasks_failed": 0,
             "last_tick": None,
         }
+
+        # Benchmark store — passive metrics recorder + idle rerun trigger
+        from app.scheduler.benchmark_store import BenchmarkStore
+        self._benchmark_store = BenchmarkStore()
+        self._idle_since: Optional[datetime] = None
+        # How long the queue must be empty before triggering a benchmark rerun (seconds)
+        self._benchmark_idle_threshold: int = 600  # 10 minutes
 
         self._log("Scheduler initialized")
 
@@ -162,6 +170,7 @@ class Scheduler:
             return
 
         self.running = True
+        self._state_lock = asyncio.Lock()  # Recreate in this loop — survives daemon_restart
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._wake_event = asyncio.Event()
         self._scheduler_loop = asyncio.get_event_loop()
@@ -247,6 +256,26 @@ class Scheduler:
 
                 if dispatched == 0 and not self._running_tasks:
                     self._log("No tasks ready", "debug")
+                    # Track idle time — trigger benchmark reruns when system is quiet
+                    if self._idle_since is None:
+                        self._idle_since = datetime.now()
+                    elif (datetime.now() - self._idle_since).total_seconds() >= self._benchmark_idle_threshold:
+                        await self._maybe_run_benchmark_rerun()
+                        self._idle_since = datetime.now()  # reset after each trigger
+                else:
+                    self._idle_since = None  # work is running — not idle
+
+                # Daily AutoTuner: analyze benchmark log and update resource priorities
+                # 1440 ticks × 60s = 24 hours. Only runs when enough data has accumulated.
+                if self.tick_count % 1440 == 0 and self.tick_count > 0:
+                    try:
+                        suggestions = self._benchmark_store.suggest_priority_updates()
+                        if suggestions:
+                            self._benchmark_store.apply_priority_updates(suggestions)
+                            self._log(f"AutoTuner applied {len(suggestions)} priority update(s): {suggestions}")
+                        self._benchmark_store.save_tuning_report()
+                    except Exception as _ate:
+                        self._log(f"AutoTuner failed (non-fatal): {_ate}", "warning")
 
                 # Periodic cleanup: remove completed tasks older than 7 days
                 if self.tick_count % 100 == 0:
@@ -440,6 +469,17 @@ class Scheduler:
                 task.mark_completed(result)
                 self.stats["tasks_succeeded"] += 1
                 self._log(f"Task {task.id} completed successfully")
+                # Record execution metrics (non-blocking, errors are swallowed)
+                try:
+                    self._benchmark_store.record_execution(task, result)
+                    # If this is a benchmark rerun, trigger async LLM-as-judge comparison
+                    if task.config.get("is_benchmark_rerun") and result.metrics.get("final_answer"):
+                        asyncio.create_task(
+                            self._run_benchmark_judge(task, result),
+                            name=f"bench-judge-{task.id}",
+                        )
+                except Exception as _be:
+                    self._log(f"Benchmark record failed (non-fatal): {_be}", "debug")
                 final_answer = (result.metrics or {}).get("final_answer")
                 is_assistant = task.type == TaskType.ASSISTANT
                 notify = self._should_notify_completion(task)
@@ -575,6 +615,97 @@ class Scheduler:
 
         # 3. Fallback: user-initiated tasks get a notification; system/cron do not
         return task.created_by == "user"
+
+    async def _maybe_run_benchmark_rerun(self) -> None:
+        """
+        When the scheduler is idle, pick a completed production task and re-run
+        it with the next untested free resource for cross-model comparison.
+
+        Shadow tasks are low-priority and marked with is_benchmark_rerun=True so
+        they don't appear in the user's HITL inbox and don't trigger dreaming.
+        If both the original and rerun produce final answers, an LLM-as-judge
+        step scores answer quality and the result is stored in the benchmark log.
+        """
+        try:
+            candidate = self._benchmark_store.get_rerun_candidate()
+            if candidate is None:
+                self._log("Benchmark: no rerun candidates (all resources tested or rate limit)", "debug")
+                return
+
+            resource_id = candidate.get("pinned_resource", "unknown")
+            self._log(f"Benchmark: scheduling rerun with resource '{resource_id}'")
+
+            shadow = Task(
+                type=TaskType.ASSISTANT,
+                config=candidate,
+                priority=TaskPriority.LOW,
+            )
+            shadow.created_by = "benchmark"
+            self.queue.add(shadow)
+            self.wake()
+
+            await self._broadcast({
+                "event_type": "system_notification",
+                "severity": "info",
+                "title": f"Benchmark rerun queued ({resource_id})",
+                "notify_user": False,
+                "data": {
+                    "resource_id": resource_id,
+                    "goal_preview": candidate.get("goal", "")[:60],
+                    "original_task_id": candidate.get("benchmark_original_task_id"),
+                },
+            })
+        except Exception as e:
+            self._log(f"Benchmark rerun scheduling failed (non-fatal): {e}", "warning")
+
+    async def _run_benchmark_judge(self, rerun_task: Task, rerun_result) -> None:
+        """
+        After a benchmark rerun completes, compare its answer against the original
+        using an LLM-as-judge. Stores the score in the benchmark log.
+        """
+        try:
+            config = rerun_task.config or {}
+            original_task_id = config.get("benchmark_original_task_id")
+            if not original_task_id:
+                return
+
+            # Load original answer from task report
+            original_answer = self._load_final_answer(original_task_id)
+            rerun_answer = (rerun_result.metrics or {}).get("final_answer", "")
+            if not original_answer or not rerun_answer:
+                return
+
+            goal = config.get("goal", "")
+            rm = self.executor._agentic_executor._rm if hasattr(self.executor, "_agentic_executor") else None
+            if rm is None:
+                return
+
+            score, winner = await self._benchmark_store.judge_async(
+                goal=goal,
+                original_answer=original_answer,
+                rerun_answer=rerun_answer,
+                resource_manager=rm,
+            )
+            self._benchmark_store.record_judge_result(rerun_task.id, score, winner)
+            self._log(
+                f"Benchmark judge: {rerun_task.id} vs {original_task_id} → "
+                f"winner={winner} score={score}"
+            )
+        except Exception as e:
+            self._log(f"Benchmark judge failed (non-fatal): {e}", "debug")
+
+    def _load_final_answer(self, task_id: str) -> Optional[str]:
+        """Try to load the final answer for a completed task from its task report."""
+        try:
+            from app.config.paths import get_memory_subpath
+            report_path = Path(get_memory_subpath("task_reports", f"{task_id}.json"))
+            if report_path.exists():
+                with open(report_path) as f:
+                    d = json.load(f)
+                return d.get("final_answer") or d.get("content")
+        except Exception:
+            pass
+        return None
 
     def _schedule_dreaming_for_agentic_task(self, task: Task):
         """
@@ -806,9 +937,23 @@ class Scheduler:
             self._log(f"{len(self._running_tasks)} task(s) still running after timeout", "warning")
 
     def stop(self):
-        """Stop the scheduler gracefully"""
+        """Stop the scheduler gracefully.
+
+        Sets running=False and immediately signals _wake_event so the ticker
+        loop exits on its next iteration rather than waiting out the full
+        tick_interval. This prevents the old event loop's ticker from still
+        being alive when daemon_restart creates a new loop and new asyncio
+        primitives — which would cause 'bound to a different event loop' errors.
+        """
         self._log("Stop requested")
         self.running = False
+        # Wake the ticker so it sees running=False immediately instead of
+        # sleeping for up to tick_interval seconds.
+        if self._wake_event is not None and self._scheduler_loop is not None:
+            try:
+                self._scheduler_loop.call_soon_threadsafe(self._wake_event.set)
+            except RuntimeError:
+                pass  # loop already closed — that's fine
 
     def add_task(self, task: Task) -> bool:
         """

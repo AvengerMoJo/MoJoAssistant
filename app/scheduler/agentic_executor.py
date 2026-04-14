@@ -454,6 +454,24 @@ class AgenticExecutor:
                 success=False, error_message="Missing 'goal' in task config"
             )
 
+        # Bug #4: detect negative user replies before running any more setup.
+        # When the user replies "no" / "cancel" / "stop" to a budget-exhaustion or
+        # security-gate HITL question the task should be permanently failed — not
+        # resumed with the reply injected into the conversation.
+        _early_reply = config.get("reply_to_question", "")
+        if _early_reply and config.get("resume_from_task_id"):
+            _early_reply_lower = (_early_reply or "").strip().lower()
+            if _early_reply_lower in ("no", "cancel", "stop", "abort", "reject"):
+                _pending_q = (task.pending_question or "").lower()
+                _is_budget_ex = "iteration budget exhausted" in _pending_q
+                _cancel_reason = (
+                    "Iteration budget exhausted — user declined to extend."
+                    if _is_budget_ex
+                    else "User cancelled task."
+                )
+                self._log(f"Task {task.id} cancelled by user reply '{_early_reply}'")
+                return TaskResult(success=False, error_message=_cancel_reason)
+
         # Load role personality if role_id is specified
         role_model_preference = None
         role_id = config.get("role_id")
@@ -648,9 +666,12 @@ class AgenticExecutor:
                 # grant a budget extension so the gate doesn't immediately re-fire.
                 # Detection uses task.pending_question (persisted in the scheduler DB)
                 # so it survives executor restarts — no in-memory flag needed.
+                # NOTE: negative replies are caught earlier (top of execute()) so we
+                # only reach here when the reply is affirmative.
                 _pending_q = (task.pending_question or "").lower()
                 _is_gate_escalation = "danger budget exhausted" in _pending_q
                 _reply_lower = (reply_to_question or "").strip().lower()
+
                 if _is_gate_escalation and _reply_lower in ("continue", "yes", "ok", "proceed", "go"):
                     self._gate.grant_override(task.id)
                     self._log(
@@ -1058,6 +1079,11 @@ class AgenticExecutor:
             iteration_log.append(_iter_entry)
 
             if final_answer:
+                # Bug #3: clear any pending HITL question (e.g. SecurityGate fired on a
+                # prior iteration but the model still produced a final answer this turn).
+                # The task is done — HITL should not override completion.
+                self._waiting_for_input_question = None
+                self._waiting_for_input_choices = None
                 self._log(f"Task {task.id}: got final answer at iteration {iteration}")
                 self._session_storage.update_status(
                     task.id,
@@ -1235,6 +1261,8 @@ class AgenticExecutor:
             "final_answer": final_answer,
             "session_file": session_file,
             "total_context_trims": _context_trim_count,
+            "resource_id": _last_resource_id,
+            "model": _last_used_model,
         }
         if auto_extracted:
             metrics["completion_mode"] = "auto_extracted"
@@ -2057,18 +2085,26 @@ class AgenticExecutor:
             pass  # violation logging must never break task execution
 
     def _parse_final_answer(self, text: str) -> Optional[str]:
-        """Extract content between <FINAL_ANSWER> tags, if present."""
+        """Extract content between <FINAL_ANSWER> tags, if present.
+
+        Tolerates whitespace inside angle brackets (e.g. '< FINAL_ANSWER >')
+        which some models (Gemma4) produce under budget pressure.
+        """
+        import re as _re
+        # Normalize any whitespace inside the tags before searching
+        normalized = _re.sub(r'<\s*FINAL_ANSWER\s*>', '<FINAL_ANSWER>', text, flags=_re.IGNORECASE)
+        normalized = _re.sub(r'<\s*/\s*FINAL_ANSWER\s*>', '</FINAL_ANSWER>', normalized, flags=_re.IGNORECASE)
         tag_open = "<FINAL_ANSWER>"
         tag_close = "</FINAL_ANSWER>"
-        start = text.find(tag_open)
+        start = normalized.find(tag_open)
         if start == -1:
             return None
         start += len(tag_open)
-        end = text.find(tag_close, start)
+        end = normalized.find(tag_close, start)
         if end == -1:
             # Tag opened but not closed — treat the rest as the answer
-            return text[start:].strip()
-        return text[start:end].strip()
+            return normalized[start:].strip()
+        return normalized[start:end].strip()
 
     def _resolve_capabilities(self, role: dict) -> List[str]:
         """
