@@ -440,10 +440,86 @@ class ToolRegistry:
         self.scheduler_thread = None
         return True
 
-    def _restart_scheduler_daemon(self):
-        """Restart scheduler daemon"""
+    def _reload_core_modules(self) -> Dict[str, Any]:
+        """
+        Reload scheduler and config modules so that edits to .py files take
+        effect without restarting the entire MoJo server process.
+
+        Safe to reload (no persisted enum/dataclass identity issues):
+          - app.scheduler.agentic_executor
+          - app.scheduler.benchmark_store
+          - app.config.doctor
+
+        Reloaded last (depends on above, creates new Scheduler class):
+          - app.scheduler.core
+
+        NOT reloaded (define TaskStatus/Task/etc. used in live task objects):
+          - app.scheduler.models
+          - app.scheduler.queue
+          - app.scheduler.triggers
+
+        After reloading core, a new Scheduler instance is created and assigned
+        to self.scheduler so the new code is active on the next start().
+        """
+        import importlib
+        import sys
+
+        # Order matters: reload dependencies before the modules that use them.
+        candidates = [
+            "app.scheduler.benchmark_store",
+            "app.scheduler.agentic_executor",
+            "app.config.doctor",
+            "app.scheduler.core",          # must be last — depends on above
+        ]
+
+        reloaded, errors = [], []
+        for mod_name in candidates:
+            if mod_name not in sys.modules:
+                continue
+            try:
+                importlib.reload(sys.modules[mod_name])
+                reloaded.append(mod_name.split(".")[-1])
+            except Exception as e:
+                errors.append(f"{mod_name.split('.')[-1]}: {e}")
+                self._log(f"Module reload failed for {mod_name}: {e}", "warning")
+
+        if reloaded:
+            self._log(f"Reloaded modules: {', '.join(reloaded)}")
+        if errors:
+            self._log(f"Reload errors (non-fatal): {errors}", "warning")
+
+        # Swap in a new Scheduler instance built from the freshly reloaded class.
+        # The TaskQueue reads state from disk on init so task history is preserved.
+        if "app.scheduler.core" in sys.modules:
+            try:
+                core_mod = sys.modules["app.scheduler.core"]
+                self.scheduler = core_mod.Scheduler(
+                    logger=self.logger,
+                    memory_service=self.memory_service,
+                    sse_notifier=self._sse_notifier,
+                    mcp_client_manager=self._mcp_client_manager,
+                    push_manager=self._push_manager,
+                    event_log=self._event_log,
+                )
+                self._log("New Scheduler instance created from reloaded core module")
+            except Exception as e:
+                self._log(f"Failed to create new Scheduler instance: {e}", "error")
+                errors.append(f"scheduler_init: {e}")
+
+        return {"reloaded": reloaded, "errors": errors}
+
+    def _restart_scheduler_daemon(self, reload_modules: bool = True):
+        """
+        Restart scheduler daemon.
+
+        With reload_modules=True (default): reloads core .py files first so
+        any code changes take effect immediately — no full process restart needed.
+        Pass reload_modules=False to do a fast restart without reloading code.
+        """
         self._stop_scheduler_daemon()
-        return self._start_scheduler_daemon()
+        reload_result = self._reload_core_modules() if reload_modules else {"reloaded": [], "errors": []}
+        success = self._start_scheduler_daemon()
+        return success, reload_result
 
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
@@ -2995,17 +3071,21 @@ Agent resumes within seconds.
     ) -> Dict[str, Any]:
         """Execute scheduler_restart_daemon tool"""
         try:
-            success = self._restart_scheduler_daemon()
+            reload_modules = bool(args.get("reload_modules", True))
+            success, reload_result = self._restart_scheduler_daemon(reload_modules=reload_modules)
 
             if success:
                 return {
                     "status": "success",
-                    "message": "Scheduler daemon restarted",
+                    "message": "Scheduler daemon restarted"
+                    + (" (modules reloaded)" if reload_result.get("reloaded") else ""),
                     "running": self.scheduler.running,
                     "tick_count": self.scheduler.tick_count,
                     "thread_alive": self.scheduler_thread.is_alive()
                     if self.scheduler_thread
                     else False,
+                    "modules_reloaded": reload_result.get("reloaded", []),
+                    "reload_errors": reload_result.get("errors", []),
                 }
             else:
                 return {
@@ -4951,7 +5031,7 @@ Agent resumes within seconds.
                 "status":         "Daemon + queue stats",
                 "daemon_start":   "Start the scheduler daemon",
                 "daemon_stop":    "Stop the scheduler daemon",
-                "daemon_restart": "Restart the scheduler daemon",
+                "daemon_restart": "Restart the scheduler daemon — reloads core .py modules by default so code changes take effect (pass reload_modules=false for fast restart without reload)",
                 "list_tools":     "Tools available to scheduled agents",
             },
             "note": "To reply to a waiting task use reply_to_task(task_id=..., reply=...) directly.",
