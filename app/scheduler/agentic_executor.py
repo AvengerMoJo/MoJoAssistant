@@ -650,8 +650,14 @@ class AgenticExecutor:
         # Reset SecurityGate danger budget only on fresh starts.
         # On resume (HITL reply or retry) the budget carries over so the gate
         # doesn't re-trigger immediately after the user says "continue".
+        # Tasks that do heavy legitimate tool use (data ingestion, benchmarks)
+        # can declare a higher budget via config key "danger_budget".
         if not resume_from:
-            self._gate.reset_task(task.id)
+            task_danger_budget = config.get("danger_budget")
+            self._gate.reset_task(
+                task.id,
+                budget=int(task_danger_budget) if task_danger_budget else None,
+            )
         if resume_from:
             messages, start_iteration = self._load_resume_messages(
                 resume_from, system_prompt
