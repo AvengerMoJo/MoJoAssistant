@@ -2865,12 +2865,28 @@ Agent resumes within seconds.
                     if started and started < zombie_cutoff:
                         age_minutes = int((now - started).total_seconds() / 60)
                         if not dry_run:
-                            task.status = TaskStatus.FAILED
-                            task.last_error = (
+                            err = (
                                 f"Zombie: task was stuck in 'running' for {age_minutes}m "
                                 f"(threshold: {zombie_minutes}m). Force-failed by cleanup."
                             )
-                            task.completed_at = now
+                            if task.cron_expression:
+                                # Cron tasks reschedule rather than staying FAILED permanently
+                                from app.scheduler.triggers import CronTrigger
+                                try:
+                                    trigger = CronTrigger(task.cron_expression)
+                                    next_run = trigger.get_next_run_time(after=now)
+                                except Exception:
+                                    next_run = None
+                                task.last_error = err
+                                task.last_failed_at = now
+                                task.status = TaskStatus.PENDING
+                                task.schedule = next_run
+                                task.started_at = None
+                                task.completed_at = None
+                            else:
+                                task.status = TaskStatus.FAILED
+                                task.last_error = err
+                                task.completed_at = now
                             self.scheduler.queue.update(task)
                         zombies_killed.append({
                             "id": task.id,

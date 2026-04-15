@@ -176,6 +176,7 @@ class Scheduler:
         self._scheduler_loop = asyncio.get_event_loop()
         self.stats["started_at"] = datetime.now()
         self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
+        self._recover_stuck_running_tasks()
         self._seed_tasks_from_config()
 
         # Eagerly connect external MCP servers so agent(action="list/status")
@@ -922,8 +923,61 @@ class Scheduler:
                     + (f" scheduled at {first_run.isoformat()}" if first_run else "")
                 )
 
+    def _recover_stuck_running_tasks(self) -> None:
+        """
+        Startup recovery: reset any task left in RUNNING state from a previous
+        daemon run.  These are zombies — the previous process died (SIGKILL,
+        crash, forced restart) before it could update the queue.
+
+        Strategy:
+          - Cron tasks  → reschedule for the next natural fire time so they
+                          run on schedule.  The last successful result (if any)
+                          is preserved so the queue doesn't lose history.
+          - One-shot    → mark FAILED so the user knows the task was dropped.
+        """
+        from app.scheduler.triggers import CronTrigger
+
+        recovered = 0
+        for task in list(self.queue.tasks.values()):
+            if task.status != TaskStatus.RUNNING:
+                continue
+
+            recovered += 1
+            if task.cron_expression:
+                try:
+                    trigger = CronTrigger(task.cron_expression)
+                    next_run = trigger.get_next_run_time(after=datetime.now())
+                except Exception:
+                    next_run = None
+
+                # Preserve last error info but clear runtime state
+                task.last_error = "Daemon restarted while task was running (zombie recovered)"
+                task.last_failed_at = datetime.now()
+                task.status = TaskStatus.PENDING
+                task.schedule = next_run
+                task.started_at = None
+                task.completed_at = None
+                # NOTE: task.result is intentionally kept — it reflects the last
+                # successful run and is valuable for history / debug.
+                self._log(
+                    f"Startup recovery: cron zombie {task.id} → rescheduled for "
+                    + (next_run.isoformat() if next_run else "ASAP")
+                )
+            else:
+                task.mark_failed("Daemon restarted while task was running (zombie recovered)")
+                self._log(f"Startup recovery: one-shot zombie {task.id} → FAILED")
+
+            self.queue.update(task)
+
+        if recovered:
+            self._log(f"Startup recovery: cleaned up {recovered} zombie RUNNING task(s)")
+
     async def _drain_running_tasks(self, timeout: float = 30.0):
-        """Wait for all running tasks to finish, with timeout."""
+        """
+        Wait for all in-flight asyncio tasks to finish before shutdown.
+        If they don't finish within the timeout, mark the corresponding
+        queue tasks as FAILED so the next startup doesn't see them as zombies.
+        """
         if not self._running_tasks:
             return
         self._log(f"Draining {len(self._running_tasks)} running task(s) (timeout={timeout}s)")
@@ -934,7 +988,18 @@ class Scheduler:
             )
             self._log("All running tasks drained")
         except asyncio.TimeoutError:
-            self._log(f"{len(self._running_tasks)} task(s) still running after timeout", "warning")
+            self._log(
+                f"{len(self._running_tasks)} task(s) still running after drain timeout — "
+                "marking as failed to prevent zombies on next startup",
+                "warning",
+            )
+            # Mark every task still in RUNNING state as FAILED so the queue on
+            # disk is clean when the next daemon picks it up.
+            for task in list(self.queue.tasks.values()):
+                if task.status == TaskStatus.RUNNING:
+                    task.mark_failed("Daemon shutdown: task did not complete before timeout")
+                    self.queue.update(task)
+                    self._log(f"Drain timeout: marked {task.id} as FAILED")
 
     def stop(self):
         """Stop the scheduler gracefully.
