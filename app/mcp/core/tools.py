@@ -622,8 +622,10 @@ class ToolRegistry:
                     "action='capability_get',   tool_name                      → get capability definition\n"
                     "action='capability_add',   tool_name, description, parameters?, executor?, danger_level?, category? → register custom capability\n"
                     "action='capability_remove',tool_name                      → remove a user-created capability\n\n"
-                    "# Validation\n"
-                    "action='doctor'                                     → full config pre-flight report"
+                    "# Validation & health improvement\n"
+                    "action='doctor'                                     → full config pre-flight report\n"
+                    "action='doctor_improve'                             → suggest config improvements from runtime data (benchmark history, failure patterns)\n"
+                    "action='doctor_apply', auto_only?                   → apply auto-safe improvements (auto_only=false applies all suggestions)"
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -3647,6 +3649,48 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Config doctor failed: {e}"}
 
+    async def _execute_config_healer(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Suggest (and optionally apply) config improvements driven by runtime data.
+
+        action="doctor_improve"  — analyse and return suggestions without applying
+        action="doctor_apply"    — apply auto_apply=True suggestions, return what changed
+                                   pass auto_only=False to apply all suggestions
+        """
+        import asyncio
+        action = args.get("action", "doctor_improve")
+        auto_only = args.get("auto_only", True)
+
+        try:
+            from app.config.doctor import ConfigHealer
+            healer = ConfigHealer()
+
+            loop = asyncio.get_event_loop()
+
+            if action == "doctor_improve":
+                report = await loop.run_in_executor(None, healer.suggest_improvements)
+                data = report.to_dict()
+                data["summary_text"] = report.summary()
+                return data
+
+            elif action == "doctor_apply":
+                def _run():
+                    imp_report = healer.suggest_improvements()
+                    messages = healer.apply_improvements(imp_report, auto_only=bool(auto_only))
+                    return imp_report, messages
+
+                imp_report, messages = await loop.run_in_executor(None, _run)
+                data = imp_report.to_dict()
+                data["applied_messages"] = messages
+                data["summary_text"] = imp_report.summary()
+                return data
+
+            else:
+                return {"status": "error", "message": f"Unknown action '{action}'"}
+
+        except Exception as e:
+            return {"status": "error", "message": f"Config healer failed: {e}"}
+
     async def _execute_audit_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return audit records of external boundary crossings."""
         try:
@@ -4397,9 +4441,11 @@ Agent resumes within seconds.
         if action in ("capability_list", "capability_get", "capability_add", "capability_remove"):
             return await self._execute_tool_manage(action, args)
 
-        # --- doctor ---
+        # --- doctor / healer ---
         if action == "doctor":
             return await self._execute_config_doctor({})
+        if action in ("doctor_improve", "doctor_apply"):
+            return await self._execute_config_healer(args)
 
         # --- modules list ---
         if action == "modules":
@@ -4445,6 +4491,8 @@ Agent resumes within seconds.
                         "capability_add":        "Register a custom capability to personal layer — params: tool_name, description, parameters?, executor?, danger_level?, category?",
                         "capability_remove":     "Remove a user-created capability — params: tool_name (system capabilities are protected)",
                         "doctor":                "Full config pre-flight report",
+                        "doctor_improve":        "Suggest config improvements from runtime data (benchmark history, failure patterns) — no changes written",
+                        "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
                     },
                     "example": 'config(action="capability_list")',
                 }
