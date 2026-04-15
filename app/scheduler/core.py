@@ -933,7 +933,12 @@ class Scheduler:
           - Cron tasks  → reschedule for the next natural fire time so they
                           run on schedule.  The last successful result (if any)
                           is preserved so the queue doesn't lose history.
-          - One-shot    → mark FAILED so the user knows the task was dropped.
+          - One-shot    → reset to PENDING so the task is retried.  We don't
+                          mark them FAILED because daemon restarts are often
+                          rapid (config reloads, /mcp reconnects) and killing
+                          a task that barely started would be surprising.
+                          Long-running zombies (> max_duration_seconds) will
+                          be caught by the wall-clock timeout in _execute_task.
         """
         from app.scheduler.triggers import CronTrigger
 
@@ -964,8 +969,11 @@ class Scheduler:
                     + (next_run.isoformat() if next_run else "ASAP")
                 )
             else:
-                task.mark_failed("Daemon restarted while task was running (zombie recovered)")
-                self._log(f"Startup recovery: one-shot zombie {task.id} → FAILED")
+                # One-shot: reset to PENDING so it retries immediately.
+                task.status = TaskStatus.PENDING
+                task.started_at = None
+                task.completed_at = None
+                self._log(f"Startup recovery: one-shot zombie {task.id} → PENDING (will retry)")
 
             self.queue.update(task)
 
