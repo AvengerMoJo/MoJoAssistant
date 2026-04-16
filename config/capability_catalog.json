@@ -36,12 +36,12 @@
     "read_file":       {
       "category": "file",
       "danger_level": "low",
-      "description": "Read the contents of a file from the filesystem. Returns text with line numbers. Use before modifying any file — always read first."
+      "description": "Read the full contents of a file. Returns raw text plus line_count and size_bytes. Always read a file before modifying it."
     },
     "write_file":      {
       "category": "file",
       "danger_level": "medium",
-      "description": "Write or overwrite a file on the filesystem. Only allowed in approved sandbox paths. Prefer making targeted edits when possible; use for creating new files or full rewrites."
+      "description": "Write or overwrite a file. Only paths inside ~/.memory/ are permitted — sandbox policy blocks all other writes. Creates parent directories automatically."
     },
     "list_files":      {
       "category": "file",

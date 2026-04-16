@@ -246,21 +246,21 @@ class CapabilityRegistry:
         builtins = [
             CapabilityDefinition(
                 name="read_file",
-                description="Read file contents. Returns full text with line numbers.",
+                description="Read the full contents of a file. Returns raw text plus line_count and size_bytes. Always read a file before editing it.",
                 danger_level="low",
                 category="file",
                 parameters={"type": "object", "properties": {
-                    "path": {"type": "string", "description": "Absolute or relative file path to read"},
+                    "path": {"type": "string", "description": "Absolute path or ~/… path to read"},
                 }, "required": ["path"]},
             ),
             CapabilityDefinition(
                 name="write_file",
-                description="Write content to file. Overwrites existing file. Only allowed in sandbox paths.",
+                description="Write or overwrite a file. Only paths inside ~/.memory/ are allowed — writes elsewhere are blocked by sandbox policy. Creates parent directories automatically.",
                 danger_level="medium",
                 category="file",
                 parameters={"type": "object", "properties": {
-                    "path": {"type": "string", "description": "File path to write"},
-                    "content": {"type": "string", "description": "Content to write"},
+                    "path": {"type": "string", "description": "Destination path (must be under ~/.memory/)"},
+                    "content": {"type": "string", "description": "Full file content to write"},
                 }, "required": ["path", "content"]},
             ),
             CapabilityDefinition(
@@ -380,6 +380,7 @@ class CapabilityRegistry:
                 category="knowledge",
                 parameters={"type": "object", "properties": {
                     "query": {"type": "string", "description": "Search query to find relevant context"},
+                    "max_items": {"type": "integer", "description": "Maximum results to return (default: 5, max: 20).", "default": 5},
                 }, "required": ["query"]},
             ),
             CapabilityDefinition(

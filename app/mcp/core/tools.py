@@ -646,7 +646,7 @@ class ToolRegistry:
             },
             {
                 "name": "add_conversation",
-                "description": "PRESERVE CONVERSATION CONTEXT: Add this Q&A exchange to memory so I remember our conversation. Use IMMEDIATELY after every user question and my response to maintain context across our interaction. This ensures I can reference previous parts of our conversation.",
+                "description": "Append a Q&A exchange to conversation memory for cross-session recall. Call after each user message + response pair to maintain continuity across reconnects.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -725,12 +725,14 @@ class ToolRegistry:
                             "type": "boolean",
                             "description": "For LLM model changes: validate the model is loaded in the server before applying (default: true)",
                         },
-                        "resource_id": {"type": "string", "description": "Resource ID (resource_* and llm_models actions)."},
-                        "model": {"type": "string"},
-                        "type": {"type": "string", "enum": ["local", "api"]},
-                        "provider": {"type": "string"},
-                        "base_url": {"type": "string"},
-                        "api_key_env": {"type": "string", "description": "Env var name holding the API key."},
+                        "resource_id": {"type": "string", "description": "Resource ID to operate on (resource_* and llm_models actions)."},
+                        "model": {"type": "string", "description": "Model identifier string (e.g. 'gemini-2.5-pro', 'qwen3.5-35b-a3b')."},
+                        "type": {"type": "string", "enum": ["local", "api"], "description": "Resource type: 'local' = LMStudio/local server, 'api' = external API."},
+                        "provider": {"type": "string", "description": "Provider name (e.g. 'google', 'openai', 'anthropic')."},
+                        "base_url": {"type": "string", "description": "API base URL (e.g. 'https://generativelanguage.googleapis.com/v1beta/openai')."},
+                        "api_key": {"type": "string", "description": "Inline API key value. Stored in personal config (~/.memory). Use instead of api_key_env when you have the key directly."},
+                        "api_key_env": {"type": "string", "description": "Env var name holding the API key (alternative to api_key). Key resolved at runtime from environment."},
+                        "auto_only": {"type": "boolean", "description": "doctor_apply: apply only auto-safe suggestions (default true). Pass false to apply all suggestions including manual-review ones."},
                         "tier": {"type": "string", "enum": ["free", "free_api", "paid"]},
                         "priority": {"type": "integer", "description": "Lower = higher priority."},
                         "enabled": {"type": "boolean"},
@@ -770,11 +772,12 @@ class ToolRegistry:
                     "properties": {
                         "action": {
                             "type": "string",
+                            "enum": ["end_conversation", "list_conversations", "remove_conversation", "remove_conversations", "add_documents", "list_documents", "remove_document", "stats", "toggle_multi_model"],
                             "description": "Operation to perform. Omit for help menu.",
                         },
-                        "limit": {"type": "integer", "description": "Result limit (list actions)."},
-                        "id": {"type": "string", "description": "Message or document ID (remove actions)."},
-                        "count": {"type": "integer", "description": "Number to remove (remove_conversations)."},
+                        "limit": {"type": "integer", "description": "Max results to return (list_conversations, list_documents)."},
+                        "id": {"type": "string", "description": "Message or document ID (remove_conversation, remove_document)."},
+                        "count": {"type": "integer", "description": "Number of recent conversations to remove (remove_conversations)."},
                         "documents": {
                             "type": "array",
                             "description": "Documents to add (add_documents action).",
@@ -917,20 +920,21 @@ class ToolRegistry:
             {
                 "name": "dream",
                 "description": (
-                    "Memory consolidation (dreaming) hub. Call with no action for help menu.\n\n"
-                    "action='process',  conversation_id, quality? — run dreaming pipeline\n"
-                    "action='list'                                — list dreaming archives\n"
-                    "action='get',      conversation_id, version? — retrieve archive\n"
-                    "action='upgrade',  conversation_id, target_quality — quality upgrade"
+                    "Memory consolidation pipeline (dreaming). Distills raw conversation logs into structured knowledge units stored in long-term memory. Call with no action for help menu.\n\n"
+                    "action='process',  conversation_id, quality?        — run full dreaming pipeline on a conversation\n"
+                    "action='list'                                        — list all dreaming archives\n"
+                    "action='get',      conversation_id, version?         — retrieve a specific archive\n"
+                    "action='upgrade',  conversation_id, target_quality   — re-process at higher quality level\n\n"
+                    "quality levels: 'fast' (quick summary), 'balanced' (default), 'deep' (full fact extraction)"
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "description": "Operation. Omit for help menu."},
-                        "conversation_id": {"type": "string"},
-                        "quality": {"type": "string", "description": "Quality level (process action)."},
-                        "version": {"type": "string", "description": "Archive version (get action)."},
-                        "target_quality": {"type": "string", "description": "Target quality (upgrade action)."},
+                        "action": {"type": "string", "description": "Operation to perform. Omit for help menu."},
+                        "conversation_id": {"type": "string", "description": "Conversation ID to process or retrieve."},
+                        "quality": {"type": "string", "enum": ["fast", "balanced", "deep"], "description": "Processing quality level (process action, default: balanced)."},
+                        "version": {"type": "string", "description": "Archive version to retrieve (get action, default: latest)."},
+                        "target_quality": {"type": "string", "enum": ["fast", "balanced", "deep"], "description": "Quality level to upgrade to (upgrade action)."},
                     },
                     "required": [],
                 },
@@ -954,10 +958,10 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "description": "Operation. Omit for help menu."},
-                        "agent_id": {"type": "string"},
-                        "type": {"type": "string", "description": "Agent type (start action)."},
-                        "params": {"type": "object", "description": "Action params (action sub-action)."},
+                        "action": {"type": "string", "enum": ["list_types", "start", "stop", "status", "list", "restart", "destroy", "action"], "description": "Operation to perform. Omit for help menu."},
+                        "agent_id": {"type": "string", "description": "External agent instance ID (stop/status/restart/destroy/action)."},
+                        "type": {"type": "string", "description": "Agent type to start, e.g. 'opencode', 'claude_code' (start action)."},
+                        "params": {"type": "object", "description": "Parameters for sub-action (action operation)."},
                     },
                     "required": [],
                 },
@@ -987,8 +991,8 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string"},
-                        "task_id": {"type": "string"},
+                        "action": {"type": "string", "description": "Operation to perform. Omit for help menu. Groups: HITL bridge (ask_user, check_reply, run_task), Google Workspace (google), coding backends (backend_*)."},
+                        "task_id": {"type": "string", "description": "Task ID for HITL operations (ask_user, check_reply)."},
                         "question": {"type": "string"},
                         "options": {"type": "array", "items": {"type": "string"}},
                         "prompt": {"type": "string"},
@@ -1041,19 +1045,19 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string"},
-                        "role_id": {"type": "string"},
-                        "session_id": {"type": "string"},
-                        "answer": {"type": "string"},
-                        "description": {"type": "string"},
-                        "file_path": {"type": "string"},
-                        "role": {"type": "object"},
-                        "capabilities": {"type": "array", "items": {"type": "string"}},
-                        "capabilities_add": {"type": "array", "items": {"type": "string"}},
-                        "capabilities_remove": {"type": "array", "items": {"type": "string"}},
-                        "model_preference": {"type": "string"},
-                        "notify_on_completion": {"type": "boolean"},
-                        "policy": {"type": "object"},
+                        "action": {"type": "string", "enum": ["list", "get", "create", "edit", "design_start", "design_answer"], "description": "Operation to perform. Omit for help menu."},
+                        "role_id": {"type": "string", "description": "Role identifier (get, edit actions)."},
+                        "session_id": {"type": "string", "description": "Design session ID (design_answer, create actions)."},
+                        "answer": {"type": "string", "description": "Answer to current design question (design_answer action)."},
+                        "description": {"type": "string", "description": "Natural language description of the role (design_start action)."},
+                        "file_path": {"type": "string", "description": "Path to agency-agents file to import (design_start action)."},
+                        "role": {"type": "object", "description": "Full role spec object (create action, alternative to session_id)."},
+                        "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Full replacement capability list (edit action). Use capabilities_add/remove for partial updates."},
+                        "capabilities_add": {"type": "array", "items": {"type": "string"}, "description": "Capabilities to add to existing role defaults (edit action)."},
+                        "capabilities_remove": {"type": "array", "items": {"type": "string"}, "description": "Capabilities to remove from existing role defaults (edit action)."},
+                        "model_preference": {"type": "string", "description": "Preferred model resource ID for this role (edit action)."},
+                        "notify_on_completion": {"type": "boolean", "description": "Send push notification when task completes (edit action)."},
+                        "policy": {"type": "object", "description": "Safety policy overrides for this role (edit action)."},
                     },
                     "required": [],
                 },
@@ -1083,8 +1087,10 @@ class ToolRegistry:
             {
                 "name": "task_report_read",
                 "description": (
-                    "Read a normalized task report by task_id from "
-                    "~/.memory/task_reports/<task_id>.json."
+                    "Read a normalized task completion record by task_id. "
+                    "Contains: success flag, final_answer, token usage, iteration count, duration, and error_message if failed. "
+                    "Lighter than task_session_read — use this for outcome checks; use task_session_read for full iteration trail. "
+                    "Reads from ~/.memory/task_reports/<task_id>.json."
                 ),
                 "inputSchema": {
                     "type": "object",
