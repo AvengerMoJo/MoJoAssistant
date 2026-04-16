@@ -371,6 +371,16 @@ class CapabilityRegistry:
                         "type": "string",
                         "description": "The assistant-side content — findings, decisions, or response worth preserving",
                     },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["role", "framework"],
+                        "default": "role",
+                        "description": (
+                            "'role' (default) — saved to your own private store, only you can retrieve it. "
+                            "'framework' — saved to the shared framework store, all agents can retrieve it. "
+                            "Use 'framework' only for tool bugs, workflow failures, or patterns every agent should know."
+                        ),
+                    },
                 }, "required": ["user_message", "assistant_message"]},
             ),
             CapabilityDefinition(
@@ -1034,13 +1044,18 @@ class CapabilityRegistry:
 
     async def _add_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Save a dialog exchange to this role's own private knowledge store.
+        Save a dialog exchange to the role-private or shared framework knowledge store.
 
-        Writes to the role-private store (not the user's personal memory).
-        The dreaming pipeline will consolidate it later.
+        scope='role' (default): writes to this role's private store.
+        scope='framework': writes to the shared __framework__ store — all agents
+            can retrieve it via _orient_from_memory. Use for tool bugs, workflow
+            failures, or patterns every agent should know.
         """
+        FRAMEWORK_ROLE_ID = "__framework__"
+
         user_message = args.get("user_message", "")
         assistant_message = args.get("assistant_message", "")
+        scope = args.get("scope", "role")
 
         if not self._memory_service:
             return {"success": False, "error": "Memory service not available"}
@@ -1050,8 +1065,10 @@ class CapabilityRegistry:
 
         try:
             import asyncio
-            role_id = getattr(self, "_current_role_id", None)
             import inspect as _inspect
+
+            role_id = getattr(self, "_current_role_id", None)
+            target_role_id = FRAMEWORK_ROLE_ID if scope == "framework" else role_id
 
             document = ""
             if user_message:
@@ -1059,26 +1076,32 @@ class CapabilityRegistry:
             if assistant_message:
                 document += f"[assistant] {assistant_message}"
 
-            metadata = {"type": "conversation", "role_id": role_id or "unknown"}
+            metadata = {
+                "type": "conversation",
+                "role_id": role_id or "unknown",
+                "scope": scope,
+            }
 
             sig = _inspect.signature(self._memory_service.add_to_knowledge_base)
             if "role_id" in sig.parameters:
                 await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: self._memory_service.add_to_knowledge_base(
-                        document, metadata, role_id=role_id
+                        document, metadata, role_id=target_role_id
                     ),
                 )
             else:
-                # Legacy service: fall back to shared store (no role isolation available)
+                # Legacy service: no role isolation — write to shared store
                 await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: self._memory_service.add_to_knowledge_base(document, metadata),
                 )
 
+            store_label = "shared framework store" if scope == "framework" else "role-private knowledge store"
             return {
                 "success": True,
-                "message": "Conversation saved to role-private knowledge store",
+                "message": f"Conversation saved to {store_label}",
+                "scope": scope,
                 "role_id": role_id,
             }
         except Exception as e:

@@ -31,7 +31,7 @@
     "add_conversation": {
       "category": "knowledge",
       "danger_level": "low",
-      "description": "Save a dialog exchange or finding to this role's own private knowledge store. The dreaming pipeline will consolidate it later. Use to preserve task context, key decisions, or insights worth remembering across sessions."
+      "description": "Save a dialog exchange or finding to the knowledge store. scope='role' (default) writes to your private store — only you retrieve it. scope='framework' writes to the shared framework store — all agents see it at task start. Use 'framework' only for tool bugs, workflow failures, or patterns every agent should know."
     },
     "read_file":       {
       "category": "file",

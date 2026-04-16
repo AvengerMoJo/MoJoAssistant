@@ -1574,48 +1574,64 @@ class AgenticExecutor:
         """
         Search memory for relevant past procedures and context before the loop starts.
 
-        Two searches are run in parallel:
-          - Global context search across all tiers (conversations, active, archival, knowledge)
-          - Role-private knowledge search (if role_id is set and the memory service supports it)
+        Three searches are run:
+          - Role-private knowledge (this role's past task reflections and dreaming clusters)
+          - Framework knowledge (__framework__ store — tool patterns, workflow lessons
+            accumulated by any agent and shared across all roles)
 
         Returns a formatted orientation block, or "" if nothing useful is found or
         the memory service is unavailable.  Never raises.
         """
+        FRAMEWORK_ROLE_ID = "__framework__"
+
         if not self._memory_service:
             return ""
         try:
-            # Search only role-scoped knowledge — never the user's personal conversations.
-            # Role-private store first (Ahman's own past tasks), then shared knowledge base.
-            merged: List[Dict[str, Any]] = []
-            try:
-                sig = inspect.signature(self._memory_service._search_knowledge_base_async)
-                if "role_id" in sig.parameters:
-                    # Role-scoped knowledge only — never the shared/user knowledge base.
-                    if role_id:
-                        merged = await self._memory_service._search_knowledge_base_async(
-                            goal, max_items=6, role_id=role_id
-                        )
-                    # No role_id → no knowledge context (safer than leaking user personal docs)
-                else:
-                    # Legacy signature: no role scoping available — skip to avoid leaking user memory
-                    pass
-            except Exception:
-                pass
+            sig = inspect.signature(self._memory_service._search_knowledge_base_async)
+            supports_role_id = "role_id" in sig.parameters
 
+            role_hits: List[Dict[str, Any]] = []
+            framework_hits: List[Dict[str, Any]] = []
+
+            if supports_role_id:
+                # Role-private knowledge — this role's accumulated experience
+                if role_id:
+                    try:
+                        role_hits = await self._memory_service._search_knowledge_base_async(
+                            goal, max_items=5, role_id=role_id
+                        )
+                    except Exception:
+                        pass
+
+                # Framework knowledge — shared patterns all agents benefit from
+                try:
+                    framework_hits = await self._memory_service._search_knowledge_base_async(
+                        goal, max_items=3, role_id=FRAMEWORK_ROLE_ID
+                    )
+                except Exception:
+                    pass
+            # Legacy signature: skip entirely to avoid leaking user memory
+
+            merged = role_hits + framework_hits
             if not merged:
                 return ""
 
             lines: List[str] = []
-            for h in merged[:6]:
+            for h in merged[:8]:
                 content = (h.get("content") or h.get("text") or "").strip()[:400]
                 source = h.get("source", "memory")
+                scope = h.get("metadata", {}).get("scope") if isinstance(h.get("metadata"), dict) else None
+                label = f"{source}:framework" if scope == "framework" else source
                 if content:
-                    lines.append(f"[{source}] {content}")
+                    lines.append(f"[{label}] {content}")
 
             if not lines:
                 return ""
 
-            self._log(f"ORIENT: injecting {len(lines)} memory hits for task")
+            self._log(
+                f"ORIENT: injecting {len(lines)} memory hits "
+                f"(role={len(role_hits)}, framework={len(framework_hits)})"
+            )
             return (
                 "\n\n## Orientation (from memory)\n"
                 "These are COMPLETED past records — historical context only. "
@@ -1640,25 +1656,38 @@ class AgenticExecutor:
         iteration_log: List[Dict[str, Any]],
     ) -> None:
         """
-        Write a procedural reflection into memory after a successful task.
+        Write task learnings back to memory after completion. Two writes:
 
-        Extracts:
-          - Ordered list of tools used (de-duplicated, first-occurrence order)
-          - A condensed outcome summary from the FINAL_ANSWER
+        1. Role-private reflection — ordered tool sequence + outcome summary.
+           Written to the role's own knowledge store for future orientation.
 
-        Writes to the role-private knowledge store when role_id is set
-        (and the memory service supports it), otherwise to the shared store.
+        2. Framework pattern (if applicable) — if the iteration log shows tool
+           errors, empty responses, or repeated failures, extract the pattern
+           and write it to the shared __framework__ store so all agents benefit.
+
         Fire-and-forget — all errors are logged, never surfaced.
         """
+        FRAMEWORK_ROLE_ID = "__framework__"
+
         if not self._memory_service:
             return
         try:
             # Ordered unique tool sequence from the iteration log
             seen: Dict[str, int] = {}
+            empty_response_count = 0
+            rejected_count = 0
+
             for entry in iteration_log:
                 for t in entry.get("tool_calls", []):
                     if t not in seen:
                         seen[t] = len(seen)
+                # Detect empty model responses (response_length=0 with no tool calls)
+                if entry.get("response_length", -1) == 0 and not entry.get("tool_calls"):
+                    empty_response_count += 1
+                # Detect repeated final-answer rejections (validation loop)
+                if entry.get("status") == "final_rejected":
+                    rejected_count += 1
+
             tools_used = sorted(seen, key=lambda t: seen[t])
 
             from datetime import datetime as _dt
@@ -1681,10 +1710,12 @@ class AgenticExecutor:
                 "tools_used": tools_used[:15],
             }
 
-            # Route to role-private store when supported
+            sig = inspect.signature(self._memory_service.add_to_knowledge_base)
+            supports_role_id = "role_id" in sig.parameters
+
+            # Write 1 — role-private reflection
             try:
-                sig = inspect.signature(self._memory_service.add_to_knowledge_base)
-                if "role_id" in sig.parameters:
+                if supports_role_id:
                     self._memory_service.add_to_knowledge_base(document, metadata, role_id=role_id)
                 else:
                     self._memory_service.add_to_knowledge_base(document, metadata)
@@ -1695,6 +1726,46 @@ class AgenticExecutor:
                 f"REFLECT: wrote task learnings to memory "
                 f"(role={role_id}, tools={tools_used[:5]})"
             )
+
+            # Write 2 — framework pattern if workflow problems detected
+            # Triggers on: ≥2 empty model responses, or ≥2 final-answer rejections
+            if supports_role_id and (empty_response_count >= 2 or rejected_count >= 2):
+                fw_lines = [
+                    f"[FRAMEWORK PATTERN — {timestamp}]",
+                    f"Detected in task run by role: {role_id or 'unknown'}",
+                    f"Total iterations: {len(iteration_log)}",
+                ]
+                if empty_response_count >= 2:
+                    fw_lines.append(
+                        f"Empty LLM responses: {empty_response_count} iterations produced no content and no tool calls. "
+                        "Likely cause: model confused by large context or resume payload. "
+                        "Mitigation: raise max_iterations, trim context before resume, or pin to a different model."
+                    )
+                if rejected_count >= 2:
+                    fw_lines.append(
+                        f"Repeated final-answer rejections: {rejected_count} attempts failed validation. "
+                        "Likely cause: validator is too strict, or model misunderstood the required output format. "
+                        "Mitigation: review validation_rules in role config, or clarify goal format requirements."
+                    )
+                fw_document = "\n".join(fw_lines)
+                fw_metadata: Dict[str, Any] = {
+                    "type": "framework_pattern",
+                    "scope": "framework",
+                    "role_origin": role_id,
+                    "empty_response_count": empty_response_count,
+                    "rejected_count": rejected_count,
+                }
+                try:
+                    self._memory_service.add_to_knowledge_base(
+                        fw_document, fw_metadata, role_id=FRAMEWORK_ROLE_ID
+                    )
+                    self._log(
+                        f"REFLECT: wrote framework pattern "
+                        f"(errors={len(tool_errors)}, empty={empty_response_count})"
+                    )
+                except Exception as fw_e:
+                    self._log(f"Framework pattern write failed (non-fatal): {fw_e}", "warning")
+
         except Exception as e:
             self._log(f"Memory reflection failed (non-fatal): {e}", "warning")
 

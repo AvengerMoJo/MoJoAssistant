@@ -646,19 +646,32 @@ class ToolRegistry:
             },
             {
                 "name": "add_conversation",
-                "description": "Append a Q&A exchange to conversation memory for cross-session recall. Call after each user message + response pair to maintain continuity across reconnects.",
+                "description": (
+                    "Save a dialog exchange or key finding to the knowledge store.\n\n"
+                    "scope='role' (default) — written to your own private store. Only you can retrieve it via memory search.\n"
+                    "scope='framework' — written to the shared framework store. Every agent sees it at task start.\n\n"
+                    "Use scope='framework' ONLY for tool bugs, workflow failures, executor quirks, or patterns "
+                    "that every agent should know about (e.g. 'Qwen outputs XML tool calls as plain text in FINAL_ANSWER'). "
+                    "Use scope='role' for personal task context, decisions, and domain-specific findings."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "user_message": {
                             "type": "string",
-                            "description": "The exact user question/message that was just asked",
+                            "description": "The user-side content of the exchange or the context/question",
                             "minLength": 1,
                         },
                         "assistant_message": {
                             "type": "string",
-                            "description": "My complete response to that user question",
+                            "description": "The assistant-side content — findings, decisions, or response worth preserving",
                             "minLength": 1,
+                        },
+                        "scope": {
+                            "type": "string",
+                            "enum": ["role", "framework"],
+                            "default": "role",
+                            "description": "'role' (default) saves to your private store. 'framework' saves to the shared store all agents read.",
                         },
                     },
                     "required": ["user_message", "assistant_message"],
@@ -1365,7 +1378,7 @@ Each blocking item includes reply_with + task_id so you know how to respond.
 | get_context(type="task_session", task_id=...) | Read full task output before replying. |
 | get_context(type="events", ...) | Raw event history — failures, config changes. |
 | search_memory(query, types?, limit_per_type?) | Find past context. types: conversations, documents. |
-| add_conversation(user_message, assistant_message) | After every exchange worth keeping. |
+| add_conversation(user_message, assistant_message, scope?) | After every exchange worth keeping. scope='framework' for tool bugs/workflow failures all agents should know. |
 | reply_to_task(task_id, reply) | Answer an agent waiting for input (from attention.blocking). |
 | web_search(query) | Current information not in local memory. |
 
