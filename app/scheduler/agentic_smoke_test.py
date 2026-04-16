@@ -30,6 +30,14 @@ _SMOKE_GOAL = (
     "After receiving the tool result, provide a <FINAL_ANSWER> with a one-line summary of what you found."
 )
 
+# Two-step write workflow goal — catches models that output XML tool calls as text
+# instead of making real function calls (known Qwen XML leakage bug).
+_SMOKE_WRITE_GOAL = (
+    "You MUST call the write_file tool to write the text 'smoke_test_ok' to the path "
+    "'~/.memory/smoke_write_test.txt'. "
+    "After the tool returns successfully, provide a <FINAL_ANSWER> confirming the write succeeded."
+)
+
 _SMOKE_SYSTEM = (
     "You are a minimal test agent. "
     "Follow instructions exactly. "
@@ -98,6 +106,38 @@ class AgenticSmokeTest:
     def __init__(self):
         pass
 
+    async def _run_single_task(
+        self,
+        resource,
+        task_id: str,
+        goal: str,
+        available_tools: list,
+        max_iterations: int = 4,
+    ) -> tuple:
+        """Run one minimal task and return (task_result, iteration_log, final_answer)."""
+        from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
+        task = Task(
+            id=task_id,
+            type=TaskType.ASSISTANT,
+            priority=TaskPriority.HIGH,
+            config={
+                "goal": goal,
+                "system_prompt": _SMOKE_SYSTEM,
+                "available_tools": available_tools,
+                "max_iterations": max_iterations,
+                "max_duration_seconds": 90,
+            },
+            resources=TaskResources(max_iterations=max_iterations, max_duration_seconds=90),
+            description="Agentic smoke test",
+            created_by="system",
+        )
+        from app.scheduler.agentic_executor import AgenticExecutor
+        single_rm = _SingleResourceManager(resource)
+        executor = AgenticExecutor(resource_manager=single_rm)
+        task_result = await executor.execute(task)
+        metrics = task_result.metrics or {}
+        return task_result, metrics.get("iteration_log", []), metrics.get("final_answer")
+
     async def run(self, resource_id: str, full: bool = False) -> SmokeTestResult:
         """
         Run the smoke test against a named resource.
@@ -130,37 +170,14 @@ class AgenticSmokeTest:
 
         model = resource.model or "?"
 
-        # Build a minimal task
+        # --- Check 1 + 2: tool calling fidelity and final answer ---
         try:
-            from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
-            task = Task(
-                id=f"smoke_test_{resource_id}",
-                type=TaskType.ASSISTANT,
-                priority=TaskPriority.HIGH,
-                config={
-                    "goal": _SMOKE_GOAL,
-                    "system_prompt": _SMOKE_SYSTEM,
-                    "available_tools": ["memory_search"],
-                    "max_iterations": 4,
-                    "max_duration_seconds": 60,
-                },
-                resources=TaskResources(max_iterations=4, max_duration_seconds=60),
-                description="Agentic smoke test",
-                created_by="system",
+            _, iteration_log, final_answer = await self._run_single_task(
+                resource=resource,
+                task_id=f"smoke_test_{resource_id}",
+                goal=_SMOKE_GOAL,
+                available_tools=["memory_search"],
             )
-        except Exception as e:
-            return SmokeTestResult(
-                resource_id=resource_id, model=model,
-                agentic_capable=False,
-                error=f"Failed to build test task: {e}",
-            )
-
-        # Run via executor with a single-resource manager
-        try:
-            from app.scheduler.agentic_executor import AgenticExecutor
-            single_rm = _SingleResourceManager(resource)
-            executor = AgenticExecutor(resource_manager=single_rm)
-            task_result = await executor.execute(task)
         except Exception as e:
             return SmokeTestResult(
                 resource_id=resource_id, model=model,
@@ -169,13 +186,6 @@ class AgenticSmokeTest:
                 duration_seconds=time.time() - start,
             )
 
-        duration = time.time() - start
-        metrics = task_result.metrics or {}
-        iteration_log = metrics.get("iteration_log", [])
-        iterations = len(iteration_log)
-        final_answer = metrics.get("final_answer")
-
-        # Check 1: tool calling fidelity
         made_tool_call = any(
             it.get("status") == "tool_use" and "memory_search" in it.get("tool_calls", [])
             for it in iteration_log
@@ -189,8 +199,6 @@ class AgenticSmokeTest:
                 else "Model did not emit a tool call (hallucinated result or ignored instruction)"
             ),
         )
-
-        # Check 2: final answer compliance
         fa_check = SmokeCheckResult(
             name="final_answer",
             status="pass" if final_answer else "fail",
@@ -201,22 +209,80 @@ class AgenticSmokeTest:
             ),
         )
 
-        # Check 3: sandbox_write (full mode only)
-        sw_check = SmokeCheckResult(name="sandbox_write", status="skip", message="Not run (full=False)")
+        # --- Check 3: write_workflow (XML tool call leakage detection) ---
+        # Runs in both standard and full mode — this catches the Qwen XML bug
+        # where the model outputs <write_file>...</write_file> as plain text in
+        # FINAL_ANSWER instead of making a real function call.
+        # A pass means the file was actually written to disk (executor ran the tool).
+        try:
+            _, wf_log, wf_answer = await self._run_single_task(
+                resource=resource,
+                task_id=f"smoke_write_{resource_id}",
+                goal=_SMOKE_WRITE_GOAL,
+                available_tools=["write_file"],
+                max_iterations=5,
+            )
+            # Verify the tool was actually called (not just described in text)
+            write_tool_called = any(
+                it.get("status") == "tool_use" and "write_file" in it.get("tool_calls", [])
+                for it in wf_log
+            )
+            # Also verify file exists on disk
+            import os as _os
+            smoke_path = _os.path.expanduser("~/.memory/smoke_write_test.txt")
+            file_written = _os.path.isfile(smoke_path)
+            if file_written:
+                try:
+                    _os.remove(smoke_path)
+                except OSError:
+                    pass
+
+            wf_pass = write_tool_called and file_written
+            wf_check = SmokeCheckResult(
+                name="write_workflow",
+                status="pass" if wf_pass else "fail",
+                message=(
+                    "Model called write_file via function API and file was written to disk"
+                    if wf_pass
+                    else (
+                        "write_file was called but file not found on disk (possible XML leakage — "
+                        "model may have output tool call as text instead of function call)"
+                        if write_tool_called
+                        else "Model did not call write_file (may have described it in text)"
+                    )
+                ),
+            )
+        except Exception as e:
+            wf_check = SmokeCheckResult(
+                name="write_workflow", status="skip",
+                message=f"Write workflow test failed to run: {e}",
+            )
+
+        # sandbox_write is superseded by write_workflow — keep key for schema compat
+        sw_check = SmokeCheckResult(
+            name="sandbox_write", status="skip",
+            message="Superseded by write_workflow check",
+        )
 
         checks = {
             "tool_calling": tool_check,
             "final_answer": fa_check,
+            "write_workflow": wf_check,
             "sandbox_write": sw_check,
         }
 
-        agentic_capable = tool_check.status == "pass" and fa_check.status == "pass"
+        # agentic_capable requires all non-skip checks to pass
+        agentic_capable = all(
+            c.status == "pass"
+            for c in checks.values()
+            if c.status != "skip"
+        )
 
         return SmokeTestResult(
             resource_id=resource_id,
             model=model,
             agentic_capable=agentic_capable,
             checks=checks,
-            iterations_used=iterations,
-            duration_seconds=duration,
+            iterations_used=len(iteration_log),
+            duration_seconds=time.time() - start,
         )

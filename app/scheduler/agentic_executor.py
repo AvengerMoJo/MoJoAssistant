@@ -50,6 +50,85 @@ def _estimate_tokens(messages: List[Dict]) -> int:
     return total
 
 
+def _extract_xml_tool_calls(text: str) -> List[Dict]:
+    """
+    Detect and parse XML-format tool calls that leaked into response text.
+
+    Qwen (and some local models) occasionally output tool call markup as plain
+    text instead of using the function-call API.  Two patterns are handled:
+
+    Pattern A — Qwen internal format (jinja template leak):
+        <tool_call>
+        <function=tool_name>
+        <parameter=arg_name>value</parameter>
+        </function>
+        </tool_call>
+
+    Pattern B — bare tag format:
+        <tool_name>
+        <arg_name>value</arg_name>
+        </tool_name>
+        (only matched when tool_name is a known common tool name)
+
+    Returns a list in the same shape as message["tool_calls"] so the executor
+    can treat them identically to real function calls.  Returns [] if nothing found.
+    """
+    import re as _re
+    import json as _json
+    import uuid as _uuid
+
+    results = []
+
+    # Pattern A: <tool_call>...<function=name>...</function></tool_call>
+    tc_blocks = _re.findall(
+        r"<tool_call>(.*?)</tool_call>", text, _re.DOTALL | _re.IGNORECASE
+    )
+    for block in tc_blocks:
+        fn_match = _re.search(
+            r"<function=([^>]+)>(.*?)</function>", block, _re.DOTALL | _re.IGNORECASE
+        )
+        if not fn_match:
+            continue
+        fn_name = fn_match.group(1).strip()
+        fn_body = fn_match.group(2)
+        params = {}
+        for pm in _re.finditer(
+            r"<parameter=([^>]+)>(.*?)</parameter>", fn_body, _re.DOTALL | _re.IGNORECASE
+        ):
+            params[pm.group(1).strip()] = pm.group(2).strip()
+        results.append({
+            "id": f"xml_{_uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {"name": fn_name, "arguments": _json.dumps(params)},
+        })
+
+    # Pattern B: bare <tool_name>...</tool_name> — only for known tools to avoid
+    # false positives on FINAL_ANSWER tags, think tags, etc.
+    _KNOWN_TOOL_TAGS = {
+        "write_file", "read_file", "bash_exec", "web_search", "fetch_url",
+        "memory_search", "add_conversation", "list_files", "search_in_files",
+    }
+    if not results:
+        for tool_name in _KNOWN_TOOL_TAGS:
+            pattern = _re.compile(
+                rf"<{_re.escape(tool_name)}>(.*?)</{_re.escape(tool_name)}>",
+                _re.DOTALL | _re.IGNORECASE,
+            )
+            for m in pattern.finditer(text):
+                body = m.group(1)
+                params = {}
+                for pm in _re.finditer(r"<([^/][^>]*)>(.*?)</\1>", body, _re.DOTALL):
+                    params[pm.group(1).strip()] = pm.group(2).strip()
+                if params:
+                    results.append({
+                        "id": f"xml_{_uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": {"name": tool_name, "arguments": _json.dumps(params)},
+                    })
+
+    return results
+
+
 def _trim_to_context_budget(
     messages: List[Dict],
     input_budget: int,
@@ -926,11 +1005,61 @@ class AgenticExecutor:
             _last_used_model = used_model
             # Thinking models (e.g. Qwen3) return reasoning in reasoning_content
             # with content empty. Fall back so the executor can see the response.
-            response_text = message.get("content", "") or message.get("reasoning_content", "") or ""
+            raw_content = message.get("content", "") or message.get("reasoning_content", "") or ""
             # Strip <think>...</think> blocks in case llama.cpp didn't separate them
             # (older builds or non-jinja mode leak think tokens into content).
-            response_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
+            response_text = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
             tool_calls = message.get("tool_calls")
+
+            # ----------------------------------------------------------------
+            # Empty-after-strip guard.
+            # If the model put everything inside <think> tags, stripping leaves
+            # an empty string — but the LLM DID respond, we just discarded it.
+            # Don't burn an iteration by appending an empty assistant message;
+            # inject a targeted nudge and try again without advancing the counter.
+            # ----------------------------------------------------------------
+            if not response_text and not tool_calls:
+                _was_all_think = bool(raw_content.strip())
+                nudge = (
+                    "Your previous response was empty after thinking. "
+                    "Please provide your tool call or <FINAL_ANSWER> now — "
+                    "do not output only reasoning."
+                    if _was_all_think else
+                    "Your previous response was empty. "
+                    "Please provide your tool call or <FINAL_ANSWER> now."
+                )
+                messages.append({"role": "user", "content": nudge})
+                self._record(task.id, "user", nudge, iteration=abs_iteration)
+                iteration_log.append({
+                    "iteration": iteration,
+                    "status": "empty_response",
+                    "response_length": 0,
+                    "was_all_think": _was_all_think,
+                    "elapsed_s": round(time.time() - iter_start, 1),
+                })
+                continue  # Don't count toward tool drift; try next iteration
+
+            # ----------------------------------------------------------------
+            # XML tool call detection.
+            # Qwen (and some other local models) occasionally output tool call
+            # XML as plain text in the response instead of via the function-call
+            # API.  Pattern: <tool_call>...<function=name>...</function></tool_call>
+            # or bare <tool_name>...</tool_name> tags in the response body.
+            # Detect and convert them to real tool calls so the task can proceed.
+            # ----------------------------------------------------------------
+            if not tool_calls and response_text:
+                tool_calls = _extract_xml_tool_calls(response_text)
+                if tool_calls:
+                    self._log(
+                        f"Iteration {iteration}: XML tool call detected in text — "
+                        f"converting to real call ({[tc['function']['name'] for tc in tool_calls]})",
+                        "warning",
+                    )
+                    # Strip the XML from the visible response text so the model
+                    # history doesn't accumulate raw XML markup
+                    response_text = re.sub(
+                        r"<tool_call>.*?</tool_call>", "", response_text, flags=re.DOTALL
+                    ).strip()
 
             # Track last substantive assistant turn for fallback completion recovery
             _last_response_text = response_text

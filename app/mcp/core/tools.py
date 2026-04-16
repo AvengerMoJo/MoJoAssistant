@@ -2873,10 +2873,58 @@ Agent resumes within seconds.
             task_id = args.get("task_id")
             task = self.scheduler.get_task(task_id)
 
-            if task:
-                return {"status": "success", "task": task.to_dict()}
-            else:
+            if not task:
                 return {"status": "error", "message": f"Task {task_id} not found"}
+
+            d = task.to_dict()
+
+            # Trim noisy / null fields before returning.
+            # Full config is available if needed — surface what matters for triage.
+            def _trim(v, max_len=200):
+                return v[:max_len] + "…" if isinstance(v, str) and len(v) > max_len else v
+
+            cfg = dict(d.get("config") or {})
+            # Truncate heavy text fields — conversation_text can be thousands of chars
+            for key in ("goal", "conversation_text", "conversation_id", "system_prompt"):
+                if key in cfg:
+                    cfg[key] = _trim(cfg[key])
+            # Drop null / empty values from config to reduce noise
+            cfg = {k: v for k, v in cfg.items() if v is not None and v != "" and v != {} and v != []}
+
+            result = d.get("result") or {}
+            if result:
+                # Trim long output fields in result
+                for key in ("output", "final_answer", "error_message"):
+                    if key in result:
+                        result[key] = _trim(result.get(key) or "", 300)
+                result = {k: v for k, v in result.items() if v is not None}
+
+            # Compact response — highlight pending_question if present
+            compact = {
+                "id": d["id"],
+                "type": d["type"],
+                "status": d["status"],
+                "created_by": d.get("created_by"),
+                "description": _trim(d.get("description") or "", 120),
+                "config": cfg,
+                "result": result or None,
+            }
+            # Surface pending_question at the top level — easy to miss in config
+            pq = d.get("pending_question") or cfg.get("pending_question")
+            if pq:
+                compact["pending_question"] = pq
+            # Include timing only when task is not pending
+            if d.get("started_at"):
+                compact["started_at"] = d["started_at"]
+            if d.get("completed_at"):
+                compact["completed_at"] = d["completed_at"]
+            # Only include non-null optional fields
+            for field in ("last_error", "retry_count", "priority"):
+                v = d.get(field)
+                if v is not None and v not in (0, "normal"):
+                    compact[field] = v
+
+            return {"status": "success", "task": compact}
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to get task: {str(e)}"}
