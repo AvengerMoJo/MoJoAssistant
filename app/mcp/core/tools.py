@@ -167,6 +167,7 @@ class ToolRegistry:
             "get_memory_stats",            # Now under memory(action='stats')
             "get_recent_events",           # Now get_context(type='events')
             "get_attention_summary",       # Now get_context(type='attention')
+            "web_search",                  # Retired — use browser/playwright-backed search flows instead
             "scheduler_resume_task",       # Retired — use reply_to_task
             # Memory management → memory hub
             "end_conversation",
@@ -217,8 +218,6 @@ class ToolRegistry:
             "audit_get",
             # External agent → external_agent hub
             "google_service",
-            # Web search → handled by backend LLM, external MCP, or agent task
-            "web_search",
             # Browser → agent tool only (never expose to user via MCP)
             "browser",
             # Dialog → belongs in web dashboard UI, not MCP
@@ -1142,17 +1141,9 @@ class ToolRegistry:
 
     def get_tools(self) -> List[Dict[str, Any]]:
         """Get list of available tools (excludes placeholders and disabled features)"""
-        # Special case: web_search is implemented and should be available
         available_tools = [
             tool for tool in self.tools if tool["name"] not in self.placeholder_tools
         ]
-
-        # Add web_search if it's not already included (implementation is complete)
-        web_search_tool = next(
-            (tool for tool in self.tools if tool["name"] == "web_search"), None
-        )
-        if web_search_tool and web_search_tool not in available_tools:
-            available_tools.append(web_search_tool)
 
         # Agent tools are always present — agent_type validation happens at execution time
 

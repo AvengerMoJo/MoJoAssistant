@@ -101,13 +101,20 @@ Nothing decides whether a piece of learning is framework-level or personal-level
 
 Claude Code auto-memory (`~/.memory/projects/.../*.md`) and the dreaming pipeline are disconnected. Conversations in the chat interface (like this one, where the Qwen XML bug was discovered) don't flow into framework knowledge automatically.
 
-**Fix needed:** A scheduled job that:
-1. Reads new entries from Claude Code auto-memory since the last run
-2. Feeds them through the dreaming pipeline (`process_document()`)
-3. Routes C-clusters tagged as framework patterns → `role_id="__framework__"` knowledge store
-4. Routes C-clusters tagged as role-personal → that role's private store
+**Deferred — implement alongside the owner one-on-one interface.**
 
-This is the hardest gap because it requires the scope classifier from Gap 3.
+Gap 4 is the mechanism that makes the weekly owner one-on-one loop work:
+- Owner has a one-on-one session with a role via the chat interface
+- That conversation saves to memory
+- Dreaming pipeline processes it and routes learnings to the right tier
+- Role's posture shifts by next task
+
+Without the one-on-one interface, there is nothing to bridge. These two features ship together:
+
+1. **One-on-one interface** — role_chat or dashboard UI for owner ↔ role sessions
+2. **Chat → dream bridge** — scheduled job that reads new chat entries, runs `process_document()`, and routes C-clusters by scope (framework → `__framework__` store, personal → role-private store)
+
+The scope classifier from Gap 3 (explicit agent tagging) is sufficient for this — no automated classifier needed.
 
 ---
 
