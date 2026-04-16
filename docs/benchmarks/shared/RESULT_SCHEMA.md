@@ -4,6 +4,10 @@ Benchmark runs should produce a machine-readable artifact in a runtime path such
 
 `~/.memory/benchmarks/<benchmark>/<run_id>/results.json`
 
+They should also produce a detailed per-question artifact, typically JSONL, that can be traced back from the summary:
+
+`results/<benchmark>_<run_id>.jsonl`
+
 ## Suggested Shape
 
 ```json
@@ -32,7 +36,8 @@ Benchmark runs should produce a machine-readable artifact in a runtime path such
   "provenance": {
     "runner": "tests/benchmarks/run_locomo.py",
     "dreaming_mode": "fresh",
-    "role_dir": "~/.memory/roles/locomo_bench_d3"
+    "role_dir": "~/.memory/roles/locomo_bench_d3",
+    "detailed_output": "results/locomo_2026-04-14_abcd_bc.jsonl"
   },
   "notes": [
     "Pilot run",

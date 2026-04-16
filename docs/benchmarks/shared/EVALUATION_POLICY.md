@@ -48,3 +48,10 @@ For memory benchmarks, we should prefer ablations over isolated scores:
 4. `ABCD-BC`
 
 This shows whether dreaming actually adds value.
+
+For product-path memory benchmarks, we should also prefer:
+
+1. `facts_only`
+2. `facts_plus_abcd`
+
+This shows whether dreaming improves the real assistant-memory path rather than only a synthetic retrieval path.

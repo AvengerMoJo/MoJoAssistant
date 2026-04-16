@@ -43,6 +43,7 @@ import time
 import datetime
 import statistics
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -59,6 +60,17 @@ def parse_args():
     p = argparse.ArgumentParser(description="Run LOCOMO benchmark against MoJoAssistant memory")
     p.add_argument("--data-dir", required=True, help="Path to cloned locomo/data directory")
     p.add_argument("--output", default="results/locomo_results.jsonl")
+    p.add_argument("--run-id", default=None, help="Stable run identifier (default: auto-generated)")
+    p.add_argument(
+        "--benchmark-root",
+        default=str(Path.home() / ".memory/benchmarks/locomo"),
+        help="Directory for normalized benchmark artifacts",
+    )
+    p.add_argument(
+        "--role-root",
+        default=str(Path.home() / ".memory/roles"),
+        help="Base directory for benchmark role/runtime state",
+    )
     p.add_argument(
         "--variant",
         default="raw_retrieval",
@@ -72,6 +84,11 @@ def parse_args():
     p.add_argument("--embedding-model", default="BAAI/bge-m3")
     p.add_argument("--embedding-cache", default=str(Path.home() / ".memory/embedding_cache"))
     p.add_argument("--role-dir", default=None, help="Pre-built role dir to load knowledge from (skip ingest)")
+    p.add_argument(
+        "--dataset-version",
+        default="locomo10",
+        help="Dataset version label stored in benchmark artifacts",
+    )
     p.add_argument("--skip-ingest", action="store_true", help="Skip ingestion, use existing role-dir")
     p.add_argument("--top-k", type=int, default=15, help="Number of chunks to retrieve per question")
     p.add_argument(
@@ -127,6 +144,58 @@ def load_locomo(data_dir: str) -> list[dict]:
         return dialogues
 
     raise FileNotFoundError(f"No LOCOMO data found in {data_dir}")
+
+
+def _slugify(text: str) -> str:
+    cleaned = "".join(ch.lower() if ch.isalnum() else "_" for ch in text)
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_") or "run"
+
+
+def build_run_id(args) -> str:
+    if args.run_id:
+        return _slugify(args.run_id)
+
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    parts = [stamp, "locomo", args.variant]
+    if args.model:
+        parts.append(_slugify(args.model))
+    if args.max_dialogues:
+        parts.append(f"d{args.max_dialogues}")
+    if args.max_questions:
+        parts.append(f"q{args.max_questions}")
+    return "_".join(parts)
+
+
+def resolve_run_paths(args) -> dict[str, Path]:
+    run_id = build_run_id(args)
+    benchmark_root = Path(args.benchmark_root).expanduser()
+    run_dir = benchmark_root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.role_dir:
+        role_dir = Path(args.role_dir).expanduser()
+    else:
+        role_dir = Path(args.role_root).expanduser() / f"locomo_bench_{run_id}"
+
+    detailed_output = Path(args.output).expanduser()
+    if not detailed_output.is_absolute():
+        detailed_output = PROJECT_ROOT / detailed_output
+    detailed_output.parent.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "run_id": Path(run_id),
+        "run_dir": run_dir,
+        "role_dir": role_dir,
+        "detailed_output": detailed_output,
+        "summary_output": run_dir / "results.json",
+    }
+
+
+def resolve_dialogue_role_dir(base_role_dir: Path, dialogue_idx: int) -> Path:
+    candidate = base_role_dir / f"dialogue_{dialogue_idx:02d}"
+    return candidate if candidate.exists() else base_role_dir
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +398,88 @@ def build_raw_context_from_km(km: KnowledgeManager, max_docs: int) -> list[tuple
     return docs
 
 
+def summarize_results(
+    *,
+    args,
+    run_id: str,
+    role_dir: Path,
+    dialogues_count: int,
+    questions_count: int,
+    latencies: list[float],
+    all_results: list[dict[str, Any]],
+    f1_by_cat: dict[str, list[float]],
+    j_by_cat: dict[str, list[float]],
+    adv_by_cat: dict[str, dict[str, int]],
+) -> dict[str, Any]:
+    all_f1 = [r["f1"] for r in all_results if not r["adversarial"]]
+    all_j = [r["j_score"] for r in all_results if not r["adversarial"] and r.get("j_score") is not None]
+    total_adv = sum(v["total"] for v in adv_by_cat.values())
+    total_abstain = sum(v["abstain"] for v in adv_by_cat.values())
+    sorted_latencies = sorted(latencies)
+    p95_latency = sorted_latencies[int(len(sorted_latencies) * 0.95)] if sorted_latencies else None
+    context_tokens = [r["context_tokens"] for r in all_results]
+    similarity_scores = [r["max_similarity"] for r in all_results]
+
+    per_category: dict[str, Any] = {}
+    for cat, scores in sorted(f1_by_cat.items()):
+        per_category[cat] = {
+            "f1": round(statistics.mean(scores), 4),
+            "count": len(scores),
+            "j_score": round(statistics.mean(j_by_cat[cat]), 1) if cat in j_by_cat else None,
+        }
+
+    for cat, stats in sorted(adv_by_cat.items()):
+        per_category[cat] = {
+            "abstention_rate": round(stats["abstain"] / max(stats["total"], 1), 4),
+            "count": stats["total"],
+        }
+
+    return {
+        "benchmark": "locomo",
+        "run_id": run_id,
+        "dataset_version": args.dataset_version,
+        "system_variant": args.variant,
+        "dialogues": dialogues_count,
+        "questions": questions_count,
+        "answer_model": args.model or "default_from_llm_config",
+        "judge_model": args.model if args.judge and args.model else ("default_from_llm_config" if args.judge else None),
+        "embedding_model": args.embedding_model,
+        "metrics": {
+            "f1": round(statistics.mean(all_f1), 4) if all_f1 else None,
+            "j_score": round(statistics.mean(all_j), 1) if all_j else None,
+            "abstention_rate_cat5": round(total_abstain / max(total_adv, 1), 4) if total_adv else None,
+            "mean_retrieval_latency_ms": round(statistics.mean(latencies), 2) if latencies else None,
+            "p95_retrieval_latency_ms": round(p95_latency, 2) if p95_latency is not None else None,
+            "mean_context_tokens": round(statistics.mean(context_tokens), 2) if context_tokens else None,
+            "mean_max_similarity": round(statistics.mean(similarity_scores), 4) if similarity_scores else None,
+        },
+        "retrieval": {
+            "mode": args.variant,
+            "top_k": args.top_k,
+            "top_b": args.top_b,
+            "top_c": args.top_c,
+            "raw_context_max_docs": args.raw_context_max_docs,
+            "rerank": args.rerank,
+            "rerank_top_k": args.rerank_top_k if args.rerank else None,
+            "rerank_top_n": args.rerank_top_n if args.rerank else None,
+        },
+        "provenance": {
+            "runner": "tests/benchmarks/run_locomo.py",
+            "data_dir": str(Path(args.data_dir).expanduser()),
+            "dreaming_mode": "prebuilt" if args.skip_ingest else "fresh",
+            "role_dir": str(role_dir),
+            "embedding_backend": args.embedding_backend,
+            "judge_enabled": args.judge,
+            "detailed_output": str(Path(args.output).expanduser()),
+        },
+        "per_category": per_category,
+        "notes": [
+            "Accepted benchmark runs should use isolated role dirs per run.",
+            "Compare summary.json artifacts across variants rather than ad-hoc console output.",
+        ],
+    }
+
+
 RERANK_PROMPT = """You are a memory retrieval expert. Given a question and a list of memory chunks, select the most relevant chunks for answering the question.
 
 Question: {question}
@@ -490,7 +641,11 @@ def check_abstention(retrieved: list[tuple[str, float]], threshold: float) -> bo
 # ---------------------------------------------------------------------------
 
 def run_benchmark(args) -> None:
-    os.makedirs(Path(args.output).parent, exist_ok=True)
+    paths = resolve_run_paths(args)
+    run_id = str(paths["run_id"])
+    role_dir = paths["role_dir"]
+    detailed_output = paths["detailed_output"]
+    summary_output = paths["summary_output"]
 
     dialogues = load_locomo(args.data_dir)
     if args.max_dialogues:
@@ -524,20 +679,21 @@ def run_benchmark(args) -> None:
 
         # Build per-dialogue knowledge store
         if args.skip_ingest and args.role_dir:
-            role_dir = Path(args.role_dir).expanduser()
-            print(f"\nDialogue {d_idx+1} — loading pre-built knowledge from {role_dir}")
+            active_role_dir = resolve_dialogue_role_dir(role_dir, d_idx)
+            print(f"\nDialogue {d_idx+1} — loading pre-built knowledge from {active_role_dir}")
         else:
-            role_dir = Path(f"/tmp/locomo_bench_d{d_idx}")
+            dialogue_role_dir = role_dir / f"dialogue_{d_idx:02d}"
             print(f"\nDialogue {d_idx+1}/{len(dialogues)} — {speaker_a} & {speaker_b}")
-            km_ingest = build_km(role_dir, args.embedding_backend, args.embedding_model, args.embedding_cache)
+            km_ingest = build_km(dialogue_role_dir, args.embedding_backend, args.embedding_model, args.embedding_cache)
             n_docs = ingest_dialogue(km_ingest, dialogue)
             print(f"  Ingested {n_docs} conversation pairs")
+            active_role_dir = dialogue_role_dir
 
-        km = build_km(role_dir, args.embedding_backend, args.embedding_model, args.embedding_cache)
-        embedding = _get_embedding(role_dir, args.embedding_backend, args.embedding_model, args.embedding_cache)
+        km = build_km(active_role_dir, args.embedding_backend, args.embedding_model, args.embedding_cache)
+        embedding = _get_embedding(active_role_dir, args.embedding_backend, args.embedding_model, args.embedding_cache)
         archives = None
         if args.variant in ("abcd_b", "abcd_bc"):
-            archives = load_dream_archives(role_dir)
+            archives = load_dream_archives(active_role_dir)
 
         for qa in qa_pairs:
             if args.max_questions and question_count >= args.max_questions:
@@ -633,9 +789,23 @@ def run_benchmark(args) -> None:
             break
 
     # Write results
-    with open(args.output, "w") as f:
+    with open(detailed_output, "w", encoding="utf-8") as f:
         for r in all_results:
             f.write(json.dumps(r) + "\n")
+
+    summary = summarize_results(
+        args=args,
+        run_id=run_id,
+        role_dir=role_dir,
+        dialogues_count=len(dialogues),
+        questions_count=question_count,
+        latencies=latencies,
+        all_results=all_results,
+        f1_by_cat=f1_by_cat,
+        j_by_cat=j_by_cat,
+        adv_by_cat=adv_by_cat,
+    )
+    summary_output.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     # Summary
     all_f1 = [r["f1"] for r in all_results if not r["adversarial"]]
@@ -682,7 +852,8 @@ def run_benchmark(args) -> None:
         name = cat_names.get(cat, cat)
         print(f"  cat {cat} ({name:12s}): {r['abstain']}/{r['total']} = {r['abstain']/max(r['total'],1)*100:.1f}%")
 
-    print(f"\nResults written to: {args.output}")
+    print(f"\nDetailed results written to: {detailed_output}")
+    print(f"Summary artifact written to: {summary_output}")
     print("\nCompetitor reference (LOCOMO J score, 0–100):")
     print("  Zep 76.6  |  Mem0 75.7  |  LangMem 58.1  |  Full-ctx baseline ~55")
 
