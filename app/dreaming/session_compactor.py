@@ -86,8 +86,18 @@ def build_session_text(task_id: str, session_path: Optional[Path] = None) -> Opt
         if role == "assistant":
             if content and content.strip():
                 lines += [
-                    f"[Iteration {iteration} — assistant reasoning]",
+                    f"[Iteration {iteration} — assistant response]",
                     content.strip()[:1200],
+                    "",
+                ]
+            # Include chain-of-thought reasoning stored in metadata, at reduced
+            # length — provides richer context for dreaming synthesis without
+            # dominating the session text with raw thinking tokens.
+            reasoning = (msg.get("metadata") or {}).get("reasoning")
+            if reasoning and reasoning.strip():
+                lines += [
+                    f"[Iteration {iteration} — model reasoning (think)]",
+                    reasoning.strip()[:600],
                     "",
                 ]
         elif role == "tool":

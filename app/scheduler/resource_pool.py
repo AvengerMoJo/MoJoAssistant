@@ -97,8 +97,10 @@ class ResourceManager:
         self._config_mtime_ns: Optional[int] = None
         self._runtime_mtime_ns: Optional[int] = None
         self._env_mtime_ns: Optional[int] = None
-        # Smoke test results: resource_id → bool (agentic_capable)
-        self._agentic_capable: Dict[str, bool] = {}
+        # Smoke test results: resource_id → {"value": bool, "tested_at": ISO str}
+        # Stale entries (older than AGENTIC_CAPABLE_TTL_DAYS) are treated as None
+        # so a working model is never permanently blocked by an old failed test.
+        self._agentic_capable: Dict[str, Any] = {}
         self._load_sandbox_env()
         self._load_usage()
         self._load_meta()
@@ -687,13 +689,25 @@ class ResourceManager:
         self._log(f"sync_local_server_models: registered {len(active_ids)} models from {template_resource_id}")
         return sorted(active_ids)
 
+    # Smoke test results expire after this many days.  A stale false no longer
+    # permanently blocks a resource — it is re-tested on next smoke test run.
+    AGENTIC_CAPABLE_TTL_DAYS = 7
+
     def _load_meta(self) -> None:
         """Load persistent resource metadata (e.g. smoke test results) from disk."""
         if not self.META_FILE.exists():
             return
         try:
             data = json.loads(self.META_FILE.read_text(encoding="utf-8"))
-            self._agentic_capable = data.get("agentic_capable", {})
+            raw = data.get("agentic_capable", {})
+            # Migrate legacy format {resource_id: bool} → {resource_id: {"value": bool, "tested_at": None}}
+            migrated: Dict[str, Any] = {}
+            for rid, v in raw.items():
+                if isinstance(v, bool):
+                    migrated[rid] = {"value": v, "tested_at": None}
+                elif isinstance(v, dict):
+                    migrated[rid] = v
+            self._agentic_capable = migrated
         except Exception:
             pass
 
@@ -706,15 +720,44 @@ class ResourceManager:
             pass
 
     def set_agentic_capable(self, resource_id: str, capable: bool) -> None:
-        """Record the smoke test result for a resource."""
+        """Record the smoke test result with a timestamp for TTL tracking."""
+        from datetime import datetime as _dt
         with self._lock:
-            self._agentic_capable[resource_id] = capable
+            self._agentic_capable[resource_id] = {
+                "value": capable,
+                "tested_at": _dt.now().isoformat(),
+            }
             self._save_meta()
             self._log(f"Resource '{resource_id}' agentic_capable = {capable}")
 
     def get_agentic_capable(self, resource_id: str) -> Optional[bool]:
-        """Return the smoke test result for a resource, or None if not tested."""
-        return self._agentic_capable.get(resource_id)
+        """
+        Return the smoke test result, or None if never tested or result expired.
+
+        Results older than AGENTIC_CAPABLE_TTL_DAYS are treated as None so a
+        model that previously failed is re-tested rather than blocked forever.
+        """
+        from datetime import datetime as _dt, timedelta as _td
+        entry = self._agentic_capable.get(resource_id)
+        if entry is None:
+            return None
+        # Guard against legacy scalar values surviving migration
+        if isinstance(entry, bool):
+            return entry
+        tested_at_str = entry.get("tested_at")
+        if tested_at_str:
+            try:
+                age = _dt.now() - _dt.fromisoformat(tested_at_str)
+                if age > _td(days=self.AGENTIC_CAPABLE_TTL_DAYS):
+                    self._log(
+                        f"Resource '{resource_id}' agentic_capable expired "
+                        f"(age={age.days}d > TTL={self.AGENTIC_CAPABLE_TTL_DAYS}d) — treating as untested",
+                        "debug",
+                    )
+                    return None
+            except Exception:
+                pass
+        return entry.get("value")
 
     def approve_paid_resource(self, resource_id: str):
         with self._lock:

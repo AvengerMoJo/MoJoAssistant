@@ -1006,9 +1006,16 @@ class AgenticExecutor:
             # Thinking models (e.g. Qwen3) return reasoning in reasoning_content
             # with content empty. Fall back so the executor can see the response.
             raw_content = message.get("content", "") or message.get("reasoning_content", "") or ""
-            # Strip <think>...</think> blocks in case llama.cpp didn't separate them
-            # (older builds or non-jinja mode leak think tokens into content).
+            # Extract <think>...</think> blocks before stripping — preserved as
+            # metadata on the session message so the dreaming pipeline and debugger
+            # can use the chain-of-thought without it polluting the visible response.
+            _think_blocks = re.findall(r"<think>(.*?)</think>", raw_content, flags=re.DOTALL)
+            _reasoning = "\n---\n".join(b.strip() for b in _think_blocks if b.strip()) or None
+            # Strip think blocks from the visible response the executor acts on
             response_text = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            # Also accept reasoning_content as a separate field (LMStudio --jinja mode)
+            if not _reasoning and message.get("reasoning_content"):
+                _reasoning = message["reasoning_content"].strip() or None
             tool_calls = message.get("tool_calls")
 
             # ----------------------------------------------------------------
@@ -1133,7 +1140,10 @@ class AgenticExecutor:
 
             # Append assistant response
             messages.append({"role": "assistant", "content": response_text})
-            self._record(task.id, "assistant", response_text, iteration=abs_iteration)
+            self._record(
+                task.id, "assistant", response_text, iteration=abs_iteration,
+                **({"metadata": {"reasoning": _reasoning}} if _reasoning else {}),
+            )
 
             # Detect plain-text BUDGET_EXTENSION_REQUEST (agent wrote it as text, not a tool call)
             if _BUDGET_EXTENSION_PREFIX in response_text and self._budget_extension_granted == 0:
