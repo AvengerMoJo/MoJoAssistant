@@ -1,154 +1,196 @@
 # Release Notes — v1.2.16-beta
 
-## Theme: Dynamic Capability Pipeline
-
-The executor no longer relies on clients knowing the right `available_tools` list or
-hard-coded system prompts. Role capabilities, tool resolution, and system prompts are
-now generated dynamically at dispatch time from three independent, composable layers.
+**Date:** 2026-04-16  
+**Branch:** wip_v1.2.16 → main  
+**Tag:** v1.2.16-beta  
+**Commits since v1.2.14-beta:** 39
 
 ---
 
-## Features
+## Theme: Role Maturity, Execution Robustness, and Framework Learning
+
+v1.2.16 focuses on three areas: making agents more reliable when running on local models (execution robustness), making the system smarter over time without manual intervention (framework learning), and making the infrastructure observable and self-healing (config doctor, capability pipeline, benchmarks).
+
+---
+
+## New Features
+
+### Two-Tier Role Growth Architecture
+
+Roles now accumulate learning in two distinct tiers, each with different scope.
+
+**Framework knowledge** (`scope="framework"`) — shared across all agents:
+- `add_conversation(scope="framework")` writes to a shared `__framework__` store
+- `_orient_from_memory` now searches both role-private (5 hits) and framework (3 hits) at every task start — every agent sees framework patterns automatically
+- `_reflect_to_memory` auto-detects workflow problems (≥2 empty responses, ≥2 final-answer rejections) and writes a framework pattern entry with diagnosis and mitigation hints
+- ABCD dreaming archives are now indexed back into the searchable knowledge base — previously the pipeline ran but its output was invisible to agents
+
+**Personal knowledge** (`scope="role"`, default) — role-private, unchanged behavior:
+- `add_conversation()` with no scope writes to the role's private store only
+
+Design rationale: `docs/architecture/two_tier_growth_design.md`
+
+### ConfigHealer — Runtime-Data-Driven Config Improvement
+
+`doctor(action="improve")` or `config(action="doctor_improve")` analyses running system health and proposes concrete config fixes — not just diagnostics.
+
+Improvement categories:
+- Unreachable resources detected → inline `api_key` fix suggested
+- Stale `agentic_capable` values → reset proposed
+- Missing role capabilities → catalog-driven fix generated
+- Model-tier mismatches → rebalance suggested
 
 ### 3-Layer Capability Resolution (`CapabilityResolver`)
 
-Tool names resolved automatically before every task — no client guesswork required.
+Tool names resolved automatically at dispatch time — no client guesswork.
 
-**Resolution order:**
-1. **System defaults** — `config/capability_defaults.json`: `ask_user` always injected; `memory` + `orchestration` categories for every agent regardless of role.
-2. **Role capabilities** — `role.capabilities[]` expanded via `capability_catalog.json` + `CapabilityRegistry`. Category names (`"terminal"`, `"web"`) expand to concrete tool names.
-3. **Runtime override** — `available_tools` from task dispatch, with modifier syntax:
-   - `"+terminal"` — add terminal tools on top of role defaults
-   - `"-web"` — remove web tools for this run
-   - Plain list without `+/-` — replaces the role capability layer (system defaults still preserved)
+Resolution order:
+1. **System defaults** — `ask_user` always present; `knowledge` + `orchestration` for every agent
+2. **Role capabilities** — `role.capabilities[]` expanded via catalog + registry
+3. **Runtime override** — `available_tools` with modifier syntax (`"+terminal"`, `"-web"`, or full replace)
 
-`ask_user` is always re-applied after all overrides — it cannot be removed.
-
-**Before:** Client had to know and list every tool explicitly or the agent ran blind.  
-**After:** `scheduler(action='add', type='assistant', role_id='researcher', goal='...')` — works out of the box.
+`ask_user` is re-applied after all overrides and cannot be removed.
 
 ### Role System Prompt Engine (`RoleTemplateEngine`)
 
-Character blocks generated from role definition at dispatch time. No more fragile
-static string concatenation in the executor.
+System prompts generated dynamically from role definition at dispatch time. Roles no longer need a hard-coded `system_prompt` string — persona, boundaries, tool guidance, and behavior rules are assembled from role fields.
 
-**Assembly order:**
-1. Identity block — `role.system_prompt` (legacy) or structured generation from `name`, `archetype`, `purpose`
-2. Nine Chapter behavioral directives — from `dimensions` scores
-3. Task context — `success_patterns` + `escalation_rules`
-4. Capability summary — what categories this role can use (never specific tool names)
+### SecurityGate Per-Task `danger_budget` Override
 
-Growth path: character evolves through ORIENT/REFLECT memory, not prompt re-authoring.
+Tasks can now set `danger_budget` in config to override the role default for a single run. Useful for high-privilege provisioning tasks without permanently raising the role's budget.
 
-### Pre-Task Capability Gap Check (`CapabilityGapChecker`)
+### MCP Health Checks in Config Doctor
 
-Runs before the agentic loop starts on fresh tasks. Keyword heuristics on the goal text
-detect required capabilities and compare against the resolved tool set.
+`doctor(action="check")` now includes MCP connectivity checks alongside resource pool health. Reports which MCP servers are unreachable and why.
 
-**Gap types:**
-- **BLOCKER** — goal explicitly requires a capability the role cannot use (e.g. `"git clone"` with no terminal). Returns `WAITING_FOR_INPUT` before the loop starts — user can add capabilities or proceed anyway.
-- **WARNING** — goal may benefit from a capability that isn't present. Logged only; loop proceeds.
+### daemon_restart Module Reload
 
-No LLM call — fast and cheap keyword matching only.
+`daemon_restart` now reloads core modules (`benchmark_store`, `agentic_executor`, `doctor`, scheduler core) without a full service restart. `tools.py` itself (the MCP server) still requires `systemctl --user restart mojoassistant`.
 
-### Scheduler Cleanup (`action='cleanup'`)
+### Knowledge Isolation Hardened
 
-New scheduler action to recover from stuck and failed tasks.
+- `knowledge_search` is role-scoped in code, not just prompt — a role cannot read another role's private store even if it tries
+- `memory_search` remains global/user-owned
+- `role_chat` was searching user personal memory — fixed to use role-scoped knowledge
+- ORIENT/REFLECT phases search agent's own knowledge only, never user memory
+- Shared docs no longer leak into role-scoped searches
 
-```
-scheduler(action='cleanup')                          # default thresholds
-scheduler(action='cleanup', zombie_minutes=60)       # stricter zombie detection
-scheduler(action='cleanup', failed_days=3, dry_run=true)  # preview only
-```
+### Systemd Service Scripts
 
-**Zombie detection:** Tasks stuck in `running` status longer than `zombie_minutes` (default: 120)
-are force-failed with a descriptive error explaining the cleanup reason.
-
-**Stale failed removal:** Tasks in `failed` status older than `failed_days` (default: 7) are removed.
-
-**`dry_run=true`** reports what would change without modifying anything.
-
----
-
-## Changes
-
-### Scheduler MCP Description Redesigned
-
-The `scheduler` tool description was rewritten to make client dispatch smooth without
-requiring deep knowledge of the capability system.
-
-Key changes:
-- Leads with the minimal dispatch pattern — `role_id` + `goal` is all that's required
-- `available_tools` clearly marked as **optional** with modifier syntax documented inline
-- `type='assistant'` (not `'agentic'`) consistently correct throughout
-- `cleanup` action added with its parameters
-- Task type table clarified: `assistant` / `custom` / `dreaming` / `agent`
-
-### Client System Prompt Updated (`config/client_system_prompt.md`)
-
-- Replaced old `scheduler_add_task`-style examples with hub pattern
-- Corrected `task_type: "agentic"` → `type: 'assistant'`
-- `available_tools` documented as optional
-- `get_context` at session start (replacing deprecated `get_memory_context`)
-- `cleanup` added to the scheduler action reference table
-
-### Config Genericisation
-
-Personal account names removed from all tracked config files. System configs now
-ship as clean examples; real accounts belong in `~/.memory/config/` (personal override layer).
-
-**Files updated:**
-- `config/llm_config.json` — `avengermojo/elmntri/tinyi/yiai` → `account_a/b/c/d`
-- `config/resource_pool.json` — same rename + added `_example_note` comment
-- `config/resource_pool_config.json` — moved to `config/examples/resource_pool_config.example.json` (was orphaned — never loaded by runtime)
-
-**Example roles genericised** (`config/roles/`):
-- `researcher.json` — removed "Rebecca" persona name throughout
-- `network_admin.json` — removed "Ahman" persona name throughout
-- `code_reviewer.json` — removed "Carl" persona name throughout
-- `developer.json` — removed gendered pronouns (she/her → neutral)
-
-Personal config in `~/.memory/config/` is unaffected and takes precedence at runtime
-via `load_layered_json_config` deep-merge.
-
----
-
-## Infrastructure
-
-### `agentic_executor.py` cleanup
-
-- Removed ad-hoc `_resolve_capabilities()` method (superseded by `CapabilityResolver`)
-- Removed static `ninechapter_overlay` / `task_context` / `capability_summary` assembly (superseded by `RoleTemplateEngine`)
-- Removed `role_prefix` string variable (superseded by `RoleTemplateEngine.build()`)
-- Gap check inserted before resume logic — only runs on fresh starts
-
-### New files
-
-| File | Purpose |
-|------|---------|
-| `app/scheduler/capability_resolver.py` | 3-layer tool resolution |
-| `app/scheduler/role_template_engine.py` | System prompt generation from role character |
-| `app/scheduler/capability_gap_checker.py` | Pre-task capability gap detection |
-| `config/capability_defaults.json` | System-level always_available + agent_defaults |
+`scripts/install_service.sh` and `scripts/mojoassistant.service` for persistent 24/7 operation as a Linux systemd user service.
 
 ---
 
 ## Bug Fixes
 
-### Role Chat Memory Isolation (`role_chat.py`)
+### Empty Response Loop (Critical)
 
-`memory_search` in role chat sessions was querying the **global** LlamaIndex
-`knowledge_manager` — returning results from the user's personal memory instead
-of the role's own knowledge.
+**Root cause:** Qwen (and other thinking models) sometimes put their entire response inside `<think>` tags. After stripping, `response_text` becomes `""`. The executor was appending an empty assistant message to context, burning an iteration, and injecting a generic continue prompt — further confusing the model.
 
-**Root cause:** `_execute_tool()` fell through to `CapabilityRegistry.execute_tool()`,
-which calls `MemoryService._search_knowledge_base_async()` — a method with no
-`role_id` parameter that queries the shared vector store.
+**Fix:** Detect empty-after-strip with raw content present. Inject targeted nudge ("your response was empty after thinking — provide a tool call or FINAL_ANSWER now"). Log as `status="empty_response"`. Continue without advancing the drift counter or appending the empty message to history.
 
-**Fix:** `memory_search` is now intercepted locally in `_execute_tool()` (same
-pattern as `knowledge_search` and `task_search`) and routed through
-`_search_knowledge()`, which reads directly from:
-- `~/.memory/roles/{role_id}/knowledge_units/` — role-distilled knowledge
-- `~/.memory/task_reports/*.json` filtered by `role_id`
+**Bonus:** `<think>` block content is now preserved as `metadata.reasoning` on the `SessionMessage` record — available for debugging, `task_session_read`, and the dreaming pipeline. `session_compactor` includes reasoning at 600 chars under `[model reasoning (think)]` so the ABCD pipeline has chain-of-thought context for richer C-cluster synthesis.
 
-User personal conversation history is never accessible from a role chat session.
+### Qwen XML Tool Call Leakage
+
+**Root cause:** Qwen (and some local models) output tool call markup as plain text in the response body instead of via the function-call API. The smoke test missed this because it only tested `memory_search` (read-only, single step) — the XML bug surfaces on `write_file` in multi-step tasks.
+
+**Executor fix:** `_extract_xml_tool_calls()` detects both formats:
+- Pattern A: `<tool_call><function=name>...</function></tool_call>` (Qwen jinja template leak)
+- Pattern B: bare `<tool_name>...</tool_name>` for known tools
+
+Detected calls are converted to real function calls transparently. The XML markup is stripped from visible response_text so it doesn't accumulate in context.
+
+**Smoke test fix:** New `write_workflow` check requires `write_file` to be called AND verifies the file exists on disk afterward. A model that describes the write in text instead of calling the function will fail and get `agentic_capable=False`.
+
+### agentic_capable TTL
+
+**Root cause:** Smoke test results were stored as `{resource_id: bool}` with no timestamp. A single failed test permanently blocked a working model with no expiry.
+
+**Fix:** Storage format changed to `{resource_id: {"value": bool, "tested_at": ISO timestamp}}`. Results older than 7 days (`AGENTIC_CAPABLE_TTL_DAYS`) are treated as `None` — the next smoke test runs rather than the old result blocking the resource. `_load_meta()` migrates legacy bool format transparently.
+
+### Startup Recovery
+
+- PENDING tasks on startup now retry (previously silently dropped)
+- Zombie task cleanup on startup drain with configurable timeout
+- One-shot interrupted tasks detected and re-queued
+
+### HITL Executor Fixes
+
+- `ask_user` pause correctly saves task state and resumes from exact iteration
+- Budget extension granted via HITL reply (`BUDGET_EXTENSION_REQUEST`) persists across resume
+- Empty HITL question no longer creates orphan waiting state
+
+### scheduler(action="get") Response Trimming
+
+Full `task.to_dict()` output replaced with compact view:
+- `goal`, `conversation_text`, `system_prompt` truncated to 200 chars
+- `pending_question` surfaced at top level (no longer buried in config)
+- Null/empty fields omitted
+- Result text fields truncated to 300 chars
+
+### Other Fixes
+
+- `deep_merge` clobbering lists: merge by `id` field instead of replace
+- Tilde path expansion in file tools: `~` expanded after sandbox check
+- Auto-sync clobbering personal config priority overrides
+- `scheduler` hub dropping `cron` param on cron task creation
+- Missing `asyncio` import in `_add_conversation`
+- Role dispatch to unknown `role_id` now escalates to user via `ask_user` instead of silent failure
+
+---
+
+## MCP Tool Description Audit (Fold 1 + Fold 2)
+
+All 14 MCP hub tools audited and updated:
+- Every param has a description and type
+- Enums declared on action fields
+- Defaults documented
+- `add_conversation`: new `scope` param (`"role"` | `"framework"`) with clear guidance
+- `config`: `api_key` inline param discoverable for resource editing
+- `read_file`, `write_file`: corrected false claims, sandbox boundary explicit
+- `memory_search`: `max_items` param now visible in schema
+
+Best practices guide: `docs/guides/MCP_TOOL_DESCRIPTION_BEST_PRACTICES.md`
+
+---
+
+## Benchmark System
+
+Full evaluation harness added under `tests/benchmarks/` and `docs/benchmarks/`:
+
+| Benchmark | What it measures |
+|-----------|-----------------|
+| LOCOMO | Long-context memory retrieval (conversation QA) |
+| LongMemEval | Multi-session memory fidelity |
+| ABCD e2e | Full dreaming pipeline quality |
+| Role memory | Role-scoped knowledge isolation and retrieval accuracy |
+
+First results: `results/locomo_abcd_bc_d1.jsonl`
+
+---
+
+## Architecture Decisions
+
+**Gap 4 (chat→dream bridge) deferred** — ships together with the owner one-on-one interface. The bridge connects chat sessions to the dreaming pipeline; without the one-on-one UI there is nothing to bridge. See `docs/architecture/two_tier_growth_design.md`.
+
+**Think blocks as metadata** — `<think>` content is signal, not noise. Preserved per-iteration for debugging and dreaming enrichment rather than discarded entirely.
+
+**agentic_capable TTL = 7 days** — chosen to be long enough to not trigger unnecessary re-testing, short enough that a recovered model isn't blocked for weeks.
+
+---
+
+## Upgrade Notes
+
+No breaking schema changes. The `agentic_capable` meta file migrates automatically on first load. No manual intervention required.
+
+If you pinned `available_tools` explicitly in task configs, behaviour is unchanged — the override layer still applies. The new capability resolution only changes the default (no `available_tools` specified) path.
+
+---
+
+## What's Next (v1.2.17)
+
+- Owner one-on-one interface + Gap 4 chat→dream bridge
+- Validator/ProviderProbe system role for bulk resource pool validation
+- Hybrid search (BM25 + embedding) for research roles
+- Two-layer catalog: system default + user personal (MCP_DESIGN.md §20)
