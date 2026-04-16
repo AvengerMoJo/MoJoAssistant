@@ -270,6 +270,7 @@ USER QUERY:
                 "output_limit": self.output_limit,
                 "message_format": self.message_format,
                 "provider": self.provider,
+                "timeout": getattr(self, "timeout", 300),
             }
             uclient = UnifiedLLMClient()
             response_data = uclient.call_sync(
@@ -325,6 +326,7 @@ USER QUERY:
                 "output_limit": self.output_limit,
                 "message_format": self.message_format,
                 "provider": self.provider,
+                "timeout": getattr(self, "timeout", 300),
             }
             uclient = UnifiedLLMClient()
             response_data = uclient.call_sync(messages=messages, resource_config=resource_config)

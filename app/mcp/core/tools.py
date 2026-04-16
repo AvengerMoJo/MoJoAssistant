@@ -167,6 +167,7 @@ class ToolRegistry:
             "get_memory_stats",            # Now under memory(action='stats')
             "get_recent_events",           # Now get_context(type='events')
             "get_attention_summary",       # Now get_context(type='attention')
+            "web_search",                  # Retired — use browser/playwright-backed search flows instead
             "scheduler_resume_task",       # Retired — use reply_to_task
             # Memory management → memory hub
             "end_conversation",
@@ -217,8 +218,6 @@ class ToolRegistry:
             "audit_get",
             # External agent → external_agent hub
             "google_service",
-            # Web search → handled by backend LLM, external MCP, or agent task
-            "web_search",
             # Browser → agent tool only (never expose to user via MCP)
             "browser",
             # Dialog → belongs in web dashboard UI, not MCP
@@ -440,10 +439,86 @@ class ToolRegistry:
         self.scheduler_thread = None
         return True
 
-    def _restart_scheduler_daemon(self):
-        """Restart scheduler daemon"""
+    def _reload_core_modules(self) -> Dict[str, Any]:
+        """
+        Reload scheduler and config modules so that edits to .py files take
+        effect without restarting the entire MoJo server process.
+
+        Safe to reload (no persisted enum/dataclass identity issues):
+          - app.scheduler.agentic_executor
+          - app.scheduler.benchmark_store
+          - app.config.doctor
+
+        Reloaded last (depends on above, creates new Scheduler class):
+          - app.scheduler.core
+
+        NOT reloaded (define TaskStatus/Task/etc. used in live task objects):
+          - app.scheduler.models
+          - app.scheduler.queue
+          - app.scheduler.triggers
+
+        After reloading core, a new Scheduler instance is created and assigned
+        to self.scheduler so the new code is active on the next start().
+        """
+        import importlib
+        import sys
+
+        # Order matters: reload dependencies before the modules that use them.
+        candidates = [
+            "app.scheduler.benchmark_store",
+            "app.scheduler.agentic_executor",
+            "app.config.doctor",
+            "app.scheduler.core",          # must be last — depends on above
+        ]
+
+        reloaded, errors = [], []
+        for mod_name in candidates:
+            if mod_name not in sys.modules:
+                continue
+            try:
+                importlib.reload(sys.modules[mod_name])
+                reloaded.append(mod_name.split(".")[-1])
+            except Exception as e:
+                errors.append(f"{mod_name.split('.')[-1]}: {e}")
+                self._log(f"Module reload failed for {mod_name}: {e}", "warning")
+
+        if reloaded:
+            self._log(f"Reloaded modules: {', '.join(reloaded)}")
+        if errors:
+            self._log(f"Reload errors (non-fatal): {errors}", "warning")
+
+        # Swap in a new Scheduler instance built from the freshly reloaded class.
+        # The TaskQueue reads state from disk on init so task history is preserved.
+        if "app.scheduler.core" in sys.modules:
+            try:
+                core_mod = sys.modules["app.scheduler.core"]
+                self.scheduler = core_mod.Scheduler(
+                    logger=self.logger,
+                    memory_service=self.memory_service,
+                    sse_notifier=self._sse_notifier,
+                    mcp_client_manager=self._mcp_client_manager,
+                    push_manager=self._push_manager,
+                    event_log=self._event_log,
+                )
+                self._log("New Scheduler instance created from reloaded core module")
+            except Exception as e:
+                self._log(f"Failed to create new Scheduler instance: {e}", "error")
+                errors.append(f"scheduler_init: {e}")
+
+        return {"reloaded": reloaded, "errors": errors}
+
+    def _restart_scheduler_daemon(self, reload_modules: bool = True):
+        """
+        Restart scheduler daemon.
+
+        With reload_modules=True (default): reloads core .py files first so
+        any code changes take effect immediately — no full process restart needed.
+        Pass reload_modules=False to do a fast restart without reloading code.
+        """
         self._stop_scheduler_daemon()
-        return self._start_scheduler_daemon()
+        reload_result = self._reload_core_modules() if reload_modules else {"reloaded": [], "errors": []}
+        success = self._start_scheduler_daemon()
+        return success, reload_result
 
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
@@ -570,19 +645,32 @@ class ToolRegistry:
             },
             {
                 "name": "add_conversation",
-                "description": "PRESERVE CONVERSATION CONTEXT: Add this Q&A exchange to memory so I remember our conversation. Use IMMEDIATELY after every user question and my response to maintain context across our interaction. This ensures I can reference previous parts of our conversation.",
+                "description": (
+                    "Save a dialog exchange or key finding to the knowledge store.\n\n"
+                    "scope='role' (default) — written to your own private store. Only you can retrieve it via memory search.\n"
+                    "scope='framework' — written to the shared framework store. Every agent sees it at task start.\n\n"
+                    "Use scope='framework' ONLY for tool bugs, workflow failures, executor quirks, or patterns "
+                    "that every agent should know about (e.g. 'Qwen outputs XML tool calls as plain text in FINAL_ANSWER'). "
+                    "Use scope='role' for personal task context, decisions, and domain-specific findings."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "user_message": {
                             "type": "string",
-                            "description": "The exact user question/message that was just asked",
+                            "description": "The user-side content of the exchange or the context/question",
                             "minLength": 1,
                         },
                         "assistant_message": {
                             "type": "string",
-                            "description": "My complete response to that user question",
+                            "description": "The assistant-side content — findings, decisions, or response worth preserving",
                             "minLength": 1,
+                        },
+                        "scope": {
+                            "type": "string",
+                            "enum": ["role", "framework"],
+                            "default": "role",
+                            "description": "'role' (default) saves to your private store. 'framework' saves to the shared store all agents read.",
                         },
                     },
                     "required": ["user_message", "assistant_message"],
@@ -622,8 +710,10 @@ class ToolRegistry:
                     "action='capability_get',   tool_name                      → get capability definition\n"
                     "action='capability_add',   tool_name, description, parameters?, executor?, danger_level?, category? → register custom capability\n"
                     "action='capability_remove',tool_name                      → remove a user-created capability\n\n"
-                    "# Validation\n"
-                    "action='doctor'                                     → full config pre-flight report"
+                    "# Validation & health improvement\n"
+                    "action='doctor'                                     → full config pre-flight report\n"
+                    "action='doctor_improve'                             → suggest config improvements from runtime data (benchmark history, failure patterns)\n"
+                    "action='doctor_apply', auto_only?                   → apply auto-safe improvements (auto_only=false applies all suggestions)"
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -647,12 +737,14 @@ class ToolRegistry:
                             "type": "boolean",
                             "description": "For LLM model changes: validate the model is loaded in the server before applying (default: true)",
                         },
-                        "resource_id": {"type": "string", "description": "Resource ID (resource_* and llm_models actions)."},
-                        "model": {"type": "string"},
-                        "type": {"type": "string", "enum": ["local", "api"]},
-                        "provider": {"type": "string"},
-                        "base_url": {"type": "string"},
-                        "api_key_env": {"type": "string", "description": "Env var name holding the API key."},
+                        "resource_id": {"type": "string", "description": "Resource ID to operate on (resource_* and llm_models actions)."},
+                        "model": {"type": "string", "description": "Model identifier string (e.g. 'gemini-2.5-pro', 'qwen3.5-35b-a3b')."},
+                        "type": {"type": "string", "enum": ["local", "api"], "description": "Resource type: 'local' = LMStudio/local server, 'api' = external API."},
+                        "provider": {"type": "string", "description": "Provider name (e.g. 'google', 'openai', 'anthropic')."},
+                        "base_url": {"type": "string", "description": "API base URL (e.g. 'https://generativelanguage.googleapis.com/v1beta/openai')."},
+                        "api_key": {"type": "string", "description": "Inline API key value. Stored in personal config (~/.memory). Use instead of api_key_env when you have the key directly."},
+                        "api_key_env": {"type": "string", "description": "Env var name holding the API key (alternative to api_key). Key resolved at runtime from environment."},
+                        "auto_only": {"type": "boolean", "description": "doctor_apply: apply only auto-safe suggestions (default true). Pass false to apply all suggestions including manual-review ones."},
                         "tier": {"type": "string", "enum": ["free", "free_api", "paid"]},
                         "priority": {"type": "integer", "description": "Lower = higher priority."},
                         "enabled": {"type": "boolean"},
@@ -692,11 +784,12 @@ class ToolRegistry:
                     "properties": {
                         "action": {
                             "type": "string",
+                            "enum": ["end_conversation", "list_conversations", "remove_conversation", "remove_conversations", "add_documents", "list_documents", "remove_document", "stats", "toggle_multi_model"],
                             "description": "Operation to perform. Omit for help menu.",
                         },
-                        "limit": {"type": "integer", "description": "Result limit (list actions)."},
-                        "id": {"type": "string", "description": "Message or document ID (remove actions)."},
-                        "count": {"type": "integer", "description": "Number to remove (remove_conversations)."},
+                        "limit": {"type": "integer", "description": "Max results to return (list_conversations, list_documents)."},
+                        "id": {"type": "string", "description": "Message or document ID (remove_conversation, remove_document)."},
+                        "count": {"type": "integer", "description": "Number of recent conversations to remove (remove_conversations)."},
                         "documents": {
                             "type": "array",
                             "description": "Documents to add (add_documents action).",
@@ -839,20 +932,21 @@ class ToolRegistry:
             {
                 "name": "dream",
                 "description": (
-                    "Memory consolidation (dreaming) hub. Call with no action for help menu.\n\n"
-                    "action='process',  conversation_id, quality? — run dreaming pipeline\n"
-                    "action='list'                                — list dreaming archives\n"
-                    "action='get',      conversation_id, version? — retrieve archive\n"
-                    "action='upgrade',  conversation_id, target_quality — quality upgrade"
+                    "Memory consolidation pipeline (dreaming). Distills raw conversation logs into structured knowledge units stored in long-term memory. Call with no action for help menu.\n\n"
+                    "action='process',  conversation_id, quality?        — run full dreaming pipeline on a conversation\n"
+                    "action='list'                                        — list all dreaming archives\n"
+                    "action='get',      conversation_id, version?         — retrieve a specific archive\n"
+                    "action='upgrade',  conversation_id, target_quality   — re-process at higher quality level\n\n"
+                    "quality levels: 'fast' (quick summary), 'balanced' (default), 'deep' (full fact extraction)"
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "description": "Operation. Omit for help menu."},
-                        "conversation_id": {"type": "string"},
-                        "quality": {"type": "string", "description": "Quality level (process action)."},
-                        "version": {"type": "string", "description": "Archive version (get action)."},
-                        "target_quality": {"type": "string", "description": "Target quality (upgrade action)."},
+                        "action": {"type": "string", "description": "Operation to perform. Omit for help menu."},
+                        "conversation_id": {"type": "string", "description": "Conversation ID to process or retrieve."},
+                        "quality": {"type": "string", "enum": ["fast", "balanced", "deep"], "description": "Processing quality level (process action, default: balanced)."},
+                        "version": {"type": "string", "description": "Archive version to retrieve (get action, default: latest)."},
+                        "target_quality": {"type": "string", "enum": ["fast", "balanced", "deep"], "description": "Quality level to upgrade to (upgrade action)."},
                     },
                     "required": [],
                 },
@@ -876,10 +970,10 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "description": "Operation. Omit for help menu."},
-                        "agent_id": {"type": "string"},
-                        "type": {"type": "string", "description": "Agent type (start action)."},
-                        "params": {"type": "object", "description": "Action params (action sub-action)."},
+                        "action": {"type": "string", "enum": ["list_types", "start", "stop", "status", "list", "restart", "destroy", "action"], "description": "Operation to perform. Omit for help menu."},
+                        "agent_id": {"type": "string", "description": "External agent instance ID (stop/status/restart/destroy/action)."},
+                        "type": {"type": "string", "description": "Agent type to start, e.g. 'opencode', 'claude_code' (start action)."},
+                        "params": {"type": "object", "description": "Parameters for sub-action (action operation)."},
                     },
                     "required": [],
                 },
@@ -909,8 +1003,8 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string"},
-                        "task_id": {"type": "string"},
+                        "action": {"type": "string", "description": "Operation to perform. Omit for help menu. Groups: HITL bridge (ask_user, check_reply, run_task), Google Workspace (google), coding backends (backend_*)."},
+                        "task_id": {"type": "string", "description": "Task ID for HITL operations (ask_user, check_reply)."},
                         "question": {"type": "string"},
                         "options": {"type": "array", "items": {"type": "string"}},
                         "prompt": {"type": "string"},
@@ -963,19 +1057,19 @@ class ToolRegistry:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string"},
-                        "role_id": {"type": "string"},
-                        "session_id": {"type": "string"},
-                        "answer": {"type": "string"},
-                        "description": {"type": "string"},
-                        "file_path": {"type": "string"},
-                        "role": {"type": "object"},
-                        "capabilities": {"type": "array", "items": {"type": "string"}},
-                        "capabilities_add": {"type": "array", "items": {"type": "string"}},
-                        "capabilities_remove": {"type": "array", "items": {"type": "string"}},
-                        "model_preference": {"type": "string"},
-                        "notify_on_completion": {"type": "boolean"},
-                        "policy": {"type": "object"},
+                        "action": {"type": "string", "enum": ["list", "get", "create", "edit", "design_start", "design_answer"], "description": "Operation to perform. Omit for help menu."},
+                        "role_id": {"type": "string", "description": "Role identifier (get, edit actions)."},
+                        "session_id": {"type": "string", "description": "Design session ID (design_answer, create actions)."},
+                        "answer": {"type": "string", "description": "Answer to current design question (design_answer action)."},
+                        "description": {"type": "string", "description": "Natural language description of the role (design_start action)."},
+                        "file_path": {"type": "string", "description": "Path to agency-agents file to import (design_start action)."},
+                        "role": {"type": "object", "description": "Full role spec object (create action, alternative to session_id)."},
+                        "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Full replacement capability list (edit action). Use capabilities_add/remove for partial updates."},
+                        "capabilities_add": {"type": "array", "items": {"type": "string"}, "description": "Capabilities to add to existing role defaults (edit action)."},
+                        "capabilities_remove": {"type": "array", "items": {"type": "string"}, "description": "Capabilities to remove from existing role defaults (edit action)."},
+                        "model_preference": {"type": "string", "description": "Preferred model resource ID for this role (edit action)."},
+                        "notify_on_completion": {"type": "boolean", "description": "Send push notification when task completes (edit action)."},
+                        "policy": {"type": "object", "description": "Safety policy overrides for this role (edit action)."},
                     },
                     "required": [],
                 },
@@ -1005,8 +1099,10 @@ class ToolRegistry:
             {
                 "name": "task_report_read",
                 "description": (
-                    "Read a normalized task report by task_id from "
-                    "~/.memory/task_reports/<task_id>.json."
+                    "Read a normalized task completion record by task_id. "
+                    "Contains: success flag, final_answer, token usage, iteration count, duration, and error_message if failed. "
+                    "Lighter than task_session_read — use this for outcome checks; use task_session_read for full iteration trail. "
+                    "Reads from ~/.memory/task_reports/<task_id>.json."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -1045,17 +1141,9 @@ class ToolRegistry:
 
     def get_tools(self) -> List[Dict[str, Any]]:
         """Get list of available tools (excludes placeholders and disabled features)"""
-        # Special case: web_search is implemented and should be available
         available_tools = [
             tool for tool in self.tools if tool["name"] not in self.placeholder_tools
         ]
-
-        # Add web_search if it's not already included (implementation is complete)
-        web_search_tool = next(
-            (tool for tool in self.tools if tool["name"] == "web_search"), None
-        )
-        if web_search_tool and web_search_tool not in available_tools:
-            available_tools.append(web_search_tool)
 
         # Agent tools are always present — agent_type validation happens at execution time
 
@@ -1281,7 +1369,7 @@ Each blocking item includes reply_with + task_id so you know how to respond.
 | get_context(type="task_session", task_id=...) | Read full task output before replying. |
 | get_context(type="events", ...) | Raw event history — failures, config changes. |
 | search_memory(query, types?, limit_per_type?) | Find past context. types: conversations, documents. |
-| add_conversation(user_message, assistant_message) | After every exchange worth keeping. |
+| add_conversation(user_message, assistant_message, scope?) | After every exchange worth keeping. scope='framework' for tool bugs/workflow failures all agents should know. |
 | reply_to_task(task_id, reply) | Answer an agent waiting for input (from attention.blocking). |
 | web_search(query) | Current information not in local memory. |
 
@@ -2776,10 +2864,58 @@ Agent resumes within seconds.
             task_id = args.get("task_id")
             task = self.scheduler.get_task(task_id)
 
-            if task:
-                return {"status": "success", "task": task.to_dict()}
-            else:
+            if not task:
                 return {"status": "error", "message": f"Task {task_id} not found"}
+
+            d = task.to_dict()
+
+            # Trim noisy / null fields before returning.
+            # Full config is available if needed — surface what matters for triage.
+            def _trim(v, max_len=200):
+                return v[:max_len] + "…" if isinstance(v, str) and len(v) > max_len else v
+
+            cfg = dict(d.get("config") or {})
+            # Truncate heavy text fields — conversation_text can be thousands of chars
+            for key in ("goal", "conversation_text", "conversation_id", "system_prompt"):
+                if key in cfg:
+                    cfg[key] = _trim(cfg[key])
+            # Drop null / empty values from config to reduce noise
+            cfg = {k: v for k, v in cfg.items() if v is not None and v != "" and v != {} and v != []}
+
+            result = d.get("result") or {}
+            if result:
+                # Trim long output fields in result
+                for key in ("output", "final_answer", "error_message"):
+                    if key in result:
+                        result[key] = _trim(result.get(key) or "", 300)
+                result = {k: v for k, v in result.items() if v is not None}
+
+            # Compact response — highlight pending_question if present
+            compact = {
+                "id": d["id"],
+                "type": d["type"],
+                "status": d["status"],
+                "created_by": d.get("created_by"),
+                "description": _trim(d.get("description") or "", 120),
+                "config": cfg,
+                "result": result or None,
+            }
+            # Surface pending_question at the top level — easy to miss in config
+            pq = d.get("pending_question") or cfg.get("pending_question")
+            if pq:
+                compact["pending_question"] = pq
+            # Include timing only when task is not pending
+            if d.get("started_at"):
+                compact["started_at"] = d["started_at"]
+            if d.get("completed_at"):
+                compact["completed_at"] = d["completed_at"]
+            # Only include non-null optional fields
+            for field in ("last_error", "retry_count", "priority"):
+                v = d.get(field)
+                if v is not None and v not in (0, "normal"):
+                    compact[field] = v
+
+            return {"status": "success", "task": compact}
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to get task: {str(e)}"}
@@ -2863,12 +2999,28 @@ Agent resumes within seconds.
                     if started and started < zombie_cutoff:
                         age_minutes = int((now - started).total_seconds() / 60)
                         if not dry_run:
-                            task.status = TaskStatus.FAILED
-                            task.last_error = (
+                            err = (
                                 f"Zombie: task was stuck in 'running' for {age_minutes}m "
                                 f"(threshold: {zombie_minutes}m). Force-failed by cleanup."
                             )
-                            task.completed_at = now
+                            if task.cron_expression:
+                                # Cron tasks reschedule rather than staying FAILED permanently
+                                from app.scheduler.triggers import CronTrigger
+                                try:
+                                    trigger = CronTrigger(task.cron_expression)
+                                    next_run = trigger.get_next_run_time(after=now)
+                                except Exception:
+                                    next_run = None
+                                task.last_error = err
+                                task.last_failed_at = now
+                                task.status = TaskStatus.PENDING
+                                task.schedule = next_run
+                                task.started_at = None
+                                task.completed_at = None
+                            else:
+                                task.status = TaskStatus.FAILED
+                                task.last_error = err
+                                task.completed_at = now
                             self.scheduler.queue.update(task)
                         zombies_killed.append({
                             "id": task.id,
@@ -2977,17 +3129,21 @@ Agent resumes within seconds.
     ) -> Dict[str, Any]:
         """Execute scheduler_restart_daemon tool"""
         try:
-            success = self._restart_scheduler_daemon()
+            reload_modules = bool(args.get("reload_modules", True))
+            success, reload_result = self._restart_scheduler_daemon(reload_modules=reload_modules)
 
             if success:
                 return {
                     "status": "success",
-                    "message": "Scheduler daemon restarted",
+                    "message": "Scheduler daemon restarted"
+                    + (" (modules reloaded)" if reload_result.get("reloaded") else ""),
                     "running": self.scheduler.running,
                     "tick_count": self.scheduler.tick_count,
                     "thread_alive": self.scheduler_thread.is_alive()
                     if self.scheduler_thread
                     else False,
+                    "modules_reloaded": reload_result.get("reloaded", []),
+                    "reload_errors": reload_result.get("errors", []),
                 }
             else:
                 return {
@@ -3646,6 +3802,48 @@ Agent resumes within seconds.
             return data
         except Exception as e:
             return {"status": "error", "message": f"Config doctor failed: {e}"}
+
+    async def _execute_config_healer(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Suggest (and optionally apply) config improvements driven by runtime data.
+
+        action="doctor_improve"  — analyse and return suggestions without applying
+        action="doctor_apply"    — apply auto_apply=True suggestions, return what changed
+                                   pass auto_only=False to apply all suggestions
+        """
+        import asyncio
+        action = args.get("action", "doctor_improve")
+        auto_only = args.get("auto_only", True)
+
+        try:
+            from app.config.doctor import ConfigHealer
+            healer = ConfigHealer()
+
+            loop = asyncio.get_event_loop()
+
+            if action == "doctor_improve":
+                report = await loop.run_in_executor(None, healer.suggest_improvements)
+                data = report.to_dict()
+                data["summary_text"] = report.summary()
+                return data
+
+            elif action == "doctor_apply":
+                def _run():
+                    imp_report = healer.suggest_improvements()
+                    messages = healer.apply_improvements(imp_report, auto_only=bool(auto_only))
+                    return imp_report, messages
+
+                imp_report, messages = await loop.run_in_executor(None, _run)
+                data = imp_report.to_dict()
+                data["applied_messages"] = messages
+                data["summary_text"] = imp_report.summary()
+                return data
+
+            else:
+                return {"status": "error", "message": f"Unknown action '{action}'"}
+
+        except Exception as e:
+            return {"status": "error", "message": f"Config healer failed: {e}"}
 
     async def _execute_audit_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return audit records of external boundary crossings."""
@@ -4397,9 +4595,11 @@ Agent resumes within seconds.
         if action in ("capability_list", "capability_get", "capability_add", "capability_remove"):
             return await self._execute_tool_manage(action, args)
 
-        # --- doctor ---
+        # --- doctor / healer ---
         if action == "doctor":
             return await self._execute_config_doctor({})
+        if action in ("doctor_improve", "doctor_apply"):
+            return await self._execute_config_healer(args)
 
         # --- modules list ---
         if action == "modules":
@@ -4445,6 +4645,8 @@ Agent resumes within seconds.
                         "capability_add":        "Register a custom capability to personal layer — params: tool_name, description, parameters?, executor?, danger_level?, category?",
                         "capability_remove":     "Remove a user-created capability — params: tool_name (system capabilities are protected)",
                         "doctor":                "Full config pre-flight report",
+                        "doctor_improve":        "Suggest config improvements from runtime data (benchmark history, failure patterns) — no changes written",
+                        "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
                     },
                     "example": 'config(action="capability_list")',
                 }
@@ -4887,7 +5089,7 @@ Agent resumes within seconds.
                 "status":         "Daemon + queue stats",
                 "daemon_start":   "Start the scheduler daemon",
                 "daemon_stop":    "Stop the scheduler daemon",
-                "daemon_restart": "Restart the scheduler daemon",
+                "daemon_restart": "Restart the scheduler daemon — reloads core .py modules by default so code changes take effect (pass reload_modules=false for fast restart without reload)",
                 "list_tools":     "Tools available to scheduled agents",
             },
             "note": "To reply to a waiting task use reply_to_task(task_id=..., reply=...) directly.",

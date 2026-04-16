@@ -1137,3 +1137,528 @@ class ConfigDoctor:
                         value=tool_like, status="pass",
                         message=f"All {len(tool_like)} tool name(s) in overlay match registry",
                     ))
+
+
+# ===========================================================================
+# ConfigHealer — runtime-data-driven config improvement suggestions
+# ===========================================================================
+
+@dataclass
+class ImprovementSuggestion:
+    """A single proposed config change, backed by runtime evidence."""
+    category: str        # "resource" | "scheduler_task"
+    target_id: str       # resource ID or cron job ID
+    field: str           # config field to change
+    current_value: Any
+    suggested_value: Any
+    reason: str          # human-readable explanation
+    evidence: str        # what data drove this suggestion
+    confidence: str      # "high" | "medium" | "low"
+    auto_apply: bool     # True = safe to apply without user confirmation
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "category": self.category,
+            "target_id": self.target_id,
+            "field": self.field,
+            "current_value": self.current_value,
+            "suggested_value": self.suggested_value,
+            "reason": self.reason,
+            "evidence": self.evidence,
+            "confidence": self.confidence,
+            "auto_apply": self.auto_apply,
+        }
+
+
+@dataclass
+class ImprovementReport:
+    suggestions: List[ImprovementSuggestion] = field(default_factory=list)
+    applied: List[ImprovementSuggestion] = field(default_factory=list)
+
+    @property
+    def auto_applicable(self) -> List[ImprovementSuggestion]:
+        return [s for s in self.suggestions if s.auto_apply]
+
+    @property
+    def manual_review(self) -> List[ImprovementSuggestion]:
+        return [s for s in self.suggestions if not s.auto_apply]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "suggestions": [s.to_dict() for s in self.suggestions],
+            "applied": [s.to_dict() for s in self.applied],
+            "summary": {
+                "total": len(self.suggestions),
+                "auto_applicable": len(self.auto_applicable),
+                "manual_review": len(self.manual_review),
+                "applied": len(self.applied),
+            },
+        }
+
+    def summary(self) -> str:
+        lines = [
+            f"Config Healer — {len(self.suggestions)} suggestion(s) "
+            f"({len(self.auto_applicable)} auto-apply, {len(self.manual_review)} manual review)",
+            "",
+        ]
+        for s in self.suggestions:
+            tag = "[auto]" if s.auto_apply else "[manual]"
+            lines.append(
+                f"  {tag} [{s.category}/{s.target_id}] {s.field}: "
+                f"{s.current_value!r} → {s.suggested_value!r}  ({s.confidence}) — {s.reason}"
+            )
+        if self.applied:
+            lines.append("")
+            lines.append(f"Applied {len(self.applied)} change(s):")
+            for s in self.applied:
+                lines.append(f"  ✓ [{s.target_id}] {s.field} = {s.suggested_value!r}")
+        return "\n".join(lines)
+
+
+class ConfigHealer:
+    """
+    Analyses runtime execution data and static config state to produce
+    improvement suggestions.  Unlike ConfigDoctor (which only diagnoses),
+    ConfigHealer proposes concrete changes and can apply them.
+
+    Data sources:
+      1. ConfigDoctor report          — static config errors / warnings
+      2. BenchmarkStore execution log — success rates, speed, judge scores
+      3. Task queue (failed tasks)    — error message patterns for cron jobs
+    """
+
+    # Thresholds
+    LOW_SUCCESS_RATE = 0.25      # below this → suggest disable or lower priority
+    MIN_SAMPLES = 5              # minimum runs before drawing conclusions
+    BUDGET_BUMP_FACTOR = 1.5     # multiply max_iterations / danger_budget by this
+    MAX_DANGER_BUDGET_DEFAULT = 160
+    SCHEDULER_CONFIG_LOOKBACK_DAYS = 14
+
+    def suggest_improvements(
+        self,
+        doctor_report: Optional["DoctorReport"] = None,
+    ) -> ImprovementReport:
+        """
+        Run all improvement heuristics and return a report of suggestions.
+        Optionally accepts an already-computed DoctorReport to avoid re-running checks.
+        """
+        if doctor_report is None:
+            doctor_report = ConfigDoctor().run_all_checks()
+
+        report = ImprovementReport()
+        self._suggest_from_doctor_report(doctor_report, report)
+        self._suggest_from_benchmark_history(report)
+        self._suggest_from_task_failures(report)
+        return report
+
+    def apply_improvements(
+        self,
+        report: ImprovementReport,
+        auto_only: bool = True,
+    ) -> List[str]:
+        """
+        Apply suggestions to personal config files.
+        Returns a list of human-readable messages for each applied change.
+        Returns only auto-applicable ones by default.
+
+        Writes:
+          - resource priority / model / enabled changes → ~/.memory/config/resource_pool.json
+          - max_iterations / danger_budget changes      → ~/.memory/config/scheduler_config.json
+        """
+        to_apply = report.auto_applicable if auto_only else report.suggestions
+        messages: List[str] = []
+
+        resource_updates: Dict[str, Dict[str, Any]] = {}
+        scheduler_updates: Dict[str, Dict[str, Any]] = {}  # {cron_job_id: {field: value}}
+
+        for s in to_apply:
+            if s.category == "resource":
+                resource_updates.setdefault(s.target_id, {})[s.field] = s.suggested_value
+                messages.append(f"[resource/{s.target_id}] {s.field} = {s.suggested_value!r}")
+            elif s.category == "scheduler_task":
+                scheduler_updates.setdefault(s.target_id, {})[s.field] = s.suggested_value
+                messages.append(
+                    f"[scheduler_task/{s.target_id}] {s.field} = {s.suggested_value!r}"
+                )
+
+        if resource_updates:
+            self._apply_resource_updates(resource_updates)
+        if scheduler_updates:
+            self._apply_scheduler_updates(scheduler_updates)
+
+        for s in to_apply:
+            report.applied.append(s)
+
+        return messages
+
+    # ------------------------------------------------------------------
+    # Heuristic 1: static doctor report → fix obvious errors
+    # ------------------------------------------------------------------
+
+    def _suggest_from_doctor_report(
+        self, doctor_report: "DoctorReport", out: ImprovementReport
+    ) -> None:
+        """
+        Turn doctor errors/warnings into actionable suggestions where possible.
+
+        Currently handles:
+          - Model ID mismatch on single-model servers → auto-fix the model name
+          - Server unreachable → suggest disable (manual — don't auto-disable)
+        """
+        # Group model errors and base_url checks by resource
+        model_errors: Dict[str, str] = {}   # res_id → current (wrong) model
+        unreachable: set = set()
+
+        for c in doctor_report.checks:
+            if c.category != "resource":
+                continue
+            if c.status == "error" and c.field == "model":
+                model_errors[c.id] = c.value
+            elif c.status in ("warn", "error") and c.field == "base_url":
+                if "not reachable" in c.message.lower():
+                    unreachable.add(c.id)
+
+        # Try to fix model ID mismatches for local servers
+        for res_id, wrong_model in model_errors.items():
+            # Fetch actual model list from the server
+            base_url = self._get_resource_base_url(res_id)
+            if not base_url:
+                continue
+            api_key = self._get_resource_api_key(res_id)
+            available = _fetch_model_list(base_url, api_key=api_key)
+            if not available:
+                continue
+            if len(available) == 1:
+                # Unambiguous — the only loaded model is the right one
+                correct_model = available[0]
+                out.suggestions.append(ImprovementSuggestion(
+                    category="resource",
+                    target_id=res_id,
+                    field="model",
+                    current_value=wrong_model,
+                    suggested_value=correct_model,
+                    reason=f"Config says '{wrong_model}' but server only has '{correct_model}' loaded.",
+                    evidence=f"_fetch_model_list({base_url}) returned [{correct_model}]",
+                    confidence="high",
+                    auto_apply=True,
+                ))
+            else:
+                # Multiple models — try to find a close match
+                norm_wrong = wrong_model.split("/")[-1].lower()
+                close = [m for m in available if norm_wrong in m.lower() or m.lower() in norm_wrong]
+                if len(close) == 1:
+                    out.suggestions.append(ImprovementSuggestion(
+                        category="resource",
+                        target_id=res_id,
+                        field="model",
+                        current_value=wrong_model,
+                        suggested_value=close[0],
+                        reason=f"Config says '{wrong_model}' not found; closest match: '{close[0]}'.",
+                        evidence=f"Available: {', '.join(available[:5])}",
+                        confidence="medium",
+                        auto_apply=False,
+                    ))
+
+        # Suggest disabling consistently unreachable resources
+        for res_id in unreachable:
+            if not self._resource_is_enabled(res_id):
+                continue  # already disabled
+            out.suggestions.append(ImprovementSuggestion(
+                category="resource",
+                target_id=res_id,
+                field="enabled",
+                current_value=True,
+                suggested_value=False,
+                reason="Server has been unreachable. Disabling prevents wasted retries.",
+                evidence="Doctor check: base_url not reachable",
+                confidence="low",
+                auto_apply=False,
+            ))
+
+    # ------------------------------------------------------------------
+    # Heuristic 2: benchmark history → priority + disable suggestions
+    # ------------------------------------------------------------------
+
+    def _suggest_from_benchmark_history(self, out: ImprovementReport) -> None:
+        """
+        Use BenchmarkStore analysis to:
+          - Suggest priority updates (delegated to BenchmarkStore.suggest_priority_updates)
+          - Flag resources with very low success rates
+        """
+        try:
+            from app.scheduler.benchmark_store import BenchmarkStore
+            bs = BenchmarkStore()
+            stats = bs.analyze(min_samples=self.MIN_SAMPLES)
+        except Exception as e:
+            logger.debug(f"ConfigHealer: benchmark analysis failed: {e}")
+            return
+
+        current_priorities = self._get_current_priorities()
+
+        for s in stats:
+            # Priority rebalancing
+            suggested_priority = (stats.index(s) + 1) * 2  # rank-based, gaps for manual
+            current_p = current_priorities.get(s.resource_id)
+            if current_p is not None and abs(suggested_priority - current_p) >= 2:
+                out.suggestions.append(ImprovementSuggestion(
+                    category="resource",
+                    target_id=s.resource_id,
+                    field="priority",
+                    current_value=current_p,
+                    suggested_value=suggested_priority,
+                    reason=(
+                        f"Benchmark rank #{stats.index(s)+1} based on composite score "
+                        f"(success={s.success_rate:.0%}, speed={s.median_duration_s:.0f}s, "
+                        f"judge_win={s.judge_win_rate:.0%})"
+                    ),
+                    evidence=f"{s.n_runs} runs; composite={s.composite_score:.3f}",
+                    confidence="medium",
+                    auto_apply=True,
+                ))
+
+            # Low success rate warning (do not auto-apply disable)
+            if s.success_rate < self.LOW_SUCCESS_RATE:
+                out.suggestions.append(ImprovementSuggestion(
+                    category="resource",
+                    target_id=s.resource_id,
+                    field="enabled",
+                    current_value=True,
+                    suggested_value=False,
+                    reason=(
+                        f"Success rate is only {s.success_rate:.0%} across {s.n_runs} runs. "
+                        f"Consider disabling or investigating model compatibility."
+                    ),
+                    evidence=f"{s.n_runs} runs; {int(s.success_rate * s.n_runs)} succeeded",
+                    confidence="medium",
+                    auto_apply=False,
+                ))
+
+    # ------------------------------------------------------------------
+    # Heuristic 3: task queue failures → scheduler config bumps
+    # ------------------------------------------------------------------
+
+    def _suggest_from_task_failures(self, out: ImprovementReport) -> None:
+        """
+        Scan the task queue for recently failed cron tasks and suggest
+        bumping max_iterations or danger_budget when the failure pattern
+        matches known budget-exhaustion signatures.
+        """
+        try:
+            from app.scheduler.queue import TaskQueue
+            from app.scheduler.models import TaskStatus
+            queue = TaskQueue()
+        except Exception as e:
+            logger.debug(f"ConfigHealer: failed to load task queue: {e}")
+            return
+
+        # Load current scheduler config to know existing values
+        try:
+            from app.config.config_loader import load_layered_json_config
+            project_root = Path(__file__).parent.parent.parent
+            sched_path = str(project_root / "config" / "scheduler_config.json")
+            sched_cfg = load_layered_json_config(sched_path)
+            cron_jobs = {
+                j["id"]: j.get("config", {})
+                for j in (sched_cfg.get("default_tasks") or sched_cfg.get("jobs", []))
+                if "id" in j
+            }
+        except Exception:
+            cron_jobs = {}
+
+        # Track failure patterns per task ID
+        budget_exhausted: Dict[str, int] = {}    # task_id → count
+        danger_exhausted: Dict[str, int] = {}    # task_id → count
+
+        cutoff_dt = __import__("datetime").datetime.now() - __import__("datetime").timedelta(
+            days=self.SCHEDULER_CONFIG_LOOKBACK_DAYS
+        )
+
+        for task in queue.tasks.values():
+            if task.status not in (
+                __import__("app.scheduler.models", fromlist=["TaskStatus"]).TaskStatus.FAILED,
+                __import__("app.scheduler.models", fromlist=["TaskStatus"]).TaskStatus.COMPLETED,
+            ):
+                continue
+            if task.completed_at and task.completed_at < cutoff_dt:
+                continue
+
+            err = ""
+            if task.result:
+                err = (task.result.error_message or "").lower()
+            elif task.status == __import__(
+                "app.scheduler.models", fromlist=["TaskStatus"]
+            ).TaskStatus.FAILED:
+                err = ""
+
+            if not err:
+                continue
+
+            # Only cron-sourced tasks have meaningful IDs to look up
+            task_id = task.id
+            if task_id not in cron_jobs:
+                continue  # dynamic/user task — skip
+
+            if "iteration budget exhausted" in err or "max_iterations" in err:
+                budget_exhausted[task_id] = budget_exhausted.get(task_id, 0) + 1
+            if "danger budget" in err or "securitygate" in err.lower():
+                danger_exhausted[task_id] = danger_exhausted.get(task_id, 0) + 1
+
+        # Emit suggestions
+        for task_id, count in budget_exhausted.items():
+            cfg = cron_jobs.get(task_id, {})
+            current = cfg.get("max_iterations", 20)
+            suggested = max(int(current * self.BUDGET_BUMP_FACTOR), current + 5)
+            out.suggestions.append(ImprovementSuggestion(
+                category="scheduler_task",
+                target_id=task_id,
+                field="max_iterations",
+                current_value=current,
+                suggested_value=suggested,
+                reason=(
+                    f"Task '{task_id}' hit iteration budget {count} time(s) recently. "
+                    f"Bumping from {current} → {suggested}."
+                ),
+                evidence=f"{count} failure(s) with 'iteration budget exhausted' in last "
+                         f"{self.SCHEDULER_CONFIG_LOOKBACK_DAYS} days",
+                confidence="medium",
+                auto_apply=True,
+            ))
+
+        for task_id, count in danger_exhausted.items():
+            cfg = cron_jobs.get(task_id, {})
+            current_budget = cfg.get("danger_budget", self.MAX_DANGER_BUDGET_DEFAULT)
+            suggested_budget = max(
+                int(current_budget * self.BUDGET_BUMP_FACTOR),
+                current_budget + 100,
+            )
+            out.suggestions.append(ImprovementSuggestion(
+                category="scheduler_task",
+                target_id=task_id,
+                field="danger_budget",
+                current_value=current_budget,
+                suggested_value=suggested_budget,
+                reason=(
+                    f"Task '{task_id}' exhausted SecurityGate danger budget {count} time(s). "
+                    f"Bumping from {current_budget} → {suggested_budget}."
+                ),
+                evidence=f"{count} failure(s) with danger budget exhaustion in last "
+                         f"{self.SCHEDULER_CONFIG_LOOKBACK_DAYS} days",
+                confidence="medium",
+                auto_apply=True,
+            ))
+
+    # ------------------------------------------------------------------
+    # Apply helpers — write to personal config layer only
+    # ------------------------------------------------------------------
+
+    def _apply_resource_updates(self, updates: Dict[str, Dict[str, Any]]) -> None:
+        """Write resource field changes to ~/.memory/config/resource_pool.json."""
+        try:
+            from app.config.paths import get_memory_subpath
+            path = Path(get_memory_subpath("config", "resource_pool.json"))
+            data: Dict[str, Any] = {}
+            if path.exists():
+                with open(path) as f:
+                    data = json.load(f)
+            resources = data.setdefault("resources", {})
+            for res_id, fields in updates.items():
+                resources.setdefault(res_id, {}).update(fields)
+                logger.info(f"ConfigHealer: resource/{res_id} ← {fields}")
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"ConfigHealer: failed to write resource_pool.json: {e}")
+
+    def _apply_scheduler_updates(self, updates: Dict[str, Dict[str, Any]]) -> None:
+        """
+        Write scheduler task config overrides to ~/.memory/config/scheduler_config.json.
+        Merges into the personal layer's default_tasks list by task ID.
+        """
+        try:
+            from app.config.paths import get_memory_subpath
+            path = Path(get_memory_subpath("config", "scheduler_config.json"))
+            data: Dict[str, Any] = {}
+            if path.exists():
+                with open(path) as f:
+                    data = json.load(f)
+
+            default_tasks: List[Dict[str, Any]] = data.setdefault("default_tasks", [])
+
+            # Build index by id
+            by_id = {t["id"]: t for t in default_tasks if "id" in t}
+
+            for task_id, fields in updates.items():
+                entry = by_id.setdefault(task_id, {"id": task_id})
+                cfg = entry.setdefault("config", {})
+                cfg.update(fields)
+                logger.info(f"ConfigHealer: scheduler_task/{task_id} ← {fields}")
+
+            # Rebuild list preserving order
+            seen = set()
+            new_list = []
+            for entry in default_tasks:
+                eid = entry.get("id")
+                if eid in by_id:
+                    new_list.append(by_id[eid])
+                    seen.add(eid)
+                elif eid is None:
+                    new_list.append(entry)
+            for eid, entry in by_id.items():
+                if eid not in seen:
+                    new_list.append(entry)
+
+            data["default_tasks"] = new_list
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"ConfigHealer: failed to write scheduler_config.json: {e}")
+
+    # ------------------------------------------------------------------
+    # Resource pool helpers
+    # ------------------------------------------------------------------
+
+    def _get_resource_base_url(self, res_id: str) -> Optional[str]:
+        try:
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            r = rm._resources.get(res_id)
+            return getattr(r, "base_url", None) if r else None
+        except Exception:
+            return None
+
+    def _get_resource_api_key(self, res_id: str) -> Optional[str]:
+        try:
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            r = rm._resources.get(res_id)
+            if r is None:
+                return None
+            key = getattr(r, "api_key", None)
+            if key:
+                return key
+            env_var = getattr(r, "api_key_env", None)
+            if env_var:
+                return os.getenv(env_var)
+            return None
+        except Exception:
+            return None
+
+    def _resource_is_enabled(self, res_id: str) -> bool:
+        try:
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            r = rm._resources.get(res_id)
+            return bool(getattr(r, "enabled", True)) if r else False
+        except Exception:
+            return False
+
+    def _get_current_priorities(self) -> Dict[str, int]:
+        try:
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            return {
+                rid: getattr(res, "priority", 50)
+                for rid, res in rm._resources.items()
+            }
+        except Exception:
+            return {}

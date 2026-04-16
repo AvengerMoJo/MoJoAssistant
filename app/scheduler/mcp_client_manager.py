@@ -74,9 +74,11 @@ class MCPClientManager:
         self._sessions: Dict[str, Any] = {}   # server_id → ClientSession
         self._exit_stack = AsyncExitStack()
         self._connected = False
-        # Prevents concurrent connect_all() calls from double-connecting the same
-        # server (e.g. startup background task racing against first agentic task).
-        self._connect_lock = asyncio.Lock()
+        # Lazily created in connect_all() so it's always bound to the running
+        # event loop — creating asyncio.Lock() in __init__ (sync context) binds
+        # it to whichever loop is current at construction time, which breaks after
+        # a daemon_restart spins up a new event loop.
+        self._connect_lock: Optional[asyncio.Lock] = None
         self._load_config()
 
     def _load_config(self) -> None:
@@ -133,6 +135,8 @@ class MCPClientManager:
         Serialized via _connect_lock to prevent concurrent callers from
         double-connecting the same server.
         """
+        if self._connect_lock is None:
+            self._connect_lock = asyncio.Lock()
         async with self._connect_lock:
             results: Dict[str, List[Any]] = {}
             for server_id, server in self._servers.items():

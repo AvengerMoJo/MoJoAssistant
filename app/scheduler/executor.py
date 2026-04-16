@@ -267,6 +267,19 @@ class TaskExecutor:
                     "automatic": automatic,
                 }
 
+                # Index C-clusters into the searchable knowledge base so
+                # _orient_from_memory can retrieve them at future task start.
+                # The dreaming pipeline stores rich archives to disk but they
+                # are not in the vector store — this closes that loop.
+                if self._memory_service:
+                    indexed = self._index_clusters_to_knowledge_base(
+                        pipeline=pipeline,
+                        conversation_id=conversation_id,
+                        role_id=conv_role_id,
+                        source=task.config.get("metadata", {}).get("source", "dreaming"),
+                    )
+                    metrics["clusters_indexed"] = indexed
+
                 # Optional inbox distillation pass after main pipeline
                 if task.config.get("distill_inbox", False):
                     try:
@@ -303,6 +316,77 @@ class TaskExecutor:
             return TaskResult(
                 success=False, error_message=f"Dreaming execution error: {e}"
             )
+
+    def _index_clusters_to_knowledge_base(
+        self,
+        pipeline: "DreamingPipeline",
+        conversation_id: str,
+        role_id: Optional[str],
+        source: str = "dreaming",
+    ) -> int:
+        """
+        Load the latest ABCD archive and index C-clusters into the vector
+        knowledge base so _orient_from_memory can retrieve them.
+
+        The dreaming pipeline stores rich archives to disk (~/memory/dreams/)
+        but they are not automatically indexed into the searchable store.
+        This closes that loop: ABCD output → add_to_knowledge_base → retrievable.
+
+        Returns the number of clusters successfully indexed.
+        """
+        indexed = 0
+        try:
+            archive = pipeline.get_archive(conversation_id)
+            if not archive:
+                return 0
+
+            clusters = archive.get("c_clusters", [])
+            knowledge_units = archive.get("knowledge_units", [])
+
+            import inspect as _inspect
+            sig = _inspect.signature(self._memory_service.add_to_knowledge_base)
+            supports_role_id = "role_id" in sig.parameters
+
+            def _store(content: str, meta: dict) -> None:
+                if supports_role_id:
+                    self._memory_service.add_to_knowledge_base(content, meta, role_id=role_id)
+                else:
+                    self._memory_service.add_to_knowledge_base(content, meta)
+
+            # Index C-clusters (synthesized knowledge)
+            for cluster in clusters:
+                content = (cluster.get("content") or cluster.get("theme") or "").strip()
+                if not content or len(content) < 20:
+                    continue
+                meta = {
+                    "type": "dreaming_cluster",
+                    "source": source,
+                    "conversation_id": conversation_id,
+                    "cluster_type": cluster.get("cluster_type", "unknown"),
+                    "role_id": role_id or "unknown",
+                }
+                _store(content, meta)
+                indexed += 1
+
+            # Index atomic knowledge units if present (document mode)
+            for unit in knowledge_units:
+                content = (unit.get("content") or unit.get("fact") or "").strip()
+                if not content or len(content) < 20:
+                    continue
+                meta = {
+                    "type": "dreaming_knowledge_unit",
+                    "source": source,
+                    "conversation_id": conversation_id,
+                    "role_id": role_id or "unknown",
+                }
+                _store(content, meta)
+                indexed += 1
+
+            if indexed:
+                self._log(f"Indexed {indexed} dreaming clusters into knowledge base (role={role_id})")
+        except Exception as e:
+            self._log(f"Cluster indexing failed (non-fatal): {e}", "warning")
+        return indexed
 
     def _is_within_off_peak(self, start_hhmm: str, end_hhmm: str) -> bool:
         """Check if current local time is inside off-peak window."""

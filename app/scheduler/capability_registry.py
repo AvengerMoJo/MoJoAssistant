@@ -246,21 +246,21 @@ class CapabilityRegistry:
         builtins = [
             CapabilityDefinition(
                 name="read_file",
-                description="Read file contents. Returns full text with line numbers.",
+                description="Read the full contents of a file. Returns raw text plus line_count and size_bytes. Always read a file before editing it.",
                 danger_level="low",
                 category="file",
                 parameters={"type": "object", "properties": {
-                    "path": {"type": "string", "description": "Absolute or relative file path to read"},
+                    "path": {"type": "string", "description": "Absolute path or ~/… path to read"},
                 }, "required": ["path"]},
             ),
             CapabilityDefinition(
                 name="write_file",
-                description="Write content to file. Overwrites existing file. Only allowed in sandbox paths.",
+                description="Write or overwrite a file. Only paths inside ~/.memory/ are allowed — writes elsewhere are blocked by sandbox policy. Creates parent directories automatically.",
                 danger_level="medium",
                 category="file",
                 parameters={"type": "object", "properties": {
-                    "path": {"type": "string", "description": "File path to write"},
-                    "content": {"type": "string", "description": "Content to write"},
+                    "path": {"type": "string", "description": "Destination path (must be under ~/.memory/)"},
+                    "content": {"type": "string", "description": "Full file content to write"},
                 }, "required": ["path", "content"]},
             ),
             CapabilityDefinition(
@@ -371,6 +371,16 @@ class CapabilityRegistry:
                         "type": "string",
                         "description": "The assistant-side content — findings, decisions, or response worth preserving",
                     },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["role", "framework"],
+                        "default": "role",
+                        "description": (
+                            "'role' (default) — saved to your own private store, only you can retrieve it. "
+                            "'framework' — saved to the shared framework store, all agents can retrieve it. "
+                            "Use 'framework' only for tool bugs, workflow failures, or patterns every agent should know."
+                        ),
+                    },
                 }, "required": ["user_message", "assistant_message"]},
             ),
             CapabilityDefinition(
@@ -380,6 +390,7 @@ class CapabilityRegistry:
                 category="knowledge",
                 parameters={"type": "object", "properties": {
                     "query": {"type": "string", "description": "Search query to find relevant context"},
+                    "max_items": {"type": "integer", "description": "Maximum results to return (default: 5, max: 20).", "default": 5},
                 }, "required": ["query"]},
             ),
             CapabilityDefinition(
@@ -1033,13 +1044,18 @@ class CapabilityRegistry:
 
     async def _add_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Save a dialog exchange to this role's own private knowledge store.
+        Save a dialog exchange to the role-private or shared framework knowledge store.
 
-        Writes to the role-private store (not the user's personal memory).
-        The dreaming pipeline will consolidate it later.
+        scope='role' (default): writes to this role's private store.
+        scope='framework': writes to the shared __framework__ store — all agents
+            can retrieve it via _orient_from_memory. Use for tool bugs, workflow
+            failures, or patterns every agent should know.
         """
+        FRAMEWORK_ROLE_ID = "__framework__"
+
         user_message = args.get("user_message", "")
         assistant_message = args.get("assistant_message", "")
+        scope = args.get("scope", "role")
 
         if not self._memory_service:
             return {"success": False, "error": "Memory service not available"}
@@ -1049,8 +1065,10 @@ class CapabilityRegistry:
 
         try:
             import asyncio
-            role_id = getattr(self, "_current_role_id", None)
             import inspect as _inspect
+
+            role_id = getattr(self, "_current_role_id", None)
+            target_role_id = FRAMEWORK_ROLE_ID if scope == "framework" else role_id
 
             document = ""
             if user_message:
@@ -1058,26 +1076,32 @@ class CapabilityRegistry:
             if assistant_message:
                 document += f"[assistant] {assistant_message}"
 
-            metadata = {"type": "conversation", "role_id": role_id or "unknown"}
+            metadata = {
+                "type": "conversation",
+                "role_id": role_id or "unknown",
+                "scope": scope,
+            }
 
             sig = _inspect.signature(self._memory_service.add_to_knowledge_base)
             if "role_id" in sig.parameters:
                 await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: self._memory_service.add_to_knowledge_base(
-                        document, metadata, role_id=role_id
+                        document, metadata, role_id=target_role_id
                     ),
                 )
             else:
-                # Legacy service: fall back to shared store (no role isolation available)
+                # Legacy service: no role isolation — write to shared store
                 await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: self._memory_service.add_to_knowledge_base(document, metadata),
                 )
 
+            store_label = "shared framework store" if scope == "framework" else "role-private knowledge store"
             return {
                 "success": True,
-                "message": "Conversation saved to role-private knowledge store",
+                "message": f"Conversation saved to {store_label}",
+                "scope": scope,
                 "role_id": role_id,
             }
         except Exception as e:

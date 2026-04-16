@@ -50,6 +50,85 @@ def _estimate_tokens(messages: List[Dict]) -> int:
     return total
 
 
+def _extract_xml_tool_calls(text: str) -> List[Dict]:
+    """
+    Detect and parse XML-format tool calls that leaked into response text.
+
+    Qwen (and some local models) occasionally output tool call markup as plain
+    text instead of using the function-call API.  Two patterns are handled:
+
+    Pattern A — Qwen internal format (jinja template leak):
+        <tool_call>
+        <function=tool_name>
+        <parameter=arg_name>value</parameter>
+        </function>
+        </tool_call>
+
+    Pattern B — bare tag format:
+        <tool_name>
+        <arg_name>value</arg_name>
+        </tool_name>
+        (only matched when tool_name is a known common tool name)
+
+    Returns a list in the same shape as message["tool_calls"] so the executor
+    can treat them identically to real function calls.  Returns [] if nothing found.
+    """
+    import re as _re
+    import json as _json
+    import uuid as _uuid
+
+    results = []
+
+    # Pattern A: <tool_call>...<function=name>...</function></tool_call>
+    tc_blocks = _re.findall(
+        r"<tool_call>(.*?)</tool_call>", text, _re.DOTALL | _re.IGNORECASE
+    )
+    for block in tc_blocks:
+        fn_match = _re.search(
+            r"<function=([^>]+)>(.*?)</function>", block, _re.DOTALL | _re.IGNORECASE
+        )
+        if not fn_match:
+            continue
+        fn_name = fn_match.group(1).strip()
+        fn_body = fn_match.group(2)
+        params = {}
+        for pm in _re.finditer(
+            r"<parameter=([^>]+)>(.*?)</parameter>", fn_body, _re.DOTALL | _re.IGNORECASE
+        ):
+            params[pm.group(1).strip()] = pm.group(2).strip()
+        results.append({
+            "id": f"xml_{_uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {"name": fn_name, "arguments": _json.dumps(params)},
+        })
+
+    # Pattern B: bare <tool_name>...</tool_name> — only for known tools to avoid
+    # false positives on FINAL_ANSWER tags, think tags, etc.
+    _KNOWN_TOOL_TAGS = {
+        "write_file", "read_file", "bash_exec", "web_search", "fetch_url",
+        "memory_search", "add_conversation", "list_files", "search_in_files",
+    }
+    if not results:
+        for tool_name in _KNOWN_TOOL_TAGS:
+            pattern = _re.compile(
+                rf"<{_re.escape(tool_name)}>(.*?)</{_re.escape(tool_name)}>",
+                _re.DOTALL | _re.IGNORECASE,
+            )
+            for m in pattern.finditer(text):
+                body = m.group(1)
+                params = {}
+                for pm in _re.finditer(r"<([^/][^>]*)>(.*?)</\1>", body, _re.DOTALL):
+                    params[pm.group(1).strip()] = pm.group(2).strip()
+                if params:
+                    results.append({
+                        "id": f"xml_{_uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": {"name": tool_name, "arguments": _json.dumps(params)},
+                    })
+
+    return results
+
+
 def _trim_to_context_budget(
     messages: List[Dict],
     input_budget: int,
@@ -454,6 +533,24 @@ class AgenticExecutor:
                 success=False, error_message="Missing 'goal' in task config"
             )
 
+        # Bug #4: detect negative user replies before running any more setup.
+        # When the user replies "no" / "cancel" / "stop" to a budget-exhaustion or
+        # security-gate HITL question the task should be permanently failed — not
+        # resumed with the reply injected into the conversation.
+        _early_reply = config.get("reply_to_question", "")
+        if _early_reply and config.get("resume_from_task_id"):
+            _early_reply_lower = (_early_reply or "").strip().lower()
+            if _early_reply_lower in ("no", "cancel", "stop", "abort", "reject"):
+                _pending_q = (task.pending_question or "").lower()
+                _is_budget_ex = "iteration budget exhausted" in _pending_q
+                _cancel_reason = (
+                    "Iteration budget exhausted — user declined to extend."
+                    if _is_budget_ex
+                    else "User cancelled task."
+                )
+                self._log(f"Task {task.id} cancelled by user reply '{_early_reply}'")
+                return TaskResult(success=False, error_message=_cancel_reason)
+
         # Load role personality if role_id is specified
         role_model_preference = None
         role_id = config.get("role_id")
@@ -632,8 +729,14 @@ class AgenticExecutor:
         # Reset SecurityGate danger budget only on fresh starts.
         # On resume (HITL reply or retry) the budget carries over so the gate
         # doesn't re-trigger immediately after the user says "continue".
+        # Tasks that do heavy legitimate tool use (data ingestion, benchmarks)
+        # can declare a higher budget via config key "danger_budget".
         if not resume_from:
-            self._gate.reset_task(task.id)
+            task_danger_budget = config.get("danger_budget")
+            self._gate.reset_task(
+                task.id,
+                budget=int(task_danger_budget) if task_danger_budget else None,
+            )
         if resume_from:
             messages, start_iteration = self._load_resume_messages(
                 resume_from, system_prompt
@@ -648,9 +751,12 @@ class AgenticExecutor:
                 # grant a budget extension so the gate doesn't immediately re-fire.
                 # Detection uses task.pending_question (persisted in the scheduler DB)
                 # so it survives executor restarts — no in-memory flag needed.
+                # NOTE: negative replies are caught earlier (top of execute()) so we
+                # only reach here when the reply is affirmative.
                 _pending_q = (task.pending_question or "").lower()
                 _is_gate_escalation = "danger budget exhausted" in _pending_q
                 _reply_lower = (reply_to_question or "").strip().lower()
+
                 if _is_gate_escalation and _reply_lower in ("continue", "yes", "ok", "proceed", "go"):
                     self._gate.grant_override(task.id)
                     self._log(
@@ -899,11 +1005,68 @@ class AgenticExecutor:
             _last_used_model = used_model
             # Thinking models (e.g. Qwen3) return reasoning in reasoning_content
             # with content empty. Fall back so the executor can see the response.
-            response_text = message.get("content", "") or message.get("reasoning_content", "") or ""
-            # Strip <think>...</think> blocks in case llama.cpp didn't separate them
-            # (older builds or non-jinja mode leak think tokens into content).
-            response_text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL).strip()
+            raw_content = message.get("content", "") or message.get("reasoning_content", "") or ""
+            # Extract <think>...</think> blocks before stripping — preserved as
+            # metadata on the session message so the dreaming pipeline and debugger
+            # can use the chain-of-thought without it polluting the visible response.
+            _think_blocks = re.findall(r"<think>(.*?)</think>", raw_content, flags=re.DOTALL)
+            _reasoning = "\n---\n".join(b.strip() for b in _think_blocks if b.strip()) or None
+            # Strip think blocks from the visible response the executor acts on
+            response_text = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            # Also accept reasoning_content as a separate field (LMStudio --jinja mode)
+            if not _reasoning and message.get("reasoning_content"):
+                _reasoning = message["reasoning_content"].strip() or None
             tool_calls = message.get("tool_calls")
+
+            # ----------------------------------------------------------------
+            # Empty-after-strip guard.
+            # If the model put everything inside <think> tags, stripping leaves
+            # an empty string — but the LLM DID respond, we just discarded it.
+            # Don't burn an iteration by appending an empty assistant message;
+            # inject a targeted nudge and try again without advancing the counter.
+            # ----------------------------------------------------------------
+            if not response_text and not tool_calls:
+                _was_all_think = bool(raw_content.strip())
+                nudge = (
+                    "Your previous response was empty after thinking. "
+                    "Please provide your tool call or <FINAL_ANSWER> now — "
+                    "do not output only reasoning."
+                    if _was_all_think else
+                    "Your previous response was empty. "
+                    "Please provide your tool call or <FINAL_ANSWER> now."
+                )
+                messages.append({"role": "user", "content": nudge})
+                self._record(task.id, "user", nudge, iteration=abs_iteration)
+                iteration_log.append({
+                    "iteration": iteration,
+                    "status": "empty_response",
+                    "response_length": 0,
+                    "was_all_think": _was_all_think,
+                    "elapsed_s": round(time.time() - iter_start, 1),
+                })
+                continue  # Don't count toward tool drift; try next iteration
+
+            # ----------------------------------------------------------------
+            # XML tool call detection.
+            # Qwen (and some other local models) occasionally output tool call
+            # XML as plain text in the response instead of via the function-call
+            # API.  Pattern: <tool_call>...<function=name>...</function></tool_call>
+            # or bare <tool_name>...</tool_name> tags in the response body.
+            # Detect and convert them to real tool calls so the task can proceed.
+            # ----------------------------------------------------------------
+            if not tool_calls and response_text:
+                tool_calls = _extract_xml_tool_calls(response_text)
+                if tool_calls:
+                    self._log(
+                        f"Iteration {iteration}: XML tool call detected in text — "
+                        f"converting to real call ({[tc['function']['name'] for tc in tool_calls]})",
+                        "warning",
+                    )
+                    # Strip the XML from the visible response text so the model
+                    # history doesn't accumulate raw XML markup
+                    response_text = re.sub(
+                        r"<tool_call>.*?</tool_call>", "", response_text, flags=re.DOTALL
+                    ).strip()
 
             # Track last substantive assistant turn for fallback completion recovery
             _last_response_text = response_text
@@ -977,7 +1140,10 @@ class AgenticExecutor:
 
             # Append assistant response
             messages.append({"role": "assistant", "content": response_text})
-            self._record(task.id, "assistant", response_text, iteration=abs_iteration)
+            self._record(
+                task.id, "assistant", response_text, iteration=abs_iteration,
+                **({"metadata": {"reasoning": _reasoning}} if _reasoning else {}),
+            )
 
             # Detect plain-text BUDGET_EXTENSION_REQUEST (agent wrote it as text, not a tool call)
             if _BUDGET_EXTENSION_PREFIX in response_text and self._budget_extension_granted == 0:
@@ -1058,6 +1224,11 @@ class AgenticExecutor:
             iteration_log.append(_iter_entry)
 
             if final_answer:
+                # Bug #3: clear any pending HITL question (e.g. SecurityGate fired on a
+                # prior iteration but the model still produced a final answer this turn).
+                # The task is done — HITL should not override completion.
+                self._waiting_for_input_question = None
+                self._waiting_for_input_choices = None
                 self._log(f"Task {task.id}: got final answer at iteration {iteration}")
                 self._session_storage.update_status(
                     task.id,
@@ -1235,6 +1406,8 @@ class AgenticExecutor:
             "final_answer": final_answer,
             "session_file": session_file,
             "total_context_trims": _context_trim_count,
+            "resource_id": _last_resource_id,
+            "model": _last_used_model,
         }
         if auto_extracted:
             metrics["completion_mode"] = "auto_extracted"
@@ -1540,48 +1713,64 @@ class AgenticExecutor:
         """
         Search memory for relevant past procedures and context before the loop starts.
 
-        Two searches are run in parallel:
-          - Global context search across all tiers (conversations, active, archival, knowledge)
-          - Role-private knowledge search (if role_id is set and the memory service supports it)
+        Three searches are run:
+          - Role-private knowledge (this role's past task reflections and dreaming clusters)
+          - Framework knowledge (__framework__ store — tool patterns, workflow lessons
+            accumulated by any agent and shared across all roles)
 
         Returns a formatted orientation block, or "" if nothing useful is found or
         the memory service is unavailable.  Never raises.
         """
+        FRAMEWORK_ROLE_ID = "__framework__"
+
         if not self._memory_service:
             return ""
         try:
-            # Search only role-scoped knowledge — never the user's personal conversations.
-            # Role-private store first (Ahman's own past tasks), then shared knowledge base.
-            merged: List[Dict[str, Any]] = []
-            try:
-                sig = inspect.signature(self._memory_service._search_knowledge_base_async)
-                if "role_id" in sig.parameters:
-                    # Role-scoped knowledge only — never the shared/user knowledge base.
-                    if role_id:
-                        merged = await self._memory_service._search_knowledge_base_async(
-                            goal, max_items=6, role_id=role_id
-                        )
-                    # No role_id → no knowledge context (safer than leaking user personal docs)
-                else:
-                    # Legacy signature: no role scoping available — skip to avoid leaking user memory
-                    pass
-            except Exception:
-                pass
+            sig = inspect.signature(self._memory_service._search_knowledge_base_async)
+            supports_role_id = "role_id" in sig.parameters
 
+            role_hits: List[Dict[str, Any]] = []
+            framework_hits: List[Dict[str, Any]] = []
+
+            if supports_role_id:
+                # Role-private knowledge — this role's accumulated experience
+                if role_id:
+                    try:
+                        role_hits = await self._memory_service._search_knowledge_base_async(
+                            goal, max_items=5, role_id=role_id
+                        )
+                    except Exception:
+                        pass
+
+                # Framework knowledge — shared patterns all agents benefit from
+                try:
+                    framework_hits = await self._memory_service._search_knowledge_base_async(
+                        goal, max_items=3, role_id=FRAMEWORK_ROLE_ID
+                    )
+                except Exception:
+                    pass
+            # Legacy signature: skip entirely to avoid leaking user memory
+
+            merged = role_hits + framework_hits
             if not merged:
                 return ""
 
             lines: List[str] = []
-            for h in merged[:6]:
+            for h in merged[:8]:
                 content = (h.get("content") or h.get("text") or "").strip()[:400]
                 source = h.get("source", "memory")
+                scope = h.get("metadata", {}).get("scope") if isinstance(h.get("metadata"), dict) else None
+                label = f"{source}:framework" if scope == "framework" else source
                 if content:
-                    lines.append(f"[{source}] {content}")
+                    lines.append(f"[{label}] {content}")
 
             if not lines:
                 return ""
 
-            self._log(f"ORIENT: injecting {len(lines)} memory hits for task")
+            self._log(
+                f"ORIENT: injecting {len(lines)} memory hits "
+                f"(role={len(role_hits)}, framework={len(framework_hits)})"
+            )
             return (
                 "\n\n## Orientation (from memory)\n"
                 "These are COMPLETED past records — historical context only. "
@@ -1606,25 +1795,38 @@ class AgenticExecutor:
         iteration_log: List[Dict[str, Any]],
     ) -> None:
         """
-        Write a procedural reflection into memory after a successful task.
+        Write task learnings back to memory after completion. Two writes:
 
-        Extracts:
-          - Ordered list of tools used (de-duplicated, first-occurrence order)
-          - A condensed outcome summary from the FINAL_ANSWER
+        1. Role-private reflection — ordered tool sequence + outcome summary.
+           Written to the role's own knowledge store for future orientation.
 
-        Writes to the role-private knowledge store when role_id is set
-        (and the memory service supports it), otherwise to the shared store.
+        2. Framework pattern (if applicable) — if the iteration log shows tool
+           errors, empty responses, or repeated failures, extract the pattern
+           and write it to the shared __framework__ store so all agents benefit.
+
         Fire-and-forget — all errors are logged, never surfaced.
         """
+        FRAMEWORK_ROLE_ID = "__framework__"
+
         if not self._memory_service:
             return
         try:
             # Ordered unique tool sequence from the iteration log
             seen: Dict[str, int] = {}
+            empty_response_count = 0
+            rejected_count = 0
+
             for entry in iteration_log:
                 for t in entry.get("tool_calls", []):
                     if t not in seen:
                         seen[t] = len(seen)
+                # Detect empty model responses (response_length=0 with no tool calls)
+                if entry.get("response_length", -1) == 0 and not entry.get("tool_calls"):
+                    empty_response_count += 1
+                # Detect repeated final-answer rejections (validation loop)
+                if entry.get("status") == "final_rejected":
+                    rejected_count += 1
+
             tools_used = sorted(seen, key=lambda t: seen[t])
 
             from datetime import datetime as _dt
@@ -1647,10 +1849,12 @@ class AgenticExecutor:
                 "tools_used": tools_used[:15],
             }
 
-            # Route to role-private store when supported
+            sig = inspect.signature(self._memory_service.add_to_knowledge_base)
+            supports_role_id = "role_id" in sig.parameters
+
+            # Write 1 — role-private reflection
             try:
-                sig = inspect.signature(self._memory_service.add_to_knowledge_base)
-                if "role_id" in sig.parameters:
+                if supports_role_id:
                     self._memory_service.add_to_knowledge_base(document, metadata, role_id=role_id)
                 else:
                     self._memory_service.add_to_knowledge_base(document, metadata)
@@ -1661,6 +1865,46 @@ class AgenticExecutor:
                 f"REFLECT: wrote task learnings to memory "
                 f"(role={role_id}, tools={tools_used[:5]})"
             )
+
+            # Write 2 — framework pattern if workflow problems detected
+            # Triggers on: ≥2 empty model responses, or ≥2 final-answer rejections
+            if supports_role_id and (empty_response_count >= 2 or rejected_count >= 2):
+                fw_lines = [
+                    f"[FRAMEWORK PATTERN — {timestamp}]",
+                    f"Detected in task run by role: {role_id or 'unknown'}",
+                    f"Total iterations: {len(iteration_log)}",
+                ]
+                if empty_response_count >= 2:
+                    fw_lines.append(
+                        f"Empty LLM responses: {empty_response_count} iterations produced no content and no tool calls. "
+                        "Likely cause: model confused by large context or resume payload. "
+                        "Mitigation: raise max_iterations, trim context before resume, or pin to a different model."
+                    )
+                if rejected_count >= 2:
+                    fw_lines.append(
+                        f"Repeated final-answer rejections: {rejected_count} attempts failed validation. "
+                        "Likely cause: validator is too strict, or model misunderstood the required output format. "
+                        "Mitigation: review validation_rules in role config, or clarify goal format requirements."
+                    )
+                fw_document = "\n".join(fw_lines)
+                fw_metadata: Dict[str, Any] = {
+                    "type": "framework_pattern",
+                    "scope": "framework",
+                    "role_origin": role_id,
+                    "empty_response_count": empty_response_count,
+                    "rejected_count": rejected_count,
+                }
+                try:
+                    self._memory_service.add_to_knowledge_base(
+                        fw_document, fw_metadata, role_id=FRAMEWORK_ROLE_ID
+                    )
+                    self._log(
+                        f"REFLECT: wrote framework pattern "
+                        f"(errors={len(tool_errors)}, empty={empty_response_count})"
+                    )
+                except Exception as fw_e:
+                    self._log(f"Framework pattern write failed (non-fatal): {fw_e}", "warning")
+
         except Exception as e:
             self._log(f"Memory reflection failed (non-fatal): {e}", "warning")
 
@@ -2057,18 +2301,26 @@ class AgenticExecutor:
             pass  # violation logging must never break task execution
 
     def _parse_final_answer(self, text: str) -> Optional[str]:
-        """Extract content between <FINAL_ANSWER> tags, if present."""
+        """Extract content between <FINAL_ANSWER> tags, if present.
+
+        Tolerates whitespace inside angle brackets (e.g. '< FINAL_ANSWER >')
+        which some models (Gemma4) produce under budget pressure.
+        """
+        import re as _re
+        # Normalize any whitespace inside the tags before searching
+        normalized = _re.sub(r'<\s*FINAL_ANSWER\s*>', '<FINAL_ANSWER>', text, flags=_re.IGNORECASE)
+        normalized = _re.sub(r'<\s*/\s*FINAL_ANSWER\s*>', '</FINAL_ANSWER>', normalized, flags=_re.IGNORECASE)
         tag_open = "<FINAL_ANSWER>"
         tag_close = "</FINAL_ANSWER>"
-        start = text.find(tag_open)
+        start = normalized.find(tag_open)
         if start == -1:
             return None
         start += len(tag_open)
-        end = text.find(tag_close, start)
+        end = normalized.find(tag_close, start)
         if end == -1:
             # Tag opened but not closed — treat the rest as the answer
-            return text[start:].strip()
-        return text[start:end].strip()
+            return normalized[start:].strip()
+        return normalized[start:end].strip()
 
     def _resolve_capabilities(self, role: dict) -> List[str]:
         """

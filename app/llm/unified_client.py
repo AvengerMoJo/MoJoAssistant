@@ -298,6 +298,7 @@ class UnifiedLLMClient:
 
         payload = self._build_payload(messages, model, output_limit, message_format, tools)
 
-        response = req.post(url, headers=headers, json=payload, timeout=60)
+        timeout = resource_config.get("timeout", 300)
+        response = req.post(url, headers=headers, json=payload, timeout=timeout)
         response.raise_for_status()
         return response.json()

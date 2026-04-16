@@ -31,17 +31,17 @@
     "add_conversation": {
       "category": "knowledge",
       "danger_level": "low",
-      "description": "Save a dialog exchange or finding to this role's own private knowledge store. The dreaming pipeline will consolidate it later. Use to preserve task context, key decisions, or insights worth remembering across sessions."
+      "description": "Save a dialog exchange or finding to the knowledge store. scope='role' (default) writes to your private store — only you retrieve it. scope='framework' writes to the shared framework store — all agents see it at task start. Use 'framework' only for tool bugs, workflow failures, or patterns every agent should know."
     },
     "read_file":       {
       "category": "file",
       "danger_level": "low",
-      "description": "Read the contents of a file from the filesystem. Returns text with line numbers. Use before modifying any file — always read first."
+      "description": "Read the full contents of a file. Returns raw text plus line_count and size_bytes. Always read a file before modifying it."
     },
     "write_file":      {
       "category": "file",
       "danger_level": "medium",
-      "description": "Write or overwrite a file on the filesystem. Only allowed in approved sandbox paths. Prefer making targeted edits when possible; use for creating new files or full rewrites."
+      "description": "Write or overwrite a file. Only paths inside ~/.memory/ are permitted — sandbox policy blocks all other writes. Creates parent directories automatically."
     },
     "list_files":      {
       "category": "file",

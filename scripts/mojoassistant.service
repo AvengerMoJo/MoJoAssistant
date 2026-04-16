@@ -1,0 +1,22 @@
+[Unit]
+Description=MoJoAssistant MCP Server (HTTP mode)
+Documentation=https://github.com/AvengerMoJo/MoJoAssistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alex/Development/Personal/MoJoAssistant
+EnvironmentFile=/home/alex/Development/Personal/MoJoAssistant/.env
+ExecStart=/home/alex/Development/Personal/MoJoAssistant/venv/bin/python \
+    unified_mcp_server.py --mode http --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mojoassistant
+
+[Install]
+WantedBy=default.target

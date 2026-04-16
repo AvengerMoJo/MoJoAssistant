@@ -231,26 +231,7 @@ class TestReplyToTask:
 
 
 # ---------------------------------------------------------------------------
-# 5. web_search
-# ---------------------------------------------------------------------------
-
-class TestWebSearch:
-    def test_missing_query(self, registry):
-        result = run(registry.execute("web_search", {}))
-        assert_no_crash(result)
-        assert_not_placeholder(result, "web_search[no query]")
-        # Should error — query is required
-
-    def test_with_query(self, registry):
-        # May fail if Google API key not configured — that's acceptable in CI
-        result = run(registry.execute("web_search", {"query": "MoJoAssistant smoke test"}))
-        assert_no_crash(result)
-        assert_not_placeholder(result, "web_search")
-        # Either success or config error — both are acceptable, crash is not
-
-
-# ---------------------------------------------------------------------------
-# 6. memory hub
+# 5. memory hub
 # ---------------------------------------------------------------------------
 
 class TestMemoryHub:
@@ -345,7 +326,7 @@ class TestConfigHub:
         result = run(registry.execute("config", {}))
         assert_help_menu(result, "config", expected_actions=[
             "get", "set", "modules", "resource_status", "doctor",
-            "role_list", "resource_approve", "llm_models",
+            "resource_approve", "llm_models",
         ])
 
     def test_modules(self, registry):
@@ -362,11 +343,6 @@ class TestConfigHub:
         result = run(registry.execute("config", {"action": "doctor"}))
         assert_no_crash(result)
         assert_not_placeholder(result, "config[doctor]")
-
-    def test_role_list(self, registry):
-        result = run(registry.execute("config", {"action": "role_list"}))
-        assert_no_crash(result)
-        assert_not_placeholder(result, "config[role_list]")
 
     def test_get_missing_module(self, registry):
         result = run(registry.execute("config", {"action": "get"}))
@@ -390,7 +366,7 @@ class TestConfigHub:
 
     def test_role_get_missing_id(self, registry):
         result = run(registry.execute("config", {"action": "role_get"}))
-        assert_expected_error(result, "config[role_get no id]", contains="role_id")
+        assert_expected_error(result, "config[role_get no id]", contains="module")
 
     def test_role_tools_not_placeholder(self, registry):
         result = run(registry.execute("role_design_start", {}))
@@ -561,6 +537,7 @@ class TestPlaceholderTools:
         "get_memory_context", "get_current_day", "get_current_time",
         "get_recent_events", "get_attention_summary",
         "scheduler_resume_task", "get_memory_stats",
+        "web_search",
         "end_conversation", "toggle_multi_model",
         "list_recent_conversations", "remove_conversation_message",
         "add_documents", "list_recent_documents", "remove_document",
@@ -587,7 +564,7 @@ class TestToolSurface:
     EXPECTED_VISIBLE = {
         "get_context", "search_memory", "add_conversation", "reply_to_task",
         "task_session_read", "task_report_read",
-        "web_search", "memory", "knowledge", "config", "scheduler",
+        "memory", "knowledge", "config", "scheduler",
         "dream", "agent", "external_agent",
     }
 
@@ -607,9 +584,9 @@ class TestToolSurface:
         desc = scheduler["description"]
         available = scheduler["inputSchema"]["properties"]["available_tools"]["description"]
 
-        assert "Assistant task example" in desc
-        assert "task_sessions" in desc
-        assert "task_reports" in desc
-        assert "capability categories" in available
-        assert "explicit tool names" in available
-        assert "expands capabilities into concrete tool definitions" in available
+        assert "DISPATCHING A ROLE TASK" in desc
+        assert "~/.memory/task_sessions/<task_id>.json" in desc
+        assert "~/.memory/task_reports/<task_id>.json" in desc
+        assert "category names" in available
+        assert "exact tool names" in available
+        assert "role's saved capabilities are used" in available
