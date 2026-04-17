@@ -15,7 +15,7 @@ from app.scheduler.ninechapter import build_behavioral_overlay, build_task_conte
 
 
 _REBECCA_ROLE = {
-    "name": "Rebecca",
+    "name": "Researcher",
     "dimensions": {
         "core_values": {"score": 100},
         "emotional_reaction": {"score": 100},

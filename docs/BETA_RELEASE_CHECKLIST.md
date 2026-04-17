@@ -18,7 +18,7 @@
 | HIGH | `memory` category in agent_defaults resolves to zero tools — dead default | Fixed |
 | HIGH | Config doctor missing from CI — silent drift goes undetected | Pending |
 | MEDIUM | Role overlays had hardcoded tool names — drift when tool names change | Fixed |
-| MEDIUM | Carl missing dimensions block — Nine Chapter score unvalidatable | Fixed |
+| MEDIUM | Coder missing dimensions block — Nine Chapter score unvalidatable | Fixed |
 | MEDIUM | Christmas writing pipeline: `alex_writing_profile.md` never written to disk | Fixed |
 | MEDIUM | `http_agent`, `get_verge_tech_news`, `curl_request` — test roles/tools polluting catalog | Partially cleaned |
 | LOW | Orphaned role dirs from old installs — stale personal configs may need cleanup | Pending cleanup |

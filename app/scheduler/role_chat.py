@@ -287,7 +287,7 @@ class RoleChatSession:
             return ""
 
         # Collect archive files at any nesting depth (handles both flat subdirs
-        # like auto_dream_* and nested paths like reports/rebecca/report_id/).
+        # like auto_dream_* and nested paths like reports/researcher/report_id/).
         # Sort newest-first by mtime, take up to 3 distinct archives.
         archives: list[dict] = []
         all_archive_files = sorted(

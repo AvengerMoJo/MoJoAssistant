@@ -556,9 +556,9 @@ def run_setup_wizard():
 # ---------------------------------------------------------------------------
 
 _DEMO_ROLES = [
-    ("rebecca", "Rebecca — researcher"),
-    ("ahman",   "Ahman   — infrastructure / sysadmin"),
-    ("carl",    "Carl    — code reviewer"),
+    ("researcher", "Researcher — researcher"),
+    ("analyst",   "Analyst   — infrastructure / sysadmin"),
+    ("coder",    "Coder    — code reviewer"),
 ]
 
 

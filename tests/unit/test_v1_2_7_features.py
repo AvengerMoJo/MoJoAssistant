@@ -49,13 +49,13 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         from app.scheduler.capability_registry import CapabilityRegistry
         # Must provide a scheduler so the scheduler-check passes and depth-check is reached
         reg = self._make_registry(depth=CapabilityRegistry.MAX_DISPATCH_DEPTH, scheduler=MagicMock())
-        result = await reg._dispatch_subtask({"role_id": "ahman", "goal": "do something"})
+        result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "do something"})
         self.assertFalse(result["success"])
         self.assertIn("Max dispatch depth", result["error"])
 
     async def test_no_scheduler_returns_error(self):
         reg = self._make_registry(depth=0, scheduler=None)
-        result = await reg._dispatch_subtask({"role_id": "ahman", "goal": "do something"})
+        result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "do something"})
         self.assertFalse(result["success"])
         self.assertIn("Scheduler not available", result["error"])
 
@@ -67,7 +67,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_goal_returns_error(self):
         reg = self._make_registry(scheduler=MagicMock())
-        result = await reg._dispatch_subtask({"role_id": "ahman"})
+        result = await reg._dispatch_subtask({"role_id": "analyst"})
         self.assertFalse(result["success"])
         self.assertIn("required", result["error"])
 
@@ -75,7 +75,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         scheduler = MagicMock()
         scheduler.add_task.return_value = False
         reg = self._make_registry(scheduler=scheduler)
-        result = await reg._dispatch_subtask({"role_id": "ahman", "goal": "do something"})
+        result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "do something"})
         self.assertFalse(result["success"])
         self.assertIn("Failed to queue", result["error"])
 
@@ -87,7 +87,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         completed_task = Task(
             id="sub_parent_task_001_abc123",
             type=TaskType.ASSISTANT,
-            config={"goal": "research X", "role_id": "ahman"},
+            config={"goal": "research X", "role_id": "analyst"},
             resources=TaskResources(),
         )
         completed_task.status = TaskStatus.COMPLETED
@@ -104,11 +104,11 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
 
         # Patch asyncio.sleep to avoid real waiting
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            result = await reg._dispatch_subtask({"role_id": "ahman", "goal": "research X"})
+            result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "research X"})
 
         self.assertTrue(result["success"])
         self.assertEqual(result["result"], "Here is the research result.")
-        self.assertEqual(result["role_id"], "ahman")
+        self.assertEqual(result["role_id"], "analyst")
 
     async def test_failed_subtask_returns_error(self):
         from app.scheduler.models import Task, TaskType, TaskStatus, TaskResources
@@ -116,7 +116,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         failed_task = Task(
             id="sub_parent_task_001_abc123",
             type=TaskType.ASSISTANT,
-            config={"goal": "do X", "role_id": "ahman"},
+            config={"goal": "do X", "role_id": "analyst"},
             resources=TaskResources(),
         )
         failed_task.status = TaskStatus.FAILED
@@ -129,7 +129,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         reg = self._make_registry(scheduler=scheduler)
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            result = await reg._dispatch_subtask({"role_id": "ahman", "goal": "do X"})
+            result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "do X"})
 
         self.assertFalse(result["success"])
         self.assertIn("Tool execution error", result["error"])
@@ -139,7 +139,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
 
         completed_task = Task(
             id="sub_x", type=TaskType.ASSISTANT,
-            config={"goal": "g", "role_id": "ahman"},
+            config={"goal": "g", "role_id": "analyst"},
             resources=TaskResources(),
         )
         completed_task.status = TaskStatus.COMPLETED
@@ -159,7 +159,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         scheduler.add_task.side_effect = capture_add
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            await reg._dispatch_subtask({"role_id": "ahman", "goal": "g"})
+            await reg._dispatch_subtask({"role_id": "analyst", "goal": "g"})
 
         self.assertEqual(len(created_tasks), 1)
         self.assertEqual(created_tasks[0].dispatch_depth, 2)
@@ -170,7 +170,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         from app.scheduler.capability_registry import CapabilityRegistry
         reg = self._make_registry(depth=CapabilityRegistry.MAX_DISPATCH_DEPTH - 1)
         reg._scheduler = None  # will fail on scheduler check, but NOT depth check
-        result = await reg._dispatch_subtask({"role_id": "ahman", "goal": "do something"})
+        result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "do something"})
         self.assertIn("Scheduler not available", result["error"])  # depth check passed
 
 
@@ -193,7 +193,7 @@ class TestDialogTool(unittest.IsolatedAsyncioTestCase):
         tools = ToolRegistry.__new__(ToolRegistry)
         tools.scheduler = MagicMock()
         tools._resource_manager = None
-        result = await tools._execute_dialog({"action": "unknown_action", "role_id": "rebecca"})
+        result = await tools._execute_dialog({"action": "unknown_action", "role_id": "researcher"})
         self.assertIn("tool", result)
         self.assertIn("actions", result)
 
@@ -211,7 +211,7 @@ class TestDialogTool(unittest.IsolatedAsyncioTestCase):
         tools = ToolRegistry.__new__(ToolRegistry)
         tools.scheduler = MagicMock()
         tools._resource_manager = None
-        result = await tools._execute_dialog({"action": "chat", "role_id": "rebecca"})
+        result = await tools._execute_dialog({"action": "chat", "role_id": "researcher"})
         self.assertEqual(result["status"], "error")
         self.assertIn("message", result["message"])
 
@@ -224,10 +224,10 @@ class TestDialogTool(unittest.IsolatedAsyncioTestCase):
         with patch("app.scheduler.role_chat.list_chat_sessions", return_value=[
             {"session_id": "s1", "started_at": "2026-03-27T10:00:00", "last_active": "2026-03-27T10:05:00", "turn_count": 3},
         ]):
-            result = await tools._execute_dialog({"action": "sessions", "role_id": "rebecca"})
+            result = await tools._execute_dialog({"action": "sessions", "role_id": "researcher"})
 
         # sessions action returns role_id / sessions / count (no "status" key)
-        self.assertEqual(result["role_id"], "rebecca")
+        self.assertEqual(result["role_id"], "researcher")
         self.assertEqual(result["count"], 1)
         self.assertIsInstance(result["sessions"], list)
 
@@ -239,7 +239,7 @@ class TestDialogTool(unittest.IsolatedAsyncioTestCase):
 
         fake_session_data = {
             "session_id": "s1",
-            "role_id": "rebecca",
+            "role_id": "researcher",
             "exchanges": [{"user": "hi", "assistant": "hello", "timestamp": "2026-03-27T10:00:00"}],
         }
 
@@ -248,7 +248,7 @@ class TestDialogTool(unittest.IsolatedAsyncioTestCase):
             instance._load_session.return_value = fake_session_data
             result = await tools._execute_dialog({
                 "action": "history",
-                "role_id": "rebecca",
+                "role_id": "researcher",
                 "session_id": "s1",
             })
 
@@ -363,18 +363,18 @@ class TestRoleChatSession(unittest.TestCase):
         self.assertEqual(results, [])
 
     def test_task_search_filters_by_role(self):
-        session = self._make_session(role_id="rebecca")
+        session = self._make_session(role_id="researcher")
         tasks_data = {
             "tasks": {
                 "t1": {
                     "id": "t1", "status": "completed",
-                    "config": {"role_id": "rebecca", "goal": "research AI"},
+                    "config": {"role_id": "researcher", "goal": "research AI"},
                     "completed_at": "2026-03-27T10:00:00",
                     "result": {"metrics": {"final_answer": "AI research done"}},
                 },
                 "t2": {
                     "id": "t2", "status": "completed",
-                    "config": {"role_id": "ahman", "goal": "other task"},
+                    "config": {"role_id": "analyst", "goal": "other task"},
                     "completed_at": "2026-03-27T11:00:00",
                     "result": {"metrics": {"final_answer": ""}},
                 },
@@ -389,15 +389,15 @@ class TestRoleChatSession(unittest.TestCase):
         self.assertEqual(results[0]["id"], "t1")
 
     def test_task_search_keyword_filter(self):
-        session = self._make_session(role_id="rebecca")
+        session = self._make_session(role_id="researcher")
         tasks_data = {
             "tasks": {
                 "t1": {"id": "t1", "status": "completed",
-                       "config": {"role_id": "rebecca", "goal": "research security"},
+                       "config": {"role_id": "researcher", "goal": "research security"},
                        "completed_at": "2026-03-27T10:00:00",
                        "result": {"metrics": {"final_answer": "done"}}},
                 "t2": {"id": "t2", "status": "completed",
-                       "config": {"role_id": "rebecca", "goal": "write a poem"},
+                       "config": {"role_id": "researcher", "goal": "write a poem"},
                        "completed_at": "2026-03-27T11:00:00",
                        "result": {"metrics": {"final_answer": "done"}}},
             }
@@ -411,15 +411,15 @@ class TestRoleChatSession(unittest.TestCase):
         self.assertEqual(results[0]["id"], "t1")
 
     def test_task_search_status_filter(self):
-        session = self._make_session(role_id="rebecca")
+        session = self._make_session(role_id="researcher")
         tasks_data = {
             "tasks": {
                 "t1": {"id": "t1", "status": "completed",
-                       "config": {"role_id": "rebecca", "goal": "task 1"},
+                       "config": {"role_id": "researcher", "goal": "task 1"},
                        "completed_at": "2026-03-27T10:00:00",
                        "result": {"metrics": {"final_answer": ""}}},
                 "t2": {"id": "t2", "status": "failed",
-                       "config": {"role_id": "rebecca", "goal": "task 2"},
+                       "config": {"role_id": "researcher", "goal": "task 2"},
                        "completed_at": "2026-03-27T11:00:00",
                        "result": {"metrics": {"final_answer": ""}}},
             }
@@ -721,7 +721,7 @@ class TestListChatSessions(unittest.TestCase):
     def test_returns_sessions_sorted_newest_first(self):
         from app.scheduler.role_chat import list_chat_sessions
         with tempfile.TemporaryDirectory() as tmp:
-            chat_dir = Path(tmp) / "roles" / "rebecca" / "chat_history"
+            chat_dir = Path(tmp) / "roles" / "researcher" / "chat_history"
             chat_dir.mkdir(parents=True)
 
             for session_id, last_active in [
@@ -730,7 +730,7 @@ class TestListChatSessions(unittest.TestCase):
             ]:
                 data = {
                     "session_id": session_id,
-                    "role_id": "rebecca",
+                    "role_id": "researcher",
                     "started_at": last_active,
                     "last_active": last_active,
                     "exchanges": [{"user": "hi", "assistant": "hey"}],
@@ -741,7 +741,7 @@ class TestListChatSessions(unittest.TestCase):
             # so mock must return the "roles" subdirectory
             roles_dir = str(Path(tmp) / "roles")
             with patch("app.scheduler.role_chat.get_memory_subpath", return_value=roles_dir):
-                result = list_chat_sessions("rebecca")
+                result = list_chat_sessions("researcher")
 
         self.assertEqual(len(result), 2)
         # Sorted by filename descending — newer session first

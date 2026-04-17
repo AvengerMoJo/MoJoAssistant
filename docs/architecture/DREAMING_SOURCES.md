@@ -91,7 +91,7 @@ tool payloads (too noisy), keeping assistant reasoning and tool summaries:
 
 ```
 === Task Session: popo_kingsum_admin_flutter_plan_001 ===
-Role: popo | Status: failed | Iterations: 3
+Role: executor | Status: failed | Iterations: 3
 Goal: Create a plan.md for the admin Flutter web app...
 
 [Iteration 1 — tool: opencode_get_messages]

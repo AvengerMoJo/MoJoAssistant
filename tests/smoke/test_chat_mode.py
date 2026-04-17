@@ -64,13 +64,13 @@ class TestToolFiltering:
 class TestResponseQualityChecker:
 
     def test_empty_response_returns_structured_fallback(self):
-        result = _ensure_response_quality("", "Rebecca")
+        result = _ensure_response_quality("", "Researcher")
         assert "What I found" in result
         assert "What I could not confirm" in result
         assert "scheduled" in result.lower() or "task flow" in result.lower()
 
     def test_whitespace_only_response_is_treated_as_empty(self):
-        result = _ensure_response_quality("   \n  ", "Rebecca")
+        result = _ensure_response_quality("   \n  ", "Researcher")
         assert "What I found" in result
 
     def test_hollow_phrase_short_response_replaced(self):
@@ -80,22 +80,22 @@ class TestResponseQualityChecker:
             "Let me look into that.",
             "Searching for this information.",
         ]:
-            result = _ensure_response_quality(phrase, "Rebecca")
+            result = _ensure_response_quality(phrase, "Researcher")
             assert "What I found" in result, f"Hollow phrase not caught: {phrase!r}"
 
     def test_hollow_phrase_long_response_passes_through(self):
         """A response that starts with a hollow phrase but is long enough is real content."""
         long = "Let me search for that. " + "x" * 200
-        result = _ensure_response_quality(long, "Rebecca")
+        result = _ensure_response_quality(long, "Researcher")
         assert result == long
 
     def test_real_response_passes_through_unchanged(self):
-        real = "The NineChapter system scores Rebecca at 95 overall, reflecting her strong research methodology."
-        assert _ensure_response_quality(real, "Rebecca") == real
+        real = "The NineChapter system scores Researcher at 95 overall, reflecting her strong research methodology."
+        assert _ensure_response_quality(real, "Researcher") == real
 
     def test_short_real_response_passes_through(self):
         """A short but genuine answer should not be replaced."""
-        assert _ensure_response_quality("Yes.", "Rebecca") == "Yes."
+        assert _ensure_response_quality("Yes.", "Researcher") == "Yes."
 
 
 class TestModeOverlayResolution:

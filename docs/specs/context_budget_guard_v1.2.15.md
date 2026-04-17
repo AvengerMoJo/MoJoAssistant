@@ -148,7 +148,7 @@ Add to task-level metrics:
 
 ## Success Criteria
 
-1. A 25-iteration Carl task on a 32k context model no longer silently loses its goal
+1. A 25-iteration Coder task on a 32k context model no longer silently loses its goal
    mid-task
 2. `iteration_log` shows `estimated_input_tokens` growing per iteration and
    `context_trimmed: true` when it fires

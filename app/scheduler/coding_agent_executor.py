@@ -1,7 +1,7 @@
 """
 CodingAgentExecutor
 
-Drives a coding agent role (e.g. Popo) using a local LLM to orchestrate
+Drives a coding agent role (e.g. Executor) using a local LLM to orchestrate
 an external coding agent (OpenCode, Claude Code).
 
 Architecture (three tiers):
@@ -394,7 +394,7 @@ class CodingAgentExecutor:
         total_elapsed = round(time.time() - start_time, 1)
         session_file = str(self._session_storage._path(task.id))
 
-        # Paused for HITL question from Popo itself
+        # Paused for HITL question from Executor itself
         if self._waiting_for_input_question:
             self._session_storage.update_status(task.id, "waiting_for_input")
             return TaskResult(

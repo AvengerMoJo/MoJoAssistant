@@ -364,7 +364,7 @@ Examples:
   - resists shallow conclusions
   - prefers evidence-backed synthesis
 
-- Popo, with stronger confirmation-oriented safety behavior:
+- Executor, with stronger confirmation-oriented safety behavior:
   - confirms sensitive actions before escalation
 
 - Analyst, with stronger threat sensitivity:
@@ -716,7 +716,7 @@ Introduce a separate owner identity layer:
 - assistant role files
   - `roles/researcher.json`
   - `roles/analyst.json`
-  - `roles/popo.json`
+  - `roles/executor.json`
 
 Roles may reference the owner profile, but they are not the owner.
 
@@ -828,7 +828,7 @@ The system should not confuse the two.
         "risk surfacing"
       ]
     },
-    "popo": {
+    "executor": {
       "relationship": "supportive coordination assistant",
       "focus": [
         "gentle coordination",

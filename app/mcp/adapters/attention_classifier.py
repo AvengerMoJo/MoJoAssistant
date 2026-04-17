@@ -10,9 +10,9 @@ Per-source rules (from config/attention_routing.json) then apply min/max caps.
 | Level | Rule                                              | Example                          |
 |-------|---------------------------------------------------|----------------------------------|
 |   5   | severity == "critical"                            | Server crash, fatal error        |
-|   4   | event_type == "task_waiting_for_input"            | Ahman asking a question          |
+|   4   | event_type == "task_waiting_for_input"            | Analyst asking a question          |
 |   3   | severity == "error" OR event_type == "task_failed"| Task failed permanently          |
-|   2   | event_type == "task_completed" AND notify_user    | Ahman finished a scan            |
+|   2   | event_type == "task_completed" AND notify_user    | Analyst finished a scan            |
 |   1   | notify_user == True (any event)                   | Background update worth noting   |
 |   0   | everything else                                   | Heartbeats, ticks, dreaming, etc.|
 
@@ -23,7 +23,7 @@ Per-source rules add min/max caps on top of the base level:
 
 Urgency × importance matrix (applied before per-source caps):
   score = urgency * importance  (each 1–5, so score range 1–25)
-  score >= 16  →  floor 4   (e.g. Ahman urgent+critical research)
+  score >= 16  →  floor 4   (e.g. Analyst urgent+critical research)
   score >= 9   →  floor 3   (e.g. scheduled important task)
   score >= 4   →  floor 2   (e.g. medium-weight task)
   score >= 2   →  floor 1   (low urgency or low importance)

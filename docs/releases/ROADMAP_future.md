@@ -142,7 +142,7 @@ Design:
   {
     "type": "task_summary",
     "task_id": "popo_kingsum_admin_flutter_plan_001",
-    "role": "popo",
+    "role": "executor",
     "goal": "...",
     "approach_summary": "...",
     "key_decisions": [...],

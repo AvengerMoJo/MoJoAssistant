@@ -29,11 +29,11 @@ def test_unpack_bundled_roles_copies_roles(tmp_path: Path) -> None:
     roles_dir = tmp_path / "roles"
 
     assert roles_dir.is_dir()
-    # At minimum ahman and carl should be present (we just bundled them)
-    assert "ahman" in unpacked
-    assert "carl" in unpacked
-    assert (roles_dir / "ahman.json").exists()
-    assert (roles_dir / "carl.json").exists()
+    # At minimum researcher and developer should be present (bundled in config/roles/)
+    assert "researcher" in unpacked
+    assert "developer" in unpacked
+    assert (roles_dir / "researcher.json").exists()
+    assert (roles_dir / "developer.json").exists()
 
 
 def test_unpack_bundled_roles_idempotent(tmp_path: Path) -> None:
@@ -42,15 +42,15 @@ def test_unpack_bundled_roles_idempotent(tmp_path: Path) -> None:
     unpack_bundled_roles(tmp_path)
 
     # Tamper with an unpacked file so we can detect an overwrite
-    target = tmp_path / "roles" / "ahman.json"
+    target = tmp_path / "roles" / "researcher.json"
     original_mtime = target.stat().st_mtime
     target.write_text('{"tampered": true}', encoding="utf-8")
 
     # Second run
     second_unpacked = unpack_bundled_roles(tmp_path)
 
-    # ahman should NOT be in second_unpacked (already existed)
-    assert "ahman" not in second_unpacked
+    # researcher should NOT be in second_unpacked (already existed)
+    assert "researcher" not in second_unpacked
 
     # File content must still be the tampered version
     data = json.loads(target.read_text())
@@ -243,7 +243,7 @@ def test_end_to_end_clean_install(tmp_path: Path) -> None:
 
     # 2. Roles unpacked
     unpacked = unpack_bundled_roles(memory_path)
-    assert len(unpacked) >= 3  # rebecca, ahman, carl at minimum
+    assert len(unpacked) >= 3  # researcher, developer, network_admin at minimum
     for role_id in unpacked:
         assert (memory_path / "roles" / f"{role_id}.json").exists()
 

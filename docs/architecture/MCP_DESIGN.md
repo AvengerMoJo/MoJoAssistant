@@ -762,7 +762,7 @@ deliberately — future changes should preserve it.
                            │
 ┌──────────────────────────▼──────────────────────────────┐
 │  Tier 3: Orchestration — CodingAgentExecutor (MoJo)     │
-│  Runs the role's local LLM (e.g. Popo on qwen3.5)      │
+│  Runs the role's local LLM (e.g. Executor on qwen3.5)      │
 │  Calls submodule methods as tools                       │
 │  Routes permission requests → HITL inbox                │
 │  Routes HITL replies → submodule respond_to_permission  │
@@ -838,28 +838,28 @@ has no concept of them and should never gain one. The executor is the bridge.
 
 ---
 
-### 16.4 Role architecture — Popo as an example
+### 16.4 Role architecture — Executor as an example
 
-Popo is not OpenCode's model pretending to be a character. The layers are:
+Executor is not OpenCode's model pretending to be a character. The layers are:
 
 ```
 qwen3.5-35b-a3b (local LLM, via LMStudio)
-    ↑ system prompt: Popo persona
+    ↑ system prompt: Executor persona
     ↑ task: "add tests to auth.py"
     |
 CodingAgentExecutor
     | calls
     ↓
-OpenCodeBackend.send_message(session_id, ...)   ← Popo's instructions to OpenCode
-OpenCodeBackend.subscribe_permissions(...)      ← Popo waiting on permission events
-OpenCodeBackend.respond_to_permission(...)      ← Popo forwarding user decisions
+OpenCodeBackend.send_message(session_id, ...)   ← Executor's instructions to OpenCode
+OpenCodeBackend.subscribe_permissions(...)      ← Executor waiting on permission events
+OpenCodeBackend.respond_to_permission(...)      ← Executor forwarding user decisions
 ```
 
-The local LLM is the **thinking layer** — it reads Popo's system prompt,
+The local LLM is the **thinking layer** — it reads Executor's system prompt,
 understands the task, decides what to ask OpenCode to do, and interprets results.
 
 OpenCode is the **execution layer** — it has shell access, can read/write files,
-run tests. It receives instructions from Popo and executes them.
+run tests. It receives instructions from Executor and executes them.
 
 MoJo scheduler is the **orchestration layer** — it starts the executor, manages
 the task lifecycle, handles the HITL inbox.
@@ -1030,7 +1030,7 @@ Shims follow three rules:
 
 ```json
 {
-  "id": "popo",
+  "id": "executor",
   "executor": "coding_agent",
   "backend_type": "opencode",
   "agent_class": "http_native",
@@ -1046,7 +1046,7 @@ Shims follow three rules:
 ```
 
 `agent_class` defaults to `http_native` — backward compatible with the current
-Popo setup. Other classes are not yet implemented; this field reserves the
+Executor setup. Other classes are not yet implemented; this field reserves the
 design space.
 
 ---
@@ -1368,7 +1368,7 @@ Also enables: `agent(action='add_backend', backend_type='opencode', url='http://
 
 ### 19.5 — Fix dead `backend_type` field in role JSON
 
-`popo.json` has `"backend_type": "opencode"` which `CodingAgentExecutor` never reads.
+`executor.json` has `"backend_type": "opencode"` which `CodingAgentExecutor` never reads.
 Routing is purely via `server_id` → servers JSON entry → `backend_type` there.
 
 Options:
@@ -1385,7 +1385,7 @@ MoJo oversees many roles and agents simultaneously. It cannot carry per-agent
 ephemeral state (session tokens, resume handles, partial results) in its own
 scheduler config — that couples MoJo to implementation details of each backend.
 
-When we tried to schedule a follow-up Popo task, there was no way to pass the
+When we tried to schedule a follow-up Executor task, there was no way to pass the
 session ID through the MCP tool because it should not exist at that layer.
 
 **The boundary:**
@@ -1429,7 +1429,7 @@ with exactly two layers: system default + user personal.
 
 **Current problems:**
 - `llm_config.json` (project) + `resource_pool_config.json` (project) + `~/.memory/config/llm_config.json` (personal) — three config surfaces for the same concern
-- `preferred_resource_id` is hardcoded in role JSON (`popo.json`) — couples the role persona to a specific infrastructure account
+- `preferred_resource_id` is hardcoded in role JSON (`executor.json`) — couples the role persona to a specific infrastructure account
 - The scheduler MCP tool has no `preferred_resource_id` parameter — users cannot specify a resource from the client at all; requests are silently dropped and fall through to dynamic selection
 
 **Target design:**
@@ -2517,7 +2517,7 @@ Every MoJoAssistant workflow today is manually wired:
 - Agent-to-agent handoffs require the user to queue the next task
 - There is no concept of "what kind of agent is this and what protocol does it follow"
 
-All current roles (Analyst, Researcher, Popo, Coder) are the operator's personal
+All current roles (Analyst, Researcher, Executor, Coder) are the operator's personal
 implementation — not a generalised system users can extend. A new user cannot
 say "I want a Docker provisioner for my project" and have MoJo know what that
 means, what workflow to run, and what happens next.

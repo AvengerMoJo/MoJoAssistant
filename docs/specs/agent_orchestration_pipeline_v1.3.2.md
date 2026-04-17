@@ -8,7 +8,7 @@ research-to-implementation pipeline requires:
 
 1. Provisioner/Analyst installs a sandbox in Portainer
 2. Researcher researches a topic → produces findings
-3. Popo implements code/tests based on Researcher's findings
+3. Executor implements code/tests based on Researcher's findings
 4. Analyst/Provisioner runs the tests in the sandbox → collects results
 5. Researcher writes an analysis report from the test results
 
@@ -31,7 +31,7 @@ install (provisioner)
     ↓
 research (researcher) ──────────────────────┐
     ↓ output injected                    │
-implement (popo)                         │
+implement (executor)                         │
     ↓                                    ↓
 run_tests (analyst) ← depends_on: [install, implement]
     ↓ output injected
@@ -66,7 +66,7 @@ scheduler add
     },
     {
       "id": "implement",
-      "role_id": "popo",
+      "role_id": "executor",
       "goal": "Implement 3 test cases based on this research:\n\n{{research.output}}\n\nStore tests in ~/.memory/opencode-sandboxes/context-strategy-tests/",
       "depends_on": ["research"],
       "max_iterations": 20

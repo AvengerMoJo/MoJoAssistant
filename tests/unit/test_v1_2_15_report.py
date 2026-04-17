@@ -154,7 +154,7 @@ class TestStoreCompletionArtifact(unittest.TestCase):
             with patch("app.config.paths.get_memory_subpath", return_value=str(report_dir)):
                 ex._store_completion_artifact(
                     task=task,
-                    role_id="rebecca",
+                    role_id="researcher",
                     goal="Research context strategies",
                     final_answer="**Completed:**\n- Done step 1\n\n**Findings:**\n- Finding A",
                     iteration_log=[{"status": "tool_use"}, {"status": "response"}],
@@ -204,7 +204,7 @@ class TestStoreCompletionArtifact(unittest.TestCase):
 
     def test_role_id_written(self):
         report = self._write_and_load(auto_extracted=False)
-        self.assertEqual(report["role_id"], "rebecca")
+        self.assertEqual(report["role_id"], "researcher")
 
 
 if __name__ == "__main__":

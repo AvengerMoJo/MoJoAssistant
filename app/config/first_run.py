@@ -94,15 +94,15 @@ OWNER_PROFILE_TEMPLATE: dict = {
     },
     "core_goals": [],
     "assistant_relationships": {
-        "rebecca": {
+        "researcher": {
             "relationship": "research partner",
             "focus": ["deep analysis", "comparative reasoning", "explanation"],
         },
-        "ahman": {
+        "analyst": {
             "relationship": "security and operations specialist",
             "focus": ["hardening", "infrastructure", "risk surfacing"],
         },
-        "carl": {
+        "coder": {
             "relationship": "code reviewer",
             "focus": ["code quality", "security", "maintainability"],
         },
@@ -265,9 +265,9 @@ _DEMO_TASKS = [
     {
         "id": "demo_rebecca_summarise",
         "type": "assistant",
-        "description": "Rebecca: summarise recent memory and what you know about this project",
+        "description": "Researcher: summarise recent memory and what you know about this project",
         "config": {
-            "role_id": "rebecca",
+            "role_id": "researcher",
             "prompt": (
                 "Summarise what you know about MoJoAssistant from memory and knowledge. "
                 "Cover: what the system does, the main roles available, and any recent activity "
@@ -279,9 +279,9 @@ _DEMO_TASKS = [
     {
         "id": "demo_ahman_health",
         "type": "assistant",
-        "description": "Ahman: check system health (memory path, config files, scheduler storage)",
+        "description": "Analyst: check system health (memory path, config files, scheduler storage)",
         "config": {
-            "role_id": "ahman",
+            "role_id": "analyst",
             "prompt": (
                 "Run a quick system health check on MoJoAssistant. Verify: "
                 "1) memory path exists and is writable, "
@@ -295,9 +295,9 @@ _DEMO_TASKS = [
     {
         "id": "demo_carl_review",
         "type": "assistant",
-        "description": "Carl: review the first_run.py module for quality issues",
+        "description": "Coder: review the first_run.py module for quality issues",
         "config": {
-            "role_id": "carl",
+            "role_id": "coder",
             "prompt": (
                 "Review app/config/first_run.py. "
                 "Flag any 🔴 blockers (correctness, security), 🟡 suggestions (robustness, edge cases), "

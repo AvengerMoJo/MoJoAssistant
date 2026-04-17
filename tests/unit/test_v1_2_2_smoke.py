@@ -204,9 +204,9 @@ class TestSchedulerHubAddNormalisation(unittest.IsolatedAsyncioTestCase):
 
     async def test_role_id_promoted_to_config(self):
         captured = await self._run_scheduler_add(
-            {"action": "add", "type": "assistant", "goal": "do something", "role_id": "popo"}
+            {"action": "add", "type": "assistant", "goal": "do something", "role_id": "executor"}
         )
-        self.assertEqual(captured.get("config", {}).get("role_id"), "popo")
+        self.assertEqual(captured.get("config", {}).get("role_id"), "executor")
 
     async def test_existing_task_type_not_overwritten(self):
         captured = await self._run_scheduler_add(
@@ -248,9 +248,9 @@ class TestCodingAgentExecutorRouting(unittest.IsolatedAsyncioTestCase):
         )
         executor._get_coding_agent_executor = MagicMock(return_value=coding_exec)
 
-        task = Task(id="t1", type=TaskType.ASSISTANT, config={"goal": "test", "role_id": "popo"})
+        task = Task(id="t1", type=TaskType.ASSISTANT, config={"goal": "test", "role_id": "executor"})
 
-        role_with_coding = {"executor": "coding_agent", "id": "popo"}
+        role_with_coding = {"executor": "coding_agent", "id": "executor"}
         with patch("app.roles.role_manager.RoleManager") as MockRM:
             MockRM.return_value.get.return_value = role_with_coding
             await executor._execute_agentic(task)
@@ -273,10 +273,10 @@ class TestCodingAgentExecutorRouting(unittest.IsolatedAsyncioTestCase):
         executor._get_coding_agent_executor = MagicMock()
 
         task = Task(
-            id="t2", type=TaskType.ASSISTANT, config={"goal": "test", "role_id": "rebecca"}
+            id="t2", type=TaskType.ASSISTANT, config={"goal": "test", "role_id": "researcher"}
         )
 
-        role_no_executor = {"id": "rebecca"}
+        role_no_executor = {"id": "researcher"}
         with patch("app.roles.role_manager.RoleManager") as MockRM:
             MockRM.return_value.get.return_value = role_no_executor
             await executor._execute_agentic(task)
@@ -399,39 +399,39 @@ class TestSessionStore(unittest.TestCase):
         os.unlink(self._tmp.name)
 
     def test_put_and_get_session(self):
-        self.store.put_session("popo", "kingsum2e", "ses_abc123", backend_type="opencode")
-        self.assertEqual(self.store.get_session_id("popo", "kingsum2e"), "ses_abc123")
+        self.store.put_session("executor", "kingsum2e", "ses_abc123", backend_type="opencode")
+        self.assertEqual(self.store.get_session_id("executor", "kingsum2e"), "ses_abc123")
 
     def test_get_missing_returns_none(self):
         self.assertIsNone(self.store.get_session_id("nobody", "nowhere"))
 
     def test_overwrite_preserves_created_at(self):
-        self.store.put_session("popo", "kingsum2e", "ses_v1")
-        first = self.store._data["popo::kingsum2e"]["created_at"]
-        self.store.put_session("popo", "kingsum2e", "ses_v2")
-        self.assertEqual(self.store._data["popo::kingsum2e"]["created_at"], first)
-        self.assertEqual(self.store.get_session_id("popo", "kingsum2e"), "ses_v2")
+        self.store.put_session("executor", "kingsum2e", "ses_v1")
+        first = self.store._data["executor::kingsum2e"]["created_at"]
+        self.store.put_session("executor", "kingsum2e", "ses_v2")
+        self.assertEqual(self.store._data["executor::kingsum2e"]["created_at"], first)
+        self.assertEqual(self.store.get_session_id("executor", "kingsum2e"), "ses_v2")
 
     def test_pending_permission_round_trip(self):
-        self.store.put_session("popo", "kingsum2e", "ses_abc")
+        self.store.put_session("executor", "kingsum2e", "ses_abc")
         perm = {"id": "perm1", "type": "write_file", "title": "Write /tmp/x"}
-        self.store.set_pending_permission("popo", "kingsum2e", perm)
-        popped = self.store.pop_pending_permission("popo", "kingsum2e")
+        self.store.set_pending_permission("executor", "kingsum2e", perm)
+        popped = self.store.pop_pending_permission("executor", "kingsum2e")
         self.assertEqual(popped["id"], "perm1")
         # Cleared after pop
-        self.assertIsNone(self.store.pop_pending_permission("popo", "kingsum2e"))
+        self.assertIsNone(self.store.pop_pending_permission("executor", "kingsum2e"))
 
     def test_delete_removes_entry(self):
-        self.store.put_session("popo", "kingsum2e", "ses_abc")
-        self.store.delete("popo", "kingsum2e")
-        self.assertIsNone(self.store.get_session_id("popo", "kingsum2e"))
+        self.store.put_session("executor", "kingsum2e", "ses_abc")
+        self.store.delete("executor", "kingsum2e")
+        self.assertIsNone(self.store.get_session_id("executor", "kingsum2e"))
 
     def test_persists_across_instances(self):
         from pathlib import Path
         from coding_agent_mcp.session_store import SessionStore
-        self.store.put_session("popo", "kingsum2e", "ses_persist")
+        self.store.put_session("executor", "kingsum2e", "ses_persist")
         store2 = SessionStore(path=Path(self._tmp.name))
-        self.assertEqual(store2.get_session_id("popo", "kingsum2e"), "ses_persist")
+        self.assertEqual(store2.get_session_id("executor", "kingsum2e"), "ses_persist")
 
 
 class TestBackendRegistrySessionMethods(unittest.IsolatedAsyncioTestCase):
@@ -459,7 +459,7 @@ class TestBackendRegistrySessionMethods(unittest.IsolatedAsyncioTestCase):
             reg._backends["srv1"] = mock_backend
             reg._default_id = "srv1"
 
-            sid = await reg.get_or_create_session("popo", "srv1")
+            sid = await reg.get_or_create_session("executor", "srv1")
             self.assertEqual(sid, "ses_new")
             mock_backend.create_session.assert_called_once()
         finally:
@@ -471,12 +471,12 @@ class TestBackendRegistrySessionMethods(unittest.IsolatedAsyncioTestCase):
         tmp.close()
         try:
             reg = self._make_registry(tmp.name)
-            reg._sessions.put_session("popo", "srv1", "ses_existing")
+            reg._sessions.put_session("executor", "srv1", "ses_existing")
             mock_backend = AsyncMock()
             mock_backend.backend_type = "opencode"
             reg._backends["srv1"] = mock_backend
 
-            sid = await reg.get_or_create_session("popo", "srv1")
+            sid = await reg.get_or_create_session("executor", "srv1")
             self.assertEqual(sid, "ses_existing")
             mock_backend.create_session.assert_not_called()
         finally:
@@ -489,16 +489,16 @@ class TestBackendRegistrySessionMethods(unittest.IsolatedAsyncioTestCase):
         tmp.close()
         try:
             reg = self._make_registry(tmp.name)
-            reg._sessions.put_session("popo", "kingsum2e", "ses_popo_1")
+            reg._sessions.put_session("executor", "kingsum2e", "ses_popo_1")
             mock_backend = AsyncMock()
             mock_backend.backend_type = "opencode"
             reg._backends["kingsum2e"] = mock_backend
 
             # Simulates what CodingAgentExecutor now does — no session_id in task.config
-            task_config = {"goal": "write admin flutter plan", "role_id": "popo"}
+            task_config = {"goal": "write admin flutter plan", "role_id": "executor"}
             self.assertNotIn("agent_session_id", task_config)
 
-            sid = await reg.get_or_create_session("popo", "kingsum2e")
+            sid = await reg.get_or_create_session("executor", "kingsum2e")
             self.assertEqual(sid, "ses_popo_1")
         finally:
             os.unlink(tmp.name)

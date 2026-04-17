@@ -57,7 +57,7 @@ class TestRuleMatches:
     def test_role_id_field_matched(self):
         rule = {"match": {"task_type": "assistant", "role_id": "security_sentinel"}}
         assert _rule_matches(rule, {"task_type": "assistant", "role_id": "security_sentinel"}) is True
-        assert _rule_matches(rule, {"task_type": "assistant", "role_id": "rebecca"}) is False
+        assert _rule_matches(rule, {"task_type": "assistant", "role_id": "researcher"}) is False
 
 
 # ---------------------------------------------------------------------------

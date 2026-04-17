@@ -637,7 +637,7 @@ class ToolRegistry:
                         },
                         "role_id": {
                             "type": "string",
-                            "description": "Search this role's private memory in addition to shared memory (e.g. 'ahman', 'rebecca').",
+                            "description": "Search this role's private memory in addition to shared memory (e.g. 'analyst', 'researcher').",
                         },
                     },
                     "required": ["query"],
@@ -678,7 +678,7 @@ class ToolRegistry:
             },
             # External Agent Manager Tools — manages external agent processes (opencode, claude_code,
             # or any external agent). NOTE: These are NOT MoJo's internal agentic assistants.
-            # To run a MoJo agentic assistant task (e.g. Ahman), use scheduler_add_task with
+            # To run a MoJo agentic assistant task (e.g. Analyst), use scheduler_add_task with
             # task_type="assistant" and a role_id.
             # Scheduler Tools
             # Scheduler Daemon Control Tools
@@ -4259,7 +4259,7 @@ Agent resumes within seconds.
             },
             "flow": "design_start → design_answer × N → synthesis → user confirms → create",
             "capability_categories": ["memory", "file", "exec", "web", "browser", "terminal", "orchestration"],
-            "example": 'role(action="edit", role_id="rebecca", capabilities_add=["pubmed_mcp"])',
+            "example": 'role(action="edit", role_id="researcher", capabilities_add=["pubmed_mcp"])',
         }
 
     # ── Role System Tools ────────────────────────────────────────────
@@ -5239,7 +5239,7 @@ Agent resumes within seconds.
                 "history":  "View session history — params: role_id, session_id?",
                 "sessions": "List all sessions for a role — params: role_id",
             },
-            "example": 'dialog(action="chat", role_id="rebecca", message="What did you find about Trivy?")',
+            "example": 'dialog(action="chat", role_id="researcher", message="What did you find about Trivy?")',
             "note": "The role will NOT accept new task assignments in chat mode. Use scheduler for that.",
         }
 

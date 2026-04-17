@@ -41,7 +41,7 @@ _PROFILE = {
     "timezone": "Asia/Taipei",
     "core_goals": ["Ship v1.x", "Keep it local-first"],
     "assistant_relationships": {
-        "rebecca": {"relationship": "research partner", "focus": ["analysis"]},
+        "researcher": {"relationship": "research partner", "focus": ["analysis"]},
     },
     "privacy_preferences": {
         "sensitive_domains": ["personal memory", "security infrastructure"],
@@ -62,7 +62,7 @@ def test_full_slice_contains_goals():
 
 def test_full_slice_contains_relationships():
     s = build_owner_context_slice(_PROFILE, "full")
-    assert "rebecca" in s
+    assert "researcher" in s
 
 
 def test_full_slice_contains_sensitive_domains():

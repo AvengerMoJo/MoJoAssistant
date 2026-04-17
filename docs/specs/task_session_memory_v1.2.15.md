@@ -2,8 +2,8 @@
 
 ## Problem
 
-Scheduled task sessions are ephemeral. When Carl studies OpenHarness, that work lives
-only in `~/.memory/task_sessions/{task_id}.json`. The next time Carl gets an assignment
+Scheduled task sessions are ephemeral. When Coder studies OpenHarness, that work lives
+only in `~/.memory/task_sessions/{task_id}.json`. The next time Coder gets an assignment
 he starts fresh — no memory of what he did, what he found, or what the owner asked him.
 
 Web UI conversations work correctly today (roles have `memory_search` + `knowledge_search`
@@ -29,7 +29,7 @@ After a task completes (success or failure with a final answer):
 3. Future tasks by the same role find it via `knowledge_search`
 4. The owner can also find it via `memory_search` (global)
 
-Carl doing an OpenHarness study → Carl remembers "I was asked to study OpenHarness,
+Coder doing an OpenHarness study → Coder remembers "I was asked to study OpenHarness,
 here is what I found" → next OpenHarness task picks up where the last one left off.
 
 ## Implementation Plan
@@ -136,9 +136,9 @@ Failed tasks with `final_answer: null` (runaway/timeout with no output) should b
 
 ## Success Criteria
 
-1. Carl completes an OpenHarness study task → `knowledge_search` in a new Carl task
+1. Coder completes an OpenHarness study task → `knowledge_search` in a new Coder task
    returns a summary of the previous study
-2. Owner asks Carl via web UI "what did you find about OpenHarness?" → Carl finds it
+2. Owner asks Coder via web UI "what did you find about OpenHarness?" → Coder finds it
    via `knowledge_search`
 3. Failed tasks with partial output are dreamed; pure-null tasks are not
 4. Dreaming does not block task completion or push notifications
