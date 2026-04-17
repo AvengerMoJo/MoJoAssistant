@@ -132,8 +132,17 @@ class AgenticSmokeTest:
             created_by="system",
         )
         from app.scheduler.agentic_executor import AgenticExecutor
+        from app.scheduler.mcp_client_manager import MCPClientManager
         single_rm = _SingleResourceManager(resource)
-        executor = AgenticExecutor(resource_manager=single_rm)
+        # No-server MCPClientManager skips STDIO discovery (smoke test uses built-in tools only)
+        from contextlib import AsyncExitStack
+        empty_mcp = MCPClientManager.__new__(MCPClientManager)
+        empty_mcp._servers = {}
+        empty_mcp._sessions = {}
+        empty_mcp._exit_stack = AsyncExitStack()
+        empty_mcp._connected = False
+        empty_mcp._connect_lock = None
+        executor = AgenticExecutor(resource_manager=single_rm, mcp_client_manager=empty_mcp)
         task_result = await executor.execute(task)
         metrics = task_result.metrics or {}
         return task_result, metrics.get("iteration_log", []), metrics.get("final_answer")

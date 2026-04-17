@@ -689,7 +689,7 @@ class AgenticExecutor:
                 self._mcp_tools_discovered = True
                 if count:
                     self._log(f"Registered {count} tools from external MCP servers")
-            except Exception as e:
+            except BaseException as e:
                 self._log(f"External MCP discovery failed (continuing): {e}", level="warning")
                 self._mcp_tools_discovered = True  # don't retry on every task
 
