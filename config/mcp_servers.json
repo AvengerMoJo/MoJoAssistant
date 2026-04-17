@@ -27,8 +27,8 @@
       "enabled": true,
       "install_hint": "npm install -g @playwright/mcp && npx playwright install chromium",
       "requires": [
-        {"binary": "node", "hint": "https://nodejs.org  or: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh | bash", "manual": "true"},
-        {"binary": "npx",  "hint": "npm install -g npm  (npx is bundled with npm 5.2+)"}
+        {"binary": "node", "manual": "true"},
+        {"binary": "npx"}
       ]
     },
     {
@@ -44,8 +44,8 @@
       "enabled": true,
       "install_hint": "cargo install tmux-mcp-rs",
       "requires": [
-        {"binary": "tmux",  "hint": "sudo apt install tmux"},
-        {"binary": "cargo", "hint": "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh  # restart shell after", "manual": "true"}
+        {"binary": "tmux"},
+        {"binary": "cargo", "manual": "true"}
       ],
       "comment": "Virtual terminal backend. SHELL points to scripts/agent-shell which prepends $MEMORY_PATH/capability to PATH for every agent-created session — no ~/.bashrc pollution. Socket auto-resolved to /tmp/tmux-UID/default at spawn time (mcp_client_manager.py). Security denylist: config/tmux-mcp.toml."
     }
