@@ -59,20 +59,28 @@ def _ts(iso: str | None) -> str:
 
 
 def _ago(iso: str | None) -> str:
-    """Return 'X min ago' style string."""
+    """Return 'X min ago' / 'in Xh' style string."""
     if not iso:
         return "—"
     try:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
         delta = datetime.now(dt.tzinfo) - dt
         s = int(delta.total_seconds())
-        if s < 60:
-            return f"{s}s ago"
-        if s < 3600:
-            return f"{s // 60}m ago"
-        if s < 86400:
-            return f"{s // 3600}h ago"
-        return f"{s // 86400}d ago"
+        if s >= 0:
+            if s < 60:
+                return f"{s}s ago"
+            if s < 3600:
+                return f"{s // 60}m ago"
+            if s < 86400:
+                return f"{s // 3600}h ago"
+            return f"{s // 86400}d ago"
+        else:
+            s = -s
+            if s < 3600:
+                return f"in {s // 60}m"
+            if s < 86400:
+                return f"in {s // 3600}h"
+            return f"in {s // 86400}d"
     except Exception:
         return "—"
 
@@ -271,20 +279,46 @@ async def overview(mojo_dash: Optional[str] = Cookie(default=None)):
           <td>{e.get('title') or e.get('message','')[:120]}</td>
         </tr>"""
 
-    # Recently active tasks
+    # Recently active tasks — include cron tasks that ran recently
+    def _cron_last_ran(t) -> str:
+        """Best timestamp for when a cron task last ran."""
+        return (
+            t.get("last_completed_at") or
+            t.get("last_started_at") or
+            (t.get("result") or {}).get("created_at") or
+            ""
+        )
+
+    def _task_sort_key(t):
+        return (
+            t.get("completed_at") or
+            t.get("started_at") or
+            _cron_last_ran(t) or
+            ""
+        )
+
     active = sorted(
-        [t for t in tasks if t.get("status") in ("running", "waiting_for_input", "completed")],
-        key=lambda t: t.get("completed_at") or t.get("started_at") or "",
+        [t for t in tasks if (
+            t.get("status") in ("running", "waiting_for_input", "completed")
+            or (t.get("cron_expression") and _cron_last_ran(t))
+        )],
+        key=_task_sort_key,
         reverse=True
-    )[:8]
+    )[:10]
 
     task_rows = ""
     for t in active:
+        last_ran = _cron_last_ran(t)
+        when = t.get("completed_at") or t.get("started_at") or last_ran
+        status = t.get("status", "?")
+        display_status = _badge(status)
+        if status == "pending" and last_ran:
+            display_status = _badge("completed") + f' <span style="color:#555;font-size:11px">↻ {_ago(t.get("schedule"))}</span>'
         task_rows += f"""<tr>
           <td><a href="/dashboard/tasks/{t['id']}">{t['id']}</a></td>
-          <td>{_badge(t.get('status','?'))}</td>
+          <td>{display_status}</td>
           <td>{t.get('config',{}).get('role_id','—')}</td>
-          <td>{_ago(t.get('completed_at') or t.get('started_at'))}</td>
+          <td>{_ago(when)}</td>
           <td style="color:#888;max-width:300px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">
             {str(t.get('config',{}).get('goal',''))[:100]}
           </td>
@@ -337,6 +371,8 @@ async def tasks_list(status: str = "", mojo_dash: Optional[str] = Cookie(default
         iters = metrics.get("iterations", "—")
         dur = metrics.get("duration_seconds")
         dur_str = f"{dur:.0f}s" if dur else "—"
+        last_run = t.get("last_completed_at") or t.get("last_started_at")
+        time_col = _ts(last_run) if last_run and t.get("cron_expression") else _ts(t.get("created_at"))
         rows += f"""<tr>
           <td><a href="/dashboard/tasks/{t['id']}">{t['id']}</a></td>
           <td>{_badge(t.get('status','?'))}</td>
@@ -344,7 +380,7 @@ async def tasks_list(status: str = "", mojo_dash: Optional[str] = Cookie(default
           <td>{t.get('priority','')}</td>
           <td>{iters}</td>
           <td>{dur_str}</td>
-          <td>{_ts(t.get('created_at'))}</td>
+          <td>{time_col}</td>
           <td style="max-width:260px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#888">
             {str(cfg.get('goal',''))[:100]}
           </td>
@@ -383,10 +419,20 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
     depth = task.get("dispatch_depth", 0)
     depth_label = f"{depth}" + (" (sub-task)" if depth > 0 else "")
 
+    is_cron = bool(task.get("cron_expression"))
+    next_run = _ts(task.get("schedule")) if is_cron and task.get("status") == "pending" else None
+    last_run = _ts(
+        task.get("last_completed_at") or task.get("last_started_at") or
+        (result.get("created_at") if result else None)
+    )
+
     meta = f"""<table style="margin-bottom:20px">
       {row("Status", _badge(task.get('status','?')))}
       {row("Role", cfg.get('role_id','—'))}
       {row("Priority", task.get('priority','—'))}
+      {row("Cron", task.get('cron_expression','—') if is_cron else '—')}
+      {row("Last run", last_run) if is_cron else ""}
+      {row("Next run", next_run) if next_run else ""}
       {row("Created", _ts(task.get('created_at')))}
       {row("Started", _ts(task.get('started_at')))}
       {row("Completed", _ts(task.get('completed_at')))}

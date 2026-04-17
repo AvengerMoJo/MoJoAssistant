@@ -512,6 +512,8 @@ class Scheduler:
                     from app.scheduler.triggers import CronTrigger
                     trigger = CronTrigger(task.cron_expression)
                     next_run = trigger.get_next_run_time(after=datetime.now())
+                    task.last_completed_at = task.completed_at
+                    task.last_started_at = task.started_at
                     task.status = TaskStatus.PENDING
                     task.schedule = next_run
                     task.started_at = None
@@ -745,6 +747,7 @@ class Scheduler:
 
             # Get goal and final answer for metadata
             goal = (task.config or {}).get("goal", "")
+            role_id = (task.config or {}).get("role_id")
             final_answer = session.final_answer or ""
             iterations = len(session.messages)
 
@@ -788,7 +791,7 @@ class Scheduler:
 
             # Queue atomic fact extraction if the final answer is a substantial report
             MIN_REPORT_LENGTH = 500  # chars — skip trivial or empty outputs
-            role_id = (task.config or {}).get("role_id", "unknown")
+            role_id = role_id or "unknown"
             if final_answer and len(final_answer) >= MIN_REPORT_LENGTH:
                 doc_task_id = f"dreaming_doc_{task.id}"
                 doc_task = Task(

@@ -157,6 +157,10 @@ class Task:
     created_by: str = "system"
     description: Optional[str] = None
 
+    # Last run info — preserved across cron reschedules for dashboard history
+    last_completed_at: Optional[datetime] = None
+    last_started_at: Optional[datetime] = None
+
     # Last failure info — preserved across cron reschedules so errors are visible
     last_error: Optional[str] = None
     last_failed_at: Optional[datetime] = None
@@ -225,6 +229,8 @@ class Task:
             else None,
             "created_by": self.created_by,
             "description": self.description,
+            "last_completed_at": self.last_completed_at.isoformat() if self.last_completed_at else None,
+            "last_started_at": self.last_started_at.isoformat() if self.last_started_at else None,
             "last_error": self.last_error,
             "last_failed_at": self.last_failed_at.isoformat() if self.last_failed_at else None,
             "pending_question": self.pending_question,
@@ -252,6 +258,10 @@ class Task:
             data["started_at"] = datetime.fromisoformat(data["started_at"])
         if "completed_at" in data and data["completed_at"]:
             data["completed_at"] = datetime.fromisoformat(data["completed_at"])
+        if "last_completed_at" in data and data["last_completed_at"]:
+            data["last_completed_at"] = datetime.fromisoformat(data["last_completed_at"])
+        if "last_started_at" in data and data["last_started_at"]:
+            data["last_started_at"] = datetime.fromisoformat(data["last_started_at"])
         if "last_failed_at" in data and data["last_failed_at"]:
             data["last_failed_at"] = datetime.fromisoformat(data["last_failed_at"])
 
