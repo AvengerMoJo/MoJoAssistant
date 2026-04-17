@@ -3839,6 +3839,27 @@ Agent resumes within seconds.
                 data["summary_text"] = imp_report.summary()
                 return data
 
+            elif action == "preflight":
+                from app.setup.preflight import PreflightChecker
+                checker = PreflightChecker()
+                items = checker.check_all()
+                summary = checker.summary(items)
+                return {
+                    "status": "success",
+                    "summary": summary,
+                    "items": [
+                        {
+                            "name": i.name,
+                            "source": i.source,
+                            "status": i.status,
+                            "detail": i.detail,
+                            "hint": i.hint,
+                            "manual": i.manual,
+                        }
+                        for i in items
+                    ],
+                }
+
             else:
                 return {"status": "error", "message": f"Unknown action '{action}'"}
 
@@ -4647,6 +4668,7 @@ Agent resumes within seconds.
                         "doctor":                "Full config pre-flight report",
                         "doctor_improve":        "Suggest config improvements from runtime data (benchmark history, failure patterns) — no changes written",
                         "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
+                        "preflight":             "Check system dependencies and MCP tool installation status (use scripts/preflight.py for interactive install)",
                     },
                     "example": 'config(action="capability_list")',
                 }

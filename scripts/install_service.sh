@@ -51,6 +51,20 @@ echo ""
 [[ -f "$PROJECT_DIR/.env" ]]                   || { err ".env not found — copy .env.example and configure it"; exit 1; }
 ok "Project validated: $PROJECT_DIR"
 
+# Preflight: check system tools and MCP dependencies
+info "Running preflight check..."
+if "$PROJECT_DIR/venv/bin/python" "$PROJECT_DIR/scripts/preflight.py" 2>&1; then
+    ok "Preflight passed"
+else
+    echo ""
+    warn "Some preflight checks failed (see above)."
+    echo -e "  Re-run with install prompts:  ${BLUE}python scripts/preflight.py${NC}"
+    echo -e "  Auto-fix non-manual items:    ${BLUE}python scripts/preflight.py --auto${NC}"
+    echo ""
+    read -rp "Continue anyway? [y/N] " _cont
+    [[ "$_cont" =~ ^[Yy]$ ]] || exit 1
+fi
+
 # Write service file (inline so paths are resolved at install time)
 mkdir -p "$HOME/.config/systemd/user"
 cat > "$SERVICE_FILE" <<EOF

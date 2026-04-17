@@ -55,6 +55,9 @@ class ExternalMCPServer:
     category: str = "external"
     enabled: bool = True
     install_hint: str = ""
+    requires: List[Dict[str, str]] = field(default_factory=list)
+    # Each requires entry: {"binary": "tmux", "hint": "sudo apt install tmux"}
+    # Optional "manual": "true" — print hint but don't offer to auto-run (e.g. rustup needs shell restart)
 
 
 class MCPClientManager:
@@ -121,6 +124,7 @@ class MCPClientManager:
                     category=srv.get("category", "external"),
                     enabled=True,
                     install_hint=srv.get("install_hint", ""),
+                    requires=srv.get("requires", []),
                 )
                 self._servers[s.id] = s  # personal layer overwrites system layer
         except Exception as e:
