@@ -248,14 +248,28 @@ main() {
     
     # Install dependencies
     install_dependencies
-    
+
+    # Preflight: check system tools and MCP dependencies
+    print_status "Running preflight check..."
+    if venv/bin/python scripts/preflight.py 2>&1; then
+        print_success "Preflight passed"
+    else
+        echo ""
+        print_warning "Some preflight checks failed (see above)."
+        echo "  Re-run with install prompts:  python scripts/preflight.py"
+        echo "  Auto-fix non-manual items:    python scripts/preflight.py --auto"
+        echo ""
+        read -rp "Continue anyway? [y/N] " _cont
+        [[ "$_cont" =~ ^[Yy]$ ]] || exit 1
+    fi
+
     # Configure environment
     create_env_file
     create_directories
-    
+
     # Optional: Download models
     download_models
-    
+
     # Create startup scripts
     create_startup_scripts
     

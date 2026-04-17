@@ -182,6 +182,22 @@ call :create_venv
 REM Install dependencies
 call :install_deps
 
+REM Preflight: check system tools and MCP dependencies
+echo.
+echo %BLUE%[INFO]%NC% Running preflight check...
+venv\Scripts\python scripts\preflight.py
+if %errorlevel% neq 0 (
+    echo.
+    echo %YELLOW%[WARNING]%NC% Some preflight checks failed.
+    echo   Re-run with install prompts:  python scripts\preflight.py
+    echo   Auto-fix non-manual items:    python scripts\preflight.py --auto
+    echo.
+    set /p _cont="Continue anyway? [y/N] "
+    if /i not "!_cont!"=="y" exit /b 1
+) else (
+    echo %GREEN%[SUCCESS]%NC% Preflight passed
+)
+
 REM Configure environment
 call :create_env
 call :create_dirs
