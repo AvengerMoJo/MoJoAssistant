@@ -24,7 +24,8 @@
       "command": "npx",
       "args": ["@playwright/mcp@latest", "--headless"],
       "category": "browser",
-      "enabled": true
+      "enabled": true,
+      "install_hint": "npm install -g @playwright/mcp && npx playwright install chromium"
     },
     {
       "id": "tmux",
@@ -37,6 +38,7 @@
       },
       "category": "terminal",
       "enabled": true,
+      "install_hint": "cargo install tmux-mcp-rs  (Rust required: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh)",
       "comment": "Virtual terminal backend. SHELL points to scripts/agent-shell which prepends $MEMORY_PATH/capability to PATH for every agent-created session — no ~/.bashrc pollution. Socket auto-resolved to /tmp/tmux-UID/default at spawn time (mcp_client_manager.py). Security denylist: config/tmux-mcp.toml."
     }
   ],

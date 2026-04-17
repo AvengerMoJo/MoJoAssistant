@@ -54,6 +54,7 @@ class ExternalMCPServer:
     # common
     category: str = "external"
     enabled: bool = True
+    install_hint: str = ""
 
 
 class MCPClientManager:
@@ -119,6 +120,7 @@ class MCPClientManager:
                     authorization=srv.get("authorization") or os.environ.get(srv.get("authorization_env", "") or ""),
                     category=srv.get("category", "external"),
                     enabled=True,
+                    install_hint=srv.get("install_hint", ""),
                 )
                 self._servers[s.id] = s  # personal layer overwrites system layer
         except Exception as e:

@@ -191,21 +191,41 @@ class ConfigDoctor:
         probe_targets: List[str] = []
         for server_id, server in mgr._servers.items():
             if server.transport == "stdio":
-                resolved = server.command if os.path.isabs(server.command) else shutil.which(server.command)
+                # Absolute paths: verify file exists. Relative/no-path: search PATH.
+                if os.path.isabs(server.command):
+                    resolved = server.command if os.path.isfile(server.command) else None
+                else:
+                    resolved = shutil.which(server.command)
                 if resolved:
                     report.add(CheckResult(
                         category="mcp", id=server_id, field="command",
                         value=server.command,
                         status="pass",
-                        message=f"Command resolves to '{resolved}'",
+                        message=f"Command found: '{resolved}'",
                     ))
+                    # For terminal-category servers, also verify the system tmux binary
+                    if server.category == "terminal":
+                        tmux_bin = shutil.which("tmux")
+                        if tmux_bin:
+                            report.add(CheckResult(
+                                category="mcp", id=server_id, field="tmux_binary",
+                                value=tmux_bin, status="pass",
+                                message=f"tmux found: '{tmux_bin}'",
+                            ))
+                        else:
+                            report.add(CheckResult(
+                                category="mcp", id=server_id, field="tmux_binary",
+                                value=None, status="error",
+                                message="tmux not found on PATH — install via: sudo apt install tmux",
+                            ))
                     probe_targets.append(server_id)
                 else:
+                    hint = f" — install: {server.install_hint}" if server.install_hint else ""
                     report.add(CheckResult(
                         category="mcp", id=server_id, field="command",
                         value=server.command,
                         status="error",
-                        message="Command not found on PATH / filesystem",
+                        message=f"Command not found on PATH / filesystem{hint}",
                     ))
             elif server.transport in ("http", "streamable_http"):
                 url = server.mcp_http_url or f"http://localhost:{server.port}/mcp"
