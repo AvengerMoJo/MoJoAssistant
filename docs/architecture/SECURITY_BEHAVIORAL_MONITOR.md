@@ -66,7 +66,7 @@ Over time, each role builds a profile of normal behavior:
 
 ```json
 {
-  "role_id": "rebecca",
+  "role_id": "researcher",
   "baseline": {
     "typical_tools": ["search_memory", "web_search", "ask_user"],
     "typical_call_count_per_session": {"mean": 8, "stddev": 3},

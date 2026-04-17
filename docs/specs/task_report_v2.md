@@ -11,7 +11,7 @@ Current shape:
 ```json
 {
   "task_id": "f10ba349",
-  "role_id": "anna",
+  "role_id": "researcher",
   "goal": "...",
   "status": "pending_review",
   "created_at": "...",
@@ -76,7 +76,7 @@ Examples:
 
 - `~/notes/briefing.md`
 - `project/docs/analysis.md`
-- `~/.memory/opencode-sandboxes/scott-briefings/source-map.md`
+- `~/.memory/opencode-sandboxes/daily-briefings/source-map.md`
 
 Purpose:
 
@@ -101,14 +101,14 @@ When a scheduled agentic task finishes:
 {
   "schema_version": "task_report_v2",
   "task_id": "f10ba349",
-  "role_id": "anna",
+  "role_id": "researcher",
   "report_type": "task_completion",
   "status": "completed",
   "review_status": "pending_review",
   "created_at": "2026-04-02T15:27:55.444584",
   "completed_at": "2026-04-02T15:27:55.444584",
   "goal": "Search memory for Alex's 2026 plan and summarize it clearly.",
-  "summary": "Anna found Alex's 2026 annual plan and returned a concise structured summary.",
+  "summary": "Role found the 2026 annual plan and returned a concise structured summary.",
   "completed": [
     "Searched memory for the 2026 plan",
     "Retrieved the master annual plan",

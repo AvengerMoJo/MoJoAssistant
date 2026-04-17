@@ -62,7 +62,7 @@ what to do next.  Includes:
   "attention": {
     "blocking": [
       {
-        "id": "u_882a", "level": 4, "from": "ahman",
+        "id": "u_882a", "level": 4, "from": "analyst",
         "blurb": "Waiting: which subnet should I scan?",
         "reply_with": "reply_to_task", "task_id": "ahman_scan_001",
         "created_at": "2026-03-19T09:14:00"
@@ -75,8 +75,8 @@ what to do next.  Includes:
     {
       "task_id": "ahman_scan_001",
       "status": "waiting_for_input",
-      "title": "Weekly Ahman security review",
-      "role": "ahman",
+      "title": "Weekly Analyst security review",
+      "role": "analyst",
       "pending_question": "which subnet should I scan?",
       "created_at": "2026-03-19T08:00:00"
     },

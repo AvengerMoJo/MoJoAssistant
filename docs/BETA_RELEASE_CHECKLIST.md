@@ -12,7 +12,7 @@
 |---|---|---|
 | URGENT | Cron tasks never notify user — `created_by: system` fallback silently drops push | Fixed (add `notify_on_completion` to role) |
 | URGENT | `add_conversation` crashes with `asyncio not defined` — agents cannot save to knowledge store | Fixed (import added) |
-| URGENT | Scott briefing written nowhere persistent — output dies in session file | Fixed (write_file added to tools) |
+| URGENT | Briefing output written nowhere persistent — output dies in session file | Fixed (write_file added to tools) |
 | HIGH | No smoke test coverage for cron→notify path | Pending |
 | HIGH | No smoke test coverage for capability tool dispatch (import errors invisible) | Pending |
 | HIGH | `memory` category in agent_defaults resolves to zero tools — dead default | Fixed |
@@ -21,7 +21,7 @@
 | MEDIUM | Carl missing dimensions block — Nine Chapter score unvalidatable | Fixed |
 | MEDIUM | Christmas writing pipeline: `alex_writing_profile.md` never written to disk | Fixed |
 | MEDIUM | `http_agent`, `get_verge_tech_news`, `curl_request` — test roles/tools polluting catalog | Partially cleaned |
-| LOW | Orphaned role dirs: `Ahman/`, `rebbecca/`, `carol/`, `Rebecca/`, `researcher/`, `reviewer/` | Pending cleanup |
+| LOW | Orphaned role dirs from old installs — stale personal configs may need cleanup | Pending cleanup |
 
 ---
 
@@ -202,10 +202,10 @@
 ### S-07 · add_conversation writes to role-private store, not shared memory
 **Covers**: knowledge isolation, add_conversation, role-scoped store
 
-1. Dispatch task as role `anna`, call `add_conversation` with test content
-2. Verify file written under `~/.memory/roles/anna/`
-3. Verify content is NOT findable via `memory_search` from a different role (e.g., `scott`)
-4. Verify content IS findable via `memory_search` from `anna`
+1. Dispatch task as role `role_a`, call `add_conversation` with test content
+2. Verify file written under `~/.memory/roles/role_a/`
+3. Verify content is NOT findable via `memory_search` from a different role (`role_b`)
+4. Verify content IS findable via `memory_search` from `role_a`
 
 **Regression target**: `asyncio not defined` crash in `_add_conversation`.
 
@@ -245,9 +245,9 @@
 ### S-11 · Role-private knowledge survives scheduler restart
 **Covers**: knowledge persistence, queue reload, embedding initialization
 
-1. Dispatch task as `scott`, call `add_conversation` with unique content
+1. Dispatch task as `reporter`, call `add_conversation` with unique content
 2. Stop and restart the scheduler
-3. Dispatch task as `scott`, call `memory_search` for the unique content
+3. Dispatch task as `reporter`, call `memory_search` for the unique content
 4. Verify content is found after restart
 
 ---

@@ -15,7 +15,7 @@ When an agent fails or hits a wall, one of two things happens today:
 
 Both outcomes put the human in the loop for problems the agent could learn to
 handle itself. The goal is not zero human involvement — it's zero human involvement
-for *known* failure patterns. The first time Rebecca can't find MoJo's architecture
+for *known* failure patterns. The first time Researcher can't find MoJo's architecture
 in search_memory, a human may need to notice. The second time, she should already
 know.
 
@@ -43,7 +43,7 @@ dreaming processes failures into lessons, lessons inject into future task contex
    {
      "type": "task_lesson",
      "task_id": "...",
-     "role_id": "rebecca",
+     "role_id": "researcher",
      "objective": "analyze MoJo memory architecture",
      "what_was_tried": ["search_memory(query='memory architecture')", "fetch_url(...)"],
      "what_failed": "search_memory returned no results for MoJo architecture docs",
@@ -58,7 +58,7 @@ dreaming processes failures into lessons, lessons inject into future task contex
    It synthesizes lessons into durable knowledge units:
    {
      "type": "agent_lesson",
-     "role_id": "rebecca",
+     "role_id": "researcher",
      "pattern": "MoJo architecture / internal codebase queries",
      "lesson": "search_memory does not contain MoJo's own architecture docs. For internal MoJo analysis, use direct file access via bash_exec or ask for knowledge base ingestion first.",
      "confidence": 0.9,
@@ -85,17 +85,17 @@ dreaming processes failures into lessons, lessons inject into future task contex
 Each role has its own private memory store at `~/.memory/roles/{role_id}/`:
 
 ```
-~/.memory/roles/rebecca/
+~/.memory/roles/researcher/
   lessons/          ← synthesized lesson knowledge units (from dream pass)
   task_history/     ← raw failure/success records per task
-  capabilities/     ← what Rebecca knows she can and cannot do
-  preferences/      ← patterns Rebecca has learned about the user's preferences
+  capabilities/     ← what Researcher knows she can and cannot do
+  preferences/      ← patterns Researcher has learned about the user's preferences
 
-~/.memory/roles/ahman/
+~/.memory/roles/analyst/
   lessons/
   ...
 
-~/.memory/roles/carl/
+~/.memory/roles/coder/
   lessons/
   ...
 ```
@@ -103,20 +103,20 @@ Each role has its own private memory store at `~/.memory/roles/{role_id}/`:
 Private memory is:
 - **Written by** the agent's own executor (failure records) and dream pass (lessons)
 - **Read by** the agent itself at task start (memory context injection)
-- **Queryable by other agents** via `search_memory(role_id="rebecca")` — cross-agent knowledge sharing
+- **Queryable by other agents** via `search_memory(role_id="researcher")` — cross-agent knowledge sharing
 
 ---
 
 ## Cross-Agent Memory Reference
 
-Agents learn different things. Rebecca learns research patterns. Ahman learns
-system administration and file operations. Carl learns code review heuristics.
+Agents learn different things. Researcher learns research patterns. Analyst learns
+system administration and file operations. Coder learns code review heuristics.
 These learnings don't have to stay siloed.
 
 **Read access:** Any agent can query another agent's lesson memory:
 ```
-search_memory(query="git clone codebase access", role_id="ahman")
-→ "Ahman's lesson: git clone works best with SSH keys configured at ~/.ssh/id_ed25519.
+search_memory(query="git clone codebase access", role_id="analyst")
+→ "Analyst's lesson: git clone works best with SSH keys configured at ~/.ssh/id_ed25519.
    For repos requiring auth, use gh auth login first."
 ```
 
@@ -127,7 +127,7 @@ Cross-agent writes require explicit handoff (sub-task completion → lesson tran
 other agent can help with a given problem:
 ```
 list_agent_capabilities(need="file system access, git operations")
-→ ["ahman: has bash_exec, git access, file read/write"]
+→ ["analyst: has bash_exec, git access, file read/write"]
 ```
 
 ---
@@ -139,12 +139,12 @@ When an agent hits a wall it can't solve alone and its lesson memory says
 sub-task without human relay:
 
 ```
-Rebecca hits wall: "need codebase access"
-→ memory says: "Ahman has file/git capability"
-→ Rebecca dispatches: scheduler_add_task(role_id="ahman", goal="clone MoJoAssistant repo and summarize Memory + Dream module architecture")
-→ Rebecca waits on sub-task completion (or continues other work)
-→ Ahman completes → writes result to shared handoff location
-→ Rebecca reads result → continues analysis
+Researcher hits wall: "need codebase access"
+→ memory says: "Analyst has file/git capability"
+→ Researcher dispatches: scheduler_add_task(role_id="analyst", goal="clone MoJoAssistant repo and summarize Memory + Dream module architecture")
+→ Researcher waits on sub-task completion (or continues other work)
+→ Analyst completes → writes result to shared handoff location
+→ Researcher reads result → continues analysis
 ```
 
 This requires `scheduler_add_task` as a dispatchable tool for assistant roles

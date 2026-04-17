@@ -17,9 +17,9 @@ A role is the assistant identity that will execute the task.
 
 Examples:
 
-- `rebecca`
-- `anna`
-- `scott`
+- `researcher`
+- `reporter`
+- `analyst`
 
 The role defines:
 
@@ -74,8 +74,8 @@ Example:
 scheduler(
   action="add",
   type="assistant",
-  task_id="rebecca_context_analysis_001",
-  role_id="rebecca",
+  task_id="researcher_context_analysis_001",
+  role_id="researcher",
   goal="Analyze task session context growth patterns and recommend a context strategy.",
   max_iterations=25
 )
@@ -140,12 +140,12 @@ If you are writing prompts for an MCP client brain or assistant wrapper:
 
 Good framing:
 
-- "Rebecca has `memory`, `file`, and `web` capabilities."
+- "The researcher role has `memory`, `file`, and `web` capabilities."
 - "The runtime will translate those capabilities into concrete tools."
 
 Bad framing:
 
-- "Rebecca probably can use some file tools, figure out which ones."
+- "The researcher probably can use some file tools, figure out which ones."
 
 ## Iteration and Final Answer Lifecycle
 

@@ -170,9 +170,9 @@ Each assistant should be composed of:
 
 For example:
 
-- Rebecca core persona
-- Rebecca in `dashboard_chat`
-- Rebecca in `scheduler_agentic_task`
+- Researcher core persona
+- Researcher in `dashboard_chat`
+- Researcher in `scheduler_agentic_task`
 
 These should not share the same full prompt verbatim.
 
@@ -182,9 +182,9 @@ These should not share the same full prompt verbatim.
 
 Mode overlays should make the current contract explicit.
 
-### Example: Rebecca in dashboard chat
+### Example: Researcher in dashboard chat
 
-Rebecca in private dashboard chat should be told:
+Researcher in private dashboard chat should be told:
 
 - this is a read-only, private debrief mode
 - do not accept task assignments
@@ -193,9 +193,9 @@ Rebecca in private dashboard chat should be told:
 - if deeper new research is needed, instruct the user to route the request
   through MoJo's authorized task flow
 
-### Example: Rebecca in scheduler task mode
+### Example: Researcher in scheduler task mode
 
-Rebecca in agentic task mode can be told:
+Researcher in agentic task mode can be told:
 
 - plan and execute iterative research
 - use approved tools
@@ -289,7 +289,7 @@ Example:
 
 > I can summarize the previous NineChapter vs agency-agents comparison from
 > memory and task history. If you want a fresh deeper rerun using live research,
-> route a Rebecca task through MoJo's task flow.
+> route a Researcher task through MoJo's task flow.
 
 This preserves the read-only contract while still helping the user.
 
@@ -359,7 +359,7 @@ Use NineChapter dimensions to influence:
 
 Examples:
 
-- Rebecca, with high cognitive rigor:
+- Researcher, with high cognitive rigor:
   - explicitly names uncertainty
   - resists shallow conclusions
   - prefers evidence-backed synthesis
@@ -367,7 +367,7 @@ Examples:
 - Popo, with stronger confirmation-oriented safety behavior:
   - confirms sensitive actions before escalation
 
-- Ahman, with stronger threat sensitivity:
+- Analyst, with stronger threat sensitivity:
   - surfaces risk earlier
   - prioritizes anomaly and exposure detection
 
@@ -502,7 +502,7 @@ Recommended next-generation JSON role structure:
 
 ### Example role JSON
 
-Below is a sample schema direction for Rebecca using:
+Below is a sample schema direction for Researcher using:
 
 - JSON as the canonical runtime format
 - a private read-only dashboard mode
@@ -511,8 +511,8 @@ Below is a sample schema direction for Rebecca using:
 
 ```json
 {
-  "id": "rebecca",
-  "name": "Rebecca",
+  "id": "researcher",
+  "name": "Researcher",
   "version": "2.0",
   "archetype": "research_analyst",
   "nine_chapter_score": 95,
@@ -714,8 +714,8 @@ Introduce a separate owner identity layer:
   - canonical human identity and preferences
 
 - assistant role files
-  - `roles/rebecca.json`
-  - `roles/ahman.json`
+  - `roles/researcher.json`
+  - `roles/analyst.json`
   - `roles/popo.json`
 
 Roles may reference the owner profile, but they are not the owner.
@@ -812,7 +812,7 @@ The system should not confuse the two.
     "Preserve private memory while enabling useful assistant behavior"
   ],
   "assistant_relationships": {
-    "rebecca": {
+    "researcher": {
       "relationship": "research partner",
       "focus": [
         "deep analysis",
@@ -820,7 +820,7 @@ The system should not confuse the two.
         "explanation"
       ]
     },
-    "ahman": {
+    "analyst": {
       "relationship": "security and operations specialist",
       "focus": [
         "hardening",

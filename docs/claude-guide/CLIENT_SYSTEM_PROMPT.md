@@ -39,7 +39,7 @@ When switching to a completely different topic, call:
 
 ## Dispatching Work to Roles
 
-To assign a task to an assistant role (Scott, Ahman, etc.):
+To assign a task to an assistant role (e.g., `researcher`, `reporter`):
   scheduler(action="add", type="assistant", role_id="<role>",
             goal="<what to do>", max_iterations=10, priority="medium")
 

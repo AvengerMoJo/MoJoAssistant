@@ -118,7 +118,7 @@ All functionality is exposed through hub tools. Each hub dispatches to sub-actio
 ### Example usage in Claude Desktop
 
 ```
-Use the scheduler tool to add a daily research task for Rebecca at 9am.
+Use the scheduler tool to add a daily research task for researcher at 9am.
 Use the config tool to check what LLM resources are available.
 Use the dream tool to list recent memory archives.
 ```
@@ -133,7 +133,7 @@ tool access list, resource tier preference, and optional data boundary policy.
 
 ```json
 {
-  "name": "Rebecca",
+  "name": "Researcher",
   "persona": "Research analyst focused on AI and distributed systems",
   "capabilities": ["web_search", "memory_search", "memory_write"],
   "local_only": false,
@@ -149,7 +149,7 @@ Add a task via MCP:
   "args": {
     "action": "add",
     "type": "assistant",
-    "role_id": "rebecca",
+    "role_id": "researcher",
     "description": "Research the latest papers on KV cache compression"
   }
 }

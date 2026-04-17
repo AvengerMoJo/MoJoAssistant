@@ -13,7 +13,7 @@ Role growth in MoJoAssistant is designed as two distinct tiers:
 | Tier | What it is | Example | Who benefits |
 |------|-----------|---------|-------------|
 | **Framework** | Patterns all agents can learn from — tool calling bugs, workflow failures, executor quirks | "Qwen outputs XML in FINAL_ANSWER instead of making tool calls" | Every role |
-| **Personal** | Role-specific accumulated character, domain stance, writing style | "Anna knows the owner's voice and how he structures arguments" | That role only |
+| **Personal** | Role-specific accumulated character, domain stance, writing style | "Archivist knows the owner's voice and how he structures arguments" | That role only |
 
 The chat interface (Claude Code or role_chat) → dreaming pipeline → role refinement loop is the intended growth mechanism. Not one-off fixes. Not individual patches per agent. A system that lets learning accumulate and propagate to the right tier automatically.
 

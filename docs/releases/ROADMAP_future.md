@@ -26,7 +26,7 @@ User / External World
 | v1.2.7 | Security depth + Role Chat + Sub-agents | ✅ Shipped | Security Sentinel, Role Chat interface, dispatch_subtask, HITL budget, MEMORY_PATH fixes |
 | v1.2.8 | Bug hardening + ConfigDoctor | ✅ Shipped | Tool-call reliability (malformed JSON, drift forcing), ConfigDoctor v1.2.7 checks |
 | **v1.2.9** | **Quality gates + coding agent bridge** | ✅ Shipped | Smoke suite (133 tests), NineChapter, InteractionMode contracts, physical knowledge isolation, completion artifacts, dependency resilience audit, INSTALL.md, coding agent HITL bridge, per-source attention routing rules |
-| **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile, demo roles (Rebecca/Ahman/Carl) bundled, first-run wizard (auto-detect, config gen, role selection, LLM backend detection + model ladder), 3 demo tasks seeded, 158 smoke tests |
+| **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile, demo roles (Researcher/Analyst/Coder) bundled, first-run wizard (auto-detect, config gen, role selection, LLM backend detection + model ladder), 3 demo tasks seeded, 158 smoke tests |
 | **v1.2.11** | **Terminal + config completeness** | ✅ Shipped | Terminal tools via tmux-mcp-rs (13 tools registered in tool_catalog + mcp_servers.json, enabled=false until tmux available), ConfigDoctor NineChapter score validation (weighted dimension drift detection), HttpAgentExecutor deferred (needs protocol spec) |
 | **v1.2.12** | **Owner identity — active layer** | 📋 Planned | Owner context filtered injection (mode overlay → filtered prompt slice per role/mode), sensitive-domain watchdog (system roles scan operations against `sensitive_domains` in owner profile) |
 | **v1.2.13** | **agency-agents import bridge** | 📋 Planned | `agency-agents` reference library integration — parse markdown personas, map to Nine Chapter wizard pre-fills, "Import from library" path in role designer, GUI operator role as first candidate |
@@ -104,7 +104,7 @@ every agent behavior enforceable, and every interaction remembered.
 **1. §21 enforcement — Role ID required, behavior_rules active**
 - `role_id` required at `scheduler_add_task` — inline `system_prompt` rejected
 - `behavior_rules.exhausts_tools_before_asking` enforced in `AgenticExecutor`
-  (fixes the Rebecca ask_user loop: agent must try all tools before surfacing a question)
+  (fixes the Researcher ask_user loop: agent must try all tools before surfacing a question)
 - `urgency` + `importance` fields on tasks, matrix drives attention level routing
 - `config doctor` validates `nine_chapter_score` derivation from dimensions
 
@@ -122,7 +122,7 @@ every agent behavior enforceable, and every interaction remembered.
 - Extracts: role, problem, context at time, resolution, outcome
 - Produces structured `resolved_interaction` memory units stored in archival memory
 - Surfaces automatically via `search_memory()` — agents learn from past resolutions
-- Dreaming LLM identifies patterns: "Ahman always needs subnet clarification"
+- Dreaming LLM identifies patterns: "Analyst always needs subnet clarification"
   → becomes a role-level hint injected into future task prompts
 
 **4. Task session compaction — Long sessions become retrievable knowledge**
@@ -209,7 +209,7 @@ works without any client), the read-only dashboard (browser), and MCP
 would reach for. Bidirectional ntfy (reply from notification) is tracked as a
 good-to-have in v1.3.x if urgency demands it.
 
-**Technical debt from v1.2.5 (Carl review):**
+**Technical debt from v1.2.5 (Coder review):**
 - ✅ Race condition in MCPClientManager eager connection — fixed (connect lock, stale flag reset, wait_for timeout)
 - ✅ Missing input validation for urgency/importance routing fields — bounds/type checking added
 - ✅ Duplicated `["free", "free_api"]` default tier preference — extracted to `DEFAULT_TIER_PREFERENCE` constant
@@ -357,7 +357,7 @@ tries the alternative approach without being told.
 
 Any agent can query another agent's lesson memory:
 ```
-search_memory(query="git clone codebase access", role_id="ahman")
+search_memory(query="git clone codebase access", role_id="analyst")
 ```
 Agents discover what other agents know without hardcoding role capabilities.
 Write access to a role's private memory is restricted to that role and the system.
@@ -367,7 +367,7 @@ Write access to a role's private memory is restricted to that role and the syste
 `scheduler_add_task` becomes available as a tool for assistant roles — not just
 humans via MCP. An agent that hits a wall it can't solve alone can dispatch a
 sub-task to the right role and wait for the result:
-- Rebecca needs codebase access → dispatches to Ahman → Ahman clones → Rebecca reads report
+- Researcher needs codebase access → dispatches to Analyst → Analyst clones → Researcher reads report
 - Sub-tasks inherit parent data_boundary policy
 - Sub-task depth limited to 2 levels (prevent runaway recursion)
 - All dispatched sub-tasks visible in EventLog with parent linkage
@@ -398,7 +398,7 @@ sub-task to the right role and wait for the result:
 - OpenAI-compatible proxy API (`/v1/models`, `/v1/chat/completions`) — any LLM client (OpenWebUI, Cursor) talks to any role directly
 - Explicit memory capture ("remember: X") writes to role private lesson store from chat
 - Post-dialog NineChapter dimension refinement via dream pipeline — personality evolves from extended conversations
-- Cross-role referral — "Ahman would know more about this" hands off chat context to another role
+- Cross-role referral — "Analyst would know more about this" hands off chat context to another role
 
 ## Priority Matrix — Urgent / Important
 
@@ -544,11 +544,11 @@ components working together:
 Each role demonstrates a distinct capability and a distinct safety posture:
 - **Alex** — personal memory assistant; `local_only: false`; shows basic
   memory search + conversation logging
-- **Rebecca** — research analyst; `tier_preference: free_api`; shows
+- **Researcher** — research analyst; `tier_preference: free_api`; shows
   web search, sub-task dispatch, dreaming consolidation
-- **Ahman** — security auditor; `local_only: true`; shows `data_boundary`
+- **Analyst** — security auditor; `local_only: true`; shows `data_boundary`
   enforcement, policy violation events, Security Sentinel integration
-- **Carl** — code reviewer; `local_only: true`; shows role chat interface,
+- **Coder** — code reviewer; `local_only: true`; shows role chat interface,
   knowledge repo indexing, `read_file` / `list_files` tool access
 
 *Demo task scripts*
@@ -558,7 +558,7 @@ observe the system end-to-end:
   retrieval; confirms memory pipeline is wired
 - `demo_policy_block` — a task that deliberately attempts a blocked tool call;
   demonstrates policy_violation event, HITL notification, and audit trail
-- `demo_research_loop` — Rebecca researches a local topic, dispatches a
+- `demo_research_loop` — Researcher researches a local topic, dispatches a
   summarisation sub-task, writes the result to memory; demonstrates multi-hop
   agent execution
 - `demo_security_sentinel` — trigger a one-off Security Sentinel run; shows
@@ -690,7 +690,7 @@ than dreaming failures.
 ```json
 {
   "attention_rules": [
-    {"source": "ahman", "event_type": "task_failed", "hitl_level": 4},
+    {"source": "analyst", "event_type": "task_failed", "hitl_level": 4},
     {"source": "opencode", "event_type": "task_completed", "hitl_level": 1},
     {"severity": "error", "source_tag": "security", "hitl_level": 5}
   ]
@@ -797,7 +797,7 @@ text and loses its typed structure before dreaming can see it.
 ```json
 {
   "type": "resolved_interaction",
-  "role": "ahman",
+  "role": "analyst",
   "problem": "which subnet should I scan?",
   "context_summary": "weekly security review, home network setup",
   "resolution": "scan 10.0.0.0/24",
@@ -812,8 +812,8 @@ text and loses its typed structure before dreaming can see it.
 - Over time: the assistant builds institutional knowledge about how problems
   are resolved, by whom, and with what outcome
 - The dreaming LLM can also identify *patterns* across interactions:
-  "Ahman always needs subnet clarification on home network tasks"
-  → becomes a role-level hint injected into future Ahman task prompts
+  "Analyst always needs subnet clarification on home network tasks"
+  → becomes a role-level hint injected into future Analyst task prompts
 
 **Files:** New `app/dreaming/inbox_distillation.py`,
 `app/dreaming/pipeline.py` (add optional inbox stage),

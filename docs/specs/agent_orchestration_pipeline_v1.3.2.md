@@ -6,11 +6,11 @@ MoJo roles can execute individual tasks well, but there is no mechanism for
 multi-role workflows where tasks depend on each other's outputs. A real
 research-to-implementation pipeline requires:
 
-1. Bao/Ahman installs a sandbox in Portainer
-2. Rebecca researches a topic → produces findings
-3. Popo implements code/tests based on Rebecca's findings
-4. Ahman/Bao runs the tests in the sandbox → collects results
-5. Rebecca writes an analysis report from the test results
+1. Provisioner/Analyst installs a sandbox in Portainer
+2. Researcher researches a topic → produces findings
+3. Popo implements code/tests based on Researcher's findings
+4. Analyst/Provisioner runs the tests in the sandbox → collects results
+5. Researcher writes an analysis report from the test results
 
 Today each step must be manually triggered, output must be manually copied
 between tasks, and there is no way to declare "don't start step 3 until
@@ -27,15 +27,15 @@ dependencies of a node are in `completed` status, the scheduler automatically
 starts it, optionally injecting the prior task's output into its goal.
 
 ```
-install (bao)
+install (provisioner)
     ↓
-research (rebecca) ──────────────────────┐
+research (researcher) ──────────────────────┐
     ↓ output injected                    │
 implement (popo)                         │
     ↓                                    ↓
-run_tests (ahman) ← depends_on: [install, implement]
+run_tests (analyst) ← depends_on: [install, implement]
     ↓ output injected
-report (rebecca)
+report (researcher)
 ```
 
 ---
@@ -53,13 +53,13 @@ scheduler add
   steps=[
     {
       "id": "install",
-      "role_id": "bao",
+      "role_id": "provisioner",
       "goal": "Install autoresearch sandbox in Portainer at http://...",
       "max_iterations": 20
     },
     {
       "id": "research",
-      "role_id": "rebecca",
+      "role_id": "researcher",
       "goal": "Research context window allocation strategies for LLM agents. Focus on...",
       "depends_on": ["install"],
       "max_iterations": 25
@@ -73,14 +73,14 @@ scheduler add
     },
     {
       "id": "run_tests",
-      "role_id": "ahman",
+      "role_id": "analyst",
       "goal": "Run the test suite at ~/.memory/opencode-sandboxes/context-strategy-tests/ and collect results.",
       "depends_on": ["install", "implement"],
       "max_iterations": 15
     },
     {
       "id": "report",
-      "role_id": "rebecca",
+      "role_id": "researcher",
       "goal": "Write an analysis report based on these test results:\n\n{{run_tests.output}}\n\nInclude recommendations for implementation.",
       "depends_on": ["run_tests"],
       "max_iterations": 15

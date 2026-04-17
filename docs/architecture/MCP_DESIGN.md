@@ -108,7 +108,7 @@ glancing at the clock — all in a single tool call.
   },
   "task_sessions": [
     { "task_id": "ahman_scan_001", "status": "waiting_for_input",
-      "role": "ahman", "pending_question": "which subnet?", "created_at": "..." }
+      "role": "analyst", "pending_question": "which subnet?", "created_at": "..." }
   ]
 }
 ```
@@ -626,7 +626,7 @@ Python process communicating via method calls.
          ↓                                     ↓
 ┌─────────────────┐                   ┌──────────────────┐
 │  Memory Service │                   │  Agent Container │
-│  (local only)   │                   │  (Ahman, etc.)   │
+│  (local only)   │                   │  (Analyst, etc.)   │
 └─────────────────┘                   └──────────────────┘
          ↑                                     ↑
          └──────────── Message Bus ────────────┘
@@ -664,7 +664,7 @@ Today dreaming processes raw conversation text. Inbox interactions are richer:
 - **Typed metadata**: who asked (source_role), what tool triggered it, what
   the resolution was
 - **Outcome signal**: the task completed after the reply — the resolution worked
-- **Reusability**: "When Ahman encountered X while doing Y, the answer was Z"
+- **Reusability**: "When Analyst encountered X while doing Y, the answer was Z"
   is more useful than reconstructing that from raw text
 
 **Data flow:**
@@ -683,7 +683,7 @@ Dreaming "inbox stage" (new pipeline stage):
 Archival memory: "interaction://ahman_scan_001"
   {
     "type": "resolved_interaction",
-    "role": "ahman",
+    "role": "analyst",
     "problem": "which subnet should I scan?",
     "context": "weekly security review, home network",
     "resolution": "scan 10.0.0.0/24",
@@ -1061,7 +1061,7 @@ permissions map cleanly to the MAP permission endpoints.
 
 **DeerFlow** is a research orchestration platform — parallel sub-agents, web
 search, scientific paper access, strong thinking model. Best fit: a role like
-Ahman that runs deep research tasks. Integration path: HTTP shim translating
+Analyst that runs deep research tasks. Integration path: HTTP shim translating
 DeerFlow's LangGraph server (port 2024) to MAP. DeerFlow's async task model
 maps onto MAP's SSE stream.
 
@@ -1231,7 +1231,7 @@ LLM + tools would execute it.
 
 **Researched:** 2026-03-20
 **Status:** Deferred — needs `AgentExecutor`, fits research role not coding role
-**Revisit when:** `AgentExecutor` done + Ahman needs a research execution backend
+**Revisit when:** `AgentExecutor` done + Analyst needs a research execution backend
 
 **What it is:**
 Python 3.12+ multi-agent research orchestration platform by ByteDance.
@@ -1260,7 +1260,7 @@ Shim would translate LangGraph thread/run API → MAP session/message API.
 Should be thin once `AgentExecutor` exists.
 
 **Best role fit:**
-Research roles (Ahman-equivalent) — complex web research, scientific literature,
+Research roles (Analyst-equivalent) — complex web research, scientific literature,
 multi-step content synthesis. Wrong for coding tasks.
 
 **Integration path when ready:**
@@ -1546,7 +1546,7 @@ that has `"custom"` in its `tool_access`.
 └─────────────────────────────────────────────────────────┘
 ```
 
-Each layer has a single responsibility. A task scheduled with `role_id: "rebecca"`
+Each layer has a single responsibility. A task scheduled with `role_id: "researcher"`
 should need **only** `goal` + `role_id` — everything else resolves from the layers above.
 
 ---
@@ -1586,8 +1586,8 @@ operating rules. It answers: **given who this agent is, what are they here to do
 
 ```json
 {
-  "id": "rebecca",
-  "name": "Rebecca",
+  "id": "researcher",
+  "name": "Researcher",
   "archetype": "empathetic_connector",
   "nine_chapter_score": 95,
   "dimensions": { ... },
@@ -1637,7 +1637,7 @@ not the agent's general capabilities.
 ```json
 {
   "task_id": "rebecca_research_001",
-  "role_id": "rebecca",
+  "role_id": "researcher",
   "goal": "Research AutoResearch projects and analyze applicability to MoJo dreaming",
 
   "urgency": 2,
@@ -1744,7 +1744,7 @@ what blocked it, and concrete options for the user to choose from.
 
 | Problem | Root cause | Fix |
 |---|---|---|
-| Rebecca ran with wrong tools | task scheduled without `role_id` | `role_id` required; inline prompt deprecated |
+| Researcher ran with wrong tools | task scheduled without `role_id` | `role_id` required; inline prompt deprecated |
 | NineChapter score set arbitrarily | score not derived from dimensions | score = weighted average, doctor validates |
 | Resource not respecting role | `preferred_resource_id` hardcoded | urgency×importance matrix selects tier |
 | Tool failures silently looped | no `behavior_rules` | role declares `tool_failure_protocol` |
@@ -2192,7 +2192,7 @@ high concurrency. Saturation detection:
 Some roles should always stay on free tiers regardless of urgency:
 ```json
 {
-  "role_id": "ahman",
+  "role_id": "analyst",
   "resource_requirements": {
     "tier": ["free", "free_api"],
     "max_tier": "free_api"
@@ -2230,7 +2230,7 @@ runaway background automation from consuming paid budget.
 ### 24.1 The Concept
 
 Today every interaction with MoJoAssistant goes through the main assistant
-layer. There is no way to talk *directly* to Ahman, Rebecca, or Carl as
+layer. There is no way to talk *directly* to Analyst, Researcher, or Coder as
 themselves — to have a freeform conversation that refines who they are,
 what they know, and how they behave.
 
@@ -2261,14 +2261,14 @@ MoJo exposes a standard OpenAI-compatible completion endpoint:
 
 ```
 GET  /v1/models              → returns list of active roles as "models"
-POST /v1/chat/completions    → model: "ahman" routes to Ahman's role channel
+POST /v1/chat/completions    → model: "analyst" routes to Analyst's role channel
 ```
 
 **What this means in practice:**
 - Any LLM client (Open WebUI, LM Studio client mode, LibreChat, Cursor,
-  Continue.dev) can point to `http://localhost:PORT/v1` and see Ahman,
-  Rebecca, Carl as selectable "models"
-- The user picks "Ahman" and gets his full personality, private memory,
+  Continue.dev) can point to `http://localhost:PORT/v1` and see Analyst,
+  Researcher, Coder as selectable "models"
+- The user picks "Analyst" and gets his full personality, private memory,
   behavior rules, and tool access — indistinguishable from a real LLM model
   from the client's perspective
 - Streaming responses supported via SSE (same as OpenAI spec)
@@ -2280,8 +2280,8 @@ interactive session with a specific role from within Claude Code or any
 MCP-capable client:
 
 ```
-dialog(role_id="ahman", message="What ports is Portainer running on?")
-→ Ahman responds in character, with memory context
+dialog(role_id="analyst", message="What ports is Portainer running on?")
+→ Analyst responds in character, with memory context
 ```
 
 Simpler to implement, tightly integrated, but locked to MCP clients.
@@ -2314,8 +2314,8 @@ Post-session dream (optional, async)
     │     e.g. user corrects factual error → cognitive_style calibration
     │
     └─► Responsibility updates → behavior_rules / purpose refinement
-          e.g. "Carl, always check for test coverage before approving"
-          → new behavior_rule added to carl.json
+          e.g. "Coder, always check for test coverage before approving"
+          → new behavior_rule added to coder.json
 ```
 
 **Two refinement modes:**
@@ -2360,9 +2360,9 @@ The role's private memory store (`~/.memory/roles/{role_id}/`) is the
 natural home for facts disclosed during dialog:
 
 ```
-User: "By the way, Ahman — the Portainer admin password changed, it's now Xk9mPq..."
-Ahman: "Got it. I've saved that to my private notes."
-    → memory.add_documents(content="Portainer password: ...", metadata={role: "ahman"})
+User: "By the way, Analyst — the Portainer admin password changed, it's now Xk9mPq..."
+Analyst: "Got it. I've saved that to my private notes."
+    → memory.add_documents(content="Portainer password: ...", metadata={role: "analyst"})
 ```
 
 Trigger patterns for automatic capture:
@@ -2385,8 +2385,8 @@ existing `task_sessions/` infrastructure:
 - Dreaming runs nightly on each role's dialog sessions to consolidate into
   long-term private knowledge
 
-This gives each role a **persistent relationship** with the user — Ahman
-remembers the last infrastructure conversation, Rebecca picks up mid-research.
+This gives each role a **persistent relationship** with the user — Analyst
+remembers the last infrastructure conversation, Researcher picks up mid-research.
 
 ---
 
@@ -2474,9 +2474,9 @@ work with them.
 
 ## §25 Agent Type Classification + Pluggable Workflow Templates
 
-### 25.0 Research Baseline — NineChapter vs agency-agents (Rebecca, 2026-03-23)
+### 25.0 Research Baseline — NineChapter vs agency-agents (Researcher, 2026-03-23)
 
-Rebecca conducted a direct 8-dimension comparison between MoJoAssistant's
+Researcher conducted a direct 8-dimension comparison between MoJoAssistant's
 NineChapter + Role system and the agency-agents project. Full session:
 `~/.memory/task_sessions/rebecca_nineChapter_vs_agency_analysis_001.json`
 
@@ -2502,7 +2502,7 @@ NineChapter + Role system and the agency-agents project. Full session:
 - **Configurability**: Markdown template + PR contribution loop makes adding agents trivial.
   MoJo's JSON config requires more discovery.
 
-**Rebecca's hybrid prescription (adopted into §25 design):**
+**Researcher's hybrid prescription (adopted into §25 design):**
 1. Adopt agency-agents' rich persona structure (comms guidelines + success metrics per role)
 2. Keep MoJo's execution engine, memory, safety, failure recovery — agency-agents has nothing close
 3. Build workflow templates + `scheduler_add_task` agent tool to close the composability gap
@@ -2517,7 +2517,7 @@ Every MoJoAssistant workflow today is manually wired:
 - Agent-to-agent handoffs require the user to queue the next task
 - There is no concept of "what kind of agent is this and what protocol does it follow"
 
-All current roles (Ahman, Rebecca, Popo, Carl) are the operator's personal
+All current roles (Analyst, Researcher, Popo, Coder) are the operator's personal
 implementation — not a generalised system users can extend. A new user cannot
 say "I want a Docker provisioner for my project" and have MoJo know what that
 means, what workflow to run, and what happens next.
@@ -2576,7 +2576,7 @@ Each role declares its type in role JSON:
 
 ```json
 {
-  "id": "ahman",
+  "id": "analyst",
   "agent_type": "provisioner",
   ...
 }
@@ -2695,7 +2695,7 @@ When a task is added for a role that has `agent_type`:
 5. Schedule the next agent's task with the connection string in the goal
 If any step fails, call ask_user before proceeding.]
 
-[Goal: Spin up a Postgres 16 container for Carl to run migration tests against]
+[Goal: Spin up a Postgres 16 container for Coder to run migration tests against]
 ```
 
 ---
@@ -2718,11 +2718,11 @@ The key mechanism that eliminates human relay between agents.
 User: "Test the migration and open a PR"
     │
     ▼
-Ahman (provisioner) spins up postgres:16 at localhost:5432
+Analyst (provisioner) spins up postgres:16 at localhost:5432
     │  stores: memory["test_env_postgres"] = {host, port, password}
     │  schedules: carl_task(goal="Review migrations against postgres://localhost:5432...")
     ▼
-Carl (reviewer) picks up task
+Coder (reviewer) picks up task
     │  reads connection from memory
     │  runs migrations, reviews output
     │  no blockers → gh pr create
@@ -2789,4 +2789,4 @@ modifying core code — the same two-layer config principle used everywhere.
 | Agent-to-agent handoff requires human queuing each step | Provisioner schedules consumer automatically |
 | Roles are the operator's personal implementations | Users define their own agent types and workflows |
 | No standard for "what does a provisioner do" | Provisioner protocol is codified and consistent |
-| Docker provision → human relay → Carl tests | Ahman provisions → Carl auto-queued → PR created |
+| Docker provision → human relay → Coder tests | Analyst provisions → Coder auto-queued → PR created |

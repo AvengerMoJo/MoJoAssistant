@@ -81,7 +81,7 @@ the flag is an explicit intent signal, not a severity concern.
 | Priority | Source | Example |
 |----------|--------|---------|
 | 1 | `task.config["notify_on_completion"]` | Override per scheduled task |
-| 2 | `role["notify_on_completion"]` | Role-level default (e.g. Ahman = true) |
+| 2 | `role["notify_on_completion"]` | Role-level default (e.g. Analyst = true) |
 | 3 | `task.created_by == "user"` | Fallback: human-initiated → notify |
 
 Background/cron tasks created by `"system"` are silent by default. User-initiated

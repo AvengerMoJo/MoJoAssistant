@@ -55,7 +55,7 @@ Paired events are rendered as readable text:
 
 ```
 === Resolved Interaction: ahman_scan_001 ===
-Role: ahman
+Role: analyst
 Question asked: which subnet should I scan?
 User replied: scan 10.0.0.0/24
 Outcome: task_completed
