@@ -18,6 +18,11 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 from app.config.paths import get_memory_subpath
 
+
+def _strip_think(text: str) -> str:
+    """Remove <think>…</think> blocks produced by reasoning models."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
 SESSIONS_DIR = get_memory_subpath("role_design_sessions")
 
 # ── Dimension weights (Nine Chapter Set A) ──────────────────────────────────
@@ -204,13 +209,16 @@ class RoleDesignSession:
         """
         Record answer for current step, advance to next step.
         Returns (next_step, result_payload).
+
+        The raw answer (including any <think> blocks) is stored in self.answers
+        for full history.  Parsing and spec-building strip think tokens on read.
         """
         step = self.current_step
 
         # Extract name from intro answer
         if step == "intro":
             self.answers["intro"] = answer
-            self.name = _extract_name(answer)
+            self.name = _extract_name(_strip_think(answer))
 
         elif step in _QUESTIONS:
             self.answers[step] = answer
@@ -243,10 +251,10 @@ class RoleDesignSession:
 
     def _generate_predict_verify(self) -> str:
         name = self.name
-        cv = self.answers.get("core_values", "their values")[:120]
-        er = self.answers.get("emotional_reaction", "their emotional style")[:120]
-        cs = self.answers.get("cognitive_style", "their thinking style")[:80]
-        so = self.answers.get("social_orientation", "their social style")[:80]
+        cv = _strip_think(self.answers.get("core_values", "their values"))[:120]
+        er = _strip_think(self.answers.get("emotional_reaction", "their emotional style"))[:120]
+        cs = _strip_think(self.answers.get("cognitive_style", "their thinking style"))[:80]
+        so = _strip_think(self.answers.get("social_orientation", "their social style"))[:80]
 
         scenario = (
             f"Someone asks **{name}** to cut corners on a task to hit a deadline faster."
@@ -300,14 +308,14 @@ class RoleDesignSession:
         name = self.name
         role_id = _slugify_role_id(name)
 
-        cv_answer   = self.answers.get("core_values", "")
-        er_answer   = self.answers.get("emotional_reaction", "")
-        cs_answer   = self.answers.get("cognitive_style", "")
-        so_answer   = self.answers.get("social_orientation", "")
-        ad_answer   = self.answers.get("adaptability", "")
-        purpose     = self.answers.get("purpose", "")
-        rt_answer   = self.answers.get("role_type", "")
-        pv_answer   = self.answers.get("predict_verify", "")
+        cv_answer   = _strip_think(self.answers.get("core_values", ""))
+        er_answer   = _strip_think(self.answers.get("emotional_reaction", ""))
+        cs_answer   = _strip_think(self.answers.get("cognitive_style", ""))
+        so_answer   = _strip_think(self.answers.get("social_orientation", ""))
+        ad_answer   = _strip_think(self.answers.get("adaptability", ""))
+        purpose     = _strip_think(self.answers.get("purpose", ""))
+        rt_answer   = _strip_think(self.answers.get("role_type", ""))
+        pv_answer   = _strip_think(self.answers.get("predict_verify", ""))
 
         # Simple dimension scores based on answer length + predict-verify result
         pv_correct = _parse_pv(pv_answer)
@@ -361,7 +369,7 @@ class RoleDesignSession:
         )
 
         agent_type, agent_type_label = _infer_agent_type(rt_answer)
-        ta_answer = self.answers.get("capabilities", "")
+        ta_answer = _strip_think(self.answers.get("capabilities", ""))
         capabilities = _parse_capabilities(ta_answer, agent_type)
 
         spec: Dict[str, Any] = {

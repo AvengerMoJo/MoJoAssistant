@@ -40,7 +40,13 @@ from tests.benchmarks.run_locomo import (
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Run LOCOMO against a role-scoped MoJo memory path")
+    p = argparse.ArgumentParser(
+        description="Run LOCOMO against a role-scoped MoJo memory path.\n\n"
+        "Intended workflow (memory is persistent — do each phase once):\n"
+        "  1. --setup-only  : ingest all dialogues + build complete ABCD dreams\n"
+        "  2. --eval-only   : answer all questions against existing memory (fast, repeatable)\n"
+        "  3. No flag       : full pipeline in one shot (first run only)\n"
+    )
     p.add_argument("--data-dir", required=True, help="Path to cloned locomo/data directory")
     p.add_argument("--output", default="results/locomo_role_memory.jsonl")
     p.add_argument("--run-id", default=None)
@@ -54,19 +60,26 @@ def parse_args():
     p.add_argument("--benchmark-root", default=str(Path.home() / ".memory/benchmarks/locomo"))
     p.add_argument("--dataset-version", default="locomo10")
     p.add_argument("--model", default=None)
-    p.add_argument("--max-dialogues", type=int, default=None)
+    p.add_argument("--max-dialogues", type=int, default=None,
+                   help="Limit dialogues (default: all). Omit for a real benchmark run.")
     p.add_argument("--max-questions", type=int, default=None)
     p.add_argument("--max-sessions", type=int, default=None)
     p.add_argument("--embedding-backend", default="huggingface")
     p.add_argument("--embedding-model", default="BAAI/bge-m3")
-    p.add_argument("--quality-level", default="basic", choices=("basic", "good", "premium"))
-    p.add_argument("--facts-top-k", type=int, default=12)
+    p.add_argument("--quality-level", default="good", choices=("basic", "good", "premium"),
+                   help="Dream quality level (default: good — extracts key_facts)")
+    p.add_argument("--facts-top-k", type=int, default=20,
+                   help="Facts retrieved per question (default: 20)")
     p.add_argument("--top-b", type=int, default=10)
-    p.add_argument("--top-c", type=int, default=6)
+    p.add_argument("--top-c", type=int, default=15,
+                   help="C-cluster summaries retrieved (default: 15)")
     p.add_argument("--judge", action="store_true")
-    p.add_argument("--reset-role-memory", action="store_true", help="Clear the role's benchmark memory before ingest")
-    p.add_argument("--prepare-dreams", action="store_true", help="Build/refresh ABCD dreams before evaluation")
-    p.add_argument("--reuse-existing-dreams", action="store_true")
+    p.add_argument("--reset-role-memory", action="store_true",
+                   help="Wipe role memory before ingest. Use only when re-ingesting from scratch.")
+    p.add_argument("--setup-only", action="store_true",
+                   help="Ingest facts + build ABCD dreams, then exit. Run once per dataset.")
+    p.add_argument("--eval-only", action="store_true",
+                   help="Skip ingest/dreams, use existing memory. Fast repeated evaluations.")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -113,6 +126,30 @@ def _reset_role_memory(role_memory_dir: Path) -> None:
     role_memory_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _ingested_sessions_path(role_memory_dir: Path) -> Path:
+    return role_memory_dir / "locomo_ingested_sessions.json"
+
+
+def _load_ingested_sessions(role_memory_dir: Path) -> set[str]:
+    """Return set of session IDs already stored in Ben's memory."""
+    path = _ingested_sessions_path(role_memory_dir)
+    if not path.exists():
+        return set()
+    try:
+        return set(json.loads(path.read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+
+def _save_ingested_sessions(role_memory_dir: Path, session_ids: set[str]) -> None:
+    path = _ingested_sessions_path(role_memory_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(sorted(session_ids), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _build_memory_service(args) -> HybridMemoryService:
     return HybridMemoryService(
         embedding_model=args.embedding_model,
@@ -144,8 +181,27 @@ def _session_text(dialogue_idx: int, session_idx: int, session_date: str, turns:
     return "\n".join(lines).strip()
 
 
-def ingest_dialogues_to_role_memory(args, svc: HybridMemoryService, dialogues: list[dict], role_id: str) -> int:
+def ingest_dialogues_to_role_memory(
+    args,
+    svc: HybridMemoryService,
+    dialogues: list[dict],
+    role_id: str,
+    already_ingested: set[str],
+) -> tuple[int, set[str]]:
+    """
+    Store conversation turns into Ben's persistent role memory.
+
+    Each LOCOMO session maps to one conversation session in MoJo:
+      Dialogue  → relationship context (who is talking)
+      Session   → one persistent conversation (stored once, never re-ingested)
+      Turn      → one fact stored in role-scoped knowledge
+
+    Returns (turns_added, newly_ingested_session_ids).
+    Already-ingested sessions are skipped automatically.
+    """
     added = 0
+    new_sessions: set[str] = set()
+
     for d_idx, dialogue in enumerate(dialogues):
         conv = dialogue.get("conversation", {})
         speaker_a = conv.get("speaker_a", "A")
@@ -160,8 +216,15 @@ def ingest_dialogues_to_role_memory(args, svc: HybridMemoryService, dialogues: l
             session_indices = session_indices[:args.max_sessions]
 
         for session_idx in session_indices:
+            session_id = f"locomo_d{d_idx:02d}_s{session_idx:02d}"
+
+            if session_id in already_ingested:
+                continue  # persistent memory — session already stored, skip
+
             session_date = conv.get(f"session_{session_idx}_date_time", "")
             turns = conv.get(f"session_{session_idx}", [])
+            session_turns = 0
+
             for turn_idx, turn in enumerate(turns):
                 speaker = turn.get("speaker") or ""
                 if speaker == "speaker_a":
@@ -171,11 +234,15 @@ def ingest_dialogues_to_role_memory(args, svc: HybridMemoryService, dialogues: l
                 text = (turn.get("text") or "").strip()
                 if not text:
                     continue
-                content = f"[dialogue={d_idx} session={session_idx} turn={turn_idx} date={session_date}] {speaker}: {text}"
+                content = (
+                    f"[session={session_id} date={session_date} turn={turn_idx}]"
+                    f" {speaker}: {text}"
+                )
                 svc.add_to_knowledge_base(
                     content,
                     metadata={
-                        "source": "locomo_conversation_fact",
+                        "source": "locomo_conversation",
+                        "session_id": session_id,
                         "dialogue_idx": d_idx,
                         "session_idx": session_idx,
                         "turn_idx": turn_idx,
@@ -185,11 +252,18 @@ def ingest_dialogues_to_role_memory(args, svc: HybridMemoryService, dialogues: l
                     role_id=role_id,
                 )
                 added += 1
-    return added
+                session_turns += 1
+
+            new_sessions.add(session_id)
+            print(f"[ingest] {session_id}: {session_turns} turns stored", flush=True)
+
+    return added, new_sessions
 
 
 async def prepare_dreams(args, role_memory_dir: Path, dialogues: list[dict]) -> None:
     llm = LLMInterface(config_file=str(PROJECT_ROOT / "config/llm_config.json"))
+    if args.model:
+        llm.set_active_interface(args.model)
     pipeline = DreamingPipeline(
         llm_interface=llm,
         quality_level=args.quality_level,
@@ -211,14 +285,17 @@ async def prepare_dreams(args, role_memory_dir: Path, dialogues: list[dict]) -> 
 
         for session_idx in session_indices:
             conversation_id = f"locomo_d{d_idx:02d}_s{session_idx:02d}"
+            print(f"[dream] building {conversation_id}", flush=True)
             archive_path = role_memory_dir / "dreams" / conversation_id / "archive_v1.json"
             if args.reuse_existing_dreams and archive_path.exists():
+                print(f"[dream] reuse existing {conversation_id}", flush=True)
                 continue
 
             session_date = conv.get(f"session_{session_idx}_date_time", "")
             turns = conv.get(f"session_{session_idx}", [])
             conversation_text = _session_text(d_idx, session_idx, session_date, turns, speaker_a, speaker_b)
             if not conversation_text:
+                print(f"[dream] skip empty {conversation_id}", flush=True)
                 continue
             result = await pipeline.process_conversation(
                 conversation_id=conversation_id,
@@ -234,6 +311,7 @@ async def prepare_dreams(args, role_memory_dir: Path, dialogues: list[dict]) -> 
             )
             if result.get("status") != "success":
                 raise RuntimeError(f"Dreaming failed for {conversation_id}: {result}")
+            print(f"[dream] done {conversation_id}", flush=True)
 
 
 async def retrieve_facts(svc: HybridMemoryService, query: str, role_id: str, top_k: int) -> tuple[list[tuple[str, float]], float]:
@@ -278,7 +356,8 @@ def answer_question(llm: LLMInterface, role: dict[str, Any], question: str, fact
                 "- Conversation facts are primary evidence.\n"
                 "- ABCD memory is secondary support only.\n"
                 "- If the answer is not supported by retrieved evidence, respond exactly: \"I don't have that information.\"\n"
-                "- Be concise and factual.\n"
+                "- Be concise. Answer with the fewest words that fully answer the question.\n"
+                "- Date resolution: if the context contains relative dates (e.g. 'yesterday', 'last year', 'next month', '3 years ago') and the session date is shown, resolve them to exact absolute dates (e.g. '7 May 2023', '2022') in your answer.\n"
             ),
         },
     ]
@@ -343,8 +422,7 @@ def summarize_results(
         "provenance": {
             "runner": "tests/benchmarks/run_locomo_role_memory.py",
             "role_id": role_id,
-            "prepare_dreams": args.prepare_dreams,
-            "reuse_existing_dreams": args.reuse_existing_dreams,
+            "eval_only": args.eval_only,
             "reset_role_memory": args.reset_role_memory,
             "detailed_output": str(Path(args.output).expanduser()),
         },
@@ -367,20 +445,54 @@ async def run_benchmark(args) -> None:
         dialogues = dialogues[:args.max_dialogues]
 
     if args.dry_run:
+        total_sessions = sum(
+            sum(1 for k in d.get("conversation", {}) if k.startswith("session_") and not k.endswith("_date_time"))
+            for d in dialogues
+        )
         total_qa = sum(len(d.get("qa", [])) for d in dialogues)
-        print(f"[DRY RUN] {len(dialogues)} dialogues, ~{total_qa} QA pairs, role={args.role_id}, variant={args.variant}")
+        already = _load_ingested_sessions(paths["role_memory_dir"])
+        print(
+            f"[DRY RUN] {len(dialogues)} dialogues, {total_sessions} sessions, "
+            f"~{total_qa} QA pairs | role={args.role_id}, variant={args.variant}\n"
+            f"  Already in memory: {len(already)} sessions  "
+            f"  Needs ingest: {total_sessions - len(already)} sessions"
+        )
         return
 
-    if args.reset_role_memory:
-        _reset_role_memory(role_memory_dir)
+    # ── Setup phase (one-time, persistent) ────────────────────────────────
+    # Memory is permanent. Sessions are stored once and never re-ingested.
+    # --reset-role-memory is the only way to start over from scratch.
+    if not args.eval_only:
+        if args.reset_role_memory:
+            _reset_role_memory(role_memory_dir)
 
-    svc = _build_memory_service(args)
-    added = ingest_dialogues_to_role_memory(args, svc, dialogues, args.role_id)
-    print(f"Ingested {added} fact documents into role:{args.role_id}")
+        svc = _build_memory_service(args)
+        already_ingested = _load_ingested_sessions(role_memory_dir)
 
-    if args.prepare_dreams or args.variant in ("facts_plus_abcd", "abcd_only"):
-        await prepare_dreams(args, role_memory_dir, dialogues)
+        added, new_sessions = ingest_dialogues_to_role_memory(
+            args, svc, dialogues, args.role_id, already_ingested
+        )
+        if new_sessions:
+            all_ingested = already_ingested | new_sessions
+            _save_ingested_sessions(role_memory_dir, all_ingested)
+            print(f"[ingest] stored {added} turns across {len(new_sessions)} new sessions "
+                  f"({len(all_ingested)} total in memory)", flush=True)
+        else:
+            print(f"[ingest] all {len(already_ingested)} sessions already in memory — nothing to add", flush=True)
 
+        if args.variant in ("facts_plus_abcd", "abcd_only"):
+            # Build only missing dream archives (skip existing ones)
+            args.reuse_existing_dreams = True
+            await prepare_dreams(args, role_memory_dir, dialogues)
+    else:
+        print(f"[eval-only] using existing persistent memory for role:{args.role_id}", flush=True)
+        svc = _build_memory_service(args)
+
+    if args.setup_only:
+        print(f"\n[setup-only] Memory and dreams ready for role:{args.role_id}. Run with --eval-only to benchmark.")
+        return
+
+    # ── Eval phase ─────────────────────────────────────────────────────────
     llm = LLMInterface(config_file=str(PROJECT_ROOT / "config/llm_config.json"))
     if args.model:
         llm.set_active_interface(args.model)
@@ -468,6 +580,18 @@ async def run_benchmark(args) -> None:
                 "dream_hits": len(dream_hits),
                 "combined_hits": len(combined),
                 "max_similarity": round(max((s for _, s in combined), default=0.0), 4),
+                "facts_context": [
+                    {"score": round(score, 4), "text": text}
+                    for text, score in facts_hits
+                ],
+                "dream_context": [
+                    {"score": round(score, 4), "text": text}
+                    for text, score in dream_hits
+                ],
+                "combined_context": [
+                    {"score": round(score, 4), "text": text}
+                    for text, score in combined
+                ],
                 "timestamp": datetime.datetime.now().isoformat(),
             }
             all_results.append(result)

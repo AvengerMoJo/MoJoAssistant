@@ -38,10 +38,12 @@ LOCOMO categories:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import datetime
 import statistics
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -339,7 +341,11 @@ def retrieve_abcd(
 
     for archive in archives:
         for b in archive.get("b_chunks", []):
-            text = b.get("content", "").strip()
+            key_facts = b.get("key_facts") or []
+            if key_facts:
+                text = "\n".join(f"- {f}" for f in key_facts if f)
+            else:
+                text = b.get("content", "").strip()
             if not text:
                 continue
             vec = embedding.get_text_embedding(text, prompt_name="passage")
@@ -347,8 +353,13 @@ def retrieve_abcd(
 
         for c in archive.get("c_clusters", []):
             theme = (c.get("theme") or "").strip()
-            content = (c.get("content") or "").strip()
-            text = f"{theme}\n{content}".strip()
+            key_facts = c.get("key_facts") or []
+            if key_facts:
+                facts_str = "\n".join(f"- {f}" for f in key_facts if f)
+                text = f"{theme}\n{facts_str}".strip()
+            else:
+                content = (c.get("content") or "").strip()
+                text = f"{theme}\n{content}".strip()
             if not text:
                 continue
             vec = embedding.get_text_embedding(text, prompt_name="passage")
@@ -367,7 +378,11 @@ def retrieve_abcd(
         for archive in archives:
             for b in archive.get("b_chunks", []):
                 bid = b.get("id")
-                text = b.get("content", "").strip()
+                key_facts = b.get("key_facts") or []
+                if key_facts:
+                    text = "\n".join(f"- {f}" for f in key_facts if f)
+                else:
+                    text = b.get("content", "").strip()
                 if not bid or not text:
                     continue
                 vec = embedding.get_text_embedding(text, prompt_name="passage")
@@ -565,19 +580,27 @@ Answer:"""
 # Scoring
 # ---------------------------------------------------------------------------
 
+def _normalize_answer(s: str) -> str:
+    """SQuAD-style answer normalization: lowercase, strip punctuation, collapse whitespace."""
+    s = s.lower()
+    s = re.sub(r"[^\w\s]", " ", s)
+    return " ".join(s.split())
+
+
 def token_f1(prediction: str, ground_truth: str) -> float:
-    """Standard token-level F1 (LOCOMO/SQuAD style)."""
-    pred_tokens = set(prediction.lower().split())
-    truth_tokens = set(ground_truth.lower().split())
+    """Standard token-level F1 (LOCOMO/SQuAD style, with punctuation normalization)."""
+    pred_tokens = _normalize_answer(prediction).split()
+    truth_tokens = _normalize_answer(ground_truth).split()
     if not truth_tokens:
         return 1.0 if not pred_tokens else 0.0
     if not pred_tokens:
         return 0.0
-    overlap = pred_tokens & truth_tokens
-    precision = len(overlap) / len(pred_tokens)
-    recall = len(overlap) / len(truth_tokens)
-    if precision + recall == 0:
+    common = Counter(pred_tokens) & Counter(truth_tokens)
+    num_same = sum(common.values())
+    if num_same == 0:
         return 0.0
+    precision = num_same / len(pred_tokens)
+    recall = num_same / len(truth_tokens)
     return 2 * precision * recall / (precision + recall)
 
 
