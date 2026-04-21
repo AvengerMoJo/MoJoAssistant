@@ -152,7 +152,7 @@ config/embedding_config.json
 config/dynamic_tools.json
 config/planning_prompts.json
 config/tool_operation_logs.json
-config/scheduler_config.json
+# config/scheduler_config.json is committed as system default; personal tasks go in ~/.memory/config/
 config/notifications_config.json
 config/roles/*.json
 # Bundled demo templates are committed

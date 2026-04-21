@@ -1,0 +1,38 @@
+{
+  "_comment": "System default scheduler tasks. Personal tasks go in ~/.memory/config/scheduler_config.json — entries there are merged on top of these by id.",
+  "default_tasks": [
+    {
+      "id": "dreaming_nightly_offpeak_default",
+      "type": "dreaming",
+      "cron": "0 3 * * *",
+      "priority": "low",
+      "description": "Automatic nightly Dreaming consolidation (off-peak)",
+      "config": {
+        "automatic": true,
+        "quality_level": "basic",
+        "off_peak_start": "01:00",
+        "off_peak_end": "05:00",
+        "enforce_off_peak": true,
+        "lookback_messages": 200
+      },
+      "resources": { "requires_gpu": true }
+    },
+    {
+      "id": "config_doctor_daily",
+      "type": "assistant",
+      "cron": "0 9 * * *",
+      "priority": "low",
+      "enabled": false,
+      "description": "Daily runtime config validation — enable in ~/.memory/config/scheduler_config.json",
+      "config": {
+        "goal": "Run the MoJoAssistant configuration doctor to validate system health. Use bash_exec to run: python3 -c \"from app.config.doctor import ConfigDoctor; import json; r = ConfigDoctor().run_all_checks(); errors = [c for c in r.checks if c.status == 'error']; warns = [c for c in r.checks if c.status == 'warn']; print(f'ERRORS: {len(errors)}, WARNS: {len(warns)}'); [print(f'  ERROR [{c.category}/{c.id}] {c.message}') for c in errors]; [print(f'  WARN  [{c.category}/{c.id}] {c.message}') for c in warns]\" Then save the output as your FINAL_ANSWER.",
+        "max_iterations": 5,
+        "tier_preference": "free",
+        "available_tools": ["bash_exec", "add_conversation"],
+        "notify_on_completion": false,
+        "final_answer_requirements": { "min_length": 20 }
+      },
+      "resources": { "requires_gpu": false }
+    }
+  ]
+}

@@ -52,13 +52,23 @@ class TestSeedTasksFromConfig(unittest.TestCase):
         )
 
     def test_seeds_dreaming_task_from_real_config(self):
-        """The committed scheduler_config.json seeds the nightly dreaming task."""
+        """The committed config/scheduler_config.json seeds the nightly dreaming task.
+
+        Uses a temp memory_config_dir so personal ~/.memory/config overrides
+        cannot affect this smoke test — it validates the system default only.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             s = self._make_scheduler(tmp)
-            s._seed_tasks_from_config()
+            # Isolate from personal ~/.memory/config by pointing layer 2 at an
+            # empty temp dir — only config/scheduler_config.json is read.
+            with patch(
+                "app.config.config_loader.MEMORY_CONFIG_DIR",
+                str(Path(tmp) / "empty_memory_config"),
+            ):
+                s._seed_tasks_from_config()
 
             task = s.get_task("dreaming_nightly_offpeak_default")
-            self.assertIsNotNone(task, "Task should be seeded from config")
+            self.assertIsNotNone(task, "Task should be seeded from config/scheduler_config.json")
             self.assertEqual(task.type, TaskType.DREAMING)
             self.assertEqual(task.cron_expression, "0 3 * * *")
             self.assertTrue(task.config.get("automatic"))
