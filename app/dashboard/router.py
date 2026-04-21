@@ -126,6 +126,7 @@ a:hover { text-decoration: underline; }
 .s-running    { background: #002a00; color: #7ec87e; }
 .s-completed  { background: #001a2a; color: #7ec8e3; }
 .s-failed     { background: #2a0000; color: #e37e7e; }
+.s-scheduled  { background: #001a1a; color: #7ee3c0; }
 .s-waiting_for_input { background: #2a1a00; color: #e3c07e; }
 .s-dreaming   { background: #1a002a; color: #c07ee3; }
 .lvl0 { color: #555; }
@@ -347,7 +348,7 @@ async def overview(mojo_dash: Optional[str] = Cookie(default=None)):
 # ---------------------------------------------------------------------------
 
 @router.get("/tasks", response_class=HTMLResponse)
-async def tasks_list(status: str = "", mojo_dash: Optional[str] = Cookie(default=None)):
+async def tasks_list(request: Request, status: str = "", type: str = "", mojo_dash: Optional[str] = Cookie(default=None)):
     if redir := _require_auth(mojo_dash):
         return redir
 
@@ -355,13 +356,35 @@ async def tasks_list(status: str = "", mojo_dash: Optional[str] = Cookie(default
     tasks = list(tasks_data.get("tasks", {}).values())
 
     all_statuses = sorted({t.get("status", "unknown") for t in tasks})
-    filtered = [t for t in tasks if not status or t.get("status") == status]
-    filtered.sort(key=lambda t: t.get("created_at", ""), reverse=True)
+    all_types = sorted({t.get("type", "unknown") for t in tasks})
+    type_filter = type
 
-    filter_links = '<a href="/dashboard/tasks" class="' + ("active" if not status else "") + '">all</a>'
+    filtered = [
+        t for t in tasks
+        if (not status or t.get("status") == status)
+        and (not type_filter or t.get("type") == type_filter)
+    ]
+
+    # Cron tasks: sort by last activity (last_completed_at / last_started_at) so they
+    # stay visible at the top regardless of when they were originally seeded.
+    # One-shot tasks: sort by created_at descending (most recent first).
+    def _sort_key(t):
+        if t.get("cron_expression"):
+            ts = t.get("last_completed_at") or t.get("last_started_at") or t.get("created_at") or ""
+        else:
+            ts = t.get("created_at") or ""
+        return ts
+
+    filtered.sort(key=_sort_key, reverse=True)
+
+    filter_links = '<a href="/dashboard/tasks" class="' + ("active" if not status and not type_filter else "") + '">all</a>'
     for s in all_statuses:
-        active = "active" if s == status else ""
+        active = "active" if s == status and not type_filter else ""
         filter_links += f'<a href="/dashboard/tasks?status={s}" class="{active}">{s}</a>'
+    filter_links += ' &nbsp;|&nbsp; '
+    for tp in all_types:
+        active = "active" if tp == type_filter else ""
+        filter_links += f'<a href="/dashboard/tasks?type={tp}" class="{active}">{tp}</a>'
 
     rows = ""
     for t in filtered:
@@ -371,18 +394,35 @@ async def tasks_list(status: str = "", mojo_dash: Optional[str] = Cookie(default
         iters = metrics.get("iterations", "—")
         dur = metrics.get("duration_seconds")
         dur_str = f"{dur:.0f}s" if dur else "—"
+        is_cron = bool(t.get("cron_expression"))
+        status_val = t.get("status", "?")
+        # Pending cron tasks are waiting for their next scheduled fire — show as "scheduled"
+        display_status = "scheduled" if (is_cron and status_val == "pending") else status_val
         last_run = t.get("last_completed_at") or t.get("last_started_at")
-        time_col = _ts(last_run) if last_run and t.get("cron_expression") else _ts(t.get("created_at"))
+        next_run = t.get("schedule")
+        if is_cron:
+            time_parts = []
+            if last_run:
+                time_parts.append(f"last: {_ts(last_run)}")
+            if next_run and status_val == "pending":
+                time_parts.append(f'<span style="color:#6af">next: {_ts(next_run)}</span>')
+            time_col = "<br>".join(time_parts) if time_parts else _ts(t.get("created_at"))
+        else:
+            time_col = _ts(t.get("created_at"))
+        cron_expr = t.get("cron_expression", "")
+        cron_badge = f' <span style="font-size:10px;color:#aaa" title="{cron_expr}">[cron]</span>' if is_cron else ""
+        label = str(cfg.get("goal") or t.get("description") or "")[:100]
         rows += f"""<tr>
-          <td><a href="/dashboard/tasks/{t['id']}">{t['id']}</a></td>
-          <td>{_badge(t.get('status','?'))}</td>
+          <td><a href="/dashboard/tasks/{t['id']}">{t['id']}</a>{cron_badge}</td>
+          <td>{_badge(display_status)}</td>
+          <td>{t.get('type','—')}</td>
           <td>{cfg.get('role_id','—')}</td>
           <td>{t.get('priority','')}</td>
           <td>{iters}</td>
           <td>{dur_str}</td>
           <td>{time_col}</td>
-          <td style="max-width:260px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#888">
-            {str(cfg.get('goal',''))[:100]}
+          <td style="max-width:240px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#888">
+            {label}
           </td>
         </tr>"""
 
@@ -390,7 +430,7 @@ async def tasks_list(status: str = "", mojo_dash: Optional[str] = Cookie(default
 <h1>Tasks <span style="color:#888;font-size:14px">({len(filtered)} shown)</span></h1>
 <div class="filters">{filter_links}</div>
 <table>
-  <tr><th>ID</th><th>Status</th><th>Role</th><th>Priority</th><th>Iters</th><th>Duration</th><th>Created</th><th>Goal</th></tr>
+  <tr><th>ID</th><th>Status</th><th>Type</th><th>Role</th><th>Priority</th><th>Iters</th><th>Duration</th><th>Last run / Created</th><th>Goal / Description</th></tr>
   {rows}
 </table>
 """)
