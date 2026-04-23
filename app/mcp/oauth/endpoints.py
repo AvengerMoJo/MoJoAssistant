@@ -360,13 +360,16 @@ async def oauth_register_client(request: Request) -> JSONResponse:
     logger.info(f"Registered new OAuth client: {client_name} (ID: {client.client_id})")
 
     # Return registration response (RFC 7591)
+    import time as _time
     registration_response = {
         "client_id": client.client_id,
+        "client_id_issued_at": int(client.created_at.timestamp()),  # required by MCP 2025-11-25
         "client_name": client.client_name,
         "redirect_uris": client.redirect_uris,
         "grant_types": client.grant_types,
         "response_types": client.response_types,
         "token_endpoint_auth_method": "none",  # Public client
+        "scope": client.scope,
     }
 
     return JSONResponse(content=registration_response, status_code=201)
