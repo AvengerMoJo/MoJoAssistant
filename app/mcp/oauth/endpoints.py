@@ -178,22 +178,19 @@ async def oauth_authorize_get(
     # Parse scopes
     requested_scopes = scope.split()
 
-    # Check for API key in query or session for auto-approval
-    api_key = request.query_params.get("api_key")
-    if config.oauth.auto_approve and config.oauth.api_key_mode:
-        if is_api_key_valid(api_key):
-            # Auto-approve for valid API key
-            logger.info("Auto-approving authorization for valid API key")
-            return await oauth_authorize_approve(
-                request=request,
-                client_id=client_id,
-                redirect_uri=redirect_uri,
-                scope=scope,
-                state=state,
-                code_challenge=code_challenge,
-                code_challenge_method=code_challenge_method,
-                auto_approved=True,
-            )
+    # Auto-approve when configured (personal assistant — no consent page needed)
+    if config.oauth.auto_approve:
+        logger.info(f"Auto-approving authorization for client_id={client_id}")
+        return await oauth_authorize_approve(
+            request=request,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            scope=scope,
+            state=state,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            auto_approved=True,
+        )
 
     # Show consent page
     logger.info(f"Showing authorization consent page for scopes: {requested_scopes}")
