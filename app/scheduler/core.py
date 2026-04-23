@@ -518,6 +518,7 @@ class Scheduler:
                     task.schedule = next_run
                     task.started_at = None
                     task.completed_at = None
+                    task.last_error = None  # clear stale error from a previous failed run
                     self._log(f"Task {task.id} rescheduled for {next_run.isoformat()}")
                 else:
                     self._log(f"Task {task.id} completed (non-recurring)")

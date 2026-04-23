@@ -1,14 +1,27 @@
 """
-In-memory storage for OAuth 2.1 Authorization Server state
-Suitable for personal use, single-instance deployments
+OAuth 2.1 Authorization Server state — in-memory with JSON persistence.
+Tokens survive server restarts; expired tokens are filtered on load.
 """
 
+import json
+import logging
+import os
 import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, Optional, List
 from threading import Lock
+
+_log = logging.getLogger(__name__)
+
+
+def _oauth_storage_dir() -> Path:
+    memory_path = os.getenv("MEMORY_PATH", str(Path.home() / ".memory"))
+    d = Path(memory_path) / "oauth"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 @dataclass
@@ -209,22 +222,86 @@ class AuthorizationCodeStore:
 
 class TokenStore:
     """
-    Thread-safe in-memory store for access and refresh tokens
-    Automatically cleans up expired tokens
+    Thread-safe store for access and refresh tokens with JSON persistence.
+    Tokens survive server restarts; expired tokens are dropped on load.
     """
 
     def __init__(self, cleanup_interval: int = 300):
-        """
-        Initialize token store
-
-        Args:
-            cleanup_interval: Seconds between automatic cleanup (default: 300)
-        """
         self._access_tokens: Dict[str, AccessTokenData] = {}
         self._refresh_tokens: Dict[str, RefreshTokenData] = {}
         self._lock = Lock()
         self._cleanup_interval = cleanup_interval
         self._last_cleanup = time.time()
+        self._path = _oauth_storage_dir() / "tokens.json"
+        self._load()
+
+    def _load(self):
+        if not self._path.exists():
+            return
+        try:
+            raw = json.loads(self._path.read_text())
+            now = datetime.now(timezone.utc)
+            for token, td in raw.get("access_tokens", {}).items():
+                expires_at = datetime.fromisoformat(td["expires_at"])
+                if expires_at > now:
+                    self._access_tokens[token] = AccessTokenData(
+                        token=td["token"],
+                        client_id=td.get("client_id"),
+                        scope=td["scope"],
+                        expires_at=expires_at,
+                        refresh_token=td.get("refresh_token"),
+                        created_at=datetime.fromisoformat(td["created_at"]),
+                    )
+            for token, rd in raw.get("refresh_tokens", {}).items():
+                expires_at = datetime.fromisoformat(rd["expires_at"])
+                if expires_at > now:
+                    self._refresh_tokens[token] = RefreshTokenData(
+                        token=rd["token"],
+                        client_id=rd.get("client_id"),
+                        scope=rd["scope"],
+                        expires_at=expires_at,
+                        created_at=datetime.fromisoformat(rd["created_at"]),
+                    )
+            _log.info(
+                "OAuth token store loaded: %d access, %d refresh tokens",
+                len(self._access_tokens),
+                len(self._refresh_tokens),
+            )
+        except Exception as e:
+            _log.warning("Failed to load OAuth token store from %s: %s", self._path, e)
+
+    def _save(self):
+        try:
+            data = {
+                "access_tokens": {
+                    t: {
+                        "token": td.token,
+                        "client_id": td.client_id,
+                        "scope": td.scope,
+                        "expires_at": td.expires_at.isoformat(),
+                        "refresh_token": td.refresh_token,
+                        "created_at": td.created_at.isoformat(),
+                    }
+                    for t, td in self._access_tokens.items()
+                    if td.is_valid()
+                },
+                "refresh_tokens": {
+                    t: {
+                        "token": rd.token,
+                        "client_id": rd.client_id,
+                        "scope": rd.scope,
+                        "expires_at": rd.expires_at.isoformat(),
+                        "created_at": rd.created_at.isoformat(),
+                    }
+                    for t, rd in self._refresh_tokens.items()
+                    if rd.is_valid()
+                },
+            }
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2))
+            tmp.replace(self._path)
+        except Exception as e:
+            _log.warning("Failed to persist OAuth token store: %s", e)
 
     def create_access_token(
         self,
@@ -279,6 +356,7 @@ class TokenStore:
             self._access_tokens[access_token] = token_data
             self._maybe_cleanup()
 
+        self._save()
         return token_data
 
     def get_access_token(self, token: str) -> Optional[AccessTokenData]:
@@ -326,6 +404,7 @@ class TokenStore:
         with self._lock:
             if token in self._access_tokens:
                 del self._access_tokens[token]
+                self._save()
                 return True
             return False
 
@@ -342,6 +421,7 @@ class TokenStore:
         with self._lock:
             if token in self._refresh_tokens:
                 del self._refresh_tokens[token]
+                self._save()
                 return True
             return False
 
@@ -353,7 +433,7 @@ class TokenStore:
             self._last_cleanup = now
 
     def _cleanup(self):
-        """Remove expired tokens"""
+        """Remove expired tokens and sync to disk."""
         expired_access = [
             token for token, data in self._access_tokens.items() if not data.is_valid()
         ]
@@ -365,6 +445,9 @@ class TokenStore:
         ]
         for token in expired_refresh:
             del self._refresh_tokens[token]
+
+        if expired_access or expired_refresh:
+            self._save()
 
     def count_access_tokens(self) -> int:
         """Get number of stored access tokens"""
@@ -392,12 +475,54 @@ class ClientRegistration:
 
 class ClientRegistrationStore:
     """
-    Thread-safe in-memory store for client registrations
+    Thread-safe store for OAuth client registrations with JSON persistence.
+    Client IDs (like Claude Code's) survive server restarts.
     """
 
     def __init__(self):
         self._clients: Dict[str, ClientRegistration] = {}
         self._lock = Lock()
+        self._path = _oauth_storage_dir() / "clients.json"
+        self._load()
+
+    def _load(self):
+        if not self._path.exists():
+            return
+        try:
+            raw = json.loads(self._path.read_text())
+            for cid, cd in raw.items():
+                self._clients[cid] = ClientRegistration(
+                    client_id=cd["client_id"],
+                    client_name=cd["client_name"],
+                    redirect_uris=cd["redirect_uris"],
+                    grant_types=cd["grant_types"],
+                    response_types=cd["response_types"],
+                    scope=cd["scope"],
+                    created_at=datetime.fromisoformat(cd["created_at"]),
+                )
+            _log.info("OAuth client store loaded: %d clients", len(self._clients))
+        except Exception as e:
+            _log.warning("Failed to load OAuth client store from %s: %s", self._path, e)
+
+    def _save(self):
+        try:
+            data = {
+                cid: {
+                    "client_id": c.client_id,
+                    "client_name": c.client_name,
+                    "redirect_uris": c.redirect_uris,
+                    "grant_types": c.grant_types,
+                    "response_types": c.response_types,
+                    "scope": c.scope,
+                    "created_at": c.created_at.isoformat(),
+                }
+                for cid, c in self._clients.items()
+            }
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2))
+            tmp.replace(self._path)
+        except Exception as e:
+            _log.warning("Failed to persist OAuth client store: %s", e)
 
     def register_client(
         self,
@@ -407,19 +532,6 @@ class ClientRegistrationStore:
         response_types: List[str],
         scope: str = "",
     ) -> ClientRegistration:
-        """
-        Register a new OAuth client
-
-        Args:
-            client_name: Name of the client application
-            redirect_uris: List of allowed redirect URIs
-            grant_types: List of OAuth grant types
-            response_types: List of OAuth response types
-            scope: Requested scopes
-
-        Returns:
-            Client registration data
-        """
         client_id = secrets.token_urlsafe(16)
 
         client = ClientRegistration(
@@ -434,6 +546,7 @@ class ClientRegistrationStore:
         with self._lock:
             self._clients[client_id] = client
 
+        self._save()
         return client
 
     def get_client(self, client_id: str) -> Optional[ClientRegistration]:
@@ -446,6 +559,7 @@ class ClientRegistrationStore:
         with self._lock:
             if client_id in self._clients:
                 del self._clients[client_id]
+                self._save()
                 return True
             return False
 

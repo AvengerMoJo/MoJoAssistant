@@ -509,9 +509,20 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
     final = result.get("final_answer") or metrics.get("final_answer", "")
     final_html = f'<h2>Final Answer</h2><div class="pre">{final}</div>' if final else ""
 
-    # Error
-    err = task.get("last_error") or result.get("error_message", "")
-    err_html = f'<h2>Error</h2><div class="pre" style="border-color:#e37e7e;color:#e37e7e">{err}</div>' if err else ""
+    # Error — for cron tasks, only show if the last failure is more recent than
+    # the last success (stale last_error from a previous run should not surface).
+    raw_err = task.get("last_error") or result.get("error_message", "")
+    if raw_err and task.get("cron_expression"):
+        from datetime import datetime as _dt
+        def _parse(s):
+            try: return _dt.fromisoformat(s) if s else None
+            except: return None
+        last_ok = _parse(task.get("last_completed_at"))
+        last_fail = _parse(task.get("last_failed_at"))
+        # Suppress stale error: last run was successful
+        if last_ok and (last_fail is None or last_ok > last_fail):
+            raw_err = ""
+    err_html = f'<h2>Error</h2><div class="pre" style="border-color:#e37e7e;color:#e37e7e">{raw_err}</div>' if raw_err else ""
 
     # Pending question (HITL)
     pq = task.get("pending_question", "")
