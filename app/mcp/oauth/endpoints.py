@@ -300,9 +300,29 @@ async def oauth_authorize_approve(
         f"{approval_type} authorization request, generated code: {code_data.code[:16]}..."
     )
 
-    # Redirect back to client with authorization code
     callback_params = urlencode({"code": code_data.code, "state": state})
     callback_url = f"{redirect_uri}?{callback_params}"
+
+    # For localhost callbacks (Claude Code CLI running on same machine), forward the
+    # auth code server-side so the browser doesn't need to redirect to localhost.
+    # This works because the server and Claude Code share the same host.
+    parsed = urlparse(redirect_uri)
+    if parsed.hostname in ("localhost", "127.0.0.1"):
+        import httpx as _httpx
+        try:
+            async with _httpx.AsyncClient(timeout=5.0) as _client:
+                await _client.get(callback_url)
+            logger.info(f"Server-relayed callback to {redirect_uri} (port {parsed.port})")
+            from fastapi.responses import HTMLResponse as _HTML
+            return _HTML(
+                "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+                "<h2>Authentication complete</h2>"
+                "<p>Claude Code has been authorized. You can close this tab.</p>"
+                "</body></html>"
+            )
+        except Exception as e:
+            logger.warning(f"Server-side relay to {redirect_uri} failed ({e}), falling back to browser redirect")
+
     logger.info(f"Redirecting to callback: {callback_url}")
     return RedirectResponse(url=callback_url, status_code=303)
 
