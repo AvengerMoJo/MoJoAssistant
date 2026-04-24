@@ -212,3 +212,4 @@ package-lock.json
 
 # Generated screenshots/artifacts
 *.png
+scripts/install_amd.sh
