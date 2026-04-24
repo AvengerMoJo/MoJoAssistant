@@ -482,7 +482,7 @@ class Scheduler:
                 except Exception as _be:
                     self._log(f"Benchmark record failed (non-fatal): {_be}", "debug")
                 final_answer = (result.metrics or {}).get("final_answer")
-                is_assistant = task.type == TaskType.ASSISTANT
+                is_assistant = task.type == TaskType.INTERNAL_ASSIGNMENT
                 notify = self._should_notify_completion(task)
                 title = (
                     f"{task.description or task.id} completed"
@@ -503,7 +503,7 @@ class Scheduler:
                 })
 
                 # Auto-schedule dreaming for completed assistant tasks
-                if task.type == TaskType.ASSISTANT:
+                if task.type == TaskType.INTERNAL_ASSIGNMENT:
                     self._schedule_dreaming_for_agentic_task(task)
                     self._store_agentic_result_to_memory(task, result)
 
@@ -549,7 +549,7 @@ class Scheduler:
 
                     # Dream partial output from failed assistant tasks so the role
                     # remembers what was attempted (skip if no final answer at all)
-                    if task.type == TaskType.ASSISTANT:
+                    if task.type == TaskType.INTERNAL_ASSIGNMENT:
                         final_ans = (result.metrics or {}).get("final_answer")
                         if final_ans:
                             self._schedule_dreaming_for_agentic_task(task)
@@ -608,7 +608,7 @@ class Scheduler:
 
         # 2. Role default (for assistant tasks with a role_id)
         role_id = cfg.get("role_id")
-        if role_id and task.type == TaskType.ASSISTANT:
+        if role_id and task.type == TaskType.INTERNAL_ASSIGNMENT:
             try:
                 from app.roles.role_manager import RoleManager
                 role = RoleManager().get(role_id)
@@ -640,7 +640,7 @@ class Scheduler:
             self._log(f"Benchmark: scheduling rerun with resource '{resource_id}'")
 
             shadow = Task(
-                type=TaskType.ASSISTANT,
+                type=TaskType.INTERNAL_ASSIGNMENT,
                 config=candidate,
                 priority=TaskPriority.LOW,
             )

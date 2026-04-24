@@ -118,7 +118,7 @@ class AgenticSmokeTest:
         from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
         task = Task(
             id=task_id,
-            type=TaskType.ASSISTANT,
+            type=TaskType.INTERNAL_ASSIGNMENT,
             priority=TaskPriority.HIGH,
             config={
                 "goal": goal,

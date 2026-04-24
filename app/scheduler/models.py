@@ -40,9 +40,9 @@ class TaskType(Enum):
 
     DREAMING = "dreaming"  # Memory consolidation (A→B→C→D pipeline)
     SCHEDULED = "scheduled"  # User calendar events
-    AGENT = "agent"  # External agent subprocess (opencode, claude_code, etc.)
+    EXTERNAL_AGENT = "external_agent"  # 3rd-party agent subprocess (opencode, claude_code, etc.)
     CUSTOM = "custom"  # User-defined tasks
-    ASSISTANT = "assistant"  # MoJo agentic assistant with a role (internal LLM think-act loop)
+    INTERNAL_ASSIGNMENT = "internal_assignment"  # Internal role-based LLM think-act loop
 
 
 @dataclass
@@ -244,8 +244,9 @@ class Task:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Task":
         """Create task from dictionary"""
-        # Convert enums
-        data["type"] = TaskType(data["type"])
+        # Convert enums — map legacy values to current names
+        _type_aliases = {"agent": "external_agent", "assistant": "internal_assignment"}
+        data["type"] = TaskType(_type_aliases.get(data["type"], data["type"]))
         data["status"] = TaskStatus(data["status"])
         data["priority"] = TaskPriority(data["priority"])
 

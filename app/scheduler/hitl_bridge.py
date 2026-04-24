@@ -52,7 +52,7 @@ def ask_user(
     if task is None:
         task = Task(
             id=task_id,
-            type=TaskType.AGENT,
+            type=TaskType.EXTERNAL_AGENT,
             status=TaskStatus.WAITING_FOR_INPUT,
             description=f"Ext-agent session: {task_id}",
             config={"ext_agent_hitl": True, "source": "external_agent"},

@@ -76,11 +76,11 @@ class TaskExecutor:
                 result = await self._execute_dreaming(task)
             elif task.type == TaskType.SCHEDULED:
                 result = await self._execute_scheduled(task)
-            elif task.type == TaskType.AGENT:
+            elif task.type == TaskType.EXTERNAL_AGENT:
                 result = await self._execute_agent(task)
             elif task.type == TaskType.CUSTOM:
                 result = await self._execute_custom(task)
-            elif task.type == TaskType.ASSISTANT:
+            elif task.type == TaskType.INTERNAL_ASSIGNMENT:
                 result = await self._execute_agentic(task)
             else:
                 raise ValueError(f"Unknown task type: {task.type}")

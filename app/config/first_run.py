@@ -264,7 +264,7 @@ def load_owner_profile(memory_path: Path) -> dict:
 _DEMO_TASKS = [
     {
         "id": "demo_rebecca_summarise",
-        "type": "assistant",
+        "type": "internal_assignment",
         "description": "Researcher: summarise recent memory and what you know about this project",
         "config": {
             "role_id": "researcher",
@@ -278,7 +278,7 @@ _DEMO_TASKS = [
     },
     {
         "id": "demo_ahman_health",
-        "type": "assistant",
+        "type": "internal_assignment",
         "description": "Analyst: check system health (memory path, config files, scheduler storage)",
         "config": {
             "role_id": "analyst",
@@ -294,7 +294,7 @@ _DEMO_TASKS = [
     },
     {
         "id": "demo_carl_review",
-        "type": "assistant",
+        "type": "internal_assignment",
         "description": "Coder: review the first_run.py module for quality issues",
         "config": {
             "role_id": "coder",

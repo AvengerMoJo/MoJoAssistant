@@ -832,7 +832,7 @@ class CapabilityRegistry:
 
         task = Task(
             id=task_id,
-            type=TaskType.ASSISTANT,
+            type=TaskType.INTERNAL_ASSIGNMENT,
             priority=priority_enum,
             config=config,
             resources=resources,
@@ -885,7 +885,7 @@ class CapabilityRegistry:
 
         task = Task(
             id=task_id,
-            type=TaskType.ASSISTANT,
+            type=TaskType.INTERNAL_ASSIGNMENT,
             priority=TaskPriority.MEDIUM,
             config=config,
             resources=TaskResources(max_iterations=int(args.get("max_iterations", 10))),

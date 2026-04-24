@@ -678,8 +678,8 @@ class ToolRegistry:
             },
             # External Agent Manager Tools — manages external agent processes (opencode, claude_code,
             # or any external agent). NOTE: These are NOT MoJo's internal agentic assistants.
-            # To run a MoJo agentic assistant task (e.g. Analyst), use scheduler_add_task with
-            # task_type="assistant" and a role_id.
+            # To run a MoJo role task (e.g. Analyst), use scheduler with
+            # type="internal_assignment" and a role_id.
             # Scheduler Tools
             # Scheduler Daemon Control Tools
             # Dreaming Tools
@@ -837,23 +837,23 @@ class ToolRegistry:
                 "description": (
                     "Schedule and manage tasks.\n\n"
                     "── DISPATCHING A ROLE TASK ──\n"
-                    "Use type='assistant' to assign work to a named role. The role's capabilities are\n"
+                    "Use type='internal_assignment' to assign work to a named role. The role's capabilities are\n"
                     "resolved automatically — you do NOT need to pass available_tools unless you want\n"
                     "to override or extend the role's defaults for this specific run.\n\n"
                     "Minimal dispatch (role handles the rest):\n"
-                    "  scheduler(action='add', type='assistant', role_id='researcher', goal='Summarise the latest Redis release notes')\n\n"
+                    "  scheduler(action='add', type='internal_assignment', role_id='researcher', goal='Summarise the latest Redis release notes')\n\n"
                     "Override tools for a single run (optional):\n"
-                    "  scheduler(action='add', type='assistant', role_id='network_admin', goal='Scan home network',\n"
+                    "  scheduler(action='add', type='internal_assignment', role_id='network_admin', goal='Scan home network',\n"
                     "            available_tools=['+terminal', '+exec'], max_iterations=15)\n"
                     "  available_tools modifiers: '+category' adds, '-category' removes, plain list replaces role caps.\n\n"
                     "Result artifacts written to:\n"
                     "  ~/.memory/task_sessions/<task_id>.json  — full iteration log\n"
                     "  ~/.memory/task_reports/<task_id>.json   — normalised completion record\n\n"
                     "── TASK TYPES ──\n"
-                    "  type='assistant' — role-based LLM think-act loop (most common)\n"
-                    "  type='custom'    — single shell command, no LLM\n"
-                    "  type='dreaming'  — memory consolidation pipeline\n"
-                    "  type='agent'     — external agent subprocess (opencode, claude_code)\n\n"
+                    "  type='internal_assignment' — role-based LLM think-act loop (most common)\n"
+                    "  type='custom'              — single shell command, no LLM\n"
+                    "  type='dreaming'            — memory consolidation pipeline\n"
+                    "  type='external_agent'      — 3rd-party agent subprocess (opencode, claude_code)\n\n"
                     "── ACTIONS ──\n"
                     "action='add',     type, goal, role_id?, available_tools?, max_iterations?, priority? — schedule\n"
                     "action='list',    status?, priority?, limit?   — compact task summary\n"
@@ -872,11 +872,11 @@ class ToolRegistry:
                         "task_id": {"type": "string"},
                         "type": {
                             "type": "string",
-                            "enum": ["assistant", "custom", "agent", "dreaming", "scheduled"],
+                            "enum": ["internal_assignment", "custom", "external_agent", "dreaming", "scheduled"],
                             "description": (
-                                "Task type. 'assistant' = role-based LLM task (most common). "
+                                "Task type. 'internal_assignment' = role-based LLM task for a MoJo role (most common). "
                                 "'custom' = shell command. 'dreaming' = memory pipeline. "
-                                "'agent' = external agent subprocess."
+                                "'external_agent' = 3rd-party agent subprocess (opencode, claude_code)."
                             ),
                         },
                         "goal": {"type": "string", "description": "What the agent should accomplish (add action)."},
@@ -885,7 +885,7 @@ class ToolRegistry:
                         "role_id": {
                             "type": "string",
                             "description": (
-                                "Role to assign this task to (add action, type='assistant'). "
+                                "Role to assign this task to (add action, type='internal_assignment'). "
                                 "The role's saved capabilities are used automatically — available_tools is optional."
                             ),
                         },
@@ -893,7 +893,7 @@ class ToolRegistry:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "OPTIONAL runtime capability override (add action, type='assistant'). "
+                                "OPTIONAL runtime capability override (add action, type='internal_assignment'). "
                                 "If omitted, the role's saved capabilities are used — no need to list tools manually. "
                                 "Use modifiers to adjust: '+terminal' adds terminal tools, '-web' removes web tools. "
                                 "Plain entries without +/- replace the role's capability layer entirely. "
@@ -957,7 +957,7 @@ class ToolRegistry:
                 "description": (
                     "External agent lifecycle hub. Call with no action for help menu.\n"
                     "NOTE: These are external agent processes (opencode, claude_code). "
-                    "For MoJo internal agentic tasks use scheduler(action='add', type='assistant', role_id=...).\n\n"
+                    "For MoJo internal agentic tasks use scheduler(action='add', type='internal_assignment', role_id=...).\n\n"
                     "action='list_types'                          — available agent types\n"
                     "action='start',   agent_id, type, ...        — start an agent\n"
                     "action='stop',    agent_id                   — stop an agent\n"
@@ -1565,7 +1565,7 @@ Agent resumes within seconds.
                 "dialog": (
                     "The 'dialog' tool has been removed from MCP. "
                     "dialog is a human ↔ role conversational interface — it belongs in the web dashboard UI, not in the MCP tool layer. "
-                    "If you want a role to perform work, use scheduler(action='add', type='assistant', role_id=...). "
+                    "If you want a role to perform work, use scheduler(action='add', type='internal_assignment', role_id=...). "
                     "If you want to chat with a role as a human, open the web dashboard."
                 ),
             }
@@ -3551,10 +3551,10 @@ Agent resumes within seconds.
             if original_task is None:
                 return {"status": "error", "message": f"Task '{task_id}' not found"}
 
-            if original_task.type != TaskType.ASSISTANT:
+            if original_task.type != TaskType.INTERNAL_ASSIGNMENT:
                 return {
                     "status": "error",
-                    "message": f"Task '{task_id}' is not an agentic assistant task (type: {original_task.type.value})",
+                    "message": f"Task '{task_id}' is not an internal_assignment task (type: {original_task.type.value})",
                 }
 
             if original_task.status.value not in ("failed", "completed"):
@@ -3586,7 +3586,7 @@ Agent resumes within seconds.
 
             resume_task = Task(
                 id=resume_task_id,
-                type=TaskType.ASSISTANT,
+                type=TaskType.INTERNAL_ASSIGNMENT,
                 priority=original_task.priority,
                 config=original_config,
                 resources=original_task.resources,
@@ -5337,7 +5337,7 @@ Agent resumes within seconds.
                 "destroy":    "Destroy an agent — params: agent_id",
                 "action":     "Send action to agent — params: agent_id, action, params",
             },
-            "note": "For MoJo internal agentic tasks use scheduler(action='add', type='assistant', role_id=...).",
+            "note": "For MoJo internal agentic tasks use scheduler(action='add', type='internal_assignment', role_id=...).",
             "example": 'agent(action="list")',
         }
 
@@ -5510,7 +5510,7 @@ Agent resumes within seconds.
         if existing is None:
             stub = Task(
                 id=task_id,
-                type=TaskType.AGENT,
+                type=TaskType.EXTERNAL_AGENT,
                 status=TaskStatus.RUNNING,
                 description=f"Headless Claude Code: {prompt[:80]}",
                 config={
