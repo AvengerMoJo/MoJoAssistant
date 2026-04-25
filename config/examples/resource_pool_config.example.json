@@ -1,11 +1,12 @@
 {
-  "_comment": "Example resource pool config. Copy to ~/.memory/config/resource_pool.json and fill in your own account names and env vars. Entries here are merged with config/resource_pool.json at runtime.",
+  "_comment": "Example resource pool config. Copy to ~/.memory/config/resource_pool.json and fill in your own accounts.",
+  "_note": "Inline api_key is the primary pattern (works with MCP resource_add tool). Use api_key_env only if you manage env vars externally.",
   "resources": {
     "lmstudio_glm4": {
       "type": "local",
       "provider": "openai",
       "base_url": "http://localhost:8080/v1",
-      "api_key_env": "LMSTUDIO_API_KEY",
+      "api_key": "sk-lm-...",
       "model": "zai-org/glm-4.7-flash",
       "tier": "free",
       "priority": 2,
@@ -18,7 +19,7 @@
       "type": "local",
       "provider": "openai",
       "base_url": "http://localhost:8080/v1",
-      "api_key_env": "LMSTUDIO_API_KEY",
+      "api_key": "sk-lm-...",
       "model": "qwen/qwen3.5-35b-a3b",
       "tier": "free",
       "priority": 1,
@@ -27,61 +28,18 @@
       "output_limit": 32768,
       "description": "Local Qwen 3.5-35B via LMStudio"
     },
-    "openrouter_account_a": {
+    "openrouter_my_account": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_A",
+      "api_key": "sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 10,
       "enabled": true,
       "context_limit": 131072,
       "output_limit": 8192,
-      "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (account A)"
-    },
-    "openrouter_account_b": {
-      "type": "api",
-      "provider": "openai-compatible",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_B",
-      "model": "openrouter/auto",
-      "tier": "free_api",
-      "priority": 10,
-      "enabled": true,
-      "context_limit": 131072,
-      "output_limit": 8192,
-      "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (account B)"
-    },
-    "openrouter_account_c": {
-      "type": "api",
-      "provider": "openai-compatible",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_C",
-      "model": "openrouter/auto",
-      "tier": "free_api",
-      "priority": 10,
-      "enabled": true,
-      "context_limit": 131072,
-      "output_limit": 8192,
-      "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (account C)"
-    },
-    "openrouter_account_d": {
-      "type": "api",
-      "provider": "openai-compatible",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_D",
-      "model": "openrouter/auto",
-      "tier": "free_api",
-      "priority": 11,
-      "enabled": true,
-      "context_limit": 131072,
-      "output_limit": 8192,
-      "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (account D — lower priority fallback)"
+      "description": "OpenRouter free-tier routing"
     }
   },
   "tier_policy": {

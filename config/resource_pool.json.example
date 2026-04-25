@@ -1,6 +1,7 @@
 {
   "comment": "Unified resource pool — single source of truth for all LLM resources. User overrides live in ~/.memory/config/resource_pool.json. Add new accounts there, not here.",
-  "_example_note": "OpenRouter entries below show the pattern for multi-account free-tier rotation. Replace account_a/b/c with your own OpenRouter account names and matching env vars.",
+  "_note": "Inline api_key is the primary pattern for orchestrated setups (users add resources via MCP config() tool). Use api_key_env only when the key lives in an existing environment variable that you manage externally.",
+  "_example_note": "OpenRouter entries below show both patterns. Inline api_key is preferred for MCP-orchestrated config. Use api_key_env for keys already in your environment or managed outside MoJoAssistant.",
   "tier_policy": {
     "free":     { "auto_approve": true },
     "free_api": { "auto_approve": true },
@@ -12,7 +13,6 @@
       "type": "local",
       "provider": "openai",
       "base_url": "http://localhost:8080/v1",
-      "api_key_env": "LMSTUDIO_API_KEY",
       "model": null,
       "dynamic_discovery": true,
       "tier": "free",
@@ -22,61 +22,31 @@
       "output_limit": 8192,
       "description": "Local LMStudio server — model auto-detected from /v1/models at runtime"
     },
-    "openrouter_account_a": {
+    "openrouter_my_account": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_A",
+      "api_key": "sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 10,
       "enabled": true,
       "context_limit": 131072,
       "output_limit": 8192,
-      "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (account A)"
+      "description": "OpenRouter free-tier routing — edit or replace via config(action='resource_add')"
     },
-    "openrouter_account_b": {
+    "openrouter_via_env": {
       "type": "api",
       "provider": "openai-compatible",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_B",
-      "model": "openrouter/auto",
-      "tier": "free_api",
-      "priority": 10,
-      "enabled": true,
-      "context_limit": 131072,
-      "output_limit": 8192,
-      "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (account B)"
-    },
-    "openrouter_account_c": {
-      "type": "api",
-      "provider": "openai-compatible",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_C",
-      "model": "openrouter/auto",
-      "tier": "free_api",
-      "priority": 10,
-      "enabled": true,
-      "context_limit": 131072,
-      "output_limit": 8192,
-      "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (account C)"
-    },
-    "openrouter_account_d": {
-      "type": "api",
-      "provider": "openai-compatible",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEY_ACCOUNT_D",
+      "api_key_env": "OPENROUTER_API_KEY",
       "model": "openrouter/auto",
       "tier": "free_api",
       "priority": 11,
       "enabled": true,
       "context_limit": 131072,
       "output_limit": 8192,
-      "account_group": "openrouter_free",
-      "description": "OpenRouter free-tier routing (account D — lower priority fallback)"
+      "description": "OpenRouter via env var — key resolved from MOJO_MEMORY/resource_pool.env at runtime"
     }
   }
 }

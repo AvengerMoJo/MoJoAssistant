@@ -4081,6 +4081,33 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Failed to save personal resource_pool.json: {e}"}
 
+        # Auto-write sandbox env when both api_key_env and api_key are provided —
+        # keeps runtime config self-contained so orchestration doesn't require
+        # manual env-file editing. The sandbox env file is loaded by ResourceManager
+        # alongside system env vars.
+        sandbox_env_path = None
+        env_key = entry.get("api_key_env")
+        env_value = entry.get("api_key")
+        if env_key and env_value:
+            try:
+                from app.scheduler.resource_pool import ResourceManager as _RM
+                sandbox_env_path = _RM.SANDBOX_ENV_FILE
+                existing_env = {}
+                if sandbox_env_path.exists():
+                    for line in sandbox_env_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, _, v = line.partition("=")
+                            existing_env[k.strip()] = v.strip()
+                existing_env[env_key] = env_value
+                sandbox_env_path.parent.mkdir(parents=True, exist_ok=True)
+                lines = [f"{k}={v}" for k, v in sorted(existing_env.items())]
+                sandbox_env_path.write_text("
+".join(lines) + "
+", encoding="utf-8")
+            except Exception as e:
+                self.logger.warning(f"Failed to auto-write sandbox env: {e}")
+
         # Reload resource manager
         try:
             self._on_resource_pool_config_change()
