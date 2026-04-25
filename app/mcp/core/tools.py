@@ -4102,9 +4102,7 @@ Agent resumes within seconds.
                 existing_env[env_key] = env_value
                 sandbox_env_path.parent.mkdir(parents=True, exist_ok=True)
                 lines = [f"{k}={v}" for k, v in sorted(existing_env.items())]
-                sandbox_env_path.write_text("
-".join(lines) + "
-", encoding="utf-8")
+                sandbox_env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             except Exception as e:
                 self.logger.warning(f"Failed to auto-write sandbox env: {e}")
 
