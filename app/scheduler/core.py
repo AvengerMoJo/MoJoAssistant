@@ -519,6 +519,7 @@ class Scheduler:
                     task.started_at = None
                     task.completed_at = None
                     task.last_error = None  # clear stale error from a previous failed run
+                    task.pending_question = None  # clear stale HITL state between cron cycles
                     self._log(f"Task {task.id} rescheduled for {next_run.isoformat()}")
                 else:
                     self._log(f"Task {task.id} completed (non-recurring)")
@@ -568,6 +569,7 @@ class Scheduler:
                         task.started_at = None
                         task.completed_at = None
                         task.result = None
+                        task.pending_question = None  # clear stale HITL state between cron cycles
                         self._log(f"Task {task.id} failed but rescheduled (cron) for {next_run.isoformat()}")
 
             # Save updated task
@@ -966,6 +968,7 @@ class Scheduler:
                 task.schedule = next_run
                 task.started_at = None
                 task.completed_at = None
+                task.pending_question = None  # clear stale HITL state on restart
                 # NOTE: task.result is intentionally kept — it reflects the last
                 # successful run and is valuable for history / debug.
                 self._log(
