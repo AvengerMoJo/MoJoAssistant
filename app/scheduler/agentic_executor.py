@@ -1358,8 +1358,9 @@ class AgenticExecutor:
             else:
                 # Instead of hard-failing, surface a HITL question so the user
                 # can grant more iterations and resume the session.
+                _actual_iters = len(iteration_log)
                 self._waiting_for_input_question = (
-                    f"Iteration budget exhausted ({max_iterations} iterations used) "
+                    f"Iteration budget exhausted ({_actual_iters} of {max_iterations} iterations used) "
                     "without a final answer. Reply 'yes' to grant more iterations and "
                     "resume, or 'no' to mark the task as failed."
                 )
