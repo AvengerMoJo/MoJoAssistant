@@ -672,14 +672,15 @@ class AgenticExecutor:
         else:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
 
-        # Owner context — inject filtered slice based on whether we may call external LLMs.
+        # Owner context — inject filtered slice based on tier and role-declared field list.
         _owner_profile = load_owner_profile()
         if _owner_profile:
             _context_tier = infer_context_tier(tier_preference)
-            _owner_slice = build_owner_context_slice(_owner_profile, _context_tier)
+            _owner_fields = role.get("owner_context_fields") if role else None
+            _owner_slice = build_owner_context_slice(_owner_profile, _context_tier, _owner_fields)
             if _owner_slice:
                 system_prompt = system_prompt + _owner_slice
-                self._log(f"Owner context injected (tier={_context_tier})")
+                self._log(f"Owner context injected (tier={_context_tier}, fields={_owner_fields or 'all'})")
 
         # Lazy-connect external MCP servers and register their tools on first use.
         if not self._mcp_tools_discovered and self._mcp_client_manager.has_servers():
@@ -838,6 +839,7 @@ class AgenticExecutor:
         _context_trim_count: int = 0
         _last_resource_id: Optional[str] = None
         _last_used_model: Optional[str] = None
+        _failed_resource_ids: set = set()  # skip recently-failed resources within this task
 
         # Tracked across iterations for fallback completion recovery
         _last_response_text: str = ""
@@ -885,13 +887,20 @@ class AgenticExecutor:
                 resource = self._rm.acquire_by_id(pinned_resource_id)
                 if resource is None:
                     self._log(f"Pinned resource '{pinned_resource_id}' unavailable, falling back to tier selection")
-                    resource = self._rm.acquire(tier_preference=iter_tiers)
+                    resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
             elif role_resource_requirements:
-                resource = self._rm.acquire_by_requirements(role_resource_requirements)
+                resource = self._rm.acquire_by_requirements(role_resource_requirements, exclude_ids=_failed_resource_ids)
                 if resource is None:
                     # Fall back to tier-only acquire if requirements can't be fully satisfied
-                    resource = self._rm.acquire(tier_preference=iter_tiers)
+                    resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
             else:
+                resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
+            if resource is None and _failed_resource_ids:
+                # All preferred resources failed — retry without exclusion list (last resort)
+                self._log(
+                    f"All non-failed resources exhausted, retrying without exclusion (iteration {iteration})",
+                    "warning",
+                )
                 resource = self._rm.acquire(tier_preference=iter_tiers)
             if resource is None:
                 self._log(f"No resource available, waiting 30s (iteration {iteration})")
@@ -985,7 +994,8 @@ class AgenticExecutor:
                         pass  # audit logging must never break task execution
             except Exception as e:
                 self._rm.record_usage(resource.id, success=False)
-                self._log(f"LLM call failed: {e}", "error")
+                _failed_resource_ids.add(resource.id)
+                self._log(f"LLM call failed: {e} — resource '{resource.id}' excluded for this task", "error")
                 iteration_log.append(
                     {
                         "iteration": iteration,
@@ -997,7 +1007,7 @@ class AgenticExecutor:
                         "elapsed_s": round(time.time() - iter_start, 1),
                     }
                 )
-                continue  # Try next iteration with potentially different resource
+                continue  # Try next iteration with a different resource
 
             message = response["choices"][0]["message"]
             used_model = response.get("_selected_model", resource.model)

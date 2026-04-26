@@ -127,7 +127,7 @@ class PolicyMonitor:
             Equivalent to data_boundary: {allow_external_mcp: false, allowed_tiers: ["free"]}.
             Explicit data_boundary values take precedence over local_only defaults.
         """
-        policy = (role.get("policy") if role else None) or {}
+        policy = dict((role.get("policy") if role else None) or {})
         data_boundary = dict((role.get("data_boundary") if role else None) or {})
 
         # local_only: true is syntactic sugar for the most restrictive data_boundary.
@@ -135,6 +135,15 @@ class PolicyMonitor:
         if role and role.get("local_only"):
             data_boundary.setdefault("allow_external_mcp", False)
             data_boundary.setdefault("allowed_tiers", ["free"])
+
+        # Trust-level coupling: owner_profile.assistant_relationships[role_id].trust_level
+        # fills policy and data_boundary gaps before explicit role values are applied.
+        # Explicit role policy always wins — trust_level only sets defaults.
+        try:
+            from app.scheduler.policy.relationship_coupler import apply_trust_defaults
+            policy, data_boundary = apply_trust_defaults(role_id, policy, data_boundary)
+        except Exception as _e:
+            logger.debug("RelationshipPolicyCoupler skipped: %s", _e)
 
         checker_names: List[str] = policy.get("checkers", ["static", "content", "sensitive_domain"])
 

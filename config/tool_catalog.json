@@ -1,5 +1,5 @@
 {
-  "comment": "System tool catalog — maps tool names to categories and metadata. User custom tools live in ~/.memory/config/tool_catalog.json. Roles declare tool_access by category.",
+  "comment": "System tool catalog — richer metadata layer merged on top of capability_catalog.json by list_tools(). To add custom tools without changing this file, create ~/.memory/config/tool_catalog.json with the same structure; entries there win on conflict. Roles declare capabilities by category, not by tool name.",
   "categories": {
     "memory":       { "description": "Memory and knowledge base access" },
     "file":         { "description": "File read, write, and search operations" },

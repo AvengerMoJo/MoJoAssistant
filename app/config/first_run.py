@@ -97,14 +97,17 @@ OWNER_PROFILE_TEMPLATE: dict = {
         "researcher": {
             "relationship": "research partner",
             "focus": ["deep analysis", "comparative reasoning", "explanation"],
+            "trust_level": "standard",
         },
         "analyst": {
             "relationship": "security and operations specialist",
             "focus": ["hardening", "infrastructure", "risk surfacing"],
+            "trust_level": "standard",
         },
         "coder": {
             "relationship": "code reviewer",
             "focus": ["code quality", "security", "maintainability"],
+            "trust_level": "standard",
         },
     },
     "policy_authority": {

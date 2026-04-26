@@ -119,6 +119,12 @@ class ToolRegistry:
                 "sensitive_keys": [],
                 "on_change": self._on_tool_catalog_change,
             },
+            "tool_catalog": {
+                "file": "config/tool_catalog.json",
+                "description": "Tool metadata catalog — richer descriptions and category assignments shown to agents via list_tools(). System layer: config/tool_catalog.json. User custom tools: ~/.memory/config/tool_catalog.json. Drop a JSON entry there to add custom tools without touching system defaults.",
+                "sensitive_keys": [],
+                "on_change": self._on_tool_catalog_change,
+            },
             "agentic_tools": {
                 "file": "config/dynamic_tools.json",
                 "description": "Dynamic tool registry for agentic LLM tasks - tools available to AI agents during execution. AI can add/remove tools with policy enforcement and automatic rollback.",
@@ -3219,9 +3225,12 @@ Agent resumes within seconds.
             from app.config.config_loader import load_layered_json_config
             from app.scheduler.capability_registry import CapabilityRegistry
 
-            catalog = load_layered_json_config("config/capability_catalog.json")
-            catalog_entries = catalog.get("tools", {})
-            categories_meta = catalog.get("categories", {})
+            # Merge capability_catalog (system capabilities) with tool_catalog
+            # (richer metadata + user custom tools). tool_catalog wins on conflict.
+            cap_catalog = load_layered_json_config("config/capability_catalog.json")
+            tool_catalog = load_layered_json_config("config/tool_catalog.json")
+            catalog_entries = {**cap_catalog.get("tools", {}), **tool_catalog.get("tools", {})}
+            categories_meta = {**cap_catalog.get("categories", {}), **tool_catalog.get("categories", {})}
             category_filter = args.get("category")
 
             registry = CapabilityRegistry()

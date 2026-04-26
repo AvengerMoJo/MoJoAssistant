@@ -155,11 +155,13 @@ config/tool_operation_logs.json
 # config/scheduler_config.json is committed as system default; personal tasks go in ~/.memory/config/
 config/notifications_config.json
 config/roles/*.json
-# Bundled demo templates are committed
+# Bundled demo templates and system roles are committed
 !config/roles/researcher.json
 !config/roles/network_admin.json
 !config/roles/code_reviewer.json
 !config/roles/developer.json
+!config/roles/data_monitor.json
+!config/roles/data_watchdog.json
 
 # MoJoAssistant specific - sensitive files
 .mojo_history

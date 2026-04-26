@@ -797,7 +797,8 @@ class RoleChatSession:
         mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
         ninechapter_overlay = build_behavioral_overlay(role)
         system_prompt = mode_overlay + ninechapter_overlay + _strip_tool_sections(base_prompt)
-        _owner_slice = build_owner_context_slice(load_owner_profile(), "minimal")
+        _owner_fields = role.get("owner_context_fields") if role else None
+        _owner_slice = build_owner_context_slice(load_owner_profile(), "minimal", _owner_fields)
         if _owner_slice:
             system_prompt = system_prompt + _owner_slice
 
@@ -935,7 +936,8 @@ class RoleChatSession:
         mode_overlay = role_overlay if role_overlay else contract.prompt_overlay
         ninechapter_overlay = build_behavioral_overlay(role)
         system_prompt = mode_overlay + ninechapter_overlay + _strip_tool_sections(base_prompt)
-        _owner_slice = build_owner_context_slice(load_owner_profile(), "minimal")
+        _owner_fields = role.get("owner_context_fields") if role else None
+        _owner_slice = build_owner_context_slice(load_owner_profile(), "minimal", _owner_fields)
         if _owner_slice:
             system_prompt = system_prompt + _owner_slice
 

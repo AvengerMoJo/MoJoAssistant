@@ -378,9 +378,13 @@ class ResourceManager:
         tier_preference: Optional[List[ResourceTier]] = None,
         min_context: int = 0,
         min_output: int = 0,
+        exclude_ids: Optional[set] = None,
     ) -> Optional[LLMResource]:
         """
         Acquire the best available resource matching constraints.
+
+        exclude_ids: skip these resource IDs (used to avoid re-selecting a
+        resource that just failed within the current task run).
 
         Returns None if no resource is available.
         """
@@ -392,6 +396,8 @@ class ResourceManager:
             candidates = []
             for resource in self._resources.values():
                 if not resource.enabled:
+                    continue
+                if exclude_ids and resource.id in exclude_ids:
                     continue
                 if resource.tier not in tier_preference:
                     continue
@@ -449,6 +455,7 @@ class ResourceManager:
     def acquire_by_requirements(
         self,
         requirements: Dict[str, Any],
+        exclude_ids: Optional[set] = None,
     ) -> Optional[LLMResource]:
         """
         Acquire the best available resource matching structured requirements.
@@ -458,6 +465,9 @@ class ResourceManager:
             min_context (int):         minimum context_limit required
             min_output (int):          minimum output_limit required
             capabilities (list[str]): resource must declare all listed capabilities
+
+        exclude_ids: skip these resource IDs (used to avoid re-selecting a
+        resource that just failed within the current task run).
 
         Returns None if nothing satisfies the requirements.
         """
@@ -482,6 +492,8 @@ class ResourceManager:
             candidates = []
             for resource in self._resources.values():
                 if not resource.enabled:
+                    continue
+                if exclude_ids and resource.id in exclude_ids:
                     continue
                 if resource.tier not in tier_preference:
                     continue

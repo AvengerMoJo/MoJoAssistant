@@ -21,6 +21,7 @@ from app.scheduler.policy.content import ContentAwarePolicyChecker
 from app.scheduler.policy.data_boundary_checker import DataBoundaryChecker
 from app.scheduler.policy.context import ContextAwarePolicyChecker
 from app.scheduler.policy.sensitive_domain import SensitiveDomainChecker
+from app.scheduler.policy.relationship_coupler import get_trust_level, apply_trust_defaults
 from app.scheduler.policy.monitor import PolicyMonitor
 
 # Auto-register all built-in checkers
@@ -38,5 +39,7 @@ __all__ = [
     "DataBoundaryChecker",
     "ContextAwarePolicyChecker",
     "SensitiveDomainChecker",
+    "get_trust_level",
+    "apply_trust_defaults",
     "PolicyMonitor",
 ]
