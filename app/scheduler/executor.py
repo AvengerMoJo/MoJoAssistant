@@ -7,6 +7,7 @@ Handler logic lives in app/scheduler/handlers/.
 External callers (core.py, tools.py) access executor state through the
 backward-compat properties and methods below — those interfaces are stable.
 """
+# [hitl-orchestrator: generic]
 
 from typing import Optional
 

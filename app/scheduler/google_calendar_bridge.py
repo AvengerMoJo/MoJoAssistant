@@ -13,6 +13,7 @@ approach used by the scheduler's executor.py for calendar event creation.
 Both functions return a plain dict: {"success": True/False, "data": ..., "error": ...}
 Auth errors surface clearly so the caller can ask the user to re-authenticate.
 """
+# [mojo-integration]
 
 from __future__ import annotations
 

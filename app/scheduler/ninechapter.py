@@ -31,6 +31,7 @@ adaptability       Gap discipline, escalation threshold
 
 Thresholds: ≥90 → strong directive, 75–89 → moderate, <75 → silent.
 """
+# [mojo-integration]
 from __future__ import annotations
 
 import json

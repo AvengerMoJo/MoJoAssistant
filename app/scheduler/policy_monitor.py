@@ -5,6 +5,7 @@ All existing imports of the form:
     from app.scheduler.policy_monitor import PolicyMonitor, PolicyDecision
 continue to work unchanged.
 """
+# [mojo-integration]
 
 from app.scheduler.policy import (  # noqa: F401
     PolicyChecker,

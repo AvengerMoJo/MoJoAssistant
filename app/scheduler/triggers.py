@@ -4,6 +4,7 @@ Trigger System for Scheduler
 Handles time-based and event-based task triggering.
 Supports cron-like expressions for recurring tasks.
 """
+# [hitl-orchestrator: generic]
 
 from datetime import datetime, timedelta
 from typing import Optional, List

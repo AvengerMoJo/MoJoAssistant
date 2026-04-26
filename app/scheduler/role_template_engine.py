@@ -31,6 +31,7 @@ Growth path:
   phase surfaces them into the first user message — the template itself
   stays stable.  Character evolves through memory, not prompt re-authoring.
 """
+# [mojo-integration]
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional

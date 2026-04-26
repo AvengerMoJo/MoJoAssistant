@@ -22,6 +22,7 @@ Physical flow:
                    ├── {"status": "answered", "reply": "..."} and clears it
                    └── {"status": "pending"} if not yet answered
 """
+# [hitl-orchestrator: generic]
 
 from __future__ import annotations
 

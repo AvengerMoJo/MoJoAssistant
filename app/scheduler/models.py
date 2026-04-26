@@ -3,6 +3,7 @@ Scheduler Data Models
 
 Defines task structures and enums for the scheduler system.
 """
+# [hitl-orchestrator: generic]
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime

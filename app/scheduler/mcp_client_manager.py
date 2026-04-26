@@ -24,6 +24,7 @@ The personal layer (~/.memory/config/mcp_servers.json) overrides system
 entries with the same id. Users or internal assistants can add entries there
 without touching the system config.
 """
+# [mojo-integration]
 
 import asyncio
 import json

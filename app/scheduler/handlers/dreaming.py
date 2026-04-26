@@ -1,4 +1,5 @@
 """Dreaming task handler — memory consolidation via the ABCD pipeline."""
+# [mojo-integration]
 from __future__ import annotations
 
 import json

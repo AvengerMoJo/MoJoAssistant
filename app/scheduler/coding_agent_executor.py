@@ -11,6 +11,7 @@ Architecture (three tiers):
 
 See docs/architecture/MCP_DESIGN.md §16 for the full architectural rationale.
 """
+# [mojo-integration]
 
 from __future__ import annotations
 

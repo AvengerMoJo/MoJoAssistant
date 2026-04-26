@@ -3,6 +3,7 @@ Scheduler Core - The "Game Loop"
 
 Persistent ticker that continuously checks for work and executes tasks.
 """
+# [mojo-integration]
 
 import asyncio
 import json

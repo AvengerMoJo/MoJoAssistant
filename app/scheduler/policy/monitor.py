@@ -32,6 +32,7 @@ Future MCP checker example:
             return PolicyDecision(**result)
     PolicyMonitor.register_checker("mcp", MCPPolicyChecker)
 """
+# [hitl-orchestrator: generic]
 
 import logging
 from typing import Any, Dict, List, Optional, Type

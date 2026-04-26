@@ -18,6 +18,7 @@ Layout:
   ~/.memory/benchmarks/execution_log.jsonl  — append-only record of runs
   ~/.memory/benchmarks/tuning_report.json   — latest AutoTuner output
 """
+# [mojo-integration]
 
 from __future__ import annotations
 

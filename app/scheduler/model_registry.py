@@ -17,6 +17,7 @@ Key normalisation:
   We index both the raw key and a normalised lowercase version, and try several
   prefix variants (bare, "openrouter/", "huggingface/") to maximise hit rate.
 """
+# [hitl-orchestrator: generic]
 
 import json
 import logging

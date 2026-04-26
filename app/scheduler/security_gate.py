@@ -40,6 +40,7 @@ Replace check() with:
 
 The GateDecision dataclass is already designed to carry across an event bus.
 """
+# [hitl-orchestrator: generic]
 from __future__ import annotations
 
 import logging

@@ -5,6 +5,7 @@ ExecutorContext: shared lazy state passed to every handler.
 TaskHandler: ABC each handler implements.
 HandlerRegistry: TaskType → TaskHandler map; dispatch entry point.
 """
+# [hitl-orchestrator: generic]
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

@@ -1,4 +1,5 @@
 """Scheduled task handler — calendar events (local JSON/ICS and Google Calendar)."""
+# [mojo-integration]
 from __future__ import annotations
 
 import asyncio

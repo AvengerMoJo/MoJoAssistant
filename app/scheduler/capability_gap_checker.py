@@ -30,6 +30,7 @@ Extending the signal map
 Add entries to _CAPABILITY_SIGNALS to teach the checker about new patterns.
 Each entry maps a capability category name to a list of goal keyword phrases.
 """
+# [hitl-orchestrator: generic]
 from __future__ import annotations
 
 import re

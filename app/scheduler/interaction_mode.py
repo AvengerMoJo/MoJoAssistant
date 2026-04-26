@@ -20,6 +20,7 @@ Usage
     contract = get_mode_contract(InteractionMode.DASHBOARD_CHAT)
     system_prompt = contract.prompt_overlay + role_persona_prompt
 """
+# [hitl-orchestrator: generic]
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -4,6 +4,7 @@ Task Queue Management
 Handles persistent storage and retrieval of scheduled tasks.
 Uses JSON for simplicity and debuggability.
 """
+# [hitl-orchestrator: generic]
 
 import json
 import os

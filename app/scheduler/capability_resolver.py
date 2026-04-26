@@ -33,6 +33,7 @@ Two-layer config:
   agent_defaults in the personal file extend (not replace) the system list.
   always_available in the personal file is merged with the system list.
 """
+# [hitl-orchestrator: generic]
 from __future__ import annotations
 
 import logging

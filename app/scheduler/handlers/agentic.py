@@ -1,4 +1,5 @@
 """Agentic task handler — autonomous LLM think-act loop, including parallel fan-out."""
+# [mojo-integration]
 from __future__ import annotations
 
 import asyncio

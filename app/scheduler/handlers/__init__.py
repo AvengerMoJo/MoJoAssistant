@@ -3,6 +3,7 @@ Task handler registry — one register() call per TaskType.
 
 New task type: add a handler file here, call registry.register() below.
 """
+# [mojo-integration]
 from app.scheduler.executor_registry import HandlerRegistry
 from app.scheduler.models import TaskType
 from app.scheduler.handlers.dreaming import DreamingHandler

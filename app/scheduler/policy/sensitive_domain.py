@@ -10,6 +10,7 @@ Sensitive domains are loaded once at task start from the owner profile.
 If no owner profile exists, or sensitive_domains is empty, this checker
 is effectively a no-op.
 """
+# [mojo-integration]
 
 import json
 import logging

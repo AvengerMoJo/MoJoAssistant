@@ -1,4 +1,5 @@
 """External agent task handler — OpenCode / AgentRegistry dispatch."""
+# [mojo-integration]
 from __future__ import annotations
 
 from app.scheduler.executor_registry import ExecutorContext, TaskHandler

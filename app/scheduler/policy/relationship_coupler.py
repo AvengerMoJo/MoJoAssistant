@@ -12,6 +12,7 @@ Trust levels and their effect on policy defaults:
 Trust level only adjusts DEFAULTS. Explicit role policy config always wins.
 If a role has no entry in assistant_relationships, "standard" is assumed.
 """
+# [mojo-integration]
 
 from typing import Any, Dict, Optional
 

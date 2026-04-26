@@ -1,4 +1,5 @@
 """Prompt-based Planning Workflow with Versioning."""
+# [mojo-integration]
 
 import json
 import os

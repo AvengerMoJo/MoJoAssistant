@@ -4,6 +4,7 @@ Agentic Executor
 Autonomous think-act loop that drives LLM conversations to completion
 using resources from the ResourceManager.
 """
+# [mojo-integration]
 
 import asyncio
 import inspect

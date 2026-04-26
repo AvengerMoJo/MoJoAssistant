@@ -1,4 +1,5 @@
 """Custom task handler — user-defined shell commands, optionally via atd."""
+# [mojo-integration]
 from __future__ import annotations
 
 import asyncio

@@ -17,6 +17,7 @@ Implementing a custom checker:
     # Or register programmatically:
     PolicyMonitor.register_checker("my_checker", MyChecker)
 """
+# [hitl-orchestrator: generic]
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field

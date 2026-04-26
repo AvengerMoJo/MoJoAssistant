@@ -14,6 +14,7 @@ does not have.
 
 Session history persists at ~/.memory/roles/{role_id}/chat_history/{session_id}.json
 """
+# [mojo-integration]
 
 from __future__ import annotations
 

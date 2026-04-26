@@ -14,6 +14,7 @@ Extending:
 
     PolicyMonitor.register_checker("my_checker", MyChecker)
 """
+# [hitl-orchestrator: generic]
 
 from app.scheduler.policy.base import PolicyChecker, PolicyDecision
 from app.scheduler.policy.static import StaticPolicyChecker

@@ -18,6 +18,7 @@ This checker is intentionally simple and fast — pure regex, no LLM.
 It is the foundation; a future LLMPolicyChecker or MCPPolicyChecker can
 extend this interface with deeper context understanding.
 """
+# [hitl-orchestrator: generic]
 
 import json
 import logging

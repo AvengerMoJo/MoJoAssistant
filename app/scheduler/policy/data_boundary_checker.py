@@ -19,6 +19,7 @@ The tier constraint (allowed_tiers) is enforced at the resource-acquisition
 level in AgenticExecutor, not here, because it governs LLM calls rather
 than individual tool dispatches.
 """
+# [hitl-orchestrator: generic]
 
 import logging
 from typing import Any, Dict

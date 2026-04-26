@@ -7,6 +7,7 @@ Implements the original PolicyMonitor logic as a pluggable checker:
   3. per-tool limits   — max_{tool}_per_task counters
   4. require_confirmation_for — allowed but flagged
 """
+# [hitl-orchestrator: generic]
 
 from typing import Any, Dict, List
 

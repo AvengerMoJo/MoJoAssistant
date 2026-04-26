@@ -20,6 +20,7 @@ Role config example:
 With max_violations_before_halt=0 (the default) this checker is a no-op,
 so roles that omit context_rules are entirely unaffected.
 """
+# [hitl-orchestrator: generic]
 
 import logging
 from typing import Any, Dict

@@ -4,6 +4,7 @@ Task Session Storage
 Persistent per-task conversation trails for agentic tasks.
 Stores one JSON file per task in ~/.memory/task_sessions/.
 """
+# [hitl-orchestrator: generic]
 
 import json
 from dataclasses import dataclass, field, asdict

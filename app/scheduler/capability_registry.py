@@ -1,4 +1,5 @@
 """Dynamic Tool Registry with Sandbox Security."""
+# [mojo-integration]
 
 import json
 import os
