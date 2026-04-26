@@ -7,3 +7,6 @@
 [submodule "submodules/agency-agents"]
 	path = submodules/agency-agents
 	url = https://github.com/msitarzewski/agency-agents.git
+[submodule "submodules/HITLOrchestrator"]
+	path = submodules/HITLOrchestrator
+	url = https://github.com/AvengerMoJo/HITLOrchestrator.git
