@@ -744,11 +744,16 @@ class AgenticExecutor:
                 resume_from, system_prompt
             )
             if messages is None:
-                return TaskResult(
-                    success=False,
-                    error_message=f"Cannot resume: session '{resume_from}' not found",
+                # Session to resume doesn't exist — fall back to fresh start
+                # rather than hard-failing. The goal is still in config so the
+                # task can run from scratch.
+                self._log(
+                    f"Resume session '{resume_from}' not found — starting fresh",
+                    "warning",
                 )
-            if reply_to_question:
+                resume_from = None
+                config.pop("resume_from_task_id", None)
+            if messages is not None and reply_to_question:
                 # If the pause was a SecurityGate budget escalation and the user approved,
                 # grant a budget extension so the gate doesn't immediately re-fire.
                 # Detection uses task.pending_question (persisted in the scheduler DB)
@@ -777,7 +782,7 @@ class AgenticExecutor:
                     f"User's reply: {reply_to_question}",
                     iteration=start_iteration,
                 )
-            else:
+            elif messages is not None:
                 # Normal resume after timeout/failure
                 messages.append(
                     {
@@ -789,7 +794,7 @@ class AgenticExecutor:
                         ),
                     }
                 )
-        else:
+        if not resume_from:
             start_iteration = 0
             # Build initial messages
             messages: List[Dict[str, str]] = [
