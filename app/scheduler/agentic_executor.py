@@ -678,7 +678,11 @@ class AgenticExecutor:
         if _owner_profile:
             _context_tier = infer_context_tier(tier_preference)
             _owner_fields = role.get("owner_context_fields") if role else None
-            _owner_slice = build_owner_context_slice(_owner_profile, _context_tier, _owner_fields)
+            try:
+                _owner_slice = build_owner_context_slice(_owner_profile, _context_tier, _owner_fields)
+            except TypeError:
+                # Cached owner_context module predates fields_filter param — fall back to 2-arg form
+                _owner_slice = build_owner_context_slice(_owner_profile, _context_tier)
             if _owner_slice:
                 system_prompt = system_prompt + _owner_slice
                 self._log(f"Owner context injected (tier={_context_tier}, fields={_owner_fields or 'all'})")

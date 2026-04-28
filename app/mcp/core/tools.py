@@ -472,6 +472,7 @@ class ToolRegistry:
         # Order matters: reload dependencies before the modules that use them.
         candidates = [
             "app.scheduler.benchmark_store",
+            "app.roles.owner_context",
             "app.scheduler.agentic_executor",
             "app.config.doctor",
             "app.scheduler.core",          # must be last — depends on above
