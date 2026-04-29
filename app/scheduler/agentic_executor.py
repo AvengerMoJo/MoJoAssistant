@@ -599,9 +599,19 @@ class AgenticExecutor:
                     # Pull expanded data_boundary from monitor (local_only expansion applied)
                     self._data_boundary = self._policy_monitor.data_boundary
                 else:
-                    self._log(f"Role '{role_id}' not found — continuing without role")
+                    msg = (
+                        f"Role resolution failed for role_id='{role_id}'. "
+                        "Agentic tasks require a valid role and must not fallback."
+                    )
+                    self._log(msg, level="error")
+                    return TaskResult(success=False, error_message=msg)
             except Exception as e:
-                self._log(f"Failed to load role '{role_id}': {e}")
+                msg = (
+                    f"Role load failed for role_id='{role_id}': {e}. "
+                    "Agentic tasks require a valid role and must not fallback."
+                )
+                self._log(msg, level="error")
+                return TaskResult(success=False, error_message=msg)
 
         # Setup-time ceiling: validate available_tools against role policy
         available_tools = config.get("available_tools", [])
@@ -698,9 +708,13 @@ class AgenticExecutor:
             _owner_fields = role.get("owner_context_fields") if role else None
             try:
                 _owner_slice = build_owner_context_slice(_owner_profile, _context_tier, _owner_fields)
-            except TypeError:
-                # Cached owner_context module predates fields_filter param — fall back to 2-arg form
-                _owner_slice = build_owner_context_slice(_owner_profile, _context_tier)
+            except TypeError as e:
+                msg = (
+                    f"Owner context build failed for task {task.id}: {e}. "
+                    "Runtime must not fallback to legacy owner_context call signature."
+                )
+                self._log(msg, level="error")
+                return TaskResult(success=False, error_message=msg)
             if _owner_slice:
                 system_prompt = system_prompt + _owner_slice
                 self._log(f"Owner context injected (tier={_context_tier}, fields={_owner_fields or 'all'})")
@@ -714,8 +728,12 @@ class AgenticExecutor:
                 if count:
                     self._log(f"Registered {count} tools from external MCP servers")
             except BaseException as e:
-                self._log(f"External MCP discovery failed (continuing): {e}", level="warning")
-                self._mcp_tools_discovered = True  # don't retry on every task
+                msg = (
+                    f"External MCP discovery failed for task {task.id}: {e}. "
+                    "Agentic runtime must not continue after discovery failure."
+                )
+                self._log(msg, level="error")
+                return TaskResult(success=False, error_message=msg)
 
         # Tool names already resolved above (before capability_summary build).
         # self._enabled_tool_names is set; nothing to re-resolve here.
@@ -766,15 +784,12 @@ class AgenticExecutor:
                 resume_from, system_prompt
             )
             if messages is None:
-                # Session to resume doesn't exist — fall back to fresh start
-                # rather than hard-failing. The goal is still in config so the
-                # task can run from scratch.
-                self._log(
-                    f"Resume session '{resume_from}' not found — starting fresh",
-                    "warning",
+                msg = (
+                    f"Resume session '{resume_from}' not found for task {task.id}. "
+                    "Runtime must not fallback to fresh start for explicit resume requests."
                 )
-                resume_from = None
-                config.pop("resume_from_task_id", None)
+                self._log(msg, "error")
+                return TaskResult(success=False, error_message=msg)
             if messages is not None and reply_to_question:
                 # If the pause was a SecurityGate budget escalation and the user approved,
                 # grant a budget extension so the gate doesn't immediately re-fire.
@@ -863,15 +878,10 @@ class AgenticExecutor:
         iteration_log: List[Dict[str, Any]] = []
         start_time = time.time()
         final_answer: Optional[str] = None
-        auto_extracted: bool = False  # provenance flag for fallback completion
         _context_trim_count: int = 0
         _last_resource_id: Optional[str] = None
         _last_used_model: Optional[str] = None
         _failed_resource_ids: set = set()  # skip recently-failed resources within this task
-
-        # Tracked across iterations for fallback completion recovery
-        _last_response_text: str = ""
-        _last_turn_had_tool_calls: bool = False
 
         self._log(
             f"Starting agentic loop for task {task.id} (max {max_iterations} iterations)"
@@ -915,41 +925,39 @@ class AgenticExecutor:
             if pinned_resource_id:
                 resource = self._rm.acquire_by_id(pinned_resource_id)
                 if resource is None:
-                    self._log(f"Pinned resource '{pinned_resource_id}' unavailable, falling back to tier selection")
-                    resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
+                    msg = (
+                        f"Pinned resource '{pinned_resource_id}' unavailable for task {task.id}. "
+                        "Runtime must not fallback to alternate resource selection."
+                    )
+                    self._log(msg, "error")
+                    return TaskResult(success=False, error_message=msg)
             elif role_resource_requirements:
                 resource = self._rm.acquire_by_requirements(role_resource_requirements, exclude_ids=_failed_resource_ids)
                 if resource is None:
-                    # Fall back to tier-only acquire if requirements can't be fully satisfied
-                    resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
+                    msg = (
+                        f"Resource requirements not satisfiable for task {task.id}: "
+                        f"{role_resource_requirements}. Runtime must not fallback to tier-only acquire."
+                    )
+                    self._log(msg, "error")
+                    return TaskResult(success=False, error_message=msg)
             else:
                 resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
-            if resource is None and _failed_resource_ids:
-                # All preferred resources failed — retry without exclusion list (last resort)
-                self._log(
-                    f"All non-failed resources exhausted, retrying without exclusion (iteration {iteration})",
-                    "warning",
-                )
-                resource = self._rm.acquire(tier_preference=iter_tiers)
             if resource is None:
-                self._log(f"No resource available, waiting 30s (iteration {iteration})")
-                # Wait and retry once
-                import asyncio
-
-                await asyncio.sleep(30)
-                resource = self._rm.acquire(tier_preference=iter_tiers)
-                if resource is None:
-                    self._log("Still no resource available, aborting")
-                    iteration_log.append(
-                        {
-                            "iteration": iteration,
-                            "status": "no_resource",
-                            "tier_preference": [t.value for t in iter_tiers],
-                            "selection_reason": selection_reason,
-                            "elapsed_s": round(time.time() - start_time, 1),
-                        }
-                    )
-                    break
+                msg = (
+                    f"No resource available for task {task.id} at iteration {iteration}. "
+                    "Runtime must fail explicitly and must not retry fallback paths."
+                )
+                self._log(msg, "error")
+                iteration_log.append(
+                    {
+                        "iteration": iteration,
+                        "status": "no_resource",
+                        "tier_preference": [t.value for t in iter_tiers],
+                        "selection_reason": selection_reason,
+                        "elapsed_s": round(time.time() - start_time, 1),
+                    }
+                )
+                return TaskResult(success=False, error_message=msg, metrics={"iteration_log": iteration_log})
 
             # Data boundary: enforce allowed_tiers constraint from role
             allowed_tiers = self._data_boundary.get("allowed_tiers")
@@ -1042,9 +1050,7 @@ class AgenticExecutor:
             used_model = response.get("_selected_model", resource.model)
             _last_resource_id = resource.id
             _last_used_model = used_model
-            # Thinking models (e.g. Qwen3) return reasoning in reasoning_content
-            # with content empty. Fall back so the executor can see the response.
-            raw_content = message.get("content", "") or message.get("reasoning_content", "") or ""
+            raw_content = message.get("content", "") or ""
             # Extract <think>...</think> blocks before stripping — preserved as
             # metadata on the session message so the dreaming pipeline and debugger
             # can use the chain-of-thought without it polluting the visible response.
@@ -1052,9 +1058,6 @@ class AgenticExecutor:
             _reasoning = "\n---\n".join(b.strip() for b in _think_blocks if b.strip()) or None
             # Strip think blocks from the visible response the executor acts on
             response_text = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
-            # Also accept reasoning_content as a separate field (LMStudio --jinja mode)
-            if not _reasoning and message.get("reasoning_content"):
-                _reasoning = message["reasoning_content"].strip() or None
             tool_calls = message.get("tool_calls")
 
             # ----------------------------------------------------------------
@@ -1106,10 +1109,6 @@ class AgenticExecutor:
                     response_text = re.sub(
                         r"<tool_call>.*?</tool_call>", "", response_text, flags=re.DOTALL
                     ).strip()
-
-            # Track last substantive assistant turn for fallback completion recovery
-            _last_response_text = response_text
-            _last_turn_had_tool_calls = bool(tool_calls)
 
             # Handle tool calls if present
             if tool_calls:
@@ -1282,7 +1281,6 @@ class AgenticExecutor:
                         final_answer=final_answer,
                         iteration_log=iteration_log,
                         duration_seconds=round(time.time() - start_time, 1),
-                        auto_extracted=False,
                         resource_id=_last_resource_id,
                         model=_last_used_model,
                     )
@@ -1346,43 +1344,6 @@ class AgenticExecutor:
                 },
             )
 
-        # ── Fallback completion recovery ──────────────────────────────────────
-        # If the agent finished its work but forgot to write <FINAL_ANSWER> tags,
-        # auto-extract the last response rather than sending the user a HITL question
-        # for a task that's effectively done.
-        #
-        # Conditions (all must hold):
-        #   - no final_answer found by tag parsing
-        #   - no pending waiting_for_input (model didn't ask a question)
-        #   - last turn had NO tool calls (model was writing, not acting)
-        #   - last response is substantive (length + no in-progress patterns)
-        #
-        # This is a recovery mechanism, not the primary path. A proper
-        # forced-finalization phase on the last iteration should be added later.
-        if (
-            final_answer is None
-            and not _cv_waiting_q.get()
-            and not _last_turn_had_tool_calls
-        ):
-            text = _last_response_text.strip()
-            _IN_PROGRESS_PATTERNS = [
-                "let me continue", "i'll now", "i will now", "next i will",
-                "next, i", "i need more information", "i need to", "i'll need to",
-                "let me check", "let me look", "i should", "i'll start",
-                "first, i", "first i'll",
-            ]
-            _looks_complete = (
-                len(text) > 150
-                and not any(p in text.lower() for p in _IN_PROGRESS_PATTERNS)
-            )
-            if _looks_complete:
-                final_answer = text
-                auto_extracted = True
-                self._log(
-                    f"Task {task.id}: fallback completion recovery — "
-                    "auto-extracted last response (no FINAL_ANSWER tags found)"
-                )
-
         success = final_answer is not None
 
         # Finalize session status if not already set
@@ -1422,23 +1383,6 @@ class AgenticExecutor:
                 },
             )
 
-        # Write completion artifact for auto-extracted completions too.
-        # The clean FINAL_ANSWER path writes inside the loop (line above the break).
-        # Auto-extracted completions fall through the loop without hitting that path.
-        if success and auto_extracted:
-            if get_mode_contract(InteractionMode.SCHEDULER_AGENTIC_TASK).stores_completion_artifact:
-                self._store_completion_artifact(
-                    task=task,
-                    role_id=config.get("role_id"),
-                    goal=goal,
-                    final_answer=final_answer,
-                    iteration_log=iteration_log,
-                    duration_seconds=total_elapsed,
-                    auto_extracted=True,
-                    resource_id=_last_resource_id,
-                    model=_last_used_model,
-                )
-
         metrics: Dict[str, Any] = {
             "iterations": len(iteration_log),
             "iteration_log": iteration_log,
@@ -1449,9 +1393,6 @@ class AgenticExecutor:
             "resource_id": _last_resource_id,
             "model": _last_used_model,
         }
-        if auto_extracted:
-            metrics["completion_mode"] = "auto_extracted"
-            metrics["auto_extracted_final_answer"] = True
 
         # REFLECT: write task learnings back to memory (non-blocking, errors swallowed)
         if success and final_answer:
@@ -1476,7 +1417,6 @@ class AgenticExecutor:
         final_answer: str,
         iteration_log: Optional[List[Dict]] = None,
         duration_seconds: float = 0.0,
-        auto_extracted: bool = False,
         resource_id: Optional[str] = None,
         model: Optional[str] = None,
     ) -> None:
@@ -1487,8 +1427,7 @@ class AgenticExecutor:
         execution metrics, provenance, and a promotion block, while keeping the
         legacy `content` field for backwards-compatible readers.
 
-        In task_report_v2, `status` records execution outcome (for example
-        completed or completed_fallback) and `review_status` starts as
+        In task_report_v2, `status` records execution outcome and `review_status` starts as
         pending_review so the user can inspect and promote the report to the
         knowledge base. Called only when the mode contract has
         stores_completion_artifact=True (i.e. SCHEDULER_AGENTIC_TASK).
@@ -1513,11 +1452,7 @@ class AgenticExecutor:
             ilog = iteration_log or []
             tool_call_count = sum(1 for e in ilog if e.get("status") == "tool_use")
 
-            # Completion mode
-            if auto_extracted:
-                completion_mode = "auto_extracted_last_response"
-            else:
-                completion_mode = "model_final_answer"
+            completion_mode = "model_final_answer"
 
             # Paths
             session_file = str(self._session_storage._path(task.id))
@@ -1525,7 +1460,7 @@ class AgenticExecutor:
             now = _dt.now().isoformat()
 
             # Execution outcome status
-            exec_status = "completed_fallback" if auto_extracted else "completed"
+            exec_status = "completed"
 
             report = {
                 # ── Legacy fields (kept for backwards-compatible readers) ──
@@ -1548,7 +1483,6 @@ class AgenticExecutor:
                 "final_answer": {
                     "raw_text": final_answer,
                     "completion_mode": completion_mode,
-                    "auto_extracted": auto_extracted,
                     "validation_notes": [],
                 },
                 "artifacts": {
