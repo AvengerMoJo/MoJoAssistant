@@ -12,6 +12,7 @@ import json
 import os
 import re
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +30,19 @@ from app.roles.owner_context import load_owner_profile, infer_context_tier, buil
 from app.scheduler.capability_resolver import CapabilityResolver
 from app.scheduler.role_template_engine import RoleTemplateEngine
 from app.scheduler.capability_gap_checker import CapabilityGapChecker
+
+# Per-execution isolated state.  Each scheduler task runs as a separate
+# asyncio.Task (via asyncio.create_task), so ContextVars give automatic
+# per-task isolation with no locks and no dict lookups.
+_cv_waiting_q:    ContextVar = ContextVar("exec_waiting_q",    default=None)
+_cv_waiting_c:    ContextVar = ContextVar("exec_waiting_c",    default=None)
+_cv_gate_pending: ContextVar = ContextVar("exec_gate_pending", default=False)
+_cv_tool_calls:   ContextVar = ContextVar("exec_tool_calls",   default=0)
+_cv_consec_notool:ContextVar = ContextVar("exec_consec_notool",default=0)
+_cv_budget_ext:   ContextVar = ContextVar("exec_budget_ext",   default=0)
+_cv_exhausts_ask: ContextVar = ContextVar("exec_exhausts_ask", default=False)
+_cv_requires_tool:ContextVar = ContextVar("exec_requires_tool",default=False)
+_cv_task_id:      ContextVar = ContextVar("exec_task_id",      default=None)
 
 # Tools whose output commonly bloats context (bash stdout, file reads).
 # Results longer than this cap are truncated before being added to messages.
@@ -512,17 +526,18 @@ class AgenticExecutor:
             resume_from_task_id (str, optional): Load previous session and continue.
             reply_to_question (str, optional): User reply injected after WAITING_FOR_INPUT resume.
         """
-        # Per-execution state for ask_user
-        self._waiting_for_input_question: Optional[str] = None
-        self._waiting_for_input_choices: Optional[list] = None
-        self._gate_escalation_pending: bool = False  # True when pause was from SecurityGate
-        self._tool_calls_made: int = 0          # non-ask_user tool calls this execution
-        self._consecutive_no_tool: int = 0      # iterations with tools available but unused
-        self._budget_extension_granted: int = 0  # extra iterations granted via BUDGET_EXTENSION_REQUEST
-        self._exhausts_tools_before_asking: bool = False
-        self._requires_tool_use: bool = False   # reject final answer if no tools called yet
-        # Task id stored so _execute_single_tool can inject per-task tmux socket
-        self._current_task_id: Optional[str] = task.id
+        # Per-execution state — stored in ContextVars so concurrent asyncio tasks
+        # each get their own isolated copy (no cross-task contamination).
+        _cv_waiting_q.set(None)
+        _cv_waiting_c.set(None)
+        _cv_gate_pending.set(False)
+        _cv_tool_calls.set(0)
+        _cv_consec_notool.set(0)
+        _cv_budget_ext.set(0)
+        _cv_exhausts_ask.set(False)
+        _cv_requires_tool.set(False)
+        _cv_task_id.set(task.id)
+        self._tool_calls_made = 0
         # Propagate task context to registry for sub-agent dispatch linkage + role scoping
         _task_role_id = (task.config or {}).get("role_id") if task.config else None
         self._tool_registry.set_task_context(task.id, task.dispatch_depth, role_id=_task_role_id)
@@ -575,12 +590,12 @@ class AgenticExecutor:
                     self._policy_monitor = PolicyMonitor.from_role(role_id, role, task_id=task.id)
                     self._log(f"Loaded role: {role.get('name')} (id={role_id})")
                     behavior_rules = role.get("behavior_rules", {})
-                    self._exhausts_tools_before_asking = behavior_rules.get(
+                    _cv_exhausts_ask.set(behavior_rules.get(
                         "exhausts_tools_before_asking", False
-                    )
-                    self._requires_tool_use = behavior_rules.get(
+                    ))
+                    _cv_requires_tool.set(behavior_rules.get(
                         "requires_tool_use", False
-                    )
+                    ))
                     # Pull expanded data_boundary from monitor (local_only expansion applied)
                     self._data_boundary = self._policy_monitor.data_boundary
                 else:
@@ -627,7 +642,10 @@ class AgenticExecutor:
         role_overlay = (role.get("mode_overlays") or {}).get(
             InteractionMode.SCHEDULER_AGENTIC_TASK.value
         ) if role else None
-        mode_overlay = role_overlay if role_overlay else mode_contract.prompt_overlay
+        mode_overlay = self._compose_mode_overlay(
+            mode_contract.prompt_overlay,
+            role_overlay,
+        )
 
         # Resolve tool names: system defaults + role capabilities + runtime override.
         enabled_tool_names = self._capability_resolver.resolve(
@@ -863,13 +881,14 @@ class AgenticExecutor:
         while True:
             iteration += 1
             # Apply any budget extension granted by BUDGET_EXTENSION_REQUEST ask_user calls
-            if self._budget_extension_granted > 0:
-                max_iterations += self._budget_extension_granted
+            if _cv_budget_ext.get() > 0:
+                _ext = _cv_budget_ext.get()
+                max_iterations += _ext
                 self._log(
-                    f"Task {task.id}: budget extended +{self._budget_extension_granted} "
+                    f"Task {task.id}: budget extended +{_ext} "
                     f"iterations (new max: {max_iterations})"
                 )
-                self._budget_extension_granted = 0
+                _cv_budget_ext.set(0)
             if iteration > max_iterations:
                 break
             abs_iteration = start_iteration + iteration
@@ -1094,7 +1113,7 @@ class AgenticExecutor:
 
             # Handle tool calls if present
             if tool_calls:
-                self._consecutive_no_tool = 0  # reset drift counter on actual tool use
+                _cv_consec_notool.set(0)  # reset drift counter on actual tool use
                 # Append assistant message with tool calls
                 messages.append(message)
                 self._record(
@@ -1108,7 +1127,7 @@ class AgenticExecutor:
                 )
 
                 tool_results = await self._execute_tool_calls(tool_calls)
-                waiting = self._waiting_for_input_question
+                waiting = _cv_waiting_q.get()
                 for tc, result_content in zip(tool_calls, tool_results):
                     messages.append(
                         {
@@ -1166,7 +1185,7 @@ class AgenticExecutor:
             )
 
             # Detect plain-text BUDGET_EXTENSION_REQUEST (agent wrote it as text, not a tool call)
-            if _BUDGET_EXTENSION_PREFIX in response_text and self._budget_extension_granted == 0:
+            if _BUDGET_EXTENSION_PREFIX in response_text and _cv_budget_ext.get() == 0:
                 import re as _re
                 match = _re.search(r"Need\s+(\d+)\s+more", response_text, _re.IGNORECASE)
                 grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
@@ -1189,8 +1208,8 @@ class AgenticExecutor:
             # inject a targeted forcing message so the next iteration acts.
             if (
                 candidate_final_answer is not None
-                and self._requires_tool_use
-                and self._tool_calls_made == 0
+                and _cv_requires_tool.get()
+                and _cv_tool_calls.get() == 0
             ):
                 forcing_msg = (
                     "Your plan is noted but you have not called any tools yet. "
@@ -1247,8 +1266,8 @@ class AgenticExecutor:
                 # Bug #3: clear any pending HITL question (e.g. SecurityGate fired on a
                 # prior iteration but the model still produced a final answer this turn).
                 # The task is done — HITL should not override completion.
-                self._waiting_for_input_question = None
-                self._waiting_for_input_choices = None
+                _cv_waiting_q.set(None)
+                _cv_waiting_c.set(None)
                 self._log(f"Task {task.id}: got final answer at iteration {iteration}")
                 self._session_storage.update_status(
                     task.id,
@@ -1282,20 +1301,20 @@ class AgenticExecutor:
             # After 2 such iterations inject a brief forcing nudge so the model
             # doesn't keep drifting in prose land when it should be acting.
             if tool_defs:
-                self._consecutive_no_tool += 1
+                _cv_consec_notool.set(_cv_consec_notool.get() + 1)
             else:
-                self._consecutive_no_tool = 0
+                _cv_consec_notool.set(0)
 
-            if tool_defs and self._consecutive_no_tool >= 2:
+            if tool_defs and _cv_consec_notool.get() >= 2:
                 available_names = [t["function"]["name"] for t in tool_defs]
                 next_msg = (
-                    f"You have responded {self._consecutive_no_tool} times without "
+                    f"You have responded {_cv_consec_notool.get()} times without "
                     "calling any tools. You have the following tools available: "
                     f"{available_names}. "
                     "Call a tool now to make progress, or provide your "
                     "<FINAL_ANSWER> if the task is complete."
                 )
-                self._consecutive_no_tool = 0  # reset after nudge
+                _cv_consec_notool.set(0)  # reset after nudge
             elif iteration >= max_iterations - 1:
                 remaining = max_iterations - iteration
                 next_msg = NEAR_LIMIT_PROMPT.format(
@@ -1309,7 +1328,7 @@ class AgenticExecutor:
         total_elapsed = round(time.time() - start_time, 1)
 
         # If the agent paused to ask the user a question, return early
-        if self._waiting_for_input_question:
+        if _cv_waiting_q.get():
             self._session_storage.update_status(
                 task.id,
                 "waiting_for_input",
@@ -1317,8 +1336,8 @@ class AgenticExecutor:
             session_file = str(self._session_storage._path(task.id))
             return TaskResult(
                 success=False,
-                waiting_for_input=self._waiting_for_input_question,
-                waiting_for_input_choices=self._waiting_for_input_choices,
+                waiting_for_input=_cv_waiting_q.get(),
+                waiting_for_input_choices=_cv_waiting_c.get(),
                 output_file=session_file,
                 metrics={
                     "iterations": len(iteration_log),
@@ -1342,7 +1361,7 @@ class AgenticExecutor:
         # forced-finalization phase on the last iteration should be added later.
         if (
             final_answer is None
-            and not self._waiting_for_input_question
+            and not _cv_waiting_q.get()
             and not _last_turn_had_tool_calls
         ):
             text = _last_response_text.strip()
@@ -1379,21 +1398,21 @@ class AgenticExecutor:
                 # Instead of hard-failing, surface a HITL question so the user
                 # can grant more iterations and resume the session.
                 _actual_iters = len(iteration_log)
-                self._waiting_for_input_question = (
+                _cv_waiting_q.set(
                     f"Iteration budget exhausted ({_actual_iters} of {max_iterations} iterations used) "
                     "without a final answer. Reply 'yes' to grant more iterations and "
                     "resume, or 'no' to mark the task as failed."
                 )
-                self._waiting_for_input_choices = ["yes", "no"]
+                _cv_waiting_c.set(["yes", "no"])
                 self._session_storage.update_status(task.id, "waiting_for_input")
 
         session_file = str(self._session_storage._path(task.id))
 
-        if self._waiting_for_input_question:
+        if _cv_waiting_q.get():
             return TaskResult(
                 success=False,
-                waiting_for_input=self._waiting_for_input_question,
-                waiting_for_input_choices=self._waiting_for_input_choices,
+                waiting_for_input=_cv_waiting_q.get(),
+                waiting_for_input_choices=_cv_waiting_c.get(),
                 output_file=session_file,
                 metrics={
                     "iterations": len(iteration_log),
@@ -2027,7 +2046,7 @@ class AgenticExecutor:
 
         # SecurityGate: composes SafetyPolicy + danger budget + plan scope.
         gate_result = self._gate.check(
-            task_id=self._current_task_id or "",
+            task_id=_cv_task_id.get() or "",
             tool_name=name,
             tool_def=tool.to_dict() if tool else None,
             args=args,
@@ -2035,7 +2054,7 @@ class AgenticExecutor:
         if gate_result.decision == SecurityDecision.HARD_STOP:
             self._log(f"Tool '{name}' hard-blocked by gate: {gate_result.reason}", "warning")
             await self._emit_policy_violation(
-                task_id=self._current_task_id,
+                task_id=_cv_task_id.get(),
                 tool_name=name,
                 layer="security_gate",
                 checker=gate_result.rule_source or "safety",
@@ -2046,9 +2065,9 @@ class AgenticExecutor:
             return {"error": f"Security gate blocked: {gate_result.reason}"}
         if gate_result.decision == SecurityDecision.STOP_ASK_USER:
             self._log(f"Gate escalating '{name}' to ask_user: {gate_result.reason}", "warning")
-            self._waiting_for_input_question = gate_result.ask_question or gate_result.reason
-            self._waiting_for_input_choices = ["continue", "cancel"]
-            self._gate_escalation_pending = True
+            _cv_waiting_q.set(gate_result.ask_question or gate_result.reason)
+            _cv_waiting_c.set(["continue", "cancel"])
+            _cv_gate_pending.set(True)
             return {"success": True, "message": f"Security gate paused: {gate_result.reason}"}
         if gate_result.decision == SecurityDecision.WARN_ALLOW:
             self._log(gate_result.warn_message or gate_result.reason, "warning")
@@ -2064,7 +2083,7 @@ class AgenticExecutor:
                 else "error"
             )
             await self._emit_policy_violation(
-                task_id=self._current_task_id,
+                task_id=_cv_task_id.get(),
                 tool_name=name,
                 layer="role",
                 checker=role_decision.checker,
@@ -2082,7 +2101,7 @@ class AgenticExecutor:
         if name == "ask_user":
             # Enforce behavior_rules.exhausts_tools_before_asking — agent must
             # attempt at least one other tool before escalating to the user.
-            if self._exhausts_tools_before_asking and self._tool_calls_made == 0:
+            if _cv_exhausts_ask.get() and _cv_tool_calls.get() == 0:
                 available = [
                     t for t in getattr(self, "_enabled_tool_names", [])
                     if t != "ask_user"
@@ -2104,9 +2123,9 @@ class AgenticExecutor:
                 import re as _re
                 match = _re.search(r"Need\s+(\d+)\s+more", question, _re.IGNORECASE)
                 grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
-                self._budget_extension_granted += grant
+                _cv_budget_ext.set(_cv_budget_ext.get() + grant)
                 self._log(
-                    f"Task {self._current_task_id}: budget extension granted (+{grant} iterations). "
+                    f"Task {_cv_task_id.get()}: budget extension granted (+{grant} iterations). "
                     f"Message: {question[:120]}"
                 )
                 return {
@@ -2114,15 +2133,18 @@ class AgenticExecutor:
                     "message": f"Budget extended by {grant} iterations. Continue your work.",
                 }
 
-            self._waiting_for_input_question = question
-            self._waiting_for_input_choices = choices if isinstance(choices, list) else None
+            _cv_waiting_q.set(question)
+            _cv_waiting_c.set(choices if isinstance(choices, list) else None)
             result_msg = f"Question submitted to user: {question}"
             if choices:
                 result_msg += f" (choices: {choices})"
             return {"success": True, "message": result_msg}
 
-        # Count non-ask_user tool calls for behavior_rules enforcement
-        self._tool_calls_made += 1
+        # Count non-ask_user tool calls for behavior_rules enforcement.
+        # Mirror into instance state too so validation paths and unit tests can
+        # use a deterministic counter even outside a live ContextVar loop.
+        _cv_tool_calls.set(_cv_tool_calls.get() + 1)
+        self._tool_calls_made = getattr(self, "_tool_calls_made", 0) + 1
 
         # tmux tools may accept a per-call "socket" override, but do not force
         # one here. The tmux MCP backend may already be configured with a fixed
@@ -2575,7 +2597,12 @@ class AgenticExecutor:
             {"read_file", "list_files", "search_in_files", "task_session_read", "task_report_read"} & enabled
         )
 
-        if mentions_blocker and has_relevant_tools and self._tool_calls_made == 0:
+        tool_attempts = max(
+            int(_cv_tool_calls.get() or 0),
+            int(getattr(self, "_tool_calls_made", 0) or 0),
+        )
+
+        if mentions_blocker and has_relevant_tools and tool_attempts == 0:
             return (
                 False,
                 "final answer claims missing/unavailable file or task-session access "
@@ -2584,7 +2611,7 @@ class AgenticExecutor:
 
         # Optional task-level contract for callers that need stricter semantics.
         contract = config.get("result_contract") or {}
-        if contract.get("requires_tool_use") and self._tool_calls_made == 0:
+        if contract.get("requires_tool_use") and tool_attempts == 0:
             return False, "result_contract requires at least one successful tool attempt"
 
         if contract.get("requires_output_file"):
@@ -2595,6 +2622,21 @@ class AgenticExecutor:
                     return False, f"required output files not written: {missing}"
 
         return True, None
+
+    def _compose_mode_overlay(self, base_overlay: str, role_overlay: Optional[str]) -> str:
+        """
+        Keep scheduler execution constraints always-on.
+
+        Role overlays are additive guidance and must not replace the core
+        scheduler-agentic execution contract.
+        """
+        base = (base_overlay or "").strip()
+        extra = (role_overlay or "").strip()
+        if not extra:
+            return base + ("\n\n" if base else "")
+        if not base:
+            return extra + "\n\n"
+        return base + "\n\n" + extra + "\n\n"
 
     def _infer_exact_text_from_goal(self, goal: str) -> Optional[str]:
         """Infer exact output requirement from goal text when user asks for exact output."""

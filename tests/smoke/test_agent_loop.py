@@ -106,7 +106,7 @@ async def test_agent_loop_completes_with_final_answer(isolated_memory_path):
 
     task = Task(
         id="smoke-agent-1",
-        type=TaskType.ASSISTANT,
+        type=TaskType.INTERNAL_ASSIGNMENT,
         priority=TaskPriority.LOW,
         config={
             "goal": "Say hello",
@@ -147,7 +147,7 @@ async def test_agent_loop_fails_gracefully_when_no_resource(isolated_memory_path
 
     task = Task(
         id="smoke-agent-no-resource",
-        type=TaskType.ASSISTANT,
+        type=TaskType.INTERNAL_ASSIGNMENT,
         priority=TaskPriority.LOW,
         config={
             "goal": "This should fail gracefully",
@@ -176,7 +176,7 @@ async def test_agent_loop_missing_goal_returns_failure(isolated_memory_path):
 
     task = Task(
         id="smoke-agent-no-goal",
-        type=TaskType.ASSISTANT,
+        type=TaskType.INTERNAL_ASSIGNMENT,
         priority=TaskPriority.LOW,
         config={},  # no "goal" key
     )
@@ -200,7 +200,7 @@ async def test_agent_loop_file_capability_translates_to_working_tool_and_writes_
 
     task = Task(
         id="smoke-agent-file-1",
-        type=TaskType.ASSISTANT,
+        type=TaskType.INTERNAL_ASSIGNMENT,
         priority=TaskPriority.LOW,
         config={
             "goal": "Inspect the current directory and report that you did it",

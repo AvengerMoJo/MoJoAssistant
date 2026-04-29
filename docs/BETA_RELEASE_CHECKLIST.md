@@ -15,6 +15,7 @@
 | URGENT | Briefing output written nowhere persistent — output dies in session file | Fixed (write_file added to tools) |
 | HIGH | No smoke test coverage for cron→notify path | Pending |
 | HIGH | No smoke test coverage for capability tool dispatch (import errors invisible) | Pending |
+| HIGH | Assistant runtime modular isolation boundary not enforced by release gate | Pending |
 | HIGH | `memory` category in agent_defaults resolves to zero tools — dead default | Fixed |
 | HIGH | Config doctor missing from CI — silent drift goes undetected | Pending |
 | MEDIUM | Role overlays had hardcoded tool names — drift when tool names change | Fixed |
@@ -125,6 +126,13 @@
 - **SSE streaming**: real-time browser/client event stream
 - **Event types**: task_started, task_completed, task_failed, task_waiting_for_input, system_notification
 - **Filters**: min_severity, notify_user_only, event_types whitelist
+
+### 13. Assistant Runtime Modularization (Pre-Beta Gate)
+- **Spec**: `docs/architecture/ASSISTANT_RUNTIME_API.md`
+- **Required modules**: assistant runtime, role kernel, policy gateway, assistant supervisor
+- **Hard rule**: all tool calls pass policy gateway; no direct bypass
+- **Isolation**: one assistant per process space; per-assistant memory/policy context
+- **Gate**: beta blocked until modular boundary is implemented and smoke matrix passes
 
 ---
 

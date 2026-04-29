@@ -4226,15 +4226,38 @@ Agent resumes within seconds.
 
     async def _execute_resource_pool_smoke_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run the agentic smoke test on a specific resource."""
-        resource_id = args.get("resource_id", "").strip()
-        full = bool(args.get("full", False))
+        extra = args.get("parameters") if isinstance(args.get("parameters"), dict) else {}
+        merged = dict(extra)
+        merged.update({k: v for k, v in args.items() if v is not None})
+
+        resource_id = str(merged.get("resource_id", "")).strip()
+        full = bool(merged.get("full", False))
+        role_id = (merged.get("role_id") or "").strip() or None
+        dynamic_goal = (merged.get("dynamic_goal") or "").strip() or None
+        dynamic_tools = merged.get("dynamic_available_tools")
+        dynamic_expected_tool = (merged.get("dynamic_expected_tool") or "").strip() or None
+        dynamic_planning_prompt = (merged.get("dynamic_planning_prompt") or "").strip() or None
+        dynamic_system_prompt = (merged.get("dynamic_system_prompt") or "").strip() or None
+        debug_artifact = bool(merged.get("debug_artifact", False))
+        issue_note = (merged.get("issue_note") or "").strip() or None
         if not resource_id:
             return {"status": "error", "message": "resource_id is required"}
 
         try:
             from app.scheduler.agentic_smoke_test import AgenticSmokeTest
             tester = AgenticSmokeTest()
-            result = await tester.run(resource_id=resource_id, full=full)
+            result = await tester.run(
+                resource_id=resource_id,
+                full=full,
+                role_id=role_id,
+                dynamic_goal=dynamic_goal,
+                dynamic_available_tools=dynamic_tools,
+                dynamic_expected_tool=dynamic_expected_tool,
+                dynamic_planning_prompt=dynamic_planning_prompt,
+                dynamic_system_prompt=dynamic_system_prompt,
+                debug_artifact=debug_artifact,
+                issue_note=issue_note,
+            )
 
             # Persist agentic_capable flag to ResourceManager
             try:
@@ -4638,7 +4661,7 @@ Agent resumes within seconds.
             resource_id = args.get("resource_id")
             if not resource_id:
                 return {"status": "error", "message": "Parameter 'resource_id' is required."}
-            return await self._execute_resource_pool_smoke_test({"resource_id": resource_id})
+            return await self._execute_resource_pool_smoke_test(args)
         if action == "llm_models":
             resource_id = args.get("resource_id")
             if not resource_id:
@@ -4693,7 +4716,7 @@ Agent resumes within seconds.
                         "resource_edit":         "Edit an existing resource — params: resource_id + any fields to update",
                         "resource_approve":      "Approve a resource — params: resource_id",
                         "resource_revoke":       "Revoke a resource — params: resource_id",
-                        "resource_smoke_test":   "Test resource connectivity — params: resource_id",
+                        "resource_smoke_test":   "Run agentic smoke checks — required: resource_id; optional: role_id, dynamic_goal, dynamic_available_tools, dynamic_expected_tool, dynamic_planning_prompt, dynamic_system_prompt, debug_artifact, issue_note",
                         "llm_models":            "List live models from server — params: resource_id",
                         "registry_refresh":      "Refresh public model registry cache (LiteLLM + OpenRouter) — auto-populates context/token limits for known models",
                         "capability_list":       "List all capabilities (system built-ins + user custom)",
