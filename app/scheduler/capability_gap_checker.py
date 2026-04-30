@@ -60,6 +60,12 @@ _BLOCKER_SIGNALS: Dict[str, List[str]] = {
     ],
 }
 
+# Shell-command-like patterns that strongly imply execution capability.
+_SHELL_COMMAND_PATTERNS: List[re.Pattern[str]] = [
+    re.compile(r"`[^`]{2,}`"),  # inline code command, e.g. `hostname -I`
+    re.compile(r"\b[a-z0-9_.-]+\s+\|\s+[a-z0-9_.-]+"),  # pipeline, e.g. a | b
+]
+
 # Phrases that suggest a capability may be needed (warning level)
 _WARNING_SIGNALS: Dict[str, List[str]] = {
     "web": [
@@ -157,6 +163,14 @@ class CapabilityGapChecker:
                         f"Goal mentions '{phrase}' but role has no '{cap}' capability"
                     )
                     break  # one blocker per capability is enough
+
+        # Detect shell-command style goals and require terminal/exec coverage.
+        has_shell_style_goal = any(p.search(goal_lower) for p in _SHELL_COMMAND_PATTERNS)
+        has_exec_coverage = ("terminal" in resolved_categories) or ("exec" in resolved_categories)
+        if has_shell_style_goal and not has_exec_coverage:
+            result.blockers.append(
+                "Goal includes shell-command syntax but role has no 'terminal' or 'exec' capability"
+            )
 
         # Check warning signals
         for cap, phrases in _WARNING_SIGNALS.items():
