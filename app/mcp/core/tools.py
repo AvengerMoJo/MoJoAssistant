@@ -2830,6 +2830,8 @@ Agent resumes within seconds.
                 config = task.config or {}
                 goal = config.get("goal", "")
                 result = task.result
+                debug = self._build_task_debug_summary(task.id)
+                intent_preflight = ((result.metrics or {}).get("intent_preflight") if result else None)
                 return {
                     "id": task.id,
                     "status": task.status.value,
@@ -2843,6 +2845,8 @@ Agent resumes within seconds.
                     "pending_question": task.pending_question,
                     "success": result.success if result else None,
                     "completion_mode": (result.metrics or {}).get("completion_mode") if result else None,
+                    "intent_preflight_ok": (intent_preflight or {}).get("ok") if intent_preflight else None,
+                    "debug": debug,
                 }
 
             tasks_data = [_summarise(t) for t in tasks]
@@ -2898,6 +2902,7 @@ Agent resumes within seconds.
                 result = {k: v for k, v in result.items() if v is not None}
 
             # Compact response — highlight pending_question if present
+            debug = self._build_task_debug_summary(task_id)
             compact = {
                 "id": d["id"],
                 "type": d["type"],
@@ -2906,7 +2911,11 @@ Agent resumes within seconds.
                 "description": _trim(d.get("description") or "", 120),
                 "config": cfg,
                 "result": result or None,
+                "debug": debug,
             }
+            intent_preflight = ((result or {}).get("metrics") or {}).get("intent_preflight") if result else None
+            if intent_preflight is not None:
+                compact["intent_preflight"] = intent_preflight
             # Surface pending_question at the top level — easy to miss in config
             pq = d.get("pending_question") or cfg.get("pending_question")
             if pq:
@@ -2926,6 +2935,70 @@ Agent resumes within seconds.
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to get task: {str(e)}"}
+
+    def _build_task_debug_summary(self, task_id: str) -> Dict[str, Any]:
+        """
+        Build a compact debug payload for dashboard/task list views.
+        Includes session/report file paths, latest error fields, and recent messages.
+        """
+        import json
+        from pathlib import Path
+        from app.config.paths import get_memory_subpath
+
+        def _trim(s: str, n: int = 220) -> str:
+            if not isinstance(s, str):
+                return s
+            return s[:n] + ("…" if len(s) > n else "")
+
+        session_path = Path(get_memory_subpath("task_sessions")) / f"{task_id}.json"
+        report_path = Path(get_memory_subpath("task_reports")) / f"{task_id}.json"
+        out: Dict[str, Any] = {
+            "session_file": str(session_path),
+            "report_file": str(report_path),
+            "session_exists": session_path.exists(),
+            "report_exists": report_path.exists(),
+        }
+
+        # Session-side debug context
+        if session_path.exists():
+            try:
+                sess = json.loads(session_path.read_text(encoding="utf-8"))
+                out["session_status"] = sess.get("status")
+                if sess.get("error_message"):
+                    out["session_error"] = _trim(sess.get("error_message", ""))
+                msgs = sess.get("messages") or []
+                # Keep last 3 lines only, focused on assistant/tool/user content.
+                tail = []
+                for m in msgs[-6:]:
+                    role = m.get("role")
+                    if role not in ("assistant", "tool", "user"):
+                        continue
+                    tail.append(
+                        {
+                            "role": role,
+                            "iteration": m.get("iteration"),
+                            "tool_name": m.get("tool_name"),
+                            "content": _trim(m.get("content", "")),
+                        }
+                    )
+                out["recent_messages"] = tail[-3:]
+            except Exception as e:
+                out["session_read_error"] = _trim(str(e))
+
+        # Report-side debug context
+        if report_path.exists():
+            try:
+                rep = json.loads(report_path.read_text(encoding="utf-8"))
+                out["report_status"] = rep.get("status")
+                out["report_summary"] = _trim(rep.get("summary", ""))
+                fa = rep.get("final_answer") or {}
+                raw = fa.get("raw_text") if isinstance(fa, dict) else rep.get("content")
+                if raw:
+                    out["final_answer_preview"] = _trim(raw)
+            except Exception as e:
+                out["report_read_error"] = _trim(str(e))
+
+        return out
 
     async def _execute_scheduler_remove_task(
         self, args: Dict[str, Any]

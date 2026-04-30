@@ -30,6 +30,10 @@ from app.roles.owner_context import load_owner_profile, infer_context_tier, buil
 from app.scheduler.capability_resolver import CapabilityResolver
 from app.scheduler.role_template_engine import RoleTemplateEngine
 from app.scheduler.capability_gap_checker import CapabilityGapChecker
+from app.scheduler.intent_class_preflight import (
+    evaluate_intent_class_preflight,
+    provider_health_from_tools,
+)
 
 # Per-execution isolated state.  Each scheduler task runs as a separate
 # asyncio.Task (via asyncio.create_task), so ContextVars give automatic
@@ -662,6 +666,26 @@ class AgenticExecutor:
             role, config.get("available_tools"), self._tool_registry
         )
         self._enabled_tool_names = enabled_tool_names
+
+        # Intent-class preflight (provider-agnostic contract gate).
+        # If required intent classes are declared for this task, at least one
+        # healthy provider must exist per class before execution can start.
+        required_intent_classes = config.get("required_intent_classes") or []
+        if required_intent_classes:
+            provider_health = provider_health_from_tools(enabled_tool_names)
+            preflight = evaluate_intent_class_preflight(required_intent_classes, provider_health)
+            if not preflight.ok:
+                report = preflight.to_dict()
+                msg = (
+                    "Intent-class preflight failed: "
+                    + "; ".join(report.get("remediation") or [])
+                )
+                self._log(msg, level="error")
+                return TaskResult(
+                    success=False,
+                    error_message=msg,
+                    metrics={"intent_preflight": report},
+                )
 
         from datetime import datetime, timezone
         _now = datetime.now(timezone.utc).astimezone()
