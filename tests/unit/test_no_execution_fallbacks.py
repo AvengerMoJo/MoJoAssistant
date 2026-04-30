@@ -39,3 +39,10 @@ def test_agentic_executor_blocks_non_security_ask_user_in_execution_flow():
     p = Path("app/scheduler/agentic_executor.py")
     text = p.read_text(encoding="utf-8")
     assert "ask_user is blocked for normal execution flow." in text
+
+
+def test_agentic_executor_uses_context_local_enabled_tools():
+    p = Path("app/scheduler/agentic_executor.py")
+    text = p.read_text(encoding="utf-8")
+    assert "_cv_enabled_tools" in text
+    assert "enabled = _cv_enabled_tools.get()" in text

@@ -47,6 +47,8 @@ _cv_budget_ext:   ContextVar = ContextVar("exec_budget_ext",   default=0)
 _cv_exhausts_ask: ContextVar = ContextVar("exec_exhausts_ask", default=False)
 _cv_requires_tool:ContextVar = ContextVar("exec_requires_tool",default=False)
 _cv_task_id:      ContextVar = ContextVar("exec_task_id",      default=None)
+_cv_role_id:      ContextVar = ContextVar("exec_role_id",      default=None)
+_cv_enabled_tools: ContextVar = ContextVar("exec_enabled_tools", default=None)
 
 # Tools whose output commonly bloats context (bash stdout, file reads).
 # Results longer than this cap are truncated before being added to messages.
@@ -575,6 +577,7 @@ class AgenticExecutor:
         role_model_preference = None
         role_id = config.get("role_id")
         self._role_id = role_id  # make role_id available to tool dispatch
+        _cv_role_id.set(role_id)
         from app.scheduler.policy_monitor import PolicyMonitor
         self._policy_monitor = PolicyMonitor(role_id=None, policy=None)
         if not role_id:
@@ -666,6 +669,7 @@ class AgenticExecutor:
             role, config.get("available_tools"), self._tool_registry
         )
         self._enabled_tool_names = enabled_tool_names
+        _cv_enabled_tools.set(enabled_tool_names)
 
         # Intent-class preflight (provider-agnostic contract gate).
         # If required intent classes are declared for this task, at least one
@@ -2000,7 +2004,9 @@ class AgenticExecutor:
         """Execute a single tool from dynamic registry or built-in tools."""
         # Enforce capabilities: reject calls to tools not in the enabled list.
         # ask_user is always permitted (HITL escape hatch injected unconditionally).
-        enabled = getattr(self, "_enabled_tool_names", None)
+        enabled = _cv_enabled_tools.get()
+        if enabled is None:
+            enabled = getattr(self, "_enabled_tool_names", None)
         if enabled is not None and name != "ask_user" and name not in enabled:
             self._log(
                 f"Tool '{name}' blocked: not in role/task capabilities list "
@@ -2085,7 +2091,7 @@ class AgenticExecutor:
             # attempt at least one other tool before escalating to the user.
             if _cv_exhausts_ask.get() and _cv_tool_calls.get() == 0:
                 available = [
-                    t for t in getattr(self, "_enabled_tool_names", [])
+                    t for t in (_cv_enabled_tools.get() or getattr(self, "_enabled_tool_names", []))
                     if t != "ask_user"
                 ]
                 hint = f" Try one of: {available}." if available else ""
@@ -2160,8 +2166,9 @@ class AgenticExecutor:
         # Fallback to built-in tools
         if name == "memory_search" and self._memory_service:
             query = args.get("query", "")
+            _role_id = _cv_role_id.get() or self._role_id
             results = await self._memory_service._search_knowledge_base_async(
-                query, max_items=5, role_id=self._role_id
+                query, max_items=5, role_id=_role_id
             )
             return {"query": query, "results": results, "count": len(results)}
 
@@ -2316,7 +2323,7 @@ class AgenticExecutor:
                 "notify_user": True,
                 "title": f"Policy blocked: {tool_name}",
                 "task_id": task_id,
-                "role_id": self._role_id,
+                "role_id": _cv_role_id.get() or self._role_id,
                 "layer": layer,
                 "checker": checker,
                 "tool_name": tool_name,
@@ -2561,7 +2568,7 @@ class AgenticExecutor:
         calls during this execution.
         """
         lower = final_answer.lower()
-        enabled = set(getattr(self, "_enabled_tool_names", []) or [])
+        enabled = set((_cv_enabled_tools.get() or getattr(self, "_enabled_tool_names", [])) or [])
 
         blocker_markers = [
             "tool constraints",
