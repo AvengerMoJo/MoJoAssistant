@@ -221,6 +221,7 @@ class ToolRegistry:
             "resource_pool_approve",
             "resource_pool_revoke",
             "resource_pool_smoke_test",
+            "llm_direct_chat",
             "audit_get",
             # External agent → external_agent hub
             "google_service",
@@ -1710,6 +1711,8 @@ Agent resumes within seconds.
             return await self._execute_resource_pool_revoke(args)
         elif name == "resource_pool_smoke_test":
             return await self._execute_resource_pool_smoke_test(args)
+        elif name == "llm_direct_chat":
+            return await self._execute_llm_direct_chat(args)
         # Hub Tools
         elif name == "role":
             return await self._execute_role_hub(args)
@@ -4345,6 +4348,92 @@ Agent resumes within seconds.
             return data
         except Exception as e:
             return {"status": "error", "message": f"Smoke test failed: {e}"}
+
+    async def _execute_llm_direct_chat(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Direct single-turn LLM call routed through the resource pool.
+
+        Picks the fastest available free-tier resource using benchmark data.
+        Falls back to any enabled resource if no free resource is available.
+
+        Args:
+            system_prompt: system instruction for the model
+            message:       user message
+            resource_id:   optional — pin to a specific resource
+            max_tokens:    optional, default 512
+        """
+        system_prompt = (args.get("system_prompt") or "").strip()
+        message = (args.get("message") or "").strip()
+        pinned_id = (args.get("resource_id") or "").strip() or None
+        max_tokens = int(args.get("max_tokens") or 512)
+
+        if not message:
+            return {"status": "error", "message": "message is required"}
+
+        try:
+            rm = self._get_resource_manager()
+            status = rm.get_status()
+
+            # Pick the best resource: pinned > fastest benchmark > highest priority enabled
+            resource_id = pinned_id
+            if not resource_id:
+                # Try benchmark data: sort free/enabled resources by median_duration_s
+                try:
+                    bench_stats = self.scheduler._benchmark_store.analyze(min_samples=3)
+                    free_enabled = {
+                        rid for rid, info in status.items()
+                        if info.get("enabled") and info.get("status") in ("available", "idle")
+                        and info.get("tier") in ("free", "local")
+                    }
+                    for s in sorted(bench_stats, key=lambda x: x.median_duration_s):
+                        if s.resource_id in free_enabled:
+                            resource_id = s.resource_id
+                            break
+                except Exception:
+                    pass
+
+            if not resource_id:
+                # Fallback: highest-priority enabled resource
+                enabled = [
+                    (rid, info) for rid, info in status.items()
+                    if info.get("enabled") and info.get("status") in ("available", "idle")
+                ]
+                if not enabled:
+                    return {"status": "error", "message": "No available resources in pool"}
+                resource_id = min(enabled, key=lambda x: x[1].get("priority", 999))[0]
+
+            # Resolve connection config
+            from app.llm.unified_client import UnifiedLLMClient
+            resource_config = UnifiedLLMClient.find_resource(resource_id)
+            if not resource_config:
+                return {"status": "error", "message": f"Resource config not found for {resource_id}"}
+
+            # Build messages
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": message})
+
+            # Clamp max_tokens to resource output_limit
+            output_limit = resource_config.get("output_limit", max_tokens)
+            resource_config = dict(resource_config)
+            resource_config["output_limit"] = min(max_tokens, output_limit)
+
+            client = UnifiedLLMClient()
+            resp = await client.call_async(messages=messages, resource_config=resource_config)
+            reply = UnifiedLLMClient._extract_text(
+                resp, resource_config.get("message_format", "openai")
+            )
+
+            return {
+                "status": "success",
+                "reply": reply,
+                "resource_id": resource_id,
+                "model": status.get(resource_id, {}).get("model", resource_config.get("model", "")),
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"llm_direct_chat failed: {e}"}
 
     # ── Role Hub ─────────────────────────────────────────────────────
 
