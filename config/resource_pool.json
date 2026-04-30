@@ -1,0 +1,10 @@
+{
+  "comment": "Unified resource pool — single source of truth for all LLM resources. User overrides live in ~/.memory/config/resource_pool.json. Add new accounts there, not here.",
+  "tier_policy": {
+    "free":     { "auto_approve": true },
+    "free_api": { "auto_approve": true },
+    "paid":     { "auto_approve": false }
+  },
+  "selection_strategy": "priority_then_availability",
+  "resources": {}
+}
