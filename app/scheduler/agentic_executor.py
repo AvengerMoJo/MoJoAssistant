@@ -780,13 +780,14 @@ class AgenticExecutor:
             for w in gap_result.warnings:
                 self._log(f"CapabilityGapChecker warning: {w}", "warning")
             if gap_result.has_blockers:
-                self._log(
-                    f"CapabilityGapChecker BLOCKER for task {task.id}: {gap_result.blockers}"
+                blocker_msg = (
+                    f"CapabilityGapChecker BLOCKER for task {task.id}: {gap_result.blockers}. "
+                    "Execution halted. Add required capabilities/tools and retry."
                 )
+                self._log(blocker_msg, "error")
                 return TaskResult(
                     success=False,
-                    waiting_for_input=gap_result.ask_user_question(),
-                    waiting_for_input_choices=["add capabilities", "proceed anyway"],
+                    error_message=blocker_msg,
                 )
 
         # --- Resume support ---
@@ -1380,16 +1381,15 @@ class AgenticExecutor:
                     final_answer=final_answer,
                 )
             else:
-                # Instead of hard-failing, surface a HITL question so the user
-                # can grant more iterations and resume the session.
                 _actual_iters = len(iteration_log)
-                _cv_waiting_q.set(
-                    f"Iteration budget exhausted ({_actual_iters} of {max_iterations} iterations used) "
-                    "without a final answer. Reply 'yes' to grant more iterations and "
-                    "resume, or 'no' to mark the task as failed."
+                self._session_storage.update_status(
+                    task.id,
+                    "failed",
+                    error_message=(
+                        f"Iteration budget exhausted ({_actual_iters}/{max_iterations}) "
+                        "without FINAL_ANSWER."
+                    ),
                 )
-                _cv_waiting_c.set(["yes", "no"])
-                self._session_storage.update_status(task.id, "waiting_for_input")
 
         session_file = str(self._session_storage._path(task.id))
 
@@ -1398,6 +1398,21 @@ class AgenticExecutor:
                 success=False,
                 waiting_for_input=_cv_waiting_q.get(),
                 waiting_for_input_choices=_cv_waiting_c.get(),
+                output_file=session_file,
+                metrics={
+                    "iterations": len(iteration_log),
+                    "iteration_log": iteration_log,
+                    "duration_seconds": total_elapsed,
+                    "session_file": session_file,
+                },
+            )
+        if not success:
+            return TaskResult(
+                success=False,
+                error_message=(
+                    f"Iteration budget exhausted ({len(iteration_log)}/{max_iterations}) "
+                    "without FINAL_ANSWER."
+                ),
                 output_file=session_file,
                 metrics={
                     "iterations": len(iteration_log),
@@ -2057,6 +2072,15 @@ class AgenticExecutor:
 
         # Handle ask_user: pause execution and wait for user reply
         if name == "ask_user":
+            # HITL is reserved for explicit security-gate escalations.
+            # Execution blockers should fail explicitly instead of stalling.
+            if not _cv_gate_pending.get():
+                return {
+                    "error": (
+                        "ask_user is blocked for normal execution flow. "
+                        "Only security-gate escalations may pause for user input."
+                    )
+                }
             # Enforce behavior_rules.exhausts_tools_before_asking — agent must
             # attempt at least one other tool before escalating to the user.
             if _cv_exhausts_ask.get() and _cv_tool_calls.get() == 0:
@@ -2114,10 +2138,12 @@ class AgenticExecutor:
             result = await self._tool_registry.execute_tool(name, args)
             # Registry signals "ask the user" on behalf of the tool (e.g. non-existent role dispatch)
             if result.get("__ask_user__"):
-                return await self._execute_tool(
-                    "ask_user",
-                    {"question": result["question"], "choices": result.get("choices")},
-                )
+                return {
+                    "error": (
+                        "Tool requested user input during execution, which is disallowed. "
+                        f"Reason: {result.get('question', 'unspecified')}"
+                    )
+                }
             if result.get("success"):
                 self._policy.track_operation(
                     operation="execute", tool_name=name, success=True
