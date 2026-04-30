@@ -4402,11 +4402,24 @@ Agent resumes within seconds.
                     return {"status": "error", "message": "No available resources in pool"}
                 resource_id = min(enabled, key=lambda x: x[1].get("priority", 999))[0]
 
-            # Resolve connection config
+            # Resolve connection config from ResourceManager (has merged personal layer + api_key)
             from app.llm.unified_client import UnifiedLLMClient
-            resource_config = UnifiedLLMClient.find_resource(resource_id)
-            if not resource_config:
-                return {"status": "error", "message": f"Resource config not found for {resource_id}"}
+            with rm._lock:
+                res_obj = rm._resources.get(resource_id)
+            if res_obj is None:
+                return {"status": "error", "message": f"Resource not found: {resource_id}"}
+            if not res_obj.base_url:
+                return {"status": "error", "message": f"Resource {resource_id} has no base_url configured"}
+
+            resource_config = {
+                "base_url": res_obj.base_url,
+                "model": res_obj.model,
+                "provider": res_obj.provider,
+                "api_key": res_obj.api_key,
+                "api_key_env": res_obj.api_key_env,
+                "output_limit": min(max_tokens, res_obj.output_limit),
+                "message_format": "openai",
+            }
 
             # Build messages
             messages = []
@@ -4414,16 +4427,9 @@ Agent resumes within seconds.
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": message})
 
-            # Clamp max_tokens to resource output_limit
-            output_limit = resource_config.get("output_limit", max_tokens)
-            resource_config = dict(resource_config)
-            resource_config["output_limit"] = min(max_tokens, output_limit)
-
             client = UnifiedLLMClient()
             resp = await client.call_async(messages=messages, resource_config=resource_config)
-            reply = UnifiedLLMClient._extract_text(
-                resp, resource_config.get("message_format", "openai")
-            )
+            reply = UnifiedLLMClient._extract_text(resp, "openai")
 
             return {
                 "status": "success",
