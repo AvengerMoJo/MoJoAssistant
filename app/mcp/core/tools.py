@@ -221,7 +221,6 @@ class ToolRegistry:
             "resource_pool_approve",
             "resource_pool_revoke",
             "resource_pool_smoke_test",
-            "llm_direct_chat",
             "audit_get",
             # External agent → external_agent hub
             "google_service",
