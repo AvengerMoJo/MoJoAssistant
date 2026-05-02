@@ -36,5 +36,14 @@ Branch: merged to `main` as of v1.1.4-beta
 - [x] Unit tests for version increment and lineage transitions.
 - [x] Integration test for repeated process on same `conversation_id` (v1, v2, v3).
 - [x] Integration test for upgrade-quality producing next version.
-- [ ] Real-memory off-schedule validation with LM Studio configured.
+- [x] Real-memory off-schedule validation with LM Studio configured.
 - [x] Confirm default retrieval favors hot/latest while history remains available.
+
+## Phase 6: Chat→Dream Bridge (v1.2.14)
+- [x] Add `mode="chat_bridge"` to DreamingHandler
+- [x] Scan all roles' chat_history for unprocessed sessions
+- [x] Convert chat exchanges to conversation text
+- [x] Run through ABCD pipeline with role-scoped storage
+- [x] Index C-clusters into searchable knowledge base
+- [x] Watermark tracking prevents re-processing
+- [x] Nightly scheduled task (03:00)

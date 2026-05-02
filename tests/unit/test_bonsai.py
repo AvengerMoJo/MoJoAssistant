@@ -1,0 +1,228 @@
+"""
+Unit tests for the Bonsai Growth Architecture.
+
+Covers:
+  - GrowthSnapshot  (creation, serialization)
+  - SnapshotManager (save, load, pin, versioning)
+  - BonsaiEngine    (growth reports, dimension drift, validation)
+"""
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from app.scheduler.bonsai import BonsaiEngine, GrowthSnapshot, SnapshotManager
+
+
+class TestGrowthSnapshot(unittest.TestCase):
+
+    def test_creates_snapshot(self):
+        dims = {
+            "core_values": {"score": 90, "summary": "Evidence-based"},
+            "cognitive_style": {"score": 85, "summary": "Systematic"},
+        }
+        snap = GrowthSnapshot(
+            role_id="test_role",
+            version=1,
+            dimensions=dims,
+            system_prompt="You are a test assistant.",
+            presentation_patterns={"financial": "growth-first"},
+            communication_style=["direct", "concise"],
+            trigger="test",
+        )
+        self.assertEqual(snap.role_id, "test_role")
+        self.assertEqual(snap.version, 1)
+        self.assertEqual(snap.dimensions["core_values"]["score"], 90)
+        self.assertIn("direct", snap.communication_style)
+
+    def test_serializes_to_dict(self):
+        snap = GrowthSnapshot(
+            role_id="test", version=1,
+            dimensions={"core_values": {"score": 80}},
+            system_prompt="test prompt",
+        )
+        d = snap.to_dict()
+        self.assertEqual(d["version"], 1)
+        self.assertEqual(d["role_id"], "test")
+        self.assertIn("system_prompt_hash", d)
+        self.assertIn("created_at", d)
+
+    def test_from_dict(self):
+        data = {
+            "version": 2,
+            "role_id": "researcher",
+            "dimensions": {"core_values": {"score": 95}},
+            "trigger": "dreaming",
+        }
+        snap = GrowthSnapshot.from_dict(data, system_prompt="test")
+        self.assertEqual(snap.version, 2)
+        self.assertEqual(snap.role_id, "researcher")
+
+
+class TestSnapshotManager(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp_dir = tempfile.mkdtemp()
+        self._patcher = patch(
+            "app.scheduler.bonsai.get_memory_subpath",
+            return_value=self._tmp_dir,
+        )
+        self._patcher.start()
+        self.manager = SnapshotManager("test_role")
+
+    def tearDown(self):
+        self._patcher.stop()
+        import shutil
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def test_save_and_load_snapshot(self):
+        snap = GrowthSnapshot(
+            role_id="test_role", version=1,
+            dimensions={"core_values": {"score": 80}},
+            system_prompt="test",
+        )
+        self.manager.save_snapshot(snap)
+
+        current = self.manager.get_current()
+        self.assertIsNotNone(current)
+        self.assertEqual(current.version, 1)
+
+    def test_version_increments(self):
+        for i in range(1, 4):
+            snap = GrowthSnapshot(
+                role_id="test_role", version=i,
+                dimensions={"core_values": {"score": 80 + i}},
+                system_prompt=f"v{i}",
+            )
+            self.manager.save_snapshot(snap)
+
+        self.assertEqual(self.manager.get_latest_version(), 3)
+
+    def test_pin_snapshot(self):
+        snap = GrowthSnapshot(
+            role_id="test_role", version=1,
+            dimensions={"core_values": {"score": 80}},
+            system_prompt="test",
+        )
+        self.manager.save_snapshot(snap)
+        self.manager.pin_snapshot(1)
+
+        pinned = self.manager.get_pinned()
+        self.assertIsNotNone(pinned)
+        self.assertEqual(pinned.version, 1)
+
+    def test_list_snapshots(self):
+        for i in range(1, 4):
+            snap = GrowthSnapshot(
+                role_id="test_role", version=i,
+                dimensions={},
+                system_prompt=f"v{i}",
+            )
+            self.manager.save_snapshot(snap)
+
+        snapshots = self.manager.list_snapshots()
+        self.assertEqual(len(snapshots), 3)
+
+    def test_returns_none_when_no_snapshot(self):
+        self.assertIsNone(self.manager.get_current())
+        self.assertIsNone(self.manager.get_pinned())
+
+
+class TestBonsaiEngine(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp_dir = tempfile.mkdtemp()
+        self._patcher = patch(
+            "app.scheduler.bonsai.get_memory_subpath",
+            return_value=self._tmp_dir,
+        )
+        self._patcher.start()
+        self.engine = BonsaiEngine("test_role")
+
+    def tearDown(self):
+        self._patcher.stop()
+        import shutil
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def test_generate_growth_report_initial(self):
+        dims = {"core_values": {"score": 80, "summary": "Good"}}
+        report = self.engine.generate_growth_report(
+            old_snapshot=None,
+            new_dimensions=dims,
+        )
+        self.assertIn("Initial State", report)
+        self.assertIn("test_role", report)
+
+    def test_generate_growth_report_with_changes(self):
+        old_snap = GrowthSnapshot(
+            role_id="test_role", version=1,
+            dimensions={"core_values": {"score": 75, "summary": "Average"}},
+            system_prompt="old",
+        )
+        new_dims = {"core_values": {"score": 85, "summary": "Improved"}}
+        report = self.engine.generate_growth_report(
+            old_snapshot=old_snap,
+            new_dimensions=new_dims,
+            signals=["Owner calibration: more evidence rigor"],
+        )
+        self.assertIn("Before", report)
+        self.assertIn("After", report)
+        self.assertIn("75 → 85", report)
+        self.assertIn("Action Required", report)
+
+    def test_compute_dimension_drift(self):
+        current = {
+            "core_values": {"score": 75},
+            "cognitive_style": {"score": 80},
+        }
+        signals = [
+            {"dimension": "core_values", "direction": "up", "strength": 0.5, "reason": "test"},
+        ]
+        new_dims = self.engine.compute_dimension_drift(current, signals, max_drift=5)
+        self.assertGreater(new_dims["core_values"]["score"], 75)
+        self.assertEqual(new_dims["cognitive_style"]["score"], 80)
+
+    def test_compute_dimension_drift_clamps(self):
+        current = {"core_values": {"score": 98}}
+        signals = [
+            {"dimension": "core_values", "direction": "up", "strength": 1.0},
+        ]
+        new_dims = self.engine.compute_dimension_drift(current, signals, max_drift=5)
+        self.assertEqual(new_dims["core_values"]["score"], 100)
+
+    def test_validate_growth_ok(self):
+        old = {"core_values": {"score": 80}}
+        new = {"core_values": {"score": 85}}
+        result = self.engine.validate_growth(old, new)
+        self.assertTrue(result["valid"])
+        self.assertEqual(len(result["issues"]), 0)
+
+    def test_validate_growth_contradiction(self):
+        old = {"core_values": {"score": 80}, "cognitive_style": {"score": 80}}
+        new = {"core_values": {"score": 95}, "cognitive_style": {"score": 50}}
+        result = self.engine.validate_growth(old, new)
+        self.assertFalse(result["valid"])
+        self.assertGreater(len(result["issues"]), 0)
+
+    def test_validate_growth_large_shift_warning(self):
+        old = {"core_values": {"score": 50}}
+        new = {"core_values": {"score": 80}}
+        result = self.engine.validate_growth(old, new)
+        self.assertTrue(result["valid"])  # Not invalid, just warned
+        self.assertGreater(len(result["warnings"]), 0)
+
+    def test_create_snapshot(self):
+        dims = {"core_values": {"score": 85, "summary": "Good"}}
+        snap = self.engine.create_snapshot(
+            dimensions=dims,
+            system_prompt="test prompt",
+            trigger="test",
+        )
+        self.assertEqual(snap.version, 1)
+        self.assertEqual(snap.role_id, "test_role")
+
+
+if __name__ == "__main__":
+    unittest.main()

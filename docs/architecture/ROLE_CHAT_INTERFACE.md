@@ -1,6 +1,6 @@
 # Role Chat Interface — Direct Conversation with Assistants
 
-**Status:** Planned — v1.2.7
+**Status:** Implemented (v1.2.7)  
 **Design date:** 2026-03-26
 
 ---

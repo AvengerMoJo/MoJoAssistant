@@ -1,6 +1,6 @@
 # Chat → Dream Bridge: Design Proposal
 
-**Status:** Proposal — awaiting review  
+**Status:** Implemented (v1.2.14)  
 **Date:** 2026-04-28  
 **Relates to:** `two_tier_growth_design.md` Gap 4, `ROLE_CHAT_INTERFACE.md`
 
@@ -8,7 +8,7 @@
 
 ## Where We Are
 
-The two-tier growth architecture is mostly working:
+The two-tier growth architecture is fully working:
 
 | Component | Status |
 |-----------|--------|
@@ -18,7 +18,7 @@ The two-tier growth architecture is mostly working:
 | `DreamingHandler` role-scoped storage | Done — routes to `~/.memory/roles/{role_id}/knowledge_units/` when `role_id` set |
 | `_index_clusters_to_knowledge_base()` | Done — C/D output indexed into searchable vector store |
 | Framework tier (`__framework__` sentinel) | Done — all agents see shared patterns at task start |
-| Gap 4: chat_history → dreaming pipeline | **Missing** |
+| Gap 4: chat_history → dreaming pipeline | **Done** — `mode="chat_bridge"` in DreamingHandler |
 
 The one-on-one conversations exist. The dreaming pipeline exists. There is no wire between them.
 

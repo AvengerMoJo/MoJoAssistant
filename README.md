@@ -6,7 +6,7 @@ MoJoAssistant sits between you and your AI systems. It keeps your memory, contex
 workflow state on your own machine, then exposes everything through a clean 14-tool MCP
 surface that any MCP-capable client (Claude Desktop, Claude Code, etc.) can use directly.
 
-Current release: `v1.2.16-beta`
+Current release: `v1.3.3-beta`
 
 ---
 
@@ -19,8 +19,11 @@ Current release: `v1.2.16-beta`
 | **Scheduler** | Cron + one-shot task runner with role-based agentic execution; HITL pause/resume |
 | **Roles** | Named AI personas with dynamic system prompts, tool access, data boundaries, and two-tier knowledge growth |
 | **Policy** | Inline safety checker — blocks credential access, reverse shells, exfiltration; per-task `danger_budget` override |
-| **Dashboard** | Browser UI at `/dashboard` — event log, tasks (incl. cron history), role chat, policy violations |
-| **Dreaming** | Nightly memory consolidation: raw sessions → ABCD semantic archives → searchable knowledge base |
+| **Behavioral Security** | Parallel observer (BehavioralMonitor) with per-role baselines; three-tier containment (LOW/MED/HIGH); honeypot sandbox |
+| **PII Scanner** | Pattern-based detection for credentials, financial data, health info, infrastructure details |
+| **Dashboard** | Browser UI at `/dashboard` — event log, tasks (incl. cron history), role chat, policy violations, news briefing |
+| **Dreaming** | Nightly memory consolidation: raw sessions → ABCD semantic archives → searchable knowledge base; chat→dream bridge |
+| **Agent Learning** | Failure→lesson pipeline; memory context injection at task start; per-role silo memory |
 | **External MCP** | Plug in external MCP servers (tmux terminal, Playwright browser) via `config/mcp_servers.json` |
 | **Google Workspace** | Calendar, Drive, Gmail via `external_agent` hub |
 | **Notifications** | ntfy / FCM push, SSE stream, persistent event log |
@@ -108,8 +111,9 @@ All functionality is exposed through hub tools. Each hub dispatches to sub-actio
 | `knowledge` | Code/doc repo indexing and file retrieval |
 | `config` | Runtime configuration, LLM resources, roles, system health (`doctor`, `doctor_improve`) |
 | `scheduler` | Task lifecycle — add, list, get, remove, daemon control |
-| `dream` | Memory consolidation pipeline — process, list, upgrade |
+| `dream` | Memory consolidation pipeline — process, list, upgrade, distill_inbox, chat_bridge |
 | `role` | Role CRUD — create, update, list, get role definitions |
+| `dialog` | Role Chat — direct conversation with any role; session persistence; cross-role referral |
 | `agent` | Coding agent lifecycle (Claude Code, OpenCode) |
 | `external_agent` | Google Workspace gateway (Calendar, Drive, Gmail) |
 | `task_session_read` | Read the full message transcript for a completed task session |
@@ -235,6 +239,7 @@ Available at `http://localhost:{port}/dashboard` on any running instance.
 - Scheduler task list with status, iteration logs, and session transcript
 - **Cron task history** — recurring tasks show last-run time and next-run countdown even while pending
 - **Role Chat** — persistent conversation UI for any role (`/dashboard/chat`)
+- **News Briefing** — daily tech/AI news from Scott (`/dashboard/news`)
 - Policy violation log
 
 Protected by the dashboard password set in `.env`.
@@ -310,6 +315,9 @@ The preflight checker validates required binaries (`tmux`, `node`, `cargo`) befo
 - [Role Chat Interface](docs/architecture/ROLE_CHAT_INTERFACE.md)
 - [Dreaming Specification](docs/architecture/DREAMING_SPECIFICATION.md)
 - [Security Behavioral Monitor](docs/architecture/SECURITY_BEHAVIORAL_MONITOR.md)
+- [Agent Learning Loop](docs/architecture/AGENT_LEARNING_LOOP.md)
+- [Two-Tier Growth Design](docs/architecture/two_tier_growth_design.md)
+- [Chat→Dream Bridge](docs/architecture/CHAT_DREAM_BRIDGE_PROPOSAL.md)
 
 ### Releases
 - [v1.2.16-beta Release Notes](docs/releases/RELEASE_NOTES_v1.2.16-beta.md)
@@ -358,7 +366,8 @@ Before merging:
 
 ## Status
 
-Active beta (`v1.2.16`). Core memory, MCP, scheduler, policy, role chat, and dreaming
-pipeline are production-ready for personal use. External MCP servers (tmux terminal,
+Active beta (`v1.3.3`). Core memory, MCP, scheduler, policy, role chat, dreaming
+pipeline, behavioral security, agent learning loop, and PII scanning are
+production-ready for personal use. External MCP servers (tmux terminal,
 Playwright browser), Google Workspace, and coding agent integrations require additional
 setup. See the roadmap for what's next.

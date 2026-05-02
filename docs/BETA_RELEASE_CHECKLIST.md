@@ -90,6 +90,8 @@
 - **Policy monitor**: behavioral pattern matching on tool calls (content, sensitive domain, data boundary)
 - **Event log**: all tool executions logged with timestamp, role, result, block reason
 - **Security gate**: pre-execution check before every tool call in agentic loop
+- **Sensitive domain checker**: scans tool args against owner's sensitive_domains list
+- **PII scanner**: pattern-based detection for credentials, financial, health, infrastructure data
 
 ### 8. Built-in Capability Tools
 - `read_file`, `write_file`, `list_files`, `search_in_files` — sandboxed file ops
@@ -133,6 +135,39 @@
 - **Hard rule**: all tool calls pass policy gateway; no direct bypass
 - **Isolation**: one assistant per process space; per-assistant memory/policy context
 - **Gate**: beta blocked until modular boundary is implemented and smoke matrix passes
+
+### 14. Behavioral Security Layer (v1.3.0)
+- **BehavioralMonitor**: parallel observer with per-role baselines (exponential moving average)
+- **ContainmentEngine**: three-tier response — LOW (silent ntfy), MEDIUM (sandbox honeypot), HIGH (hard halt)
+- **SandboxRuntime**: honeypot containment — bash in tmpdir, file ops in sandbox, network blocked
+- **Forensics logging**: containment events written to `~/.memory/security/containment_log.jsonl`
+
+### 15. Agent Learning Loop (v1.3.1)
+- **Failure→lesson pipeline**: `_write_task_lesson()` writes structured records on failure
+- **Memory context injection**: `_inject_lessons()` reads relevant lessons at task start
+- **Failure taxonomy**: classifies failures (missing_resource, wrong_tool, missing_permission, ambiguous_goal, external_unavailable, knowledge_gap)
+- **Per-role silo memory**: `lessons/`, `task_history/` directories per role
+
+### 16. PII Scanner (v1.3.3)
+- **Pattern-based detection**: emails, SSNs, credit cards, API keys, AWS keys, private keys, crypto wallets, IPs, medical records
+- **Tool args scanning**: `scan_tool_args()` checks tool call arguments
+- **Redaction**: `redact_pii()` replaces PII with `[REDACTED:type]`
+
+### 17. Agent Orchestration (v1.3.2)
+- **Workflow templates**: `config/workflow_templates/{type}.json` for 6 agent types (researcher, executor, reviewer, provisioner, monitor, orchestrator)
+- **Template auto-injection**: loaded at task start based on role's `agent_type`
+- **OpenAI-compatible proxy**: `/v1/models`, `/v1/chat/completions` endpoints
+- **Cross-role referral**: `refer_to_role` tool in Role Chat
+
+### 18. Chat→Dream Bridge (v1.2.14)
+- **Nightly scheduled task**: scans all roles' chat_history for unprocessed sessions
+- **Watermark tracking**: prevents re-processing already-dreamed sessions
+- **Knowledge indexing**: C-clusters indexed into role's searchable knowledge base
+
+### 19. agency-agents Import Bridge (v1.2.13)
+- **Markdown persona parser**: extracts frontmatter, identity, critical rules, communication style
+- **NineChapter dimension inference**: generates dimension scores from persona traits
+- **184 personas available**: from submodules/agency-agents library
 
 ---
 
