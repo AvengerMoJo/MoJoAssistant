@@ -22,6 +22,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+import ipaddress
+
 
 @dataclass
 class PIIMatch:
@@ -90,7 +92,7 @@ _PATTERNS = {
     ),
     "password_assignment": (
         "credentials",
-        re.compile(r'(?:password|passwd|pwd|secret)\s*[:=]\s*\S+', re.IGNORECASE),
+        re.compile(r'(?:password|passwd|pwd|secret)\s*[:=]\s*(?!\$\{)(?!\{\{)(?!<)(?!\[)\S+', re.IGNORECASE),
         0.7,
     ),
     "ip_address": (
@@ -128,6 +130,15 @@ def scan_text(text: str) -> PIIClassificationResult:
     for name, (category, pattern, confidence) in _PATTERNS.items():
         for match in pattern.finditer(text):
             value = match.group(0)
+
+            # Reduce confidence for private/loopback IPs
+            if name == "ip_address":
+                try:
+                    if ipaddress.ip_address(value).is_private:
+                        confidence = 0.1  # Effectively filter out unless threshold lowered
+                except ValueError:
+                    pass
+
             # Redact the value for logging
             if len(value) > 8:
                 redacted = value[:4] + "*" * (len(value) - 8) + value[-4:]

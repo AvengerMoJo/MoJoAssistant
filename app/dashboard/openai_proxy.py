@@ -7,31 +7,98 @@ to MoJoAssistant roles directly using the standard OpenAI API format.
 Routes:
   GET  /v1/models           — list available roles as models
   POST /v1/chat/completions — send chat message to a role
+
+Authentication:
+  Bearer token in Authorization header, validated against
+  ~/.memory/config/openai_proxy.json (key: "api_key").
+  Auto-generated on first startup if not present.
 """
 # [mojo-integration]
 
 from __future__ import annotations
 
 import json
+import logging
+import secrets
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, Security
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.config.paths import get_memory_subpath
 from app.roles.role_manager import RoleManager
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/v1")
+security = HTTPBearer(auto_error=False)
+
+# Module-level cache for RoleManager with TTL
+_role_manager_cache: Optional[Tuple[float, RoleManager]] = None
+_ROLE_MANAGER_TTL = 60  # seconds
+
+
+def _load_proxy_config() -> Dict[str, Any]:
+    """Load proxy config from ~/.memory/config/openai_proxy.json."""
+    config_path = Path(get_memory_subpath("config")) / "openai_proxy.json"
+    if not config_path.exists():
+        # Generate a default API key on first run
+        api_key = secrets.token_urlsafe(32)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({"api_key": api_key}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        logger.info(f"Generated OpenAI proxy API key: {api_key}")
+        return {"api_key": api_key}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+async def _verify_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+) -> str:
+    """Verify Bearer token against proxy config. Returns the token on success."""
+    config = _load_proxy_config()
+    expected = config.get("api_key")
+
+    # If no key configured, allow access (first run)
+    if not expected:
+        return ""
+
+    if not credentials or credentials.credentials != expected:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "message": "Invalid or missing API key",
+                    "type": "authentication_error",
+                }
+            },
+        )
+    return credentials.credentials
 
 
 def _get_role_manager() -> RoleManager:
-    return RoleManager()
+    """Get cached RoleManager instance (TTL: 60s)."""
+    global _role_manager_cache
+    now = time.time()
+    if _role_manager_cache is None or now - _role_manager_cache[0] > _ROLE_MANAGER_TTL:
+        _role_manager_cache = (now, RoleManager())
+    return _role_manager_cache[1]
 
 
 @router.get("/models")
-async def list_models():
+async def list_models(token: str = Security(_verify_token)):
     """List available roles as OpenAI-compatible models.
+
+    Requires: Bearer token in Authorization header.
 
     Returns:
         OpenAI-compatible model list response.
@@ -62,8 +129,13 @@ async def list_models():
 
 
 @router.post("/chat/completions")
-async def chat_completions(request: Request):
+async def chat_completions(
+    request: Request,
+    token: str = Security(_verify_token),
+):
     """OpenAI-compatible chat completion endpoint.
+
+    Requires: Bearer token in Authorization header.
 
     Accepts:
         {

@@ -306,10 +306,12 @@ class DreamingHandler(TaskHandler):
                 continue
 
             roles_processed += 1
+            # Create a fresh pipeline per role to avoid shared storage mutation
             pipeline = ctx.get_dreaming_pipeline(quality_level)
             try:
                 from dreaming.storage.json_backend import JsonFileBackend
                 role_storage_path = role_dir / "knowledge_units"
+                pipeline = ctx.get_dreaming_pipeline(quality_level)
                 pipeline.storage = JsonFileBackend(storage_path=role_storage_path)
             except Exception as e:
                 ctx.log(f"Chat bridge: could not set role storage for {role_id}: {e}", "warning")
@@ -371,7 +373,13 @@ class DreamingHandler(TaskHandler):
                     errors.append(f"{session_file.name}: {err}")
 
                 processed_ids.add(session_file.stem)
+                # Write watermark after each session for exactly-once processing
+                self._save_watermark(watermark_path, {
+                    "last_processed_at": datetime.now().isoformat(),
+                    "processed_session_ids": sorted(processed_ids),
+                })
 
+            # Final watermark update (redundant but ensures consistency)
             self._save_watermark(watermark_path, {
                 "last_processed_at": datetime.now().isoformat(),
                 "processed_session_ids": sorted(processed_ids),
@@ -383,9 +391,10 @@ class DreamingHandler(TaskHandler):
             "sessions_dreamed": total_sessions,
             "clusters_indexed": total_indexed,
             "quality_level": quality_level,
+            "errors": errors,
+            "error_count": len(errors),
         }
         if errors:
-            metrics["errors"] = errors[:10]
             ctx.log(f"Chat bridge completed with {len(errors)} errors", "warning")
 
         return TaskResult(success=True, metrics=metrics)

@@ -502,6 +502,12 @@ class AgenticExecutor:
         self._openrouter_model_cache_ttl_seconds = 600
         self._role_id: Optional[str] = None
 
+        # Behavioral security layer (v1.3.0)
+        from app.scheduler.security.behavioral_monitor import BehavioralMonitor
+        from app.scheduler.security.containment_engine import ContainmentEngine
+        self._behavioral_monitor = BehavioralMonitor()
+        self._containment_engine = ContainmentEngine()
+
     def _log(self, message: str, level: str = "info"):
         if self._logger:
             getattr(self._logger, level)(f"[AgenticExecutor] {message}")
@@ -1006,6 +1012,18 @@ class AgenticExecutor:
                         "elapsed_s": round(time.time() - start_time, 1),
                     }
                 )
+                # LEARN: write lesson on resource exhaustion
+                if role_id:
+                    try:
+                        await self._write_task_lesson(
+                            task_id=task.id,
+                            role_id=role_id,
+                            goal=goal,
+                            error_message=msg,
+                            iteration_log=iteration_log,
+                        )
+                    except Exception:
+                        pass
                 return TaskResult(success=False, error_message=msg, metrics={"iteration_log": iteration_log})
 
             # Data boundary: enforce allowed_tiers constraint from role
@@ -1476,6 +1494,36 @@ class AgenticExecutor:
                 iteration_log=iteration_log,
                 final_answer=final_answer,
             )
+
+        # SECURITY: BehavioralMonitor session-end assessment (v1.3.0)
+        _tools_used = []
+        for entry in iteration_log:
+            for t in entry.get("tool_calls", []):
+                if t not in _tools_used:
+                    _tools_used.append(t)
+        try:
+            _role = role_id or "unknown"
+            assessment = self._behavioral_monitor.observe_session_end(
+                task_id=task.id,
+                role_id=_role,
+                tools_used=_tools_used,
+                iteration_count=len(iteration_log),
+                success=success,
+            )
+            if assessment.get("suspicion_level") != "NONE":
+                containment = await self._containment_engine.respond(
+                    task_id=task.id,
+                    role_id=_role,
+                    suspicion_level=assessment["suspicion_level"],
+                    suspicion_score=assessment["suspicion_score"],
+                    assessment=assessment,
+                )
+                metrics["behavioral_assessment"] = assessment
+                metrics["containment_action"] = containment.get("action")
+                if containment.get("action") == "halt":
+                    self._log(f"Session halted by containment: {containment.get('reason')}", "error")
+        except Exception as sec_err:
+            self._log(f"BehavioralMonitor session-end failed (non-fatal): {sec_err}", "debug")
 
         return TaskResult(
             success=True,
@@ -2239,6 +2287,14 @@ class AgenticExecutor:
         if gate_result.decision == SecurityDecision.WARN_ALLOW:
             self._log(gate_result.warn_message or gate_result.reason, "warning")
 
+        # BehavioralMonitor: observe every tool call (non-blocking)
+        try:
+            _role = _cv_role_id.get() or self._role_id or "unknown"
+            _task = _cv_task_id.get() or ""
+            self._behavioral_monitor.observe_tool_call(_task, _role, name, args)
+        except Exception as bm_err:
+            self._log(f"BehavioralMonitor observe failed (non-fatal): {bm_err}", "debug")
+
         # Check role policy (allowed_tools ceiling, denied_tools, per-task limits)
         role_decision = self._policy_monitor.check(name, args)
         if not role_decision.allowed:
@@ -2827,7 +2883,6 @@ class AgenticExecutor:
         User overrides take precedence if they exist.
         """
         from app.config.paths import get_memory_subpath
-        import os
 
         # User override layer
         user_path = Path(get_memory_subpath("config")) / "workflow_templates" / f"{agent_type}.json"
@@ -2837,13 +2892,16 @@ class AgenticExecutor:
             except Exception:
                 pass
 
-        # System default layer
-        system_path = Path("config/workflow_templates") / f"{agent_type}.json"
+        # System default layer — use absolute path from project root
+        _PROJECT_ROOT = Path(__file__).parent.parent.parent
+        system_path = _PROJECT_ROOT / "config" / "workflow_templates" / f"{agent_type}.json"
         if system_path.exists():
             try:
                 return json.loads(system_path.read_text(encoding="utf-8"))
             except Exception:
                 pass
+        else:
+            self._log(f"Workflow template not found: {system_path}", "debug")
 
         return None
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,8 +37,8 @@ _WEIGHTS = {
     "c2_pattern": 40,
 }
 
-# Credential path patterns
-_CREDENTIAL_PATTERNS = [
+# Credential path patterns — path-like strings only
+_CREDENTIAL_PATH_PATTERNS = [
     ".ssh/id_",
     ".ssh/authorized_keys",
     ".kube/config",
@@ -47,7 +48,15 @@ _CREDENTIAL_PATTERNS = [
     ".azure/",
     ".gnupg/",
     ".netrc",
-    "SECRET", "TOKEN", "KEY", "PASSWORD", "CREDENTIAL",
+]
+
+# Credential keyword patterns — word-boundary anchored to avoid false positives
+_CREDENTIAL_KEYWORD_PATTERNS = [
+    re.compile(r'\bSECRET\b'),
+    re.compile(r'\bTOKEN\b'),
+    re.compile(r'\bKEY\b'),
+    re.compile(r'\bPASSWORD\b'),
+    re.compile(r'\bCREDENTIAL\b'),
 ]
 
 # C2 / exfiltration patterns
@@ -133,13 +142,22 @@ class BehavioralMonitor:
         except Exception:
             args_text = str(args)
 
-        # Credential path access
-        if any(p in args_text for p in _CREDENTIAL_PATTERNS):
+        # Credential path access — only match path-like patterns
+        if any(p in args_text for p in _CREDENTIAL_PATH_PATTERNS):
             score += _WEIGHTS["credential_path_access"]
             logger.warning(
                 f"BehavioralMonitor: credential path access in task {task_id} "
                 f"by role {role_id}, tool {tool_name}"
             )
+
+        # Credential keyword patterns — word-boundary anchored, only for path operations
+        if tool_name in ("read_file", "write_file", "bash_exec"):
+            if any(p.search(args_text) for p in _CREDENTIAL_KEYWORD_PATTERNS):
+                score += _WEIGHTS["credential_path_access"]
+                logger.warning(
+                    f"BehavioralMonitor: credential keyword in path operation in task {task_id} "
+                    f"by role {role_id}, tool {tool_name}"
+                )
 
         # C2 patterns
         if any(p in args_text for p in _C2_PATTERNS):
@@ -234,19 +252,23 @@ class BehavioralMonitor:
         self._save_baselines()
 
         # Final suspicion assessment
-        final_score = self._session_scores.pop(task_id, 0.0)
-        if final_score >= 85:
+        # Normalize score by iteration count to prevent long legitimate sessions
+        # from accumulating high scores via noise
+        raw_score = self._session_scores.pop(task_id, 0.0)
+        normalized_score = raw_score / max(1, iteration_count / 5)  # normalize per 5 iterations
+        if normalized_score >= 85:
             level = "HIGH"
-        elif final_score >= 60:
+        elif normalized_score >= 60:
             level = "MEDIUM"
-        elif final_score >= 30:
+        elif normalized_score >= 30:
             level = "LOW"
         else:
             level = "NONE"
 
         return {
             "suspicion_level": level,
-            "suspicion_score": final_score,
+            "suspicion_score": normalized_score,
+            "raw_score": raw_score,
             "role_id": role_id,
             "task_id": task_id,
             "assessed_at": datetime.now().isoformat(),
