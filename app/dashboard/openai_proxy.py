@@ -175,6 +175,16 @@ async def chat_completions(
             status_code=400,
         )
 
+    # Streaming not yet supported — fail fast with clear message
+    if stream:
+        return JSONResponse(
+            {"error": {
+                "message": "Streaming not yet supported. Set stream=false or omit.",
+                "type": "not_implemented_error",
+            }},
+            status_code=501,
+        )
+
     # Load role
     manager = _get_role_manager()
     role = manager.get(model)

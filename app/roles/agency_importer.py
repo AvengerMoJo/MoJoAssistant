@@ -48,8 +48,19 @@ def _parse_frontmatter(text: str) -> Dict[str, str]:
     match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
     if not match:
         return {}
+
+    raw = match.group(1).strip()
+
+    # Try yaml first for correctness
+    try:
+        import yaml
+        return yaml.safe_load(raw) or {}
+    except Exception:
+        pass
+
+    # Fallback: line-by-line parsing
     result = {}
-    for line in match.group(1).strip().split("\n"):
+    for line in raw.split("\n"):
         if ":" in line:
             key, _, value = line.partition(":")
             result[key.strip()] = value.strip()
@@ -72,10 +83,20 @@ def _extract_critical_rules(text: str) -> List[str]:
     """Extract numbered rules from Critical Rules section."""
     rules_text = _extract_section(text, "🚨 Critical Rules")
     rules = []
+
+    # Try bold-title format first: 1. **Title** body
     for match in re.finditer(r"\d+\.\s+\*\*(.+?)\*\*\s*(.*?)(?=\d+\.|\Z)", rules_text, re.DOTALL):
         title = match.group(1).strip()
         body = match.group(2).strip()
         rules.append(f"{title}: {body}" if body else title)
+
+    # Fallback: plain numbered list if bold format produced nothing
+    if not rules:
+        for match in re.finditer(r"\d+\.\s+(.+?)(?=\d+\.|\Z)", rules_text, re.DOTALL):
+            rule = match.group(1).strip()
+            if rule:
+                rules.append(rule)
+
     return rules
 
 

@@ -94,19 +94,56 @@ class SandboxRuntime:
         # Log the attempt
         logger.info(f"SandboxRuntime: bash command intercepted: {command[:100]}")
 
-        # Return a plausible response based on common commands
+        # Return context-aware responses based on common commands
         if command.startswith("ls"):
-            return "sandbox_file.txt\nsandbox_data.json"
+            # Return actual sandbox directory contents
+            try:
+                entries = [f.name for f in self._sandbox_dir.iterdir() if not f.name.startswith(".")]
+                return "\n".join(sorted(entries)) if entries else ""
+            except Exception:
+                return ""
+
         elif command.startswith("cat"):
-            return "[sandbox content - file not accessible in containment]"
+            # Check if file exists in sandbox overlay
+            file_path = command[4:].strip().lstrip("/")
+            sandbox_file = self._sandbox_dir / file_path
+            if sandbox_file.exists():
+                try:
+                    return sandbox_file.read_text(encoding="utf-8")[:10000]
+                except Exception:
+                    return f"cat: {file_path}: Permission denied"
+            return f"cat: {file_path}: No such file or directory"
+
         elif command.startswith("pwd"):
             return str(self._sandbox_dir)
+
         elif command.startswith("echo"):
             return command[5:].strip()
+
+        elif command.startswith("whoami"):
+            return "sandbox_user"
+
+        elif command.startswith("hostname"):
+            return "sandbox-host"
+
+        elif command.startswith("id"):
+            return "uid=1000(sandbox_user) gid=1000(sandbox_user) groups=1000(sandbox_user)"
+
+        elif command.startswith("uname"):
+            return "Linux sandbox-host 5.15.0 #1 SMP x86_64 GNU/Linux"
+
         elif command.startswith("python") or command.startswith("pip"):
-            return "[sandbox: command executed in isolated environment]"
+            return "Python 3.10.12\n>>> "
+
+        elif command.startswith("which"):
+            prog = command[6:].strip()
+            return f"/usr/bin/{prog}"
+
+        elif command.startswith("env") or command.startswith("printenv"):
+            return "HOME=/home/sandbox_user\nUSER=sandbox_user\nPATH=/usr/bin:/bin\nSHELL=/bin/bash"
+
         else:
-            return f"[sandbox: command '{command[:50]}' executed in containment]"
+            return ""
 
     def _sandbox_file_read(self, args: Dict[str, Any]) -> str:
         """Read from sandbox filesystem."""
@@ -165,3 +202,25 @@ class SandboxRuntime:
                 logger.info(f"SandboxRuntime: cleaned up sandbox for task {self.task_id}")
         except Exception as e:
             logger.warning(f"SandboxRuntime: cleanup failed: {e}")
+
+    @staticmethod
+    def cleanup_stale(max_age_days: int = 7) -> int:
+        """Remove sandbox directories older than max_age_days.
+
+        Returns number of directories removed.
+        """
+        import time
+        removed = 0
+        sandbox_root = Path("/tmp")
+        cutoff = time.time() - (max_age_days * 86400)
+
+        for d in sandbox_root.glob("mojo-sandbox-*"):
+            if d.is_dir():
+                try:
+                    if d.stat().st_mtime < cutoff:
+                        shutil.rmtree(d, ignore_errors=True)
+                        removed += 1
+                        logger.info(f"SandboxRuntime: cleaned stale sandbox {d.name}")
+                except Exception:
+                    pass
+        return removed

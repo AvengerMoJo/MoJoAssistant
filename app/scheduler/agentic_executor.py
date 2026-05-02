@@ -9,6 +9,7 @@ using resources from the ResourceManager.
 import asyncio
 import inspect
 import json
+import logging
 import os
 import re
 import time
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from app.scheduler.models import Task, TaskResult
 from app.scheduler.resource_pool import LLMResource, ResourceManager, ResourceTier
@@ -1484,6 +1487,19 @@ class AgenticExecutor:
                 iteration_log=iteration_log,
             )
 
+        # LEARN: write success-path lesson (v1.3.1)
+        if success and role_id and final_answer:
+            try:
+                await self._write_success_lesson(
+                    task_id=task.id,
+                    role_id=role_id,
+                    goal=goal,
+                    iteration_log=iteration_log,
+                    final_answer=final_answer,
+                )
+            except Exception:
+                pass
+
         # LEARN: write structured lesson on failure (v1.3.1)
         if not success and role_id:
             await self._write_task_lesson(
@@ -2072,7 +2088,23 @@ class AgenticExecutor:
                 for phrase in ["would need", "would require", "to unblock", "to proceed", "need to"]:
                     idx = lower.find(phrase)
                     if idx >= 0:
-                        what_would_unblock = final_answer[idx:idx+200].strip()
+                        # Walk backward to sentence boundary
+                        start = idx
+                        for delim in [". ", "\n", "! ", "? "]:
+                            delim_idx = final_answer.rfind(delim, max(0, idx - 200), idx)
+                            if delim_idx >= 0:
+                                start = delim_idx + len(delim)
+                                break
+
+                        # Walk forward to sentence boundary
+                        end = min(idx + 300, len(final_answer))
+                        for delim in [". ", "\n\n", "\n", "! ", "? "]:
+                            delim_idx = final_answer.find(delim, idx + len(phrase))
+                            if delim_idx >= 0 and delim_idx < end:
+                                end = delim_idx + len(delim)
+                                break
+
+                        what_would_unblock = final_answer[start:end].strip()
                         break
 
             lesson = {
@@ -2096,6 +2128,54 @@ class AgenticExecutor:
             self._log(f"LEARN: wrote task_lesson for {task_id} (type={failure_type})")
         except Exception as e:
             self._log(f"Task lesson write failed (non-fatal): {e}", "warning")
+
+    async def _write_success_lesson(
+        self,
+        task_id: str,
+        role_id: str,
+        goal: str,
+        iteration_log: List[Dict[str, Any]],
+        final_answer: str,
+    ) -> None:
+        """Write a lightweight success record for future pattern learning.
+
+        Stored at ~/.memory/roles/{role_id}/task_history/{task_id}.json
+        so the dream pass can synthesize positive strategy patterns.
+        """
+        try:
+            from app.config.paths import get_memory_subpath
+            task_history_dir = (
+                Path(get_memory_subpath("roles")) / role_id / "task_history"
+            )
+            task_history_dir.mkdir(parents=True, exist_ok=True)
+
+            tools_tried: List[str] = []
+            seen = set()
+            for entry in iteration_log:
+                for t in entry.get("tool_calls", []):
+                    if t not in seen:
+                        seen.add(t)
+                        tools_tried.append(t)
+
+            lesson = {
+                "type": "success_lesson",
+                "task_id": task_id,
+                "role_id": role_id,
+                "objective": goal[:300],
+                "tools_used": tools_tried[:15],
+                "iterations_used": len(iteration_log),
+                "answer_excerpt": (final_answer or "").strip()[:300],
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            lesson_path = task_history_dir / f"{task_id}.json"
+            lesson_path.write_text(
+                json.dumps(lesson, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            self._log(f"LEARN: wrote success_lesson for {task_id}")
+        except Exception as e:
+            self._log(f"Success lesson write failed (non-fatal): {e}", "warning")
 
     async def _inject_lessons(self, goal: str, role_id: Optional[str]) -> str:
         """Query role's private lessons for relevant context at task start.
@@ -2294,6 +2374,21 @@ class AgenticExecutor:
             self._behavioral_monitor.observe_tool_call(_task, _role, name, args)
         except Exception as bm_err:
             self._log(f"BehavioralMonitor observe failed (non-fatal): {bm_err}", "debug")
+
+        # PII Scanner: scan tool args for sensitive data (v1.3.3)
+        try:
+            from app.scheduler.security.pii_scanner import scan_tool_args
+            pii_result = scan_tool_args(name, args)
+            if pii_result.has_pii:
+                high_conf = [m for m in pii_result.matches if m.confidence >= 0.7]
+                if high_conf:
+                    cats = sorted(set(m.category for m in high_conf))
+                    self._log(
+                        f"PII detected in {name} args: {cats} ({len(high_conf)} matches)",
+                        "warning",
+                    )
+        except Exception as pii_err:
+            self._log(f"PII scan failed (non-fatal): {pii_err}", "debug")
 
         # Check role policy (allowed_tools ceiling, denied_tools, per-task limits)
         role_decision = self._policy_monitor.check(name, args)
@@ -2901,7 +2996,7 @@ class AgenticExecutor:
             except Exception:
                 pass
         else:
-            self._log(f"Workflow template not found: {system_path}", "debug")
+            logger.debug(f"Workflow template not found: {system_path}")
 
         return None
 

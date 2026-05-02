@@ -169,21 +169,21 @@ This document is structured for agent ingestion. Each issue has a unique ID, sev
 | BSL-001 | HIGH | Behavioral Security | Session score accumulation unbounded | ✅ Fixed |
 | BSL-002 | HIGH | Behavioral Security | Credential patterns match freetext args | ✅ Fixed |
 | BSL-003 | HIGH | Behavioral Security | Monitor/ContainmentEngine not wired into executor | ✅ Fixed |
-| ALL-001 | HIGH | Learning Loop | `_write_task_lesson` only called on budget-exhausted path | ✅ Partial |
+| ALL-001 | HIGH | Learning Loop | `_write_task_lesson` only called on budget-exhausted path | ✅ Fixed |
 | WFT-001 | HIGH | Workflow Templates | `_load_workflow_template` uses relative path | ✅ Fixed |
-| PII-001 | HIGH | PII Scanner | Scanner not integrated into tool pipeline | ⏳ Pending |
+| PII-001 | HIGH | PII Scanner | Scanner not integrated into tool pipeline | ✅ Fixed |
 | CDB-001 | HIGH | Chat→Dream Bridge | Shared pipeline storage mutation | ✅ Fixed |
-| BSL-004 | MEDIUM | Behavioral Security | Sandbox fake responses trivially detectable | ⏳ Pending |
-| BSL-005 | MEDIUM | Behavioral Security | Sandbox tmpdir never cleaned up | ⏳ Pending |
+| BSL-004 | MEDIUM | Behavioral Security | Sandbox fake responses trivially detectable | ✅ Fixed |
+| BSL-005 | MEDIUM | Behavioral Security | Sandbox tmpdir never cleaned up | ✅ Fixed |
 | OAP-002 | MEDIUM | OpenAI Proxy | `RoleManager` instantiated on every request | ✅ Fixed |
 | PII-002 | MEDIUM | PII Scanner | IP pattern high false-positive rate for infra roles | ✅ Fixed |
 | CDB-002 | MEDIUM | Chat→Dream Bridge | Errors not surfaced in TaskResult metrics | ✅ Fixed |
 | CDB-003 | MEDIUM | Chat→Dream Bridge | Watermark written at end-of-role not per-session | ✅ Fixed |
-| AGI-001 | MEDIUM | Agency Importer | YAML frontmatter parser breaks on colons in values | ⏳ Pending |
-| ALL-002 | LOW | Learning Loop | `what_would_unblock` extraction produces mid-sentence fragments | ⏳ Pending |
-| ALL-003 | LOW | Learning Loop | No success-path lessons captured | ⏳ Pending |
-| OAP-003 | LOW | OpenAI Proxy | `stream=true` silently ignored, clients will hang | ⏳ Pending |
+| AGI-001 | MEDIUM | Agency Importer | YAML frontmatter parser breaks on colons in values | ✅ Fixed |
+| ALL-002 | LOW | Learning Loop | `what_would_unblock` extraction produces mid-sentence fragments | ✅ Fixed |
+| ALL-003 | LOW | Learning Loop | No success-path lessons captured | ✅ Fixed |
+| OAP-003 | LOW | OpenAI Proxy | `stream=true` silently ignored, clients will hang | ✅ Fixed |
 | PII-003 | LOW | PII Scanner | `password_assignment` matches env-var template syntax | ✅ Fixed |
-| AGI-002 | LOW | Agency Importer | `_extract_critical_rules` assumes `**bold**` formatting | ⏳ Pending |
+| AGI-002 | LOW | Agency Importer | `_extract_critical_rules` assumes `**bold**` formatting | ✅ Fixed |
 
 **Priority order for a beta-blocking pass:** OAP-001, BSL-003, PII-001, WFT-001, BSL-001, CDB-001, ALL-001 — the rest can follow in a hardening PR.
