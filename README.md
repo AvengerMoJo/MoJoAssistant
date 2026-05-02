@@ -24,6 +24,7 @@ Current release: `v1.3.3-beta`
 | **Dashboard** | Browser UI at `/dashboard` — event log, tasks (incl. cron history), role chat, policy violations, news briefing |
 | **Dreaming** | Nightly memory consolidation: raw sessions → ABCD semantic archives → searchable knowledge base; chat→dream bridge |
 | **Agent Learning** | Failure→lesson pipeline; memory context injection at task start; per-role silo memory |
+| **Bonsai** | Assistant growth architecture — personality evolution via one-on-one calibration, dreaming synthesis, HITL validation |
 | **External MCP** | Plug in external MCP servers (tmux terminal, Playwright browser) via `config/mcp_servers.json` |
 | **Google Workspace** | Calendar, Drive, Gmail via `external_agent` hub |
 | **Notifications** | ntfy / FCM push, SSE stream, persistent event log |

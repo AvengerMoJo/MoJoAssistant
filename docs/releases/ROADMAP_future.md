@@ -36,6 +36,7 @@ User / External World
 | v1.3.2 | Agent Orchestration + Role Chat Full | ✅ Shipped | Agent type classification (agent_type in role JSON), workflow templates (`config/workflow_templates/{type}.json`), OpenAI-compat proxy (`/v1/models`, `/v1/chat/completions`), cross-role referral (`refer_to_role` tool in Role Chat) |
 | v1.3.3 | Advanced Security + PII Sanitization | ✅ Shipped | PII scanner (`app/scheduler/security/pii_scanner.py`) — pattern-based detection for credentials, financial, health, infrastructure data; `scan_text()`, `redact_pii()` |
 | v1.3.x | Institutional Knowledge | ✅ Shipped | Inbox→dreaming→knowledge distillation (`app/dreaming/inbox_distillation.py`), resolved-interaction memory units |
+| **v1.4.0** | **Bonsai — Assistant Growth Architecture** | 🚧 In Progress | Growth snapshots, dimension drift, growth reports, HITL validation, presentation patterns — `app/scheduler/bonsai.py` |
 | **v2.0.0** | **Public release — dropping beta** | 🎯 Target | All quality gates passed; clean install story; stable vs experimental surface documented |
 | v2.x | Architecture evolution | 💭 Future | Message passing, containerization, multi-node, language-agnostic agents |
 
