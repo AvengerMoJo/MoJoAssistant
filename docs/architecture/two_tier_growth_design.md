@@ -101,20 +101,21 @@ Nothing decides whether a piece of learning is framework-level or personal-level
 
 Claude Code auto-memory (`~/.memory/projects/.../*.md`) and the dreaming pipeline are disconnected. Conversations in the chat interface (like this one, where the Qwen XML bug was discovered) don't flow into framework knowledge automatically.
 
-**Deferred — implement alongside the owner one-on-one interface.**
+**Implemented — Chat→Dream bridge via `mode="chat_bridge"` in DreamingHandler.**
 
-Gap 4 is the mechanism that makes the weekly owner one-on-one loop work:
-- Owner has a one-on-one session with a role via the chat interface
-- That conversation saves to memory
-- Dreaming pipeline processes it and routes learnings to the right tier
-- Role's posture shifts by next task
-
-Without the one-on-one interface, there is nothing to bridge. These two features ship together:
-
-1. **One-on-one interface** — role_chat or dashboard UI for owner ↔ role sessions
-2. **Chat → dream bridge** — scheduled job that reads new chat entries, runs `process_document()`, and routes C-clusters by scope (framework → `__framework__` store, personal → role-private store)
+The bridge runs nightly (cron `0 3 * * *`) and:
+1. Scans `~/.memory/roles/{role_id}/chat_history/` for all roles
+2. Checks watermark to skip already-processed sessions
+3. Converts chat exchanges to conversation text
+4. Runs through the ABCD dreaming pipeline with role-scoped storage
+5. Indexes C-clusters into the role's searchable knowledge base
+6. Updates watermark to prevent re-processing
 
 The scope classifier from Gap 3 (explicit agent tagging) is sufficient for this — no automated classifier needed.
+
+**Remaining work:**
+- Scope tagging at C-cluster time (personal vs framework) — current implementation routes all to role-private store
+- One-on-one interface dashboard UI (nice to have for v1.3)
 
 ---
 

@@ -908,7 +908,11 @@ class CapabilityRegistry:
                 return {"success": False, "error": f"Sub-task '{task_id}' disappeared from queue"}
             if t.status.value in ("completed", "failed"):
                 if t.status.value == "failed":
-                    err = t.last_error or "Sub-task failed without error detail"
+                    err = t.last_error
+                    if not err and t.result:
+                        err = t.result.error_message
+                    if not err:
+                        err = f"Sub-task failed without error detail (status={t.status.value}, retries={t.retry_count})"
                     return {"success": False, "task_id": task_id, "error": err}
                 result = t.result
                 final_answer = ""

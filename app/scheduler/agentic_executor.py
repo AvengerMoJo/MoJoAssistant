@@ -14,6 +14,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -699,16 +700,28 @@ class AgenticExecutor:
         )
 
         character_block = self._role_template_engine.build(role) if role else ""
+
+        # Load workflow template based on agent_type
+        workflow_template_block = ""
+        if role:
+            agent_type = role.get("agent_type")
+            if agent_type:
+                template = self._load_workflow_template(agent_type)
+                if template:
+                    workflow_template_block = self._build_workflow_template_prompt(template)
+                    self._log(f"Loaded workflow template for agent_type={agent_type}")
+
         if character_block:
             system_prompt = (
                 mode_overlay
                 + runtime_context
                 + character_block
+                + workflow_template_block
                 + "\n\n---\n\n"
                 + workflow_prompt
             )
         else:
-            system_prompt = mode_overlay + runtime_context + workflow_prompt
+            system_prompt = mode_overlay + runtime_context + workflow_template_block + workflow_prompt
 
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get(
@@ -871,7 +884,12 @@ class AgenticExecutor:
             if not resume_from:
                 orient_block = await self._orient_from_memory(goal, role_id)
 
-            # Build first user message with goal + optional context + orientation
+            # LEARN: inject relevant lessons from role's private lesson store
+            lessons_block = ""
+            if not resume_from and role_id:
+                lessons_block = await self._inject_lessons(goal, role_id)
+
+            # Build first user message with goal + optional context + orientation + lessons
             user_content = f"Goal: {goal}"
             context = config.get("context")
             if context:
@@ -880,6 +898,8 @@ class AgenticExecutor:
                 )
             if orient_block:
                 user_content += orient_block
+            if lessons_block:
+                user_content += lessons_block
             messages.append({"role": "user", "content": user_content})
 
         # --- Create session ---
@@ -1446,6 +1466,17 @@ class AgenticExecutor:
                 iteration_log=iteration_log,
             )
 
+        # LEARN: write structured lesson on failure (v1.3.1)
+        if not success and role_id:
+            await self._write_task_lesson(
+                task_id=task.id,
+                role_id=role_id,
+                goal=goal,
+                error_message=f"Iteration budget exhausted ({len(iteration_log)}/{max_iterations}) without FINAL_ANSWER.",
+                iteration_log=iteration_log,
+                final_answer=final_answer,
+            )
+
         return TaskResult(
             success=True,
             output_file=session_file,
@@ -1924,6 +1955,163 @@ class AgenticExecutor:
 
         except Exception as e:
             self._log(f"Memory reflection failed (non-fatal): {e}", "warning")
+
+    # ------------------------------------------------------------------
+    # LEARN — Phase 5b: write structured lesson on failure (v1.3.1)
+    # ------------------------------------------------------------------
+
+    # Failure taxonomy — maps error patterns to lesson categories
+    _FAILURE_TAXONOMY = {
+        "missing_resource": ["not found", "unavailable", "no results", "404", "does not exist"],
+        "wrong_tool": ["not supported", "platform", "javascript", "requires browser", "fetch_url"],
+        "missing_permission": ["blocked by policy", "permission denied", "not allowed", "forbidden"],
+        "ambiguous_goal": ["unclear", "ambiguous", "what do you mean", "clarify", "specify"],
+        "external_unavailable": ["rate limit", "timeout", "service down", "503", "429", "connection"],
+        "knowledge_gap": ["don't know", "no information", "not enough context", "need more"],
+    }
+
+    def _classify_failure(self, error_message: str, iteration_log: List[Dict[str, Any]]) -> str:
+        """Classify a failure into a taxonomy category based on error message and iteration log."""
+        lower_err = (error_message or "").lower()
+        combined = lower_err
+        for entry in iteration_log:
+            for t in entry.get("tool_calls", []):
+                combined += f" {t}"
+            if entry.get("status") == "final_rejected":
+                combined += " rejected"
+
+        for category, patterns in self._FAILURE_TAXONOMY.items():
+            if any(p in combined for p in patterns):
+                return category
+        return "unknown"
+
+    async def _write_task_lesson(
+        self,
+        task_id: str,
+        role_id: str,
+        goal: str,
+        error_message: str,
+        iteration_log: List[Dict[str, Any]],
+        final_answer: Optional[str] = None,
+    ) -> None:
+        """Write a structured task_lesson record on failure or incomplete.
+
+        Stored at ~/.memory/roles/{role_id}/task_history/{task_id}.json
+        so the dreaming pass can synthesize durable agent_lesson records.
+        """
+        try:
+            from app.config.paths import get_memory_subpath
+            task_history_dir = (
+                Path(get_memory_subpath("roles")) / role_id / "task_history"
+            )
+            task_history_dir.mkdir(parents=True, exist_ok=True)
+
+            # Collect tools tried
+            tools_tried: List[str] = []
+            seen = set()
+            for entry in iteration_log:
+                for t in entry.get("tool_calls", []):
+                    if t not in seen:
+                        seen.add(t)
+                        tools_tried.append(t)
+
+            failure_type = self._classify_failure(error_message, iteration_log)
+
+            # Extract what would unblock from final_answer if present
+            what_would_unblock = ""
+            if final_answer:
+                lower = final_answer.lower()
+                for phrase in ["would need", "would require", "to unblock", "to proceed", "need to"]:
+                    idx = lower.find(phrase)
+                    if idx >= 0:
+                        what_would_unblock = final_answer[idx:idx+200].strip()
+                        break
+
+            lesson = {
+                "type": "task_lesson",
+                "task_id": task_id,
+                "role_id": role_id,
+                "objective": goal[:300],
+                "what_was_tried": tools_tried[:15],
+                "what_failed": (error_message or "iteration budget exhausted")[:300],
+                "failure_type": failure_type,
+                "what_would_unblock": what_would_unblock[:300],
+                "iterations_used": len(iteration_log),
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            lesson_path = task_history_dir / f"{task_id}.json"
+            lesson_path.write_text(
+                json.dumps(lesson, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            self._log(f"LEARN: wrote task_lesson for {task_id} (type={failure_type})")
+        except Exception as e:
+            self._log(f"Task lesson write failed (non-fatal): {e}", "warning")
+
+    async def _inject_lessons(self, goal: str, role_id: Optional[str]) -> str:
+        """Query role's private lessons for relevant context at task start.
+
+        Reads from ~/.memory/roles/{role_id}/lessons/ — synthesized lesson
+        knowledge units produced by the dream pass from task_history records.
+        Returns a formatted block or "" if nothing relevant found.
+        """
+        if not role_id or not self._memory_service:
+            return ""
+        try:
+            from app.config.paths import get_memory_subpath
+            lessons_dir = Path(get_memory_subpath("roles")) / role_id / "lessons"
+            if not lessons_dir.is_dir():
+                return ""
+
+            # Read recent lessons
+            lessons = []
+            for f in sorted(lessons_dir.glob("*.json"), reverse=True)[:10]:
+                try:
+                    lessons.append(json.loads(f.read_text(encoding="utf-8")))
+                except Exception:
+                    continue
+
+            if not lessons:
+                return ""
+
+            # Simple relevance: check if goal keywords appear in lesson content
+            goal_words = set(goal.lower().split())
+            relevant = []
+            for lesson in lessons:
+                content = (lesson.get("lesson") or lesson.get("content") or "").lower()
+                pattern = (lesson.get("pattern") or "").lower()
+                combined = f"{content} {pattern}"
+                matches = sum(1 for w in goal_words if w in combined and len(w) > 3)
+                if matches >= 2:
+                    relevant.append(lesson)
+
+            if not relevant:
+                return ""
+
+            lines = []
+            for lesson in relevant[:3]:
+                pattern = lesson.get("pattern", "")
+                content = lesson.get("lesson", "")
+                confidence = lesson.get("confidence", 0.5)
+                if content:
+                    lines.append(
+                        f"[lesson:{lesson.get('role_id', role_id)}] "
+                        f"{pattern}: {content} (confidence: {confidence:.0%})"
+                    )
+
+            if not lines:
+                return ""
+
+            self._log(f"LEARN: injecting {len(lines)} lessons for role={role_id}")
+            return (
+                "\n\n## Memory notes (from past lessons)\n"
+                + "\n".join(lines)
+                + "\n"
+            )
+        except Exception as e:
+            self._log(f"Lesson injection failed (non-fatal): {e}", "warning")
+            return ""
 
     async def _execute_tool_calls(self, tool_calls: List[Dict]) -> List[str]:
         """Execute tool calls and return results as strings."""
@@ -2628,6 +2816,61 @@ class AgenticExecutor:
         if not base:
             return extra + "\n\n"
         return base + "\n\n" + extra + "\n\n"
+
+    def _load_workflow_template(self, agent_type: str) -> Optional[Dict[str, Any]]:
+        """Load workflow template for an agent type.
+
+        Two-layer lookup:
+          1. System defaults: config/workflow_templates/{type}.json
+          2. User overrides: ~/.memory/config/workflow_templates/{type}.json
+
+        User overrides take precedence if they exist.
+        """
+        from app.config.paths import get_memory_subpath
+        import os
+
+        # User override layer
+        user_path = Path(get_memory_subpath("config")) / "workflow_templates" / f"{agent_type}.json"
+        if user_path.exists():
+            try:
+                return json.loads(user_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        # System default layer
+        system_path = Path("config/workflow_templates") / f"{agent_type}.json"
+        if system_path.exists():
+            try:
+                return json.loads(system_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        return None
+
+    def _build_workflow_template_prompt(self, template: Dict[str, Any]) -> str:
+        """Convert a workflow template dict into a prompt block."""
+        lines = [f"\n## Workflow: {template.get('type', 'unknown')}"]
+        if template.get("description"):
+            lines.append(template["description"])
+
+        for phase in template.get("phases", []):
+            name = phase.get("name", "unknown")
+            instruction = phase.get("instruction", "")
+            tools = phase.get("tools", [])
+            lines.append(f"\n### {name.title()}")
+            lines.append(instruction)
+            if tools:
+                lines.append(f"Tools: {', '.join(tools)}")
+
+        if template.get("success_criteria"):
+            lines.append(f"\n**Success criteria:** {template['success_criteria']}")
+
+        if template.get("escalation_triggers"):
+            lines.append("\n**Escalate when:**")
+            for trigger in template["escalation_triggers"]:
+                lines.append(f"- {trigger}")
+
+        return "\n".join(lines) + "\n"
 
     def _infer_exact_text_from_goal(self, goal: str) -> Optional[str]:
         """Infer exact output requirement from goal text when user asks for exact output."""

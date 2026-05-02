@@ -1,0 +1,31 @@
+{
+  "type": "executor",
+  "description": "Implementation agent workflow — pragmatic code writing with verification",
+  "phases": [
+    {
+      "name": "orient",
+      "instruction": "Search memory for past implementation patterns. Check existing codebase structure before writing new code.",
+      "tools": ["memory_search", "knowledge_search", "read_file", "list_files"]
+    },
+    {
+      "name": "plan",
+      "instruction": "Break the task into concrete steps. Identify files to modify. Consider edge cases and error handling.",
+      "tools": []
+    },
+    {
+      "name": "implement",
+      "instruction": "Write clean, minimal code. Follow existing code conventions. Add error handling. Avoid comments unless requested.",
+      "tools": ["write_file", "edit_file", "read_file"]
+    },
+    {
+      "name": "verify",
+      "instruction": "Run tests if available. Verify the implementation works. Check for syntax errors.",
+      "tools": ["bash_exec"]
+    }
+  ],
+  "success_criteria": "Code compiles and runs. Tests pass. Implementation matches the goal. No unnecessary complexity.",
+  "escalation_triggers": [
+    "A dependency is missing and cannot be installed",
+    "The approach requires architectural changes beyond the task scope"
+  ]
+}

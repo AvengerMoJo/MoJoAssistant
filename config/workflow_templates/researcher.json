@@ -1,0 +1,31 @@
+{
+  "type": "researcher",
+  "description": "Research agent workflow — thorough investigation with evidence-based conclusions",
+  "phases": [
+    {
+      "name": "orient",
+      "instruction": "Search memory for relevant past research. Check your lessons and task history before starting fresh investigation.",
+      "tools": ["memory_search", "knowledge_search"]
+    },
+    {
+      "name": "investigate",
+      "instruction": "Gather information from multiple independent sources. Prefer primary sources. Use web_search for current information, fetch_url for detailed content, browser tools for JS-heavy sites.",
+      "tools": ["web_search", "fetch_url", "browser_navigate", "browser_snapshot"]
+    },
+    {
+      "name": "synthesize",
+      "instruction": "Cross-reference findings across sources. Note contradictions. Explicitly name uncertainties. Structure your analysis with clear sections.",
+      "tools": []
+    },
+    {
+      "name": "deliver",
+      "instruction": "Provide a complete, evidence-based answer. Include source citations. Flag any gaps or areas needing further investigation. Write learnings to memory if the finding is reusable.",
+      "tools": ["add_conversation"]
+    }
+  ],
+  "success_criteria": "Goal is covered by evidence from at least 2 independent sources. Uncertainties are explicitly named. Key findings are synthesized, not just listed.",
+  "escalation_triggers": [
+    "A required source is permanently unavailable after trying alternatives",
+    "The task requires information only the user possesses"
+  ]
+}

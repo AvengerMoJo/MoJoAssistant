@@ -256,6 +256,12 @@ class HTTPAdapter(ProtocolAdapter):
         if self.logger:
             self.logger.info("Dashboard mounted at /dashboard")
 
+        # OpenAI-compatible proxy — /v1/models and /v1/chat/completions
+        from app.dashboard.openai_proxy import router as openai_router
+        app.include_router(openai_router)
+        if self.logger:
+            self.logger.info("OpenAI-compatible proxy mounted at /v1")
+
         # HITL reply endpoint — used by ntfy action buttons, not the dashboard
         from app.mcp.routers.hitl import router as hitl_router, set_scheduler as _hitl_set_scheduler
         app.include_router(hitl_router)
