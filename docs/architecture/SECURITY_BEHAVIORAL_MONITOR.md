@@ -1,6 +1,6 @@
 # Security Behavioral Monitor + Containment Engine
 
-**Status:** Planned — v1.3.x
+**Status:** Implemented (v1.3.0)
 **Trigger:** Trivy supply chain attack (March 2026) + growing autonomous AI agent landscape
 **Design date:** 2026-03-26
 

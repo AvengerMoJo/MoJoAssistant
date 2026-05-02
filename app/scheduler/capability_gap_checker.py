@@ -61,8 +61,10 @@ _BLOCKER_SIGNALS: Dict[str, List[str]] = {
 }
 
 # Shell-command-like patterns that strongly imply execution capability.
+# NOTE: backtick pattern requires at least one space inside (command + argument),
+# so bare paths/identifiers like `~/foo/bar` or `tool_name` are not flagged.
 _SHELL_COMMAND_PATTERNS: List[re.Pattern[str]] = [
-    re.compile(r"`[^`]{2,}`"),  # inline code command, e.g. `hostname -I`
+    re.compile(r"`[^`\s]+\s+[^`]+`"),  # inline command with args, e.g. `hostname -I`
     re.compile(r"\b[a-z0-9_.-]+\s+\|\s+[a-z0-9_.-]+"),  # pipeline, e.g. a | b
 ]
 

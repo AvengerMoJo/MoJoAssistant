@@ -752,7 +752,13 @@ def test_full_pipeline():
 
 ## Future Enhancements
 
-**Planned v1.3.0 Features:**
+**Implemented (v1.2.14 — v1.3.x):**
+- ✅ Chat→Dream bridge (`mode="chat_bridge"`) — processes role chat sessions nightly
+- ✅ Inbox distillation — pairs HITL interactions into resolved_interaction records
+- ✅ Dreaming sources indexing — C-clusters indexed into searchable knowledge base
+- ✅ Two-tier growth (framework + role) — shared and private knowledge tiers
+
+**Planned:**
 - Real-time dreaming (continuous processing)
 - Dreaming triggers (token threshold, new topics)
 - Multi-modal dreaming (include images, code)
