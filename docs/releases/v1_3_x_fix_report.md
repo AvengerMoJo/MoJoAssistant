@@ -9,24 +9,24 @@ This document is structured for agent ingestion. Each issue has a unique ID, sev
 
 ## BEHAVIORAL SECURITY LAYER (`app/scheduler/security/`)
 
-### BSL-001 — Score accumulation is unbounded (HIGH)
+### BSL-001 — Score accumulation is unbounded (HIGH) ✅ FIXED
 **File:** `app/scheduler/security/behavioral_monitor.py`
 **Problem:** `_session_scores[task_id]` is incremented on every `observe_tool_call`. A long legitimate session making many normal calls accumulates score over time. There is no decay, normalization, or per-call cap. A session with 50 routine `bash_exec` calls can reach HIGH containment via noise.
-**Fix:** Cap the per-call score contribution and normalize the session total by iteration count before classification. In `observe_session_end`, divide the raw accumulated score by `max(1, iteration_count)` before comparing against thresholds. Alternatively, store a list of per-call scores and use the 90th percentile rather than the sum.
+**Fix:** Normalized score by iteration count in `observe_session_end()`: `normalized_score = raw_score / max(1, iteration_count / 5)`. Added `raw_score` to return dict for debugging. Commit: `0635e78`.
 
 ---
 
-### BSL-002 — Credential pattern strings match freetext args (HIGH)
+### BSL-002 — Credential pattern strings match freetext args (HIGH) ✅ FIXED
 **File:** `app/scheduler/security/behavioral_monitor.py`, `_CREDENTIAL_PATTERNS` list
 **Problem:** Bare uppercase strings `"SECRET"`, `"TOKEN"`, `"KEY"`, `"PASSWORD"`, `"CREDENTIAL"` are substring-matched against raw tool arg strings. This fires on any tool whose args happen to contain these words — e.g. `{"query": "keyboard shortcut"}` matches `"KEY"`, or `{"description": "secret agent movie"}` matches `"SECRET"`.
-**Fix:** Apply the uppercase patterns only when the tool name is a file/path operation (`read_file`, `write_file`, `bash_exec`) AND the matched field is a path-like string (contains `/` or `\`). For freetext fields like `query` or `description`, skip the uppercase patterns entirely. Alternatively, require word-boundary anchors: `r'\bKEY\b'` etc., which at minimum avoids partial-word matches.
+**Fix:** Split into path patterns (substring match) and keyword patterns (regex with `\b` word boundaries). Keyword patterns only applied to path operations (`read_file`, `write_file`, `bash_exec`). Commit: `0635e78`.
 
 ---
 
-### BSL-003 — BehavioralMonitor / ContainmentEngine not wired into AgenticExecutor (HIGH)
+### BSL-003 — BehavioralMonitor / ContainmentEngine not wired into AgenticExecutor (HIGH) ✅ FIXED
 **File:** `app/scheduler/agentic_executor.py`
 **Problem:** `BehavioralMonitor` and `ContainmentEngine` are implemented but not imported or called anywhere in `AgenticExecutor`. The security layer has no effect in production.
-**Fix:** In `AgenticExecutor.__init__` (or as a lazily-initialized property), instantiate `BehavioralMonitor()` and `ContainmentEngine()`. In the tool-call dispatch path, call `monitor.observe_tool_call(task_id, role_id, tool_name, args)` for every tool execution. After the session completes, call `monitor.observe_session_end(...)` and pass the result to `containment_engine.respond(...)`. If `respond()` returns `action == "halt"`, abort the session. If `action == "sandbox"`, swap the tool backend for a `SandboxRuntime` instance (which already has the right interface).
+**Fix:** Imported and instantiated both in `AgenticExecutor.__init__()`. Added `observe_tool_call()` in `_execute_single_tool()` after security gate. Added `observe_session_end()` + `containment.respond()` after session completion in main execute loop. Commit: `0635e78`.
 
 ---
 
@@ -46,10 +46,10 @@ This document is structured for agent ingestion. Each issue has a unique ID, sev
 
 ## AGENT LEARNING LOOP (`app/scheduler/agentic_executor.py`)
 
-### ALL-001 — `_write_task_lesson` only called on iteration-budget-exhausted path (HIGH)
+### ALL-001 — `_write_task_lesson` only called on iteration-budget-exhausted path (HIGH) ✅ PARTIALLY FIXED
 **File:** `app/scheduler/agentic_executor.py`
 **Problem:** `_write_task_lesson` is invoked only in the `if not success` block triggered by the iteration budget path (~line 1466). Other failure exits — tool errors, LLM API errors, explicit task cancellation — do not record a lesson. The learning loop will miss the majority of real-world failures.
-**Fix:** Audit all `return TaskResult(success=False, ...)` and `raise` paths in `AgenticExecutor`. For each failure exit that has a meaningful `error_message`, add an `await self._write_task_lesson(...)` call before returning. Wrap each call in try/except so a lesson-write failure cannot mask the original failure.
+**Fix:** Added lesson writing to resource exhaustion failure path. Other paths (LLM errors) continue to next iteration rather than failing immediately, so lesson writing at final failure point is appropriate. Commit: `0635e78`.
 
 ---
 
@@ -69,52 +69,26 @@ This document is structured for agent ingestion. Each issue has a unique ID, sev
 
 ## AGENT ORCHESTRATION / WORKFLOW TEMPLATES
 
-### WFT-001 — `_load_workflow_template` uses relative path (HIGH)
+### WFT-001 — `_load_workflow_template` uses relative path (HIGH) ✅ FIXED
 **File:** `app/scheduler/agentic_executor.py`, `_load_workflow_template`
 **Problem:** `system_path = Path("config/workflow_templates") / f"{agent_type}.json"` resolves relative to the process CWD. If MoJo is started from any directory other than the project root (e.g. via systemd with a different `WorkingDirectory`), this silently fails and no system templates load. The user override layer will still work, masking the bug.
-**Fix:** Replace the relative path with an absolute anchor:
-```python
-import os
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
-system_path = _PROJECT_ROOT / "config" / "workflow_templates" / f"{agent_type}.json"
-```
-Add a `logger.debug` when the system path does not exist so the failure is visible.
+**Fix:** Changed to absolute path using `Path(__file__).parent.parent.parent` anchor. Added debug logging when template not found. Commit: `0635e78`.
 
 ---
 
 ## OPENAI-COMPATIBLE PROXY (`app/dashboard/openai_proxy.py`)
 
-### OAP-001 — No authentication on proxy endpoints (CRITICAL)
+### OAP-001 — No authentication on proxy endpoints (CRITICAL) ✅ FIXED
 **File:** `app/dashboard/openai_proxy.py`
 **Problem:** `GET /v1/models` and `POST /v1/chat/completions` have no auth check. Any process (or network peer, if the FastAPI server is externally accessible) can enumerate all roles and send arbitrary messages to them without credentials.
-**Fix:** Add a dependency that checks for a Bearer token in the `Authorization` header, validated against a secret stored in `~/.memory/config/openai_proxy.json` (key: `"api_key"`). If the header is absent or invalid, return HTTP 401. Generate a random default key on first startup and log it once. Example:
-```python
-from fastapi import Depends, HTTPException, Security
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
-security = HTTPBearer()
-
-async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
-    expected = _load_proxy_config().get("api_key")
-    if not expected or credentials.credentials != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-```
+**Fix:** Added Bearer token authentication via `HTTPBearer`. API key auto-generated on first startup to `~/.memory/config/openai_proxy.json`. Returns HTTP 401 on missing/invalid token. Commit: `0635e78`.
 
 ---
 
-### OAP-002 — `RoleManager` instantiated on every request (MEDIUM)
+### OAP-002 — `RoleManager` instantiated on every request (MEDIUM) ✅ FIXED
 **File:** `app/dashboard/openai_proxy.py`, `_get_role_manager`
 **Problem:** `_get_role_manager()` calls `RoleManager()` on every HTTP request. If `RoleManager.__init__` scans the filesystem, this is an O(roles) I/O hit per request.
-**Fix:** Cache the instance at module level with a TTL (e.g. 60 seconds) so repeated requests reuse the same object, but config changes are still picked up:
-```python
-_role_manager_cache: tuple[float, RoleManager] | None = None
-
-def _get_role_manager() -> RoleManager:
-    global _role_manager_cache
-    if _role_manager_cache is None or time.time() - _role_manager_cache[0] > 60:
-        _role_manager_cache = (time.time(), RoleManager())
-    return _role_manager_cache[1]
-```
+**Fix:** Module-level cache with 60-second TTL. Commit: `0635e78`.
 
 ---
 
@@ -134,73 +108,40 @@ def _get_role_manager() -> RoleManager:
 
 ---
 
-### PII-002 — IP address pattern will produce high false-positive rate for infra roles (MEDIUM)
+### PII-002 — IP address pattern will produce high false-positive rate for infra roles (MEDIUM) ✅ FIXED
 **File:** `app/scheduler/security/pii_scanner.py`, `_PATTERNS["ip_address"]`
 **Problem:** The IP pattern matches all IPv4 addresses including RFC1918 (`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`) and loopback (`127.0.0.1`). Roles that legitimately work with infrastructure (sysadmin, monitor, researcher) will trigger PII alerts constantly.
-**Fix:** Either lower the confidence for RFC1918/loopback ranges to `0.1` (effectively filtering them out unless the threshold is also lowered), or add a post-filter that removes matches that fall within the private/loopback ranges. A simple check:
-```python
-import ipaddress
-def _is_private_ip(addr: str) -> bool:
-    try:
-        return ipaddress.ip_address(addr).is_private
-    except ValueError:
-        return False
-```
-Apply this in the scanner and set `confidence = 0.1` for private IPs.
+**Fix:** Added `ipaddress` import. In `scan_text()`, check if IP is private/loopback and reduce confidence to 0.1. Commit: `0635e78`.
 
 ---
 
-### PII-003 — `password_assignment` regex matches env-var template syntax (LOW)
+### PII-003 — `password_assignment` regex matches env-var template syntax (LOW) ✅ FIXED
 **File:** `app/scheduler/security/pii_scanner.py`, `_PATTERNS["password_assignment"]`
 **Problem:** Pattern `(?:password|passwd|pwd|secret)\s*[:=]\s*\S+` matches `password: ${DB_PASSWORD}` and `secret: {{ vault.secret }}` — template/env-var patterns that are not actual secrets.
-**Fix:** Add a negative lookahead to exclude common template syntaxes:
-```python
-re.compile(
-    r'(?:password|passwd|pwd|secret)\s*[:=]\s*(?!\$\{)(?!\{\{)(?!<)(?!\[)\S+',
-    re.IGNORECASE
-)
-```
+**Fix:** Added negative lookahead `(?!\$\{)(?!\{\{)(?!<)(?!\[)` to exclude template syntax. Commit: `0635e78`.
 
 ---
 
 ## CHAT→DREAM BRIDGE (`app/scheduler/handlers/dreaming.py`)
 
-### CDB-001 — Shared pipeline instance storage mutation (HIGH)
+### CDB-001 — Shared pipeline instance storage mutation (HIGH) ✅ FIXED
 **File:** `app/scheduler/handlers/dreaming.py`, `_execute_chat_bridge`
 **Problem:** `pipeline = ctx.get_dreaming_pipeline(quality_level)` and then `pipeline.storage = JsonFileBackend(role_storage_path)` mutates the storage backend on what may be a shared singleton. If the pipeline object is reused across roles in the same loop iteration (or across concurrent tasks), the storage swap for role N will overwrite the storage context for role N-1 before role N-1's results are committed.
-**Fix:** Verify that `ctx.get_dreaming_pipeline()` returns a fresh instance each call (check `ExecutorContext` implementation). If it returns a singleton, either (a) make it return a copy/new instance, or (b) save and restore the original storage: `orig = pipeline.storage; pipeline.storage = role_backend; ... pipeline.storage = orig`.
+**Fix:** Call `ctx.get_dreaming_pipeline(quality_level)` fresh for each role instead of reusing across the loop. Commit: `0635e78`.
 
 ---
 
-### CDB-002 — Errors collected but not surfaced in TaskResult (MEDIUM)
+### CDB-002 — Errors collected but not surfaced in TaskResult (MEDIUM) ✅ FIXED
 **File:** `app/scheduler/handlers/dreaming.py`, `_execute_chat_bridge`
 **Problem:** Failed session file reads are appended to `errors: list[str]` but the list is never included in the returned `TaskResult` metrics. Errors are silently lost unless someone reads the logs.
-**Fix:** Include the error list in the returned metrics:
-```python
-return TaskResult(
-    success=True,
-    metrics={
-        "roles_processed": roles_processed,
-        "sessions_processed": total_sessions,
-        "knowledge_units_indexed": total_indexed,
-        "errors": errors,          # add this
-        "error_count": len(errors), # and this
-    },
-)
-```
+**Fix:** Added `errors` and `error_count` to returned metrics dict. Commit: `0635e78`.
 
 ---
 
-### CDB-003 — Watermark persistence timing (MEDIUM)
+### CDB-003 — Watermark persistence timing (MEDIUM) ✅ FIXED
 **File:** `app/scheduler/handlers/dreaming.py`, `_execute_chat_bridge`
 **Problem:** It is unclear from the code (partial diff) whether `processed_ids` is written back to `watermark_path` after each session file or only once after the full role loop. If the process crashes mid-role, all sessions in that role are re-processed on the next run, potentially generating duplicate knowledge units.
-**Fix:** Write the watermark back after each successfully processed session (not just at the end of the role):
-```python
-processed_ids.add(session_file.stem)
-watermark["processed_session_ids"] = sorted(processed_ids)
-self._save_watermark(watermark_path, watermark)
-```
-This is slightly more I/O but guarantees exactly-once processing.
+**Fix:** Write watermark after each successfully processed session, plus a final redundant write at end of role loop for consistency. Commit: `0635e78`.
 
 ---
 
@@ -222,27 +163,27 @@ This is slightly more I/O but guarantees exactly-once processing.
 
 ## Summary Table
 
-| ID | Severity | Subsystem | One-line description |
-|---|---|---|---|
-| OAP-001 | CRITICAL | OpenAI Proxy | No auth on `/v1/*` endpoints |
-| BSL-001 | HIGH | Behavioral Security | Session score accumulation unbounded |
-| BSL-002 | HIGH | Behavioral Security | Credential patterns match freetext args |
-| BSL-003 | HIGH | Behavioral Security | Monitor/ContainmentEngine not wired into executor |
-| ALL-001 | HIGH | Learning Loop | `_write_task_lesson` only called on budget-exhausted path |
-| WFT-001 | HIGH | Workflow Templates | `_load_workflow_template` uses relative path |
-| PII-001 | HIGH | PII Scanner | Scanner not integrated into tool pipeline |
-| CDB-001 | HIGH | Chat→Dream Bridge | Shared pipeline storage mutation |
-| BSL-004 | MEDIUM | Behavioral Security | Sandbox fake responses trivially detectable |
-| BSL-005 | MEDIUM | Behavioral Security | Sandbox tmpdir never cleaned up |
-| OAP-002 | MEDIUM | OpenAI Proxy | `RoleManager` instantiated on every request |
-| PII-002 | MEDIUM | PII Scanner | IP pattern high false-positive rate for infra roles |
-| CDB-002 | MEDIUM | Chat→Dream Bridge | Errors not surfaced in TaskResult metrics |
-| CDB-003 | MEDIUM | Chat→Dream Bridge | Watermark written at end-of-role not per-session |
-| AGI-001 | MEDIUM | Agency Importer | YAML frontmatter parser breaks on colons in values |
-| ALL-002 | LOW | Learning Loop | `what_would_unblock` extraction produces mid-sentence fragments |
-| ALL-003 | LOW | Learning Loop | No success-path lessons captured |
-| OAP-003 | LOW | OpenAI Proxy | `stream=true` silently ignored, clients will hang |
-| PII-003 | LOW | PII Scanner | `password_assignment` matches env-var template syntax |
-| AGI-002 | LOW | Agency Importer | `_extract_critical_rules` assumes `**bold**` formatting |
+| ID | Severity | Subsystem | One-line description | Status |
+|---|---|---|---|---|
+| OAP-001 | CRITICAL | OpenAI Proxy | No auth on `/v1/*` endpoints | ✅ Fixed |
+| BSL-001 | HIGH | Behavioral Security | Session score accumulation unbounded | ✅ Fixed |
+| BSL-002 | HIGH | Behavioral Security | Credential patterns match freetext args | ✅ Fixed |
+| BSL-003 | HIGH | Behavioral Security | Monitor/ContainmentEngine not wired into executor | ✅ Fixed |
+| ALL-001 | HIGH | Learning Loop | `_write_task_lesson` only called on budget-exhausted path | ✅ Partial |
+| WFT-001 | HIGH | Workflow Templates | `_load_workflow_template` uses relative path | ✅ Fixed |
+| PII-001 | HIGH | PII Scanner | Scanner not integrated into tool pipeline | ⏳ Pending |
+| CDB-001 | HIGH | Chat→Dream Bridge | Shared pipeline storage mutation | ✅ Fixed |
+| BSL-004 | MEDIUM | Behavioral Security | Sandbox fake responses trivially detectable | ⏳ Pending |
+| BSL-005 | MEDIUM | Behavioral Security | Sandbox tmpdir never cleaned up | ⏳ Pending |
+| OAP-002 | MEDIUM | OpenAI Proxy | `RoleManager` instantiated on every request | ✅ Fixed |
+| PII-002 | MEDIUM | PII Scanner | IP pattern high false-positive rate for infra roles | ✅ Fixed |
+| CDB-002 | MEDIUM | Chat→Dream Bridge | Errors not surfaced in TaskResult metrics | ✅ Fixed |
+| CDB-003 | MEDIUM | Chat→Dream Bridge | Watermark written at end-of-role not per-session | ✅ Fixed |
+| AGI-001 | MEDIUM | Agency Importer | YAML frontmatter parser breaks on colons in values | ⏳ Pending |
+| ALL-002 | LOW | Learning Loop | `what_would_unblock` extraction produces mid-sentence fragments | ⏳ Pending |
+| ALL-003 | LOW | Learning Loop | No success-path lessons captured | ⏳ Pending |
+| OAP-003 | LOW | OpenAI Proxy | `stream=true` silently ignored, clients will hang | ⏳ Pending |
+| PII-003 | LOW | PII Scanner | `password_assignment` matches env-var template syntax | ✅ Fixed |
+| AGI-002 | LOW | Agency Importer | `_extract_critical_rules` assumes `**bold**` formatting | ⏳ Pending |
 
 **Priority order for a beta-blocking pass:** OAP-001, BSL-003, PII-001, WFT-001, BSL-001, CDB-001, ALL-001 — the rest can follow in a hardening PR.
