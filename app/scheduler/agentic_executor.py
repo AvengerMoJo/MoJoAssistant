@@ -585,6 +585,7 @@ class AgenticExecutor:
 
         # Load role personality if role_id is specified
         role_model_preference = None
+        role_preferred_resource_id = None
         role_id = config.get("role_id")
         self._role_id = role_id  # make role_id available to tool dispatch
         _cv_role_id.set(role_id)
@@ -629,6 +630,21 @@ class AgenticExecutor:
                 )
                 self._log(msg, level="error")
                 return TaskResult(success=False, error_message=msg)
+
+        # Compatibility: some roles may store a resource ID in model_preference
+        # (e.g. "lmstudio_qwen35b"). Treat that as a resource pin instead of
+        # passing it as a literal model name to providers.
+        if role_model_preference:
+            try:
+                if self._rm.get_resource(role_model_preference) is not None:
+                    role_preferred_resource_id = role_model_preference
+                    role_model_preference = None
+                    self._log(
+                        f"Role model_preference resolved as resource id: "
+                        f"{role_preferred_resource_id}"
+                    )
+            except Exception:
+                pass
 
         # Setup-time ceiling: validate available_tools against role policy
         available_tools = config.get("available_tools", [])
@@ -979,7 +995,7 @@ class AgenticExecutor:
                 config=config,
                 iteration_log=iteration_log,
             )
-            pinned_resource_id = config.get("pinned_resource")
+            pinned_resource_id = config.get("pinned_resource") or role_preferred_resource_id
             if pinned_resource_id:
                 resource = self._rm.acquire_by_id(pinned_resource_id)
                 if resource is None:
@@ -1069,7 +1085,12 @@ class AgenticExecutor:
                 )
 
             # Call LLM
-            effective_model = role_model_preference or resource.model
+            # Only apply role_model_preference to local resources — applying a
+            # local model name (e.g. "qwen/qwen3.5-35b-a3b") to a cloud API
+            # provider (Gemini, Anthropic, OpenRouter) causes a guaranteed HTTP
+            # error since those providers don't recognise the model ID.
+            _model_override = role_model_preference if resource.type == "local" else None
+            effective_model = _model_override or resource.model
             self._log(
                 f"Iteration {iteration}: calling {effective_model} via {resource.id} "
                 f"(~{_estimate_tokens(messages)}t input)"
@@ -1078,7 +1099,7 @@ class AgenticExecutor:
             try:
                 response = await self._call_llm(
                     resource, messages, tools=tool_defs or None,
-                    model_override=role_model_preference,
+                    model_override=_model_override,
                 )
                 self._rm.record_usage(resource.id, success=True)
                 # Audit trail — log every non-free external boundary crossing
