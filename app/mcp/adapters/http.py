@@ -324,6 +324,12 @@ class HTTPAdapter(ProtocolAdapter):
             uptime = time.time() - self.engine.start_time
             return {"status": "healthy", "uptime": round(uptime, 2)}
 
+        # Enhanced health endpoint with memory usage
+        @app.get("/api/health")
+        async def api_health():
+            from app.mcp.adapters.health import api_health_check
+            return await api_health_check(self.engine)
+
         # SSE endpoint for real-time task notifications
         @app.get("/events/tasks")
         async def task_events():

@@ -1,31 +1,37 @@
 {
   "type": "executor",
-  "description": "Implementation agent workflow — pragmatic code writing with verification",
+  "description": "Full project coding workflow — implement features, fix bugs, write tests",
   "phases": [
     {
-      "name": "orient",
-      "instruction": "Search memory for past implementation patterns. Check existing codebase structure before writing new code.",
-      "tools": ["memory_search", "knowledge_search", "read_file", "list_files"]
+      "name": "discover",
+      "instruction": "Before touching any code: 1) Read the relevant files completely. 2) Check git status and recent commits. 3) Understand existing conventions (typing, dataclasses, patterns). 4) Search memory for similar past tasks.",
+      "tools": ["read_file", "list_files", "search_in_files", "memory_search"]
     },
     {
       "name": "plan",
-      "instruction": "Break the task into concrete steps. Identify files to modify. Consider edge cases and error handling.",
-      "tools": []
+      "instruction": "Plan the implementation: 1) List specific files to create/modify. 2) Identify dependencies. 3) Consider edge cases. 4) For complex tasks, dispatch to specialized agents.",
+      "tools": ["dispatch_subtask"]
     },
     {
       "name": "implement",
-      "instruction": "Write clean, minimal code. Follow existing code conventions. Add error handling. Avoid comments unless requested.",
-      "tools": ["write_file", "edit_file", "read_file"]
+      "instruction": "Write clean, minimal code following project conventions. Add error handling. Don't add comments unless they explain non-obvious behavior.",
+      "tools": ["write_file", "edit_file"]
+    },
+    {
+      "name": "test",
+      "instruction": "Run existing tests. Add new tests if the feature has testable behavior. Verify the code works end-to-end.",
+      "tools": ["bash_exec"]
     },
     {
       "name": "verify",
-      "instruction": "Run tests if available. Verify the implementation works. Check for syntax errors.",
+      "instruction": "Run the full test suite. Check for regressions. Verify the goal is actually achieved.",
       "tools": ["bash_exec"]
     }
   ],
-  "success_criteria": "Code compiles and runs. Tests pass. Implementation matches the goal. No unnecessary complexity.",
+  "success_criteria": "Code compiles, tests pass, implementation matches the goal, and existing tests aren't broken.",
   "escalation_triggers": [
     "A dependency is missing and cannot be installed",
-    "The approach requires architectural changes beyond the task scope"
+    "The approach requires architectural changes beyond the task scope",
+    "The task requires specialized knowledge (security, performance, etc.)"
   ]
 }
