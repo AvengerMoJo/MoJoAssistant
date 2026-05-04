@@ -6,8 +6,10 @@ File: app/mcp/adapters/http.py
 import asyncio
 import json
 import time
+import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
+from uuid import uuid4
 from fastapi import FastAPI, Request, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -54,6 +56,7 @@ class HTTPAdapter(ProtocolAdapter):
         )
 
         self.oauth_enabled = use_oauth
+        self._access_logger = logging.getLogger("uvicorn.error")
 
     def set_logger(self, logger):
         self.logger = logger
@@ -74,6 +77,52 @@ class HTTPAdapter(ProtocolAdapter):
             allow_methods=["*"],
             allow_headers=["*", "Authorization"],  # Include Authorization header
         )
+
+        @app.middleware("http")
+        async def request_trace_middleware(request: Request, call_next):
+            """
+            Attach/propagate request ID and emit a single structured access line.
+            """
+            request_id = request.headers.get("x-request-id") or str(uuid4())
+            request.state.request_id = request_id
+            start = time.perf_counter()
+            response = None
+            error_text = None
+            try:
+                response = await call_next(request)
+                return response
+            except Exception as exc:
+                error_text = str(exc)
+                raise
+            finally:
+                elapsed_ms = round((time.perf_counter() - start) * 1000.0, 2)
+                if response is not None:
+                    response.headers["X-Request-ID"] = request_id
+                access_logger = self.logger or self._access_logger
+                if access_logger:
+                    method = request.method
+                    path = request.url.path
+                    query = request.url.query or ""
+                    status_code = response.status_code if response is not None else 500
+                    cf_ray = request.headers.get("cf-ray")
+                    cf_ip = request.headers.get("cf-connecting-ip")
+                    forwarded_for = request.headers.get("x-forwarded-for")
+                    remote_ip = request.client.host if request.client else "-"
+                    access_logger.info(
+                        "access request_id=%s method=%s path=%s query=%s status=%s latency_ms=%s remote_ip=%s "
+                        "x_forwarded_for=%s cf_connecting_ip=%s cf_ray=%s error=%s",
+                        request_id,
+                        method,
+                        path,
+                        query,
+                        status_code,
+                        elapsed_ms,
+                        remote_ip,
+                        forwarded_for,
+                        cf_ip,
+                        cf_ray,
+                        error_text or "",
+                    )
 
         # Initialize OAuth middleware if enabled
         if self.oauth_config.enabled:

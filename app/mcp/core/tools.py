@@ -2677,6 +2677,13 @@ Agent resumes within seconds.
             urgency = args.get("urgency")
             importance = args.get("importance")
 
+            # Extract max_duration_seconds and danger_budget from config if provided
+            if isinstance(config, dict):
+                if "max_duration_seconds" in config:
+                    resources_dict.setdefault("max_duration_seconds", config.pop("max_duration_seconds"))
+                if "danger_budget" in config:
+                    resources_dict.setdefault("danger_budget", config.pop("danger_budget"))
+
             # Validate urgency / importance: must be int 1–5 if provided
             def _validate_routing_field(name: str, value):
                 if value is None:
@@ -3888,6 +3895,33 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Config doctor failed: {e}"}
 
+    async def _execute_config_doctor_context_probe(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the external context discovery capability script via ConfigDoctor."""
+        import asyncio
+        try:
+            from app.config.doctor import ConfigDoctor
+            doctor = ConfigDoctor()
+            resource_id = args.get("resource_id")
+            all_enabled_local = bool(args.get("all_enabled_local", False))
+            ladder = args.get("ladder")
+            connect_timeout = int(args.get("connect_timeout", 10))
+            read_timeout = int(args.get("read_timeout", 120))
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: doctor.run_context_probe(
+                    resource_id=resource_id,
+                    all_enabled_local=all_enabled_local,
+                    ladder=ladder,
+                    connect_timeout=connect_timeout,
+                    read_timeout=read_timeout,
+                ),
+            )
+            return result
+        except Exception as e:
+            return {"status": "error", "message": f"Context probe failed: {e}"}
+
     async def _execute_config_healer(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Suggest (and optionally apply) config improvements driven by runtime data.
@@ -4844,6 +4878,8 @@ Agent resumes within seconds.
         # --- doctor / healer ---
         if action == "doctor":
             return await self._execute_config_doctor({})
+        if action == "doctor_context_probe":
+            return await self._execute_config_doctor_context_probe(args)
         if action in ("doctor_improve", "doctor_apply"):
             return await self._execute_config_healer(args)
 
@@ -4891,6 +4927,7 @@ Agent resumes within seconds.
                         "capability_add":        "Register a custom capability to personal layer — params: tool_name, description, parameters?, executor?, danger_level?, category?",
                         "capability_remove":     "Remove a user-created capability — params: tool_name (system capabilities are protected)",
                         "doctor":                "Full config pre-flight report",
+                        "doctor_context_probe":  "Run cached empirical context-limit discovery script — params: resource_id? | all_enabled_local? | ladder? | connect_timeout? | read_timeout?",
                         "doctor_improve":        "Suggest config improvements from runtime data (benchmark history, failure patterns) — no changes written",
                         "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
                         "preflight":             "Check system dependencies and MCP tool installation status (use scripts/preflight.py for interactive install)",

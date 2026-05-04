@@ -846,6 +846,15 @@ class AgenticExecutor:
                 task.id,
                 budget=int(task_danger_budget) if task_danger_budget else None,
             )
+        elif resume_from and not config.get("reply_to_question"):
+            # Resume from failed task (not HITL reply) — reset gate with extended budget
+            task_danger_budget = config.get("danger_budget")
+            self._gate.reset_task(
+                task.id,
+                budget=int(task_danger_budget) if task_danger_budget else None,
+            )
+            self._log(f"Gate reset on failed resume for task {task.id}")
+
         if resume_from:
             messages, start_iteration = self._load_resume_messages(
                 resume_from, system_prompt

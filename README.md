@@ -367,8 +367,34 @@ Before merging:
 
 ## Status
 
-Active beta (`v1.3.3`). Core memory, MCP, scheduler, policy, role chat, dreaming
-pipeline, behavioral security, agent learning loop, and PII scanning are
-production-ready for personal use. External MCP servers (tmux terminal,
-Playwright browser), Google Workspace, and coding agent integrations require additional
-setup. See the roadmap for what's next.
+Active beta (`v1.4.0`). Core memory, MCP, scheduler, policy, role chat, dreaming
+pipeline, behavioral security, agent learning loop, Bonsai growth architecture,
+and PII scanning are production-ready for personal use.
+
+### Stable vs Experimental
+
+**Stable (production-ready):**
+- Memory system (4-tier, semantic search, role-scoped isolation)
+- Scheduler (cron + one-shot, HITL pause/resume, zombie detection)
+- MCP tool surface (14 hub tools)
+- Policy pipeline (static, content, data_boundary, context, sensitive_domain)
+- Role system (NineChapter dimensions, dynamic prompts, two-tier growth)
+- Dashboard (event log, tasks, role chat, news briefing)
+- Dreaming pipeline (A→B→C→D, chat→dream bridge, inbox distillation)
+- Notifications (ntfy push, SSE stream)
+- Bonsai growth architecture (snapshots, dimension drift, HITL validation)
+
+**Experimental (may change):**
+- LLM resource selection (local models, LMStudio integration)
+- Agent execution on local models (Qwen, Gemma — tool-calling reliability varies)
+- OpenAI-compatible proxy (`/v1/models`, `/v1/chat/completions`)
+- Coding agent integration (OpenCode, Claude Code)
+- External MCP servers (tmux terminal, Playwright browser)
+- Google Workspace integration (Calendar, Drive, Gmail)
+- agency-agents persona import (184 personas)
+
+**Requires additional setup:**
+- tmux terminal tools (requires tmux installed)
+- Playwright browser tools (requires `npx @playwright/mcp@latest`)
+- Google Workspace (requires OAuth setup)
+- ntfy push notifications (requires ntfy.sh or self-hosted instance)
