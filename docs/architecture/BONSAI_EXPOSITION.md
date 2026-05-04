@@ -47,6 +47,32 @@ Personality evolution happens in small increments (±1-5 points on a 100-point s
 
 Every personality state is a snapshot that can be compared, pinned, or reverted. If a growth direction proves undesirable, the owner can roll back to a previous version. This is essential for trust — the owner must know that no personality change is permanent without their approval.
 
+### 2.5 Scores Are Predictive Confidence, Not Quality Grades
+
+This is the most commonly misread aspect of the framework.
+
+A NineChapter dimension score is **not** a quality rating. A `core_values` score of 95 does not mean the assistant is "95% good" at core values. It means: *given a situation where core values are in play, the system can predict this assistant's behaviour with ~95% confidence.*
+
+The analogy: if you know someone is Christian, you can predict with roughly 80% confidence that they will be at church on Sunday morning. Their religion is not a quality score — it is a dimension with high **predictive leverage** over a specific class of decisions.
+
+Applied to BRIDLE:
+
+| Score | Meaning |
+|-------|---------|
+| `core_values: 95` | Situations involving intellectual honesty → behaviour predictable with ~95% confidence |
+| `cognitive_style: 70` | Analytical approach in novel situations → still uncertain, model lacks enough signal |
+| `social_orientation: 82` | Audience-adaptation behaviour → predictable, calibration is well-established |
+
+**A score rising from 70 → 85 does not mean the assistant got better. It means the system got better at predicting the assistant.**
+
+This reframe has three consequences:
+
+1. **Growth is learning, not grading** — BRIDLE accumulates a behavioral model of the agent. Each calibration session is a prediction → observation → update cycle. The dreaming pipeline synthesises those observations into updated confidence levels.
+
+2. **Taste is measurable** — taste cannot be objectively evaluated for quality, but predictive accuracy *can* be measured. The system knows its model is improving when it can forecast outputs before seeing them.
+
+3. **The HITL validation step is a model test** — when the owner reviews a growth report, they are not approving a quality improvement. They are confirming or correcting a prediction: *"yes, that is how I expect this assistant to behave"* or *"no, that prediction is wrong."*
+
 ---
 
 ## 3. The Four-Pillar Architecture
@@ -132,14 +158,17 @@ A (raw session) → B (chunks) → C (clusters) → D (archive)
 
 The assistant's "DNA" consists of two components:
 
-**A. NineChapter Dimensions** (the character genome):
-| Dimension | What It Controls |
+**A. NineChapter Dimensions** (the behavioral prediction model):
+
+Each dimension score is a **predictive confidence value** — the probability that the system can correctly forecast the assistant's behaviour when that dimension is in play. It is not a quality grade.
+
+| Dimension | What It Predicts |
 |-----------|-----------------|
-| `core_values` | Evidence rigor, intellectual honesty, uncertainty naming |
-| `cognitive_style` | Response structure, verification discipline, response density |
-| `social_orientation` | Question discipline, teaching orientation, audience awareness |
-| `emotional_reaction` | Composure under challenge, assertiveness level |
-| `adaptability` | Gap handling, escalation threshold |
+| `core_values` | Behaviour under intellectual honesty pressure — evidence standards, uncertainty naming, refusal to oversimplify |
+| `cognitive_style` | How the assistant structures reasoning — verification discipline, response density, analytical approach in novel situations |
+| `social_orientation` | Audience-adaptation choices — who the assistant reads the room for, teaching vs. informing, question discipline |
+| `emotional_reaction` | Responses under challenge — composure level, assertiveness, pushback style |
+| `adaptability` | Gap-handling behaviour — escalation threshold, tolerance for ambiguity, fallback strategies |
 
 **B. System Prompt** (the voice):
 - Communication style preferences
@@ -224,9 +253,12 @@ After one-on-one discussions and dreaming, the assistant presents its growth to 
 |--------|------|--------|
 | **Scale** | Millions of feedback signals | Tens of calibration points |
 | **Feedback type** | Binary (good/bad) | Rich (direction + strength + reason) |
-| **Training** | Model weights updated | Personality metadata updated |
-| **Target** | General alignment | Individual taste |
+| **Training** | Model weights updated | Behavioral prediction model updated |
+| **Target** | Better outputs (quality) | More predictable outputs (confidence) |
 | **Reversibility** | Difficult | Trivial |
+| **Epistemology** | Train the agent to produce better results | Build a model of the agent to predict and steer its results |
+
+The deepest difference is epistemological: RLHF asks *"how do we make the agent produce better outputs?"* BRIDLE asks *"how do we build an accurate model of this agent so we can predict and guide its outputs?"* These are fundamentally different problems — one optimises the agent, the other builds understanding of it.
 
 ### 4.4 BRIDLE vs. Constitutional AI
 
@@ -329,41 +361,59 @@ Snapshot Pinned (personality state locked)
 ### Initial State (v1)
 ```json
 {
-  "core_values": {"score": 80, "summary": "Accurate financial reporting"},
-  "cognitive_style": {"score": 75, "summary": "Standard financial analysis"},
+  "core_values": {
+    "score": 80,
+    "summary": "Behaviour involving reporting integrity is predictable ~80% of the time — evidence-first framing is consistent, but edge cases (conflicting stakeholder priorities) are still uncertain"
+  },
+  "cognitive_style": {
+    "score": 75,
+    "summary": "Standard analytical structure is predictable; novel financial scenarios still produce variable outputs — model lacks sufficient signal to forecast framing choices reliably"
+  },
+  "social_orientation": {
+    "score": 68,
+    "summary": "Audience-adaptation behaviour is weak — system cannot yet reliably predict whether the assistant will adjust framing for different stakeholders"
+  },
   "presentation_patterns": {
     "financial_report": "balanced overview of all metrics"
   }
 }
 ```
 
+> **Reading the scores:** `social_orientation: 68` does not mean the assistant is bad at social awareness. It means: *given a presentation situation, the system can only predict the assistant's framing choice 68% of the time.* The model doesn't yet know the assistant well enough in this dimension.
+
 ### One-on-One Session
 Owner: "When presenting to investors, always lead with growth opportunities. They're not worried about losses — they want to see where we're winning."
 
 ### Dreaming Processing
-- Extracts signal: "investor presentation → growth-first"
-- Updates `presentation_patterns.financial_report`: "lead with growth opportunities"
-- Slight increase in `social_orientation` (more audience-aware)
+- Extracts signal: "investor audience → growth-first framing"
+- Updates `presentation_patterns.financial_report`: "lead with growth opportunities for investor audience"
+- `social_orientation` rises: model has gained a confirmed prediction — *investor context → growth framing* — confidence increases
 
 ### Growth Report (v2)
 ```markdown
-## Before
-- Financial Report: balanced overview of all metrics
+## What the System Learned (v1 → v2)
 
-## After
-- Financial Report: lead with growth opportunities for investor audience
+### New Prediction Now Possible
+- Given: investor audience + financial data
+- Predicted output: growth-first framing
+- Confidence: ~85% (up from ~68%)
+- Evidence: 1 direct owner calibration + 3 corroborating task observations
 
-## What Changed
-- presentation_patterns.financial_report: updated based on owner calibration
-- social_orientation: 75 → 78 (increased audience awareness)
+### Dimension Update
+- social_orientation: 68 → 73
+  Reason: investor-context framing behaviour is now predictable; model has a confirmed pattern
 
-## Recommendation
-This growth aligns with owner's stated preference for investor-facing materials.
+### Presentation Pattern Update
+- financial_report: "balanced overview" → "lead with growth for investor audience"
+  Reason: explicit owner instruction, confirmed prediction
+
+## Owner Validation Question
+Is this prediction correct? When this assistant sees investor-facing financial data, will it lead with growth?
 ```
 
 ### Owner Validation
-- [x] Accept growth (pin snapshot)
-- Assistant now presents financials with growth-first framing
+- [x] Accept — prediction confirmed, snapshot pinned
+- The assistant's `social_orientation` model is now more accurate; future investor presentations are predictable
 
 ---
 
@@ -371,7 +421,17 @@ This growth aligns with owner's stated preference for investor-facing materials.
 
 ### 8.1 Can Taste Be Quantified?
 
-BRIDLE assumes taste can be represented as a combination of dimension scores and presentation patterns. Is this sufficient, or are there aspects of taste that resist formalization?
+**Yes — as predictive accuracy, not quality.**
+
+Taste cannot be objectively evaluated for correctness (it is inherently subjective). But *predictive accuracy* can be measured: the system makes a forecast about how the assistant will present information in a given context, observes the actual output, and updates its confidence accordingly.
+
+A dimension score is a statement of that confidence. Taste is quantified not as "how good is this assistant's taste" but as "how accurately can we predict this assistant's taste expression in a given situation."
+
+Each owner calibration session is a prediction test:
+- Owner confirms the output → the prediction was right → confidence rises
+- Owner corrects the output → the prediction was wrong → the model updates
+
+The residual open question is whether **five dimensions** (NineChapter) provide sufficient coverage to make meaningful predictions across all relevant situations, or whether a higher-dimensional model is needed for complex domains.
 
 ### 8.2 How Many Calibration Points Are Needed?
 
