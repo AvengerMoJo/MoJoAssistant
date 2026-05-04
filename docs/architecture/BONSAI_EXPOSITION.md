@@ -1,13 +1,21 @@
-# Bonsai: A Framework for Assistant Personality Growth Through Human-Guided Evolution
+# BRIDLE: Bonsai Refinement through Iterative Directed Learning and Evolution
+
+*A Framework for Harnessing AI Agent Personality Through Human-Guided Growth*
 
 **Author:** Alex Lau  
 **Date:** 2026-05-02  
+**Updated:** 2026-05-04  
 **Purpose:** Technical exposition for comparative analysis against other AI harnessing/growth models  
 **Status:** Working implementation in MoJoAssistant v1.4.0  
 
+> **BRIDLE** = **B**onsai **R**efinement through **I**terative **D**irected **L**earning and **E**volution  
+> The *Bonsai* at the root of the acronym is intentional: the philosophy of patient, owner-guided shaping
+> of a living system — small cuts, gradual form, nothing permanent without approval — is the soul of this
+> framework. BRIDLE is the harness that channels it.
+
 ---
 
-## 1. The Core Problem Bonsai Addresses
+## 1. The Core Problem BRIDLE Addresses
 
 Current AI assistants are **stateless personalities**. They optimize for correctness — the right answer to the right question — but they have no mechanism for developing *taste*: the ability to present the same data differently based on:
 
@@ -17,19 +25,19 @@ Current AI assistants are **stateless personalities**. They optimize for correct
 
 A CFO assistant reporting quarterly earnings to an investor should highlight growth potential. The same assistant reporting to a risk-averse board should emphasize loss mitigation. Same data, different framing — this is taste, not correctness.
 
-**Bonsai is a framework for growing this taste.**
+**BRIDLE is a framework for growing this taste.**
 
 ---
 
 ## 2. Design Philosophy
 
-### 2.1 Bonsai Is Not About Capability
+### 2.1 BRIDLE Is Not About Capability
 
-Bonsai does not make assistants more capable (that's tooling), more knowledgeable (that's memory), or more correct (that's bug-fixing). It makes them more *appropriate* — able to choose how to present information based on context and accumulated understanding.
+BRIDLE does not make assistants more capable (that's tooling), more knowledgeable (that's memory), or more correct (that's bug-fixing). It makes them more *appropriate* — able to choose how to present information based on context and accumulated understanding.
 
 ### 2.2 Growth Requires Human Judgment
 
-Unlike autonomous learning systems, Bonsai requires human validation at every growth step. Assistants don't evolve on their own — they propose growth, and the owner approves, rejects, or adjusts. This is a deliberate constraint: taste is subjective, and only the owner can determine whether a personality shift is desirable.
+Unlike autonomous learning systems, BRIDLE requires human validation at every growth step. Assistants don't evolve on their own — they propose growth, and the owner approves, rejects, or adjusts. This is a deliberate constraint: taste is subjective, and only the owner can determine whether a personality shift is desirable.
 
 ### 2.3 Gradual, Not Dramatic
 
@@ -45,7 +53,7 @@ Every personality state is a snapshot that can be compared, pinned, or reverted.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                         BONSAI                              │
+│                         BRIDLE                              │
 ├────────────────┬────────────────┬──────────────┬────────────┤
 │    GROWTH      │   DIRECTION    │     DNA      │  PRESENT   │
 │   (Memory)     │ (One-on-One)   │   (Dream)    │   (HITL)   │
@@ -189,30 +197,30 @@ After one-on-one discussions and dreaming, the assistant presents its growth to 
 
 ---
 
-## 4. What Makes Bonsai Different
+## 4. What Makes BRIDLE Different
 
-### 4.1 Bonsai vs. Fine-Tuning
+### 4.1 BRIDLE vs. Fine-Tuning
 
-| Aspect | Fine-Tuning | Bonsai |
+| Aspect | Fine-Tuning | BRIDLE |
 |--------|-------------|--------|
 | **Mechanism** | Gradient updates to model weights | Personality metadata + system prompt |
 | **Scope** | Model-level (all users) | Assistant-level (per role) |
 | **Reversibility** | Difficult (requires retraining) | Trivial (revert snapshot) |
 | **Speed** | Hours/days (training) | Instant (prompt update) |
-| **Granularity** | Binary (trained or not) | Continuous (gradual drift) |
+| **Granularity** | Binary (trained or not) | Continuous (gradual Bonsai drift) |
 
-### 4.2 Bonsai vs. RAG (Retrieval-Augmented Generation)
+### 4.2 BRIDLE vs. RAG (Retrieval-Augmented Generation)
 
-| Aspect | RAG | Bonsai |
+| Aspect | RAG | BRIDLE |
 |--------|-----|--------|
 | **Purpose** | Retrieve relevant context | Shape how context is presented |
 | **What changes** | Input to the LLM | Personality of the LLM |
 | **Learning** | Passive (index grows) | Active (validated evolution) |
 | **Human role** | None (automatic indexing) | Central (HITL validation) |
 
-### 4.3 Bonsai vs. RLHF (Reinforcement Learning from Human Feedback)
+### 4.3 BRIDLE vs. RLHF (Reinforcement Learning from Human Feedback)
 
-| Aspect | RLHF | Bonsai |
+| Aspect | RLHF | BRIDLE |
 |--------|------|--------|
 | **Scale** | Millions of feedback signals | Tens of calibration points |
 | **Feedback type** | Binary (good/bad) | Rich (direction + strength + reason) |
@@ -220,18 +228,18 @@ After one-on-one discussions and dreaming, the assistant presents its growth to 
 | **Target** | General alignment | Individual taste |
 | **Reversibility** | Difficult | Trivial |
 
-### 4.4 Bonsai vs. Constitutional AI
+### 4.4 BRIDLE vs. Constitutional AI
 
-| Aspect | Constitutional AI | Bonsai |
+| Aspect | Constitutional AI | BRIDLE |
 |--------|-------------------|--------|
 | **Principles** | Fixed set of rules | Evolving personality |
-| **Enforcement** | Hard constraints | Soft drift |
+| **Enforcement** | Hard constraints | Soft Bonsai drift |
 | **Owner input** | None (system-defined) | Central (human-guided) |
 | **Goal** | Safety/correctness | Taste/appropriateness |
 
-### 4.5 Bonsai vs. Prompt Engineering
+### 4.5 BRIDLE vs. Prompt Engineering
 
-| Aspect | Prompt Engineering | Bonsai |
+| Aspect | Prompt Engineering | BRIDLE |
 |--------|-------------------|--------|
 | **When** | Before deployment | Continuous |
 | **Who** | Developer | Owner + Assistant |
@@ -274,7 +282,7 @@ The same data should be presented differently depending on context. A financial 
 ### 6.1 Core Components
 
 ```
-app/scheduler/bonsai.py
+app/scheduler/bonsai.py          # module retains "bonsai" name — the B in BRIDLE
 ├── GrowthSnapshot          — point-in-time personality state
 ├── SnapshotManager         — versioned storage + current/pinned symlinks
 └── BonsaiEngine            — growth reports, dimension drift, validation
@@ -363,7 +371,7 @@ This growth aligns with owner's stated preference for investor-facing materials.
 
 ### 8.1 Can Taste Be Quantified?
 
-Bonsai assumes taste can be represented as a combination of dimension scores and presentation patterns. Is this sufficient, or are there aspects of taste that resist formalization?
+BRIDLE assumes taste can be represented as a combination of dimension scores and presentation patterns. Is this sufficient, or are there aspects of taste that resist formalization?
 
 ### 8.2 How Many Calibration Points Are Needed?
 
@@ -385,7 +393,7 @@ Five dimensions (NineChapter) may be too coarse or too fine. What's the optimal 
 
 ## 9. Comparison Framework
 
-When comparing Bonsai to other harnessing/growth models, consider:
+When comparing BRIDLE to other harnessing/growth models, consider:
 
 | Criterion | Questions to Ask |
 |-----------|-----------------|
@@ -402,13 +410,15 @@ When comparing Bonsai to other harnessing/growth models, consider:
 
 ## 10. Summary
 
-Bonsai is a framework for growing assistant taste through human-guided evolution. It combines:
+BRIDLE is a framework for harnessing AI agent personality through human-guided evolution. The name encodes the design: **B**onsai **R**efinement through **I**terative **D**irected **L**earning and **E**volution — the Bonsai philosophy of patient, incremental shaping by a skilled owner is the engine; the bridle is the harness that channels it into directed growth.
 
-1. **Accumulated memory** (what the assistant has experienced)
-2. **Owner calibration** (what the owner values)
-3. **Dream synthesis** (how raw signals become coherent personality)
-4. **HITL validation** (whether growth is approved)
+BRIDLE combines four pillars:
 
-The key insight is that taste — unlike correctness — cannot be objectively measured. It requires human judgment at every step, gradual evolution rather than dramatic shifts, and full reversibility through versioned snapshots.
+1. **Accumulated memory** — GROWTH: what the assistant has experienced across tasks
+2. **Owner calibration** — DIRECTION: what the owner values, surfaced through one-on-one sessions
+3. **Dream synthesis** — DNA: how raw signals become coherent personality through the ABCD pipeline
+4. **HITL validation** — PRESENT: whether growth is approved before it is pinned
 
-This makes Bonsai fundamentally different from fine-tuning, RLHF, and other automated approaches to AI personality development. It's not about making assistants better — it's about making them *yours*.
+The key insight is that taste — unlike correctness — cannot be objectively measured. It requires human judgment at every step, gradual Bonsai-style drift rather than dramatic shifts, and full reversibility through versioned snapshots.
+
+This makes BRIDLE fundamentally different from fine-tuning, RLHF, and other automated approaches to AI personality development. It's not about making assistants better — it's about making them *yours*.
