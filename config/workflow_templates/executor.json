@@ -1,6 +1,6 @@
 {
   "type": "executor",
-  "description": "Orchestration workflow — PoMo drives OpenCode via tmux or MCP",
+  "description": "Orchestration workflow — PoPo drives OpenCode via tmux or MCP",
   "phases": [
     {
       "name": "assess",
