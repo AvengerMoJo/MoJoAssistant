@@ -1,37 +1,42 @@
 {
   "type": "executor",
-  "description": "Full project coding workflow — implement features, fix bugs, write tests",
+  "description": "Orchestration workflow — PoMo drives OpenCode via tmux or MCP",
   "phases": [
     {
-      "name": "discover",
-      "instruction": "Before touching any code: 1) Read the relevant files completely. 2) Check git status and recent commits. 3) Understand existing conventions (typing, dataclasses, patterns). 4) Search memory for similar past tasks.",
-      "tools": ["read_file", "list_files", "search_in_files", "memory_search"]
+      "name": "assess",
+      "instruction": "Understand the task. Read relevant files. Check git status. Determine if this needs OpenCode or can be done directly.",
+      "tools": ["read_file", "list_files", "memory_search"]
     },
     {
-      "name": "plan",
-      "instruction": "Plan the implementation: 1) List specific files to create/modify. 2) Identify dependencies. 3) Consider edge cases. 4) For complex tasks, dispatch to specialized agents.",
+      "name": "decide",
+      "instruction": "Decide approach: (A) Direct implementation if simple (< 5 files, no complex logic), (B) OpenCode via tmux if complex coding needed, (C) Dispatch to specialized agent if research/review needed.",
+      "tools": []
+    },
+    {
+      "name": "execute_direct",
+      "instruction": "For simple tasks: implement directly using write_file, edit_file, bash_exec. Run tests.",
+      "tools": ["write_file", "edit_file", "bash_exec"]
+    },
+    {
+      "name": "execute_opencode",
+      "instruction": "For complex tasks: use tmux to create/connect to OpenCode session, send instructions, monitor progress. Example: tmux__send-keys 'cd /path/to/project && opencode' then tmux__send-keys 'implement the feature'",
+      "tools": ["tmux__list-sessions", "tmux__create-session", "tmux__send-keys", "tmux__capture-pane"]
+    },
+    {
+      "name": "dispatch",
+      "instruction": "For specialized tasks: dispatch to researcher, reviewer, or other agents.",
       "tools": ["dispatch_subtask"]
     },
     {
-      "name": "implement",
-      "instruction": "Write clean, minimal code following project conventions. Add error handling. Don't add comments unless they explain non-obvious behavior.",
-      "tools": ["write_file", "edit_file"]
-    },
-    {
-      "name": "test",
-      "instruction": "Run existing tests. Add new tests if the feature has testable behavior. Verify the code works end-to-end.",
-      "tools": ["bash_exec"]
-    },
-    {
       "name": "verify",
-      "instruction": "Run the full test suite. Check for regressions. Verify the goal is actually achieved.",
-      "tools": ["bash_exec"]
+      "instruction": "Verify the work is done. Run tests. Check git status. Confirm goal achieved.",
+      "tools": ["bash_exec", "read_file"]
     }
   ],
-  "success_criteria": "Code compiles, tests pass, implementation matches the goal, and existing tests aren't broken.",
+  "success_criteria": "Goal achieved, tests pass, code works.",
   "escalation_triggers": [
-    "A dependency is missing and cannot be installed",
-    "The approach requires architectural changes beyond the task scope",
-    "The task requires specialized knowledge (security, performance, etc.)"
+    "OpenCode server not available",
+    "Task requires external API access not available",
+    "Architectural decisions needed that require owner input"
   ]
 }

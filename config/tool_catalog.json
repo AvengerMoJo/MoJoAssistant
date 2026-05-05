@@ -126,6 +126,9 @@
     "playwright__browser_close":           { "category": "browser", "danger_level": "low",    "description": "Close the current browser page." },
 
     "google_calendar_list":   { "category": "google", "danger_level": "low",    "description": "List events from Google Calendar for a date range." },
-    "google_calendar_create": { "category": "google", "danger_level": "medium", "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary." }
+    "google_calendar_create": { "category": "google", "danger_level": "medium", "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary." },
+
+    "agent":                 { "category": "orchestration", "danger_level": "medium", "description": "External agent lifecycle — start, stop, status, action for OpenCode/Claude Code servers." },
+    "external_agent":        { "category": "orchestration", "danger_level": "medium", "description": "External services — Google Workspace, coding agent HITL bridge." }
   }
 }

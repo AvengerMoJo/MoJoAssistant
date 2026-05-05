@@ -79,6 +79,16 @@
       "danger_level": "medium",
       "description": "Dispatch a task to another agent role and WAIT for the result before continuing. Use when you need a specialist's output inline — e.g. a researcher dispatching to a provisioner, then using the provisioner's output to continue. Max depth: 2. Blocked when local_only is set."
     },
+    "agent": {
+      "category": "orchestration",
+      "danger_level": "medium",
+      "description": "External agent lifecycle — start, stop, status, action for OpenCode/Claude Code servers. Use agent(action='start', type='opencode', identifier='git_url') to launch an OpenCode server for a project."
+    },
+    "external_agent": {
+      "category": "orchestration",
+      "danger_level": "medium",
+      "description": "External services — Google Workspace, coding agent HITL bridge. Use for Calendar, Gmail, Drive operations and HITL communication with coding agents."
+    },
     "ask_user":        {
       "category": "comms",
       "danger_level": "low",
