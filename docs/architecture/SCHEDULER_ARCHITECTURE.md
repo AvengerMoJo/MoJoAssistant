@@ -102,6 +102,25 @@ Background/Dreaming (Unlimited) → Free API (OpenRouter) → Paid API (OpenAI/A
           (Local LLM)                    ↑                ↑
 ```
 
+**Context Limit Validation:**
+
+Use the context probe utility to discover actual model context limits:
+
+```bash
+# Test a specific resource
+python3 scripts/doctor_context_probe.py --resource-id lmstudio_granite_4_1_8b
+
+# Test all enabled local models
+python3 scripts/doctor_context_probe.py --all-enabled-local
+
+# Custom ladder (token sizes to test)
+python3 scripts/doctor_context_probe.py --resource-id lmstudio_qwen36 --ladder 131000,65000,32000
+```
+
+Results are stored in `~/.memory/config/resource_pool_meta.json` under `verified_context.<resource_id>`.
+
+The probe sends increasingly large prompts (default ladder: 1M → 512k → 262k → 131k → 65k → 32k tokens) and records where the model fails, giving you the verified context limit.
+
 ### 6. Execution Engine
 
 **Purpose:** Executes tasks and tracks results.
@@ -161,6 +180,10 @@ scheduler add <task>        # Add manual task
 scheduler list              # List all tasks
 scheduler remove <task_id>   # Remove task
 scheduler config             # Configure settings
+
+# Context limit validation
+scripts/doctor_context_probe.py --resource-id <resource_id>
+scripts/doctor_context_probe.py --all-enabled-local
 ```
 
 ### MCP Tools
@@ -313,3 +336,8 @@ LOG_PATH=.memory/scheduler.log
 - CLI commands remain functional
 - MCP tools work independently
 - No breaking changes to memory system
+
+## Related Docs
+- [Context Budget Guard Spec](../specs/context_budget_guard_v1.2.15.md) — runtime context trimming
+- [Resource Pool Config](../../config/resource_pool.json) — system defaults
+- Personal overrides: `~/.memory/config/resource_pool.json`

@@ -13,16 +13,51 @@
 | URGENT | Cron tasks never notify user — `created_by: system` fallback silently drops push | Fixed (add `notify_on_completion` to role) |
 | URGENT | `add_conversation` crashes with `asyncio not defined` — agents cannot save to knowledge store | Fixed (import added) |
 | URGENT | Briefing output written nowhere persistent — output dies in session file | Fixed (write_file added to tools) |
-| HIGH | No smoke test coverage for cron→notify path | Pending |
-| HIGH | No smoke test coverage for capability tool dispatch (import errors invisible) | Pending |
-| HIGH | Assistant runtime modular isolation boundary not enforced by release gate | Pending |
+| HIGH | No smoke test coverage for cron→notify path | Fixed (S-02 smoke added in `tests/integration/test_mcp_surface_smoke.py`) |
+| HIGH | No smoke test coverage for capability tool dispatch (import errors invisible) | In progress (planned in Beta Gap Closure Plan) |
+| HIGH | Assistant runtime modular isolation boundary not enforced by release gate | In progress (planned in Beta Gap Closure Plan) |
 | HIGH | `memory` category in agent_defaults resolves to zero tools — dead default | Fixed |
-| HIGH | Config doctor missing from CI — silent drift goes undetected | Pending |
+| HIGH | Config doctor missing from CI — silent drift goes undetected | Fixed (smoke-test workflow now runs doctor gate and fails on errors) |
 | MEDIUM | Role overlays had hardcoded tool names — drift when tool names change | Fixed |
 | MEDIUM | Coder missing dimensions block — Nine Chapter score unvalidatable | Fixed |
 | MEDIUM | Christmas writing pipeline: `alex_writing_profile.md` never written to disk | Fixed |
-| MEDIUM | `http_agent`, `get_verge_tech_news`, `curl_request` — test roles/tools polluting catalog | Partially cleaned |
-| LOW | Orphaned role dirs from old installs — stale personal configs may need cleanup | Pending cleanup |
+| MEDIUM | `http_agent`, `get_verge_tech_news`, `curl_request` — test roles/tools polluting catalog | In progress (planned in Beta Gap Closure Plan) |
+| LOW | Orphaned role dirs from old installs — stale personal configs may need cleanup | In progress (planned in Beta Gap Closure Plan) |
+
+---
+
+## Beta Gap Closure Plan (as of 2026-05-07)
+
+> Goal: close every non-fixed item above and enforce them as release gates before beta sign-off.
+
+| Gap | Owner | Effort Budget | Target Date | Exit Criteria | Status |
+|---|---|---:|---|---|---|
+| Smoke coverage for cron→notify path | PoPo + Alex | 0.5 dev day + 0.5 validation day | 2026-05-09 | S-02 runs in CI; fail if notification event not emitted for cron completion | Fixed (test `TestSchedulerCronNotifySmoke::test_cron_completion_reschedules_and_notifies`) |
+| Smoke coverage for capability tool dispatch/import errors | PoPo + Alex | 1 dev day + 0.5 validation day | 2026-05-10 | CI test proves missing/broken tool import fails fast and marks resource/task appropriately | Scheduled |
+| Assistant runtime modular isolation release gate | Ahman + PoPo + Alex | 2 dev days + 1 validation day | 2026-05-13 | CI gate enforces policy-gateway-only tool path and process/module boundary checks from `ASSISTANT_RUNTIME_API.md` | Scheduled |
+| Config doctor in CI | Ahman + Alex | 0.5 dev day + 0.5 validation day | 2026-05-09 | CI blocks merge when `doctor(action=\"check\")` returns errors | Fixed (implemented in `.github/workflows/smoke-test.yml`) |
+| Remove test-role/tool catalog pollution (`http_agent`, `get_verge_tech_news`, `curl_request`) | PoPo + Alex | 0.5 dev day + 0.5 validation day | 2026-05-10 | Catalog/roles contain only production-safe entries; migration notes added if renamed/removed | Scheduled |
+| Cleanup stale/orphaned legacy role dirs | Alex | 0.5 day | 2026-05-11 | One-time cleanup script + dry-run mode + docs for user-safe execution under `~/.memory/roles/` | Scheduled |
+
+### Execution Cadence
+
+1. Daily 30-minute beta gap review with explicit pass/fail per row (start: 2026-05-08).
+2. No new feature work merged until all HIGH gaps above are marked Fixed.
+3. Every gap closure PR must update this checklist and attach CI proof (job URL or local command transcript).
+
+### Beta Readiness Gate
+
+Beta sign-off is blocked until all of the following are true:
+1. Every row in the **Urgent / Important Before Release** table is `Fixed`.
+2. S-01 through S-08 smoke workflows pass on mainline CI.
+3. Config doctor CI gate is mandatory and green.
+4. Modular isolation gate is mandatory and green.
+
+### Time and Resource Guardrail
+
+- Planned burn window: **2026-05-08 to 2026-05-13** (6 calendar days).
+- Minimum allocation: **1.5 focused engineering days per day** across PoPo/Ahman/Alex combined.
+- If any HIGH item misses target by >1 day, trigger scope freeze + escalation review before further feature merges.
 
 ---
 

@@ -20,6 +20,7 @@ import os
 import sys
 import pytest
 from pathlib import Path
+from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -103,6 +104,16 @@ def assert_help_menu(result, tool_name, expected_actions=None):
             assert action in result["actions"], (
                 f"{tool_name} help menu missing action '{action}'"
             )
+
+
+class _InMemoryEventLog:
+    """Minimal async event sink for scheduler broadcast assertions."""
+
+    def __init__(self):
+        self.events = []
+
+    async def append(self, event):
+        self.events.append(event)
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +429,73 @@ class TestSchedulerHub:
     def test_get_missing_task_id(self, registry):
         result = run(registry.execute("scheduler", {"action": "get"}))
         assert_expected_error(result, "scheduler[get no task_id]", contains="task_id")
+
+
+class TestSchedulerCronNotifySmoke:
+    def test_cron_completion_reschedules_and_notifies(self):
+        """
+        S-02 smoke: a cron task completion should emit a task_completed event
+        with notify_user=True and then reschedule to next cron window.
+        """
+        from app.scheduler.core import Scheduler
+        from app.scheduler.models import Task, TaskPriority, TaskResources, TaskResult, TaskStatus, TaskType
+
+        class _StubExecutor:
+            async def execute(self, _task):
+                return TaskResult(
+                    success=True,
+                    metrics={"final_answer": "ok", "completion_mode": "final_answer"},
+                )
+
+        event_log = _InMemoryEventLog()
+        storage_path = "/tmp/mojo-smoke-cron-notify.json"
+        try:
+            os.remove(storage_path)
+        except FileNotFoundError:
+            pass
+
+        scheduler = Scheduler(
+            storage_path=storage_path,
+            tick_interval=1,
+            event_log=event_log,
+        )
+        scheduler.executor = _StubExecutor()
+
+        task = Task(
+            id="smoke_cron_notify_task",
+            type=TaskType.CUSTOM,
+            schedule=datetime.now() - timedelta(seconds=1),
+            cron_expression="* * * * *",
+            priority=TaskPriority.MEDIUM,
+            config={"notify_on_completion": True, "command": "echo smoke"},
+            resources=TaskResources(),
+            description="cron notify smoke",
+            created_by="system",
+        )
+        assert scheduler.add_task(task)
+
+        queued = scheduler.queue.get_next()
+        assert queued is not None, "Cron smoke task should be ready"
+        queued.mark_started()
+        scheduler.queue.update(queued)
+
+        run(scheduler._execute_task(queued))
+        updated = scheduler.get_task(task.id)
+        assert updated is not None
+
+        # Cron tasks should be re-armed, not left completed.
+        assert updated.status == TaskStatus.PENDING
+        assert updated.schedule is not None and updated.schedule > datetime.now()
+        assert updated.started_at is None
+        assert updated.completed_at is None
+
+        completed_events = [
+            e
+            for e in event_log.events
+            if e.get("event_type") == "task_completed" and e.get("task_id") == task.id
+        ]
+        assert completed_events, "Expected task_completed event for cron run"
+        assert completed_events[-1].get("notify_user") is True
 
     def test_remove_missing_task_id(self, registry):
         result = run(registry.execute("scheduler", {"action": "remove"}))
