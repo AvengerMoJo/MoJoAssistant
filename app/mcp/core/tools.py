@@ -703,7 +703,7 @@ class ToolRegistry:
                     "action='validate', module                           → validate config\n"
                     "action='sync_local_models', resource_id             → sync models from local server\n\n"
                     "# Resource pool (runtime LLM state)\n"
-                    "action='resource_status'                            → all resources + approval state\n"
+                    "action='resource_status'                            → list ALL LLM resource-pool entries (model/provider/tier/context limits) + approval state\n"
                     "action='resource_add',       resource_id, type, provider, base_url, model, tier,\n"
                     "                             context_limit, output_limit, input_limit?, ...  → add resource\n"
                     "action='resource_edit',      resource_id + fields to update               → edit resource\n"
@@ -712,8 +712,8 @@ class ToolRegistry:
                     "action='resource_smoke_test',resource_id            → test connectivity\n"
                     "action='llm_models',         resource_id            → list live models from server\n"
                     "action='registry_refresh'                           → refresh public model registry (LiteLLM + OpenRouter)\n\n"
-                    "# Custom assistant capabilities (user-defined tools)\n"
-                    "action='capability_list'                                  → list all capabilities (system + user)\n"
+                    "# Custom assistant capabilities (user-defined tools; NOT LLM resources)\n"
+                    "action='capability_list'                                  → list all tool capabilities (system + user). Use this for tool inventory, not resource-pool inventory.\n"
                     "action='capability_get',   tool_name                      → get capability definition\n"
                     "action='capability_add',   tool_name, description, parameters?, executor?, danger_level?, category? → register custom capability\n"
                     "action='capability_remove',tool_name                      → remove a user-created capability\n\n"
@@ -4038,6 +4038,8 @@ Agent resumes within seconds.
             user_tools = [t.to_dict() for t in registry.list_user_tools()]
             return {
                 "status": "success",
+                "entity_type": "tool_capabilities",
+                "hint": "This lists TOOL capabilities. For LLM resource-pool entries, call config(action='resource_status').",
                 "system_tools": len(system_tools),
                 "user_tools": len(user_tools),
                 "system": [{"name": t["name"], "category": t.get("category",""), "description": t["description"][:80]} for t in system_tools],
@@ -4914,7 +4916,7 @@ Agent resumes within seconds.
                         "validate":              "Validate config — params: module",
                         "modules":               "List all config modules",
                         "sync_local_models":     "Sync models from local server — params: resource_id",
-                        "resource_status":       "All resources + approval state",
+                        "resource_status":       "List all LLM resource-pool entries + approval state (use this for 'show resources in pool')",
                         "resource_add":          "Add a new resource — params: resource_id, type, provider, base_url, model, tier, context_limit, output_limit, input_limit?, ...",
                         "resource_edit":         "Edit an existing resource — params: resource_id + any fields to update",
                         "resource_approve":      "Approve a resource — params: resource_id",
@@ -4922,7 +4924,7 @@ Agent resumes within seconds.
                         "resource_smoke_test":   "Run agentic smoke checks — required: resource_id; optional: role_id, dynamic_goal, dynamic_available_tools, dynamic_expected_tool, dynamic_planning_prompt, dynamic_system_prompt, debug_artifact, issue_note",
                         "llm_models":            "List live models from server — params: resource_id",
                         "registry_refresh":      "Refresh public model registry cache (LiteLLM + OpenRouter) — auto-populates context/token limits for known models",
-                        "capability_list":       "List all capabilities (system built-ins + user custom)",
+                        "capability_list":       "List tool capabilities (system built-ins + user custom) — NOT the LLM resource pool",
                         "capability_get":        "Get full capability definition — params: tool_name",
                         "capability_add":        "Register a custom capability to personal layer — params: tool_name, description, parameters?, executor?, danger_level?, category?",
                         "capability_remove":     "Remove a user-created capability — params: tool_name (system capabilities are protected)",
@@ -4932,7 +4934,7 @@ Agent resumes within seconds.
                         "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
                         "preflight":             "Check system dependencies and MCP tool installation status (use scripts/preflight.py for interactive install)",
                     },
-                    "example": 'config(action="capability_list")',
+                    "example": 'config(action="resource_status")',
                 }
             # Show specific module structure
             if module_name not in self._config_modules:
