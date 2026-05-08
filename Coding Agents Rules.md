@@ -22,6 +22,18 @@ Leverage the internal memory context system (MoJoAssistant MCP) to continuously 
 2. Never expose secrets or credentials.
 3. Validate inputs and handle errors clearly.
 4. Prefer least-privilege operations.
+5. **NO FALLBACKS FOR EXECUTION-CORRECTNESS PATHS.**
+6. **NO FALLBACKS FOR EXECUTION-CORRECTNESS PATHS.**
+7. **NO FALLBACKS FOR EXECUTION-CORRECTNESS PATHS.**
+
+### Strict No-Fallback Policy (Execution Paths)
+For assistant execution, role loading, policy enforcement, tool dispatch, and task completion:
+
+1. **Do not silently continue** after a failed precondition.
+2. **Do not substitute guessed behavior** when required data is missing.
+3. **Do not auto-recover by inventing completion** (for example, deriving a final answer without required contract tags).
+4. **Fail fast with explicit error** and structured logs/events.
+5. **Fix root cause, not symptoms**. Fallbacks that hide errors are prohibited.
 
 ## Collaboration
 1. State assumptions when requirements are ambiguous.

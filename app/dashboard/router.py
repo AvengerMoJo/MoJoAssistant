@@ -1311,3 +1311,39 @@ async def chat_send(
         f"/dashboard/chat/{role_id}?session_id={session.session_id}",
         status_code=303,
     )
+
+
+# ---------------------------------------------------------------------------
+# News dashboard
+# ---------------------------------------------------------------------------
+
+@router.get("/news", response_class=HTMLResponse)
+async def news_dashboard(request: Request):
+    """Daily news briefing dashboard."""
+    briefing_path = Path.home() / ".memory" / "content" / "scott_news_latest.md"
+
+    if not briefing_path.exists():
+        content = "<p>No briefing available yet.</p>"
+    else:
+        content = briefing_path.read_text(encoding="utf-8")
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Daily News Briefing</title>
+        <style>
+            body {{ font-family: -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+            h1 {{ color: #333; }}
+            h2 {{ color: #555; border-bottom: 1px solid #eee; padding-bottom: 5px; }}
+            .card {{ background: #f8f9fa; border-left: 4px solid #007bff; padding: 15px; margin: 10px 0; }}
+            .metadata {{ background: #e9ecef; padding: 10px; border-radius: 5px; font-size: 0.9em; }}
+        </style>
+    </head>
+    <body>
+        <h1>Daily News Briefing</h1>
+        <div class="content">{content}</div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(html)

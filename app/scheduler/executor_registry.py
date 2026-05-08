@@ -34,10 +34,40 @@ class HandlerRegistry:
         self._handlers[task_type] = handler
 
     async def dispatch(self, task: Task, ctx: "ExecutorContext") -> TaskResult:
+        task = self._infer_type(task)
         handler = self._handlers.get(task.type)
         if handler is None:
             raise ValueError(f"No handler registered for task type: {task.type}")
         return await handler.execute(task, ctx)
+
+    @staticmethod
+    def _infer_type(task: Task) -> Task:
+        """
+        Correct common task type mismatches at dispatch time.
+
+        custom + goal (no command) → internal_assignment
+        external_agent + goal (no operation) → internal_assignment
+
+        Both patterns arise when a task is created with the wrong type but
+        the config clearly signals an agentic intent (goal + optional role_id).
+        """
+        cfg = task.config or {}
+        has_goal = bool(cfg.get("goal"))
+        has_role = bool(cfg.get("role_id"))
+
+        if task.type == TaskType.CUSTOM and has_goal and not cfg.get("command"):
+            import copy
+            t = copy.copy(task)
+            t.type = TaskType.INTERNAL_ASSIGNMENT
+            return t
+
+        if task.type == TaskType.EXTERNAL_AGENT and (has_goal or has_role) and not cfg.get("operation"):
+            import copy
+            t = copy.copy(task)
+            t.type = TaskType.INTERNAL_ASSIGNMENT
+            return t
+
+        return task
 
 
 class ExecutorContext:

@@ -835,13 +835,21 @@ class ResourceManager:
 
         return calls_in_window < agent_limit
 
+    # Auto-recovery: reset consecutive_errors after this many seconds
+    _ERROR_RECOVERY_SECONDS = 300  # 5 minutes
+
     def _compute_status(self, resource: LLMResource) -> ResourceStatus:
         if not resource.enabled:
             return ResourceStatus.DISABLED
 
         usage = self._usage.get(resource.id)
         if usage and usage.consecutive_errors >= 5:
-            return ResourceStatus.UNREACHABLE
+            # Auto-recovery: if last call was long ago, reset error counter
+            if usage.last_call_at and (time.time() - usage.last_call_at) > self._ERROR_RECOVERY_SECONDS:
+                usage.consecutive_errors = 0
+                self._persist_usage()
+            else:
+                return ResourceStatus.UNREACHABLE
 
         if self._is_rate_limited(resource):
             return ResourceStatus.RATE_LIMITED

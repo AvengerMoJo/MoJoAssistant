@@ -1,0 +1,31 @@
+{
+  "type": "provisioner",
+  "description": "Provisioning agent workflow — system setup and configuration",
+  "phases": [
+    {
+      "name": "assess",
+      "instruction": "Check current system state. What's already configured? What's missing?",
+      "tools": ["bash_exec", "read_file", "list_files"]
+    },
+    {
+      "name": "plan",
+      "instruction": "Identify required changes. Check dependencies. Consider rollback options.",
+      "tools": []
+    },
+    {
+      "name": "execute",
+      "instruction": "Apply changes incrementally. Verify each step before proceeding. Log all changes.",
+      "tools": ["bash_exec", "write_file", "edit_file"]
+    },
+    {
+      "name": "verify",
+      "instruction": "Confirm the system is in the expected state. Run health checks. Report results.",
+      "tools": ["bash_exec"]
+    }
+  ],
+  "success_criteria": "System is in the target state. All health checks pass. Changes are logged for rollback.",
+  "escalation_triggers": [
+    "A required resource is unavailable",
+    "The change would break existing functionality"
+  ]
+}

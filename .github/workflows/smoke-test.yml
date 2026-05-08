@@ -31,6 +31,35 @@ jobs:
           pip install -r requirements-runtime.txt
           pip install submodules/dreaming-memory-pipeline/
 
+      - name: Config doctor gate (error-only)
+        env:
+          ENVIRONMENT: ci
+          EMBEDDING_MODEL: all-MiniLM-L6-v2
+          MEMORY_PATH: /tmp/mojo-doctor-ci
+          PYTHONPATH: ${{ github.workspace }}
+          LOG_LEVEL: WARNING
+        run: |
+          python3 - <<'PY'
+          import json
+          import sys
+          from app.config.doctor import ConfigDoctor
+
+          report = ConfigDoctor().run_all_checks().to_dict()
+          status = report.get("status")
+          summary = report.get("summary", {}) or {}
+          errors = int(summary.get("errors", 0) or 0)
+
+          print(json.dumps({
+              "status": status,
+              "summary": summary,
+              "error_count": errors,
+          }, indent=2))
+
+          if status == "error" or errors > 0:
+              print("Config doctor gate failed: errors detected.")
+              sys.exit(1)
+          PY
+
       - name: Start server
         env:
           MCP_REQUIRE_AUTH: "false"

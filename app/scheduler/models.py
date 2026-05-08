@@ -208,6 +208,7 @@ class Task:
         self.status = TaskStatus.FAILED
         self.completed_at = datetime.now()
         self.result = TaskResult(success=False, error_message=error_message)
+        self.last_error = error_message
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""

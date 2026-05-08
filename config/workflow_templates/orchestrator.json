@@ -1,0 +1,31 @@
+{
+  "type": "orchestrator",
+  "description": "Orchestration agent workflow — multi-agent coordination",
+  "phases": [
+    {
+      "name": "decompose",
+      "instruction": "Break the goal into sub-tasks. Identify which agent types are needed. Consider dependencies.",
+      "tools": []
+    },
+    {
+      "name": "dispatch",
+      "instruction": "Queue sub-tasks to appropriate agents. Set clear goals and constraints for each.",
+      "tools": ["scheduler_add_task"]
+    },
+    {
+      "name": "monitor",
+      "instruction": "Track sub-task progress. Identify blockers. Re-prioritize if needed.",
+      "tools": ["task_search"]
+    },
+    {
+      "name": "synthesize",
+      "instruction": "Collect results from sub-tasks. Resolve conflicts. Produce unified output.",
+      "tools": ["memory_search", "add_conversation"]
+    }
+  ],
+  "success_criteria": "All sub-tasks complete successfully. Results are synthesized into a coherent answer. Dependencies are properly managed.",
+  "escalation_triggers": [
+    "A sub-task fails repeatedly",
+    "Circular dependency detected between sub-tasks"
+  ]
+}

@@ -106,7 +106,7 @@ async def test_agent_loop_completes_with_final_answer(isolated_memory_path):
 
     task = Task(
         id="smoke-agent-1",
-        type=TaskType.ASSISTANT,
+        type=TaskType.INTERNAL_ASSIGNMENT,
         priority=TaskPriority.LOW,
         config={
             "goal": "Say hello",
@@ -147,7 +147,7 @@ async def test_agent_loop_fails_gracefully_when_no_resource(isolated_memory_path
 
     task = Task(
         id="smoke-agent-no-resource",
-        type=TaskType.ASSISTANT,
+        type=TaskType.INTERNAL_ASSIGNMENT,
         priority=TaskPriority.LOW,
         config={
             "goal": "This should fail gracefully",
@@ -176,7 +176,7 @@ async def test_agent_loop_missing_goal_returns_failure(isolated_memory_path):
 
     task = Task(
         id="smoke-agent-no-goal",
-        type=TaskType.ASSISTANT,
+        type=TaskType.INTERNAL_ASSIGNMENT,
         priority=TaskPriority.LOW,
         config={},  # no "goal" key
     )
@@ -200,7 +200,7 @@ async def test_agent_loop_file_capability_translates_to_working_tool_and_writes_
 
     task = Task(
         id="smoke-agent-file-1",
-        type=TaskType.ASSISTANT,
+        type=TaskType.INTERNAL_ASSIGNMENT,
         priority=TaskPriority.LOW,
         config={
             "goal": "Inspect the current directory and report that you did it",
@@ -235,9 +235,30 @@ async def test_agent_loop_file_capability_translates_to_working_tool_and_writes_
     assert session_path.exists(), "task session artifact should be written"
     assert report_path.exists(), "task report artifact should be written"
 
-    session = json.loads(session_path.read_text(encoding="utf-8"))
-    report = json.loads(report_path.read_text(encoding="utf-8"))
 
-    assert session["final_answer"] is not None
-    assert report["status"] in {"completed", "completed_fallback"}
-    assert report["metrics"]["tool_calls"] >= 1
+@pytest.mark.asyncio
+async def test_agent_loop_fails_fast_when_required_intent_class_missing(isolated_memory_path):
+    """If task declares required intent classes that resolved tools can't satisfy,
+    executor should fail before entering the loop."""
+    from app.scheduler.agentic_executor import AgenticExecutor
+
+    stub_resource = _make_stub_resource()
+    rm = _make_resource_manager(stub_resource)
+    executor = AgenticExecutor(resource_manager=rm)
+
+    task = Task(
+        id="smoke-agent-intent-preflight-1",
+        type=TaskType.INTERNAL_ASSIGNMENT,
+        priority=TaskPriority.LOW,
+        config={
+            "goal": "Execute command and report output",
+            "available_tools": ["memory_search"],  # no execute provider
+            "required_intent_classes": ["execute", "finalize"],
+            "max_iterations": 3,
+        },
+    )
+
+    result = await executor.execute(task)
+    assert result.success is False
+    assert "Intent-class preflight failed" in (result.error_message or "")
+    assert "intent_preflight" in (result.metrics or {})

@@ -18,6 +18,21 @@
       "resources": { "requires_gpu": true }
     },
     {
+      "id": "chat_bridge_nightly",
+      "type": "dreaming",
+      "cron": "0 3 * * *",
+      "priority": "low",
+      "description": "Nightly chat→dream bridge — indexes role chat sessions into searchable knowledge",
+      "config": {
+        "mode": "chat_bridge",
+        "quality_level": "basic",
+        "enforce_off_peak": true,
+        "off_peak_start": "01:00",
+        "off_peak_end": "05:00"
+      },
+      "resources": { "requires_gpu": true }
+    },
+    {
       "id": "config_doctor_daily",
       "type": "assistant",
       "cron": "0 9 * * *",
@@ -31,6 +46,17 @@
         "available_tools": ["bash_exec", "add_conversation"],
         "notify_on_completion": false,
         "final_answer_requirements": { "min_length": 20 }
+      },
+      "resources": { "requires_gpu": false }
+    },
+    {
+      "id": "relationship_update_weekly",
+      "type": "dreaming",
+      "cron": "0 4 * * 0",
+      "priority": "low",
+      "description": "Weekly assistant_relationships auto-update from task history",
+      "config": {
+        "mode": "relationship_update"
       },
       "resources": { "requires_gpu": false }
     }

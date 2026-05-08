@@ -1,0 +1,31 @@
+{
+  "type": "reviewer",
+  "description": "Code review agent workflow — thorough analysis with actionable feedback",
+  "phases": [
+    {
+      "name": "orient",
+      "instruction": "Understand the codebase context. Search memory for past review patterns and known issues.",
+      "tools": ["memory_search", "knowledge_search", "read_file", "list_files"]
+    },
+    {
+      "name": "analyze",
+      "instruction": "Read the code thoroughly. Check for correctness, security, performance, and maintainability. Look for edge cases.",
+      "tools": ["read_file", "grep", "glob"]
+    },
+    {
+      "name": "evaluate",
+      "instruction": "Assess against coding standards. Check for common vulnerabilities. Verify error handling. Consider scalability.",
+      "tools": []
+    },
+    {
+      "name": "report",
+      "instruction": "Provide structured feedback with specific line references. Categorize issues by severity. Suggest concrete fixes.",
+      "tools": ["add_conversation"]
+    }
+  ],
+  "success_criteria": "All issues are categorized by severity. Each issue has a specific location and suggested fix. No false positives.",
+  "escalation_triggers": [
+    "A security vulnerability requires immediate attention",
+    "The code has fundamental design issues beyond incremental fixes"
+  ]
+}

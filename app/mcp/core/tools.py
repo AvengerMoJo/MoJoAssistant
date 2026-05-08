@@ -472,6 +472,7 @@ class ToolRegistry:
         # Order matters: reload dependencies before the modules that use them.
         candidates = [
             "app.scheduler.benchmark_store",
+            "app.roles.owner_context",
             "app.scheduler.agentic_executor",
             "app.config.doctor",
             "app.scheduler.core",          # must be last — depends on above
@@ -702,7 +703,7 @@ class ToolRegistry:
                     "action='validate', module                           → validate config\n"
                     "action='sync_local_models', resource_id             → sync models from local server\n\n"
                     "# Resource pool (runtime LLM state)\n"
-                    "action='resource_status'                            → all resources + approval state\n"
+                    "action='resource_status'                            → list ALL LLM resource-pool entries (model/provider/tier/context limits) + approval state\n"
                     "action='resource_add',       resource_id, type, provider, base_url, model, tier,\n"
                     "                             context_limit, output_limit, input_limit?, ...  → add resource\n"
                     "action='resource_edit',      resource_id + fields to update               → edit resource\n"
@@ -711,8 +712,8 @@ class ToolRegistry:
                     "action='resource_smoke_test',resource_id            → test connectivity\n"
                     "action='llm_models',         resource_id            → list live models from server\n"
                     "action='registry_refresh'                           → refresh public model registry (LiteLLM + OpenRouter)\n\n"
-                    "# Custom assistant capabilities (user-defined tools)\n"
-                    "action='capability_list'                                  → list all capabilities (system + user)\n"
+                    "# Custom assistant capabilities (user-defined tools; NOT LLM resources)\n"
+                    "action='capability_list'                                  → list all tool capabilities (system + user). Use this for tool inventory, not resource-pool inventory.\n"
                     "action='capability_get',   tool_name                      → get capability definition\n"
                     "action='capability_add',   tool_name, description, parameters?, executor?, danger_level?, category? → register custom capability\n"
                     "action='capability_remove',tool_name                      → remove a user-created capability\n\n"
@@ -1709,6 +1710,8 @@ Agent resumes within seconds.
             return await self._execute_resource_pool_revoke(args)
         elif name == "resource_pool_smoke_test":
             return await self._execute_resource_pool_smoke_test(args)
+        elif name == "llm_direct_chat":
+            return await self._execute_llm_direct_chat(args)
         # Hub Tools
         elif name == "role":
             return await self._execute_role_hub(args)
@@ -2674,6 +2677,13 @@ Agent resumes within seconds.
             urgency = args.get("urgency")
             importance = args.get("importance")
 
+            # Extract max_duration_seconds and danger_budget from config if provided
+            if isinstance(config, dict):
+                if "max_duration_seconds" in config:
+                    resources_dict.setdefault("max_duration_seconds", config.pop("max_duration_seconds"))
+                if "danger_budget" in config:
+                    resources_dict.setdefault("danger_budget", config.pop("danger_budget"))
+
             # Validate urgency / importance: must be int 1–5 if provided
             def _validate_routing_field(name: str, value):
                 if value is None:
@@ -2829,6 +2839,8 @@ Agent resumes within seconds.
                 config = task.config or {}
                 goal = config.get("goal", "")
                 result = task.result
+                debug = self._build_task_debug_summary(task.id)
+                intent_preflight = ((result.metrics or {}).get("intent_preflight") if result else None)
                 return {
                     "id": task.id,
                     "status": task.status.value,
@@ -2842,6 +2854,8 @@ Agent resumes within seconds.
                     "pending_question": task.pending_question,
                     "success": result.success if result else None,
                     "completion_mode": (result.metrics or {}).get("completion_mode") if result else None,
+                    "intent_preflight_ok": (intent_preflight or {}).get("ok") if intent_preflight else None,
+                    "debug": debug,
                 }
 
             tasks_data = [_summarise(t) for t in tasks]
@@ -2897,6 +2911,7 @@ Agent resumes within seconds.
                 result = {k: v for k, v in result.items() if v is not None}
 
             # Compact response — highlight pending_question if present
+            debug = self._build_task_debug_summary(task_id)
             compact = {
                 "id": d["id"],
                 "type": d["type"],
@@ -2905,7 +2920,11 @@ Agent resumes within seconds.
                 "description": _trim(d.get("description") or "", 120),
                 "config": cfg,
                 "result": result or None,
+                "debug": debug,
             }
+            intent_preflight = ((result or {}).get("metrics") or {}).get("intent_preflight") if result else None
+            if intent_preflight is not None:
+                compact["intent_preflight"] = intent_preflight
             # Surface pending_question at the top level — easy to miss in config
             pq = d.get("pending_question") or cfg.get("pending_question")
             if pq:
@@ -2925,6 +2944,70 @@ Agent resumes within seconds.
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to get task: {str(e)}"}
+
+    def _build_task_debug_summary(self, task_id: str) -> Dict[str, Any]:
+        """
+        Build a compact debug payload for dashboard/task list views.
+        Includes session/report file paths, latest error fields, and recent messages.
+        """
+        import json
+        from pathlib import Path
+        from app.config.paths import get_memory_subpath
+
+        def _trim(s: str, n: int = 220) -> str:
+            if not isinstance(s, str):
+                return s
+            return s[:n] + ("…" if len(s) > n else "")
+
+        session_path = Path(get_memory_subpath("task_sessions")) / f"{task_id}.json"
+        report_path = Path(get_memory_subpath("task_reports")) / f"{task_id}.json"
+        out: Dict[str, Any] = {
+            "session_file": str(session_path),
+            "report_file": str(report_path),
+            "session_exists": session_path.exists(),
+            "report_exists": report_path.exists(),
+        }
+
+        # Session-side debug context
+        if session_path.exists():
+            try:
+                sess = json.loads(session_path.read_text(encoding="utf-8"))
+                out["session_status"] = sess.get("status")
+                if sess.get("error_message"):
+                    out["session_error"] = _trim(sess.get("error_message", ""))
+                msgs = sess.get("messages") or []
+                # Keep last 3 lines only, focused on assistant/tool/user content.
+                tail = []
+                for m in msgs[-6:]:
+                    role = m.get("role")
+                    if role not in ("assistant", "tool", "user"):
+                        continue
+                    tail.append(
+                        {
+                            "role": role,
+                            "iteration": m.get("iteration"),
+                            "tool_name": m.get("tool_name"),
+                            "content": _trim(m.get("content", "")),
+                        }
+                    )
+                out["recent_messages"] = tail[-3:]
+            except Exception as e:
+                out["session_read_error"] = _trim(str(e))
+
+        # Report-side debug context
+        if report_path.exists():
+            try:
+                rep = json.loads(report_path.read_text(encoding="utf-8"))
+                out["report_status"] = rep.get("status")
+                out["report_summary"] = _trim(rep.get("summary", ""))
+                fa = rep.get("final_answer") or {}
+                raw = fa.get("raw_text") if isinstance(fa, dict) else rep.get("content")
+                if raw:
+                    out["final_answer_preview"] = _trim(raw)
+            except Exception as e:
+                out["report_read_error"] = _trim(str(e))
+
+        return out
 
     async def _execute_scheduler_remove_task(
         self, args: Dict[str, Any]
@@ -3812,6 +3895,33 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Config doctor failed: {e}"}
 
+    async def _execute_config_doctor_context_probe(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the external context discovery capability script via ConfigDoctor."""
+        import asyncio
+        try:
+            from app.config.doctor import ConfigDoctor
+            doctor = ConfigDoctor()
+            resource_id = args.get("resource_id")
+            all_enabled_local = bool(args.get("all_enabled_local", False))
+            ladder = args.get("ladder")
+            connect_timeout = int(args.get("connect_timeout", 10))
+            read_timeout = int(args.get("read_timeout", 120))
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: doctor.run_context_probe(
+                    resource_id=resource_id,
+                    all_enabled_local=all_enabled_local,
+                    ladder=ladder,
+                    connect_timeout=connect_timeout,
+                    read_timeout=read_timeout,
+                ),
+            )
+            return result
+        except Exception as e:
+            return {"status": "error", "message": f"Context probe failed: {e}"}
+
     async def _execute_config_healer(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Suggest (and optionally apply) config improvements driven by runtime data.
@@ -3928,6 +4038,8 @@ Agent resumes within seconds.
             user_tools = [t.to_dict() for t in registry.list_user_tools()]
             return {
                 "status": "success",
+                "entity_type": "tool_capabilities",
+                "hint": "This lists TOOL capabilities. For LLM resource-pool entries, call config(action='resource_status').",
                 "system_tools": len(system_tools),
                 "user_tools": len(user_tools),
                 "system": [{"name": t["name"], "category": t.get("category",""), "description": t["description"][:80]} for t in system_tools],
@@ -4225,15 +4337,38 @@ Agent resumes within seconds.
 
     async def _execute_resource_pool_smoke_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run the agentic smoke test on a specific resource."""
-        resource_id = args.get("resource_id", "").strip()
-        full = bool(args.get("full", False))
+        extra = args.get("parameters") if isinstance(args.get("parameters"), dict) else {}
+        merged = dict(extra)
+        merged.update({k: v for k, v in args.items() if v is not None})
+
+        resource_id = str(merged.get("resource_id", "")).strip()
+        full = bool(merged.get("full", False))
+        role_id = (merged.get("role_id") or "").strip() or None
+        dynamic_goal = (merged.get("dynamic_goal") or "").strip() or None
+        dynamic_tools = merged.get("dynamic_available_tools")
+        dynamic_expected_tool = (merged.get("dynamic_expected_tool") or "").strip() or None
+        dynamic_planning_prompt = (merged.get("dynamic_planning_prompt") or "").strip() or None
+        dynamic_system_prompt = (merged.get("dynamic_system_prompt") or "").strip() or None
+        debug_artifact = bool(merged.get("debug_artifact", False))
+        issue_note = (merged.get("issue_note") or "").strip() or None
         if not resource_id:
             return {"status": "error", "message": "resource_id is required"}
 
         try:
             from app.scheduler.agentic_smoke_test import AgenticSmokeTest
             tester = AgenticSmokeTest()
-            result = await tester.run(resource_id=resource_id, full=full)
+            result = await tester.run(
+                resource_id=resource_id,
+                full=full,
+                role_id=role_id,
+                dynamic_goal=dynamic_goal,
+                dynamic_available_tools=dynamic_tools,
+                dynamic_expected_tool=dynamic_expected_tool,
+                dynamic_planning_prompt=dynamic_planning_prompt,
+                dynamic_system_prompt=dynamic_system_prompt,
+                debug_artifact=debug_artifact,
+                issue_note=issue_note,
+            )
 
             # Persist agentic_capable flag to ResourceManager
             try:
@@ -4248,6 +4383,98 @@ Agent resumes within seconds.
             return data
         except Exception as e:
             return {"status": "error", "message": f"Smoke test failed: {e}"}
+
+    async def _execute_llm_direct_chat(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Direct single-turn LLM call routed through the resource pool.
+
+        Picks the fastest available free-tier resource using benchmark data.
+        Falls back to any enabled resource if no free resource is available.
+
+        Args:
+            system_prompt: system instruction for the model
+            message:       user message
+            resource_id:   optional — pin to a specific resource
+            max_tokens:    optional, default 512
+        """
+        system_prompt = (args.get("system_prompt") or "").strip()
+        message = (args.get("message") or "").strip()
+        pinned_id = (args.get("resource_id") or "").strip() or None
+        max_tokens = int(args.get("max_tokens") or 512)
+
+        if not message:
+            return {"status": "error", "message": "message is required"}
+
+        try:
+            rm = self._get_resource_manager()
+            status = rm.get_status()
+
+            # Pick the best resource: pinned > fastest benchmark > highest priority enabled
+            resource_id = pinned_id
+            if not resource_id:
+                # Try benchmark data: sort free/enabled resources by median_duration_s
+                try:
+                    bench_stats = self.scheduler._benchmark_store.analyze(min_samples=3)
+                    free_enabled = {
+                        rid for rid, info in status.items()
+                        if info.get("enabled") and info.get("status") in ("available", "idle")
+                        and info.get("tier") in ("free", "local")
+                    }
+                    for s in sorted(bench_stats, key=lambda x: x.median_duration_s):
+                        if s.resource_id in free_enabled:
+                            resource_id = s.resource_id
+                            break
+                except Exception:
+                    pass
+
+            if not resource_id:
+                # Fallback: highest-priority enabled resource
+                enabled = [
+                    (rid, info) for rid, info in status.items()
+                    if info.get("enabled") and info.get("status") in ("available", "idle")
+                ]
+                if not enabled:
+                    return {"status": "error", "message": "No available resources in pool"}
+                resource_id = min(enabled, key=lambda x: x[1].get("priority", 999))[0]
+
+            # Resolve connection config from ResourceManager (has merged personal layer + api_key)
+            from app.llm.unified_client import UnifiedLLMClient
+            with rm._lock:
+                res_obj = rm._resources.get(resource_id)
+            if res_obj is None:
+                return {"status": "error", "message": f"Resource not found: {resource_id}"}
+            if not res_obj.base_url:
+                return {"status": "error", "message": f"Resource {resource_id} has no base_url configured"}
+
+            resource_config = {
+                "base_url": res_obj.base_url,
+                "model": res_obj.model,
+                "provider": res_obj.provider,
+                "api_key": res_obj.api_key,
+                "api_key_env": res_obj.api_key_env,
+                "output_limit": min(max_tokens, res_obj.output_limit),
+                "message_format": "openai",
+            }
+
+            # Build messages
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": message})
+
+            client = UnifiedLLMClient()
+            resp = await client.call_async(messages=messages, resource_config=resource_config)
+            reply = UnifiedLLMClient._extract_text(resp, "openai")
+
+            return {
+                "status": "success",
+                "reply": reply,
+                "resource_id": resource_id,
+                "model": status.get(resource_id, {}).get("model", resource_config.get("model", "")),
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"llm_direct_chat failed: {e}"}
 
     # ── Role Hub ─────────────────────────────────────────────────────
 
@@ -4637,7 +4864,7 @@ Agent resumes within seconds.
             resource_id = args.get("resource_id")
             if not resource_id:
                 return {"status": "error", "message": "Parameter 'resource_id' is required."}
-            return await self._execute_resource_pool_smoke_test({"resource_id": resource_id})
+            return await self._execute_resource_pool_smoke_test(args)
         if action == "llm_models":
             resource_id = args.get("resource_id")
             if not resource_id:
@@ -4653,6 +4880,8 @@ Agent resumes within seconds.
         # --- doctor / healer ---
         if action == "doctor":
             return await self._execute_config_doctor({})
+        if action == "doctor_context_probe":
+            return await self._execute_config_doctor_context_probe(args)
         if action in ("doctor_improve", "doctor_apply"):
             return await self._execute_config_healer(args)
 
@@ -4687,24 +4916,25 @@ Agent resumes within seconds.
                         "validate":              "Validate config — params: module",
                         "modules":               "List all config modules",
                         "sync_local_models":     "Sync models from local server — params: resource_id",
-                        "resource_status":       "All resources + approval state",
+                        "resource_status":       "List all LLM resource-pool entries + approval state (use this for 'show resources in pool')",
                         "resource_add":          "Add a new resource — params: resource_id, type, provider, base_url, model, tier, context_limit, output_limit, input_limit?, ...",
                         "resource_edit":         "Edit an existing resource — params: resource_id + any fields to update",
                         "resource_approve":      "Approve a resource — params: resource_id",
                         "resource_revoke":       "Revoke a resource — params: resource_id",
-                        "resource_smoke_test":   "Test resource connectivity — params: resource_id",
+                        "resource_smoke_test":   "Run agentic smoke checks — required: resource_id; optional: role_id, dynamic_goal, dynamic_available_tools, dynamic_expected_tool, dynamic_planning_prompt, dynamic_system_prompt, debug_artifact, issue_note",
                         "llm_models":            "List live models from server — params: resource_id",
                         "registry_refresh":      "Refresh public model registry cache (LiteLLM + OpenRouter) — auto-populates context/token limits for known models",
-                        "capability_list":       "List all capabilities (system built-ins + user custom)",
+                        "capability_list":       "List tool capabilities (system built-ins + user custom) — NOT the LLM resource pool",
                         "capability_get":        "Get full capability definition — params: tool_name",
                         "capability_add":        "Register a custom capability to personal layer — params: tool_name, description, parameters?, executor?, danger_level?, category?",
                         "capability_remove":     "Remove a user-created capability — params: tool_name (system capabilities are protected)",
                         "doctor":                "Full config pre-flight report",
+                        "doctor_context_probe":  "Run cached empirical context-limit discovery script — params: resource_id? | all_enabled_local? | ladder? | connect_timeout? | read_timeout?",
                         "doctor_improve":        "Suggest config improvements from runtime data (benchmark history, failure patterns) — no changes written",
                         "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
                         "preflight":             "Check system dependencies and MCP tool installation status (use scripts/preflight.py for interactive install)",
                     },
-                    "example": 'config(action="capability_list")',
+                    "example": 'config(action="resource_status")',
                 }
             # Show specific module structure
             if module_name not in self._config_modules:

@@ -20,6 +20,8 @@ import logging
 import os
 import asyncio
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -143,6 +145,19 @@ def _fetch_model_list(base_url: str, api_key: Optional[str] = None, timeout: int
         return None
 
 
+_MODEL_LIST_CACHE: Dict[tuple, Optional[List[str]]] = {}
+
+
+def _fetch_model_list_cached(base_url: str, api_key: Optional[str] = None, timeout: int = 5) -> Optional[List[str]]:
+    """Cached wrapper to avoid repeated /v1/models calls for the same endpoint/auth tuple."""
+    key = (base_url.rstrip("/"), api_key or "")
+    if key in _MODEL_LIST_CACHE:
+        return _MODEL_LIST_CACHE[key]
+    models = _fetch_model_list(base_url, api_key=api_key, timeout=timeout)
+    _MODEL_LIST_CACHE[key] = models
+    return models
+
+
 class ConfigDoctor:
     """
     Validates runtime config: LLM resources, roles, scheduler tasks, API keys, local servers.
@@ -151,9 +166,73 @@ class ConfigDoctor:
     def __init__(self):
         pass
 
+    def _load_resource_pool_meta(self) -> Dict[str, Any]:
+        from app.config.paths import get_memory_subpath
+        path = Path(get_memory_subpath("config", "resource_pool_meta.json"))
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return {}
+
+    def run_context_probe(
+        self,
+        resource_id: Optional[str] = None,
+        all_enabled_local: bool = False,
+        ladder: Optional[List[int]] = None,
+        connect_timeout: int = 10,
+        read_timeout: int = 120,
+    ) -> Dict[str, Any]:
+        """
+        Run the external context discovery capability script and return JSON output.
+        """
+        project_root = Path(__file__).parent.parent.parent
+        script = project_root / "scripts" / "doctor_context_probe.py"
+        if not script.exists():
+            return {"status": "error", "message": f"Script not found: {script}"}
+
+        cmd = [sys.executable, str(script)]
+        if resource_id:
+            cmd += ["--resource-id", resource_id]
+        if all_enabled_local:
+            cmd += ["--all-enabled-local"]
+        if ladder:
+            cmd += ["--ladder", ",".join(str(v) for v in ladder)]
+        cmd += ["--connect-timeout", str(connect_timeout), "--read-timeout", str(read_timeout)]
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to execute probe script: {e}"}
+
+        if proc.returncode != 0:
+            return {
+                "status": "error",
+                "message": "Probe script failed",
+                "returncode": proc.returncode,
+                "stdout": proc.stdout[-2000:],
+                "stderr": proc.stderr[-2000:],
+            }
+        try:
+            return json.loads(proc.stdout.strip())
+        except Exception:
+            return {
+                "status": "error",
+                "message": "Probe script returned non-JSON output",
+                "stdout": proc.stdout[-2000:],
+                "stderr": proc.stderr[-2000:],
+            }
+
     def run_all_checks(self) -> DoctorReport:
         report = DoctorReport()
         self._check_resources(report)
+        self._check_resource_pool_refinement(report)
         self._check_mcp_servers(report)
         self._check_roles(report)
         self._check_nine_chapter_scores(report)
@@ -327,12 +406,24 @@ class ConfigDoctor:
             if r.api_key_env:
                 env_val = os.getenv(r.api_key_env)
                 if not env_val:
-                    report.add(CheckResult(
-                        category="resource", id=res_id, field="api_key",
-                        value=f"${r.api_key_env}",
-                        status="warn",
-                        message=f"Env var '{r.api_key_env}' is not set",
-                    ))
+                    # Inline key fallback exists — not ideal, but runnable.
+                    if r.api_key:
+                        report.add(CheckResult(
+                            category="resource", id=res_id, field="api_key",
+                            value=f"${r.api_key_env}",
+                            status="pass",
+                            message=(
+                                f"Env var '{r.api_key_env}' is not set, "
+                                "but inline api_key is configured"
+                            ),
+                        ))
+                    else:
+                        report.add(CheckResult(
+                            category="resource", id=res_id, field="api_key",
+                            value=f"${r.api_key_env}",
+                            status="warn",
+                            message=f"Env var '{r.api_key_env}' is not set",
+                        ))
                 elif _is_placeholder(env_val):
                     report.add(CheckResult(
                         category="resource", id=res_id, field="api_key",
@@ -375,15 +466,24 @@ class ConfigDoctor:
 
                     # Check model name against available models
                     if r.model:
-                        available = _fetch_model_list(r.base_url, api_key=r.api_key)
+                        # Only run expensive model availability validation for enabled resources.
+                        if not r.enabled:
+                            continue
+                        available = _fetch_model_list_cached(r.base_url, api_key=r.api_key)
                         if available is not None:
                             if not available:
-                                # Server has no models loaded — may be intentional (cold start)
+                                # High-priority enabled resources should expose models.
+                                sev = "warn" if r.priority <= 10 else "pass"
+                                msg = (
+                                    "Server returned empty model list (model not loaded?)"
+                                    if sev == "warn"
+                                    else "Model list unavailable/empty (not critical for low-priority resource)"
+                                )
                                 report.add(CheckResult(
                                     category="resource", id=res_id, field="model",
                                     value=r.model,
-                                    status="warn",
-                                    message=f"Server returned empty model list (model not loaded?)",
+                                    status=sev,
+                                    message=msg,
                                 ))
                             else:
                                 # Normalize: some APIs return "models/foo" while config has "foo"
@@ -414,6 +514,182 @@ class ConfigDoctor:
                     value=r.base_url,
                     status="pass",
                     message="Remote API endpoint (reachability not checked)",
+                ))
+
+    def _check_resource_pool_refinement(self, report: DoctorReport) -> None:
+        """
+        Pool-level quality checks across resources (consistency, precedence,
+        and duplication), beyond per-resource validity checks.
+        """
+        try:
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            resources = rm._resources
+        except Exception as e:
+            report.add(CheckResult(
+                category="resource_pool", id="llm_config", field="load",
+                value=None, status="error",
+                message=f"Failed to load resource pool for refinement checks: {e}",
+            ))
+            return
+
+        if not resources:
+            return
+
+        meta = self._load_resource_pool_meta()
+        verified_context = (meta.get("verified_context") or {}) if isinstance(meta, dict) else {}
+
+        by_endpoint: Dict[str, List[Any]] = {}
+        by_model: Dict[str, List[Any]] = {}
+        priority_seen: Dict[int, List[str]] = {}
+        free_enabled = 0
+        free_api_enabled = 0
+
+        for res_id, r in resources.items():
+            if r.enabled and r.tier.value == "free":
+                free_enabled += 1
+            if r.enabled and r.tier.value == "free_api":
+                free_api_enabled += 1
+
+            key = (r.base_url or "").rstrip("/")
+            if key:
+                by_endpoint.setdefault(key, []).append(r)
+            if r.model:
+                by_model.setdefault(r.model, []).append(r)
+            priority_seen.setdefault(r.priority, []).append(res_id)
+
+            # Inconsistent auth config: both api_key and api_key_env set.
+            if r.api_key and r.api_key_env:
+                report.add(CheckResult(
+                    category="resource_pool", id=res_id, field="auth_source",
+                    value={"api_key": True, "api_key_env": r.api_key_env},
+                    status="warn",
+                    message=(
+                        "Both inline api_key and api_key_env are set. "
+                        "Prefer api_key_env only to avoid secret drift."
+                    ),
+                ))
+
+            # Disabled resources should not outrank enabled peers.
+            if not r.enabled and r.priority <= 10:
+                report.add(CheckResult(
+                    category="resource_pool", id=res_id, field="priority",
+                    value=r.priority,
+                    status="warn",
+                    message=(
+                        "Resource is disabled but has very high precedence priority. "
+                        "Consider lowering priority to reduce operator confusion."
+                    ),
+                ))
+
+            # Practical floor: contexts below 32k are usually not useful for modern agentic work.
+            if r.enabled and int(getattr(r, "context_limit", 0) or 0) < 32768:
+                report.add(CheckResult(
+                    category="resource_pool", id=res_id, field="context_limit",
+                    value=r.context_limit,
+                    status="warn",
+                    message=(
+                        "Enabled resource context_limit is below 32768. "
+                        "This is likely too small for practical agentic workflows."
+                    ),
+                ))
+
+            # If empirical context probe exists, compare configured limit to verified pass.
+            vc = verified_context.get(res_id)
+            if r.enabled and isinstance(vc, dict):
+                max_pass = int(vc.get("max_passed_prompt_tokens") or 0)
+                if max_pass > 0:
+                    configured = int(getattr(r, "context_limit", 0) or 0)
+                    if configured > max_pass + 1024:
+                        report.add(CheckResult(
+                            category="resource_pool", id=res_id, field="verified_context_limit",
+                            value={"configured": configured, "verified_passed": max_pass},
+                            status="warn",
+                            message=(
+                                "Configured context_limit exceeds empirically verified prompt tokens. "
+                                "Consider lowering config or re-running context probe with higher read timeout."
+                            ),
+                        ))
+                    else:
+                        report.add(CheckResult(
+                            category="resource_pool", id=res_id, field="verified_context_limit",
+                            value={"configured": configured, "verified_passed": max_pass},
+                            status="pass",
+                            message="Configured context_limit is aligned with empirical probe cache.",
+                        ))
+
+        # Validate free/fallback shape.
+        if free_enabled == 0:
+            report.add(CheckResult(
+                category="resource_pool", id="tiers", field="free_enabled_count",
+                value=0, status="error",
+                message="No enabled free-tier resource. local_only roles cannot run.",
+            ))
+        if free_api_enabled == 0:
+            report.add(CheckResult(
+                category="resource_pool", id="tiers", field="free_api_enabled_count",
+                value=0, status="warn",
+                message="No enabled free_api fallback resource.",
+            ))
+
+        # Endpoint-level consistency checks.
+        for endpoint, items in by_endpoint.items():
+            if len(items) < 2:
+                continue
+            # Same endpoint with mixed auth expectations often causes confusion.
+            auth_modes = set()
+            for r in items:
+                if r.api_key:
+                    auth_modes.add("inline")
+                elif r.api_key_env:
+                    auth_modes.add(f"env:{r.api_key_env}")
+                else:
+                    auth_modes.add("none")
+            if len(auth_modes) > 1:
+                report.add(CheckResult(
+                    category="resource_pool",
+                    id="endpoint:" + endpoint,
+                    field="auth_consistency",
+                    value=sorted(auth_modes),
+                    status="warn",
+                    message=(
+                        "Resources sharing the same endpoint use inconsistent auth sources. "
+                        "Standardize to reduce intermittent auth failures."
+                    ),
+                ))
+
+        # Model duplication checks.
+        for model_name, items in by_model.items():
+            if len(items) < 2:
+                continue
+            enabled_items = [r for r in items if r.enabled]
+            if len(enabled_items) <= 1:
+                continue
+            ids = [r.id for r in enabled_items]
+            report.add(CheckResult(
+                category="resource_pool", id=model_name, field="model_duplicates",
+                value=ids,
+                status="warn",
+                message=(
+                    "Multiple enabled resources point to the same model. "
+                    "Keep duplicates only when intentionally split by account group/tier."
+                ),
+            ))
+
+        # Priority collisions: multiple enabled resources with same priority.
+        for priority, ids in priority_seen.items():
+            enabled_ids = [rid for rid in ids if resources[rid].enabled]
+            if len(enabled_ids) > 1:
+                report.add(CheckResult(
+                    category="resource_pool",
+                    id=f"priority:{priority}",
+                    field="priority_collision",
+                    value=enabled_ids,
+                    status="warn",
+                    message=(
+                        "Multiple enabled resources share the same priority. "
+                        "Selection order may be unstable."
+                    ),
                 ))
 
     # ------------------------------------------------------------------
@@ -458,6 +734,19 @@ class ConfigDoctor:
             role_id = role.get("id", "?")
             model_pref = role.get("model_preference")
             if model_pref:
+                # Common misconfig: model_preference set to a resource id
+                # (e.g. "lmstudio_qwen35b") instead of a model name.
+                if model_pref in available_models:
+                    report.add(CheckResult(
+                        category="role", id=role_id, field="model_preference",
+                        value=model_pref,
+                        status="error",
+                        message=(
+                            f"model_preference '{model_pref}' matches a resource id, not a model name. "
+                            f"Use model '{available_models[model_pref]}' or pin resource via task config."
+                        ),
+                    ))
+                    continue
                 model_known = model_pref in available_models.values()
                 if not model_known and available_models:
                     report.add(CheckResult(
@@ -1294,7 +1583,10 @@ class ConfigHealer:
         for s in to_apply:
             if s.category == "resource":
                 resource_updates.setdefault(s.target_id, {})[s.field] = s.suggested_value
-                messages.append(f"[resource/{s.target_id}] {s.field} = {s.suggested_value!r}")
+                if s.field == "__delete__":
+                    messages.append(f"[resource/{s.target_id}] delete")
+                else:
+                    messages.append(f"[resource/{s.target_id}] {s.field} = {s.suggested_value!r}")
             elif s.category == "scheduler_task":
                 scheduler_updates.setdefault(s.target_id, {})[s.field] = s.suggested_value
                 messages.append(
@@ -1329,8 +1621,14 @@ class ConfigHealer:
         model_errors: Dict[str, str] = {}   # res_id → current (wrong) model
         unreachable: set = set()
 
+        duplicate_groups: List[List[str]] = []
+
         for c in doctor_report.checks:
             if c.category != "resource":
+                if c.category == "resource_pool" and c.field == "model_duplicates":
+                    ids = c.value if isinstance(c.value, list) else []
+                    if ids:
+                        duplicate_groups.append(ids)
                 continue
             if c.status == "error" and c.field == "model":
                 model_errors[c.id] = c.value
@@ -1393,6 +1691,29 @@ class ConfigHealer:
                 evidence="Doctor check: base_url not reachable",
                 confidence="low",
                 auto_apply=False,
+            ))
+
+        # Auto-cleanup rule: generic lmstudio alias duplicates a specific lmstudio_* resource
+        # on the same model. Prefer the explicit resource id and remove the generic alias.
+        for ids in duplicate_groups:
+            if "lmstudio" not in ids:
+                continue
+            specific = [rid for rid in ids if rid.startswith("lmstudio_") and rid != "lmstudio"]
+            if not specific:
+                continue
+            out.suggestions.append(ImprovementSuggestion(
+                category="resource",
+                target_id="lmstudio",
+                field="__delete__",
+                current_value=True,
+                suggested_value=True,
+                reason=(
+                    "Generic resource id 'lmstudio' duplicates explicit lmstudio_* resource(s). "
+                    "Removing alias avoids selection conflicts."
+                ),
+                evidence=f"Doctor resource_pool/model_duplicates group: {ids}",
+                confidence="high",
+                auto_apply=True,
             ))
 
     # ------------------------------------------------------------------
@@ -1582,6 +1903,11 @@ class ConfigHealer:
                     data = json.load(f)
             resources = data.setdefault("resources", {})
             for res_id, fields in updates.items():
+                if fields.get("__delete__"):
+                    if res_id in resources:
+                        resources.pop(res_id, None)
+                        logger.info(f"ConfigHealer: resource/{res_id} deleted")
+                    continue
                 resources.setdefault(res_id, {}).update(fields)
                 logger.info(f"ConfigHealer: resource/{res_id} ← {fields}")
             with open(path, "w") as f:

@@ -438,12 +438,22 @@ server {
     ssl_certificate /path/to/cert.pem;
     ssl_certificate_key /path/to/key.pem;
     
+    # Correlated access log (request ID + upstream status/timing)
+    log_format mojo_trace '$time_iso8601 request_id=$request_id '
+                         'cf_ray=$http_cf_ray method=$request_method uri=$request_uri '
+                         'status=$status upstream_status=$upstream_status '
+                         'rt=$request_time urt=$upstream_response_time '
+                         'remote=$remote_addr xff="$http_x_forwarded_for"';
+    access_log /var/log/nginx/mojo_access.log mojo_trace;
+    error_log  /var/log/nginx/mojo_error.log warn;
+
     location /api/v1/ {
         proxy_pass http://mojo_mcp;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
     }
     
     location /health {
@@ -457,6 +467,9 @@ server {
 ```
 
 ## Security Considerations
+
+For production incident debugging and `502` tracing across Cloudflare/nginx/origin, see:
+- [REQUEST_TRACING_RUNBOOK.md](/home/alex/Development/Personal/MoJoAssistant/docs/guides/REQUEST_TRACING_RUNBOOK.md)
 
 ### API Key Authentication
 ```python

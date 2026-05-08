@@ -19,6 +19,8 @@ Usage (via MCP):
 """
 
 import asyncio
+import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -61,9 +63,10 @@ class SmokeTestResult:
     iterations_used: int = 0
     duration_seconds: float = 0.0
     error: Optional[str] = None
+    debug_bundle: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "resource_id": self.resource_id,
             "model": self.model,
             "agentic_capable": self.agentic_capable,
@@ -75,6 +78,9 @@ class SmokeTestResult:
             "duration_seconds": round(self.duration_seconds, 2),
             "error": self.error,
         }
+        if self.debug_bundle:
+            data["debug_bundle"] = self.debug_bundle
+        return data
 
 
 class _SingleResourceManager:
@@ -112,21 +118,33 @@ class AgenticSmokeTest:
         task_id: str,
         goal: str,
         available_tools: list,
+        role_id: Optional[str] = None,
+        planning_prompt: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
         max_iterations: int = 4,
     ) -> tuple:
         """Run one minimal task and return (task_result, iteration_log, final_answer)."""
         from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
+        task_config = {
+            "goal": goal,
+            "available_tools": available_tools,
+            "max_iterations": max_iterations,
+            "max_duration_seconds": 90,
+        }
+        if role_id:
+            task_config["role_id"] = role_id
+        if planning_prompt:
+            task_config["planning_prompt"] = planning_prompt
+        if system_prompt_override:
+            task_config["system_prompt"] = system_prompt_override
+        elif not role_id:
+            # Keep legacy behavior for role-less smoke tests.
+            task_config["system_prompt"] = _SMOKE_SYSTEM
         task = Task(
             id=task_id,
             type=TaskType.INTERNAL_ASSIGNMENT,
             priority=TaskPriority.HIGH,
-            config={
-                "goal": goal,
-                "system_prompt": _SMOKE_SYSTEM,
-                "available_tools": available_tools,
-                "max_iterations": max_iterations,
-                "max_duration_seconds": 90,
-            },
+            config=task_config,
             resources=TaskResources(max_iterations=max_iterations, max_duration_seconds=90),
             description="Agentic smoke test",
             created_by="system",
@@ -147,7 +165,29 @@ class AgenticSmokeTest:
         metrics = task_result.metrics or {}
         return task_result, metrics.get("iteration_log", []), metrics.get("final_answer")
 
-    async def run(self, resource_id: str, full: bool = False) -> SmokeTestResult:
+    def _write_debug_bundle(self, payload: Dict[str, Any]) -> Optional[str]:
+        try:
+            ts = int(time.time())
+            out_path = os.path.join("/tmp", f"mojo_agentic_smoke_debug_{ts}.json")
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+            return out_path
+        except Exception:
+            return None
+
+    async def run(
+        self,
+        resource_id: str,
+        full: bool = False,
+        role_id: Optional[str] = None,
+        dynamic_goal: Optional[str] = None,
+        dynamic_available_tools: Optional[list] = None,
+        dynamic_expected_tool: Optional[str] = None,
+        dynamic_planning_prompt: Optional[str] = None,
+        dynamic_system_prompt: Optional[str] = None,
+        debug_artifact: bool = False,
+        issue_note: Optional[str] = None,
+    ) -> SmokeTestResult:
         """
         Run the smoke test against a named resource.
 
@@ -179,13 +219,24 @@ class AgenticSmokeTest:
 
         model = resource.model or "?"
 
+        dynamic_mode = bool(dynamic_goal)
+        if dynamic_mode and not dynamic_available_tools:
+            dynamic_available_tools = ["memory_search"]
+        if dynamic_mode and not dynamic_expected_tool and dynamic_available_tools:
+            dynamic_expected_tool = dynamic_available_tools[0]
+
         # --- Check 1 + 2: tool calling fidelity and final answer ---
         try:
+            primary_goal = dynamic_goal or _SMOKE_GOAL
+            primary_tools = dynamic_available_tools or ["memory_search"]
             _, iteration_log, final_answer = await self._run_single_task(
                 resource=resource,
                 task_id=f"smoke_test_{resource_id}",
-                goal=_SMOKE_GOAL,
-                available_tools=["memory_search"],
+                goal=primary_goal,
+                available_tools=primary_tools,
+                role_id=role_id,
+                planning_prompt=dynamic_planning_prompt,
+                system_prompt_override=dynamic_system_prompt,
             )
         except Exception as e:
             return SmokeTestResult(
@@ -195,15 +246,16 @@ class AgenticSmokeTest:
                 duration_seconds=time.time() - start,
             )
 
+        expected_tool = dynamic_expected_tool or "memory_search"
         made_tool_call = any(
-            it.get("status") == "tool_use" and "memory_search" in it.get("tool_calls", [])
+            it.get("status") == "tool_use" and expected_tool in it.get("tool_calls", [])
             for it in iteration_log
         )
         tool_check = SmokeCheckResult(
             name="tool_calling",
             status="pass" if made_tool_call else "fail",
             message=(
-                "Model called memory_search as required"
+                f"Model called {expected_tool} as required"
                 if made_tool_call
                 else "Model did not emit a tool call (hallucinated result or ignored instruction)"
             ),
@@ -223,49 +275,56 @@ class AgenticSmokeTest:
         # where the model outputs <write_file>...</write_file> as plain text in
         # FINAL_ANSWER instead of making a real function call.
         # A pass means the file was actually written to disk (executor ran the tool).
-        try:
-            _, wf_log, wf_answer = await self._run_single_task(
-                resource=resource,
-                task_id=f"smoke_write_{resource_id}",
-                goal=_SMOKE_WRITE_GOAL,
-                available_tools=["write_file"],
-                max_iterations=5,
-            )
-            # Verify the tool was actually called (not just described in text)
-            write_tool_called = any(
-                it.get("status") == "tool_use" and "write_file" in it.get("tool_calls", [])
-                for it in wf_log
-            )
-            # Also verify file exists on disk
-            import os as _os
-            smoke_path = _os.path.expanduser("~/.memory/smoke_write_test.txt")
-            file_written = _os.path.isfile(smoke_path)
-            if file_written:
-                try:
-                    _os.remove(smoke_path)
-                except OSError:
-                    pass
-
-            wf_pass = write_tool_called and file_written
+        if dynamic_mode:
             wf_check = SmokeCheckResult(
                 name="write_workflow",
-                status="pass" if wf_pass else "fail",
-                message=(
-                    "Model called write_file via function API and file was written to disk"
-                    if wf_pass
-                    else (
-                        "write_file was called but file not found on disk (possible XML leakage — "
-                        "model may have output tool call as text instead of function call)"
-                        if write_tool_called
-                        else "Model did not call write_file (may have described it in text)"
-                    )
-                ),
+                status="skip",
+                message="Skipped in dynamic mode (focus is role/persona prompt behavior)",
             )
-        except Exception as e:
-            wf_check = SmokeCheckResult(
-                name="write_workflow", status="skip",
-                message=f"Write workflow test failed to run: {e}",
-            )
+        else:
+            try:
+                _, wf_log, wf_answer = await self._run_single_task(
+                    resource=resource,
+                    task_id=f"smoke_write_{resource_id}",
+                    goal=_SMOKE_WRITE_GOAL,
+                    available_tools=["write_file"],
+                    max_iterations=5,
+                )
+                # Verify the tool was actually called (not just described in text)
+                write_tool_called = any(
+                    it.get("status") == "tool_use" and "write_file" in it.get("tool_calls", [])
+                    for it in wf_log
+                )
+                # Also verify file exists on disk
+                import os as _os
+                smoke_path = _os.path.expanduser("~/.memory/smoke_write_test.txt")
+                file_written = _os.path.isfile(smoke_path)
+                if file_written:
+                    try:
+                        _os.remove(smoke_path)
+                    except OSError:
+                        pass
+
+                wf_pass = write_tool_called and file_written
+                wf_check = SmokeCheckResult(
+                    name="write_workflow",
+                    status="pass" if wf_pass else "fail",
+                    message=(
+                        "Model called write_file via function API and file was written to disk"
+                        if wf_pass
+                        else (
+                            "write_file was called but file not found on disk (possible XML leakage — "
+                            "model may have output tool call as text instead of function call)"
+                            if write_tool_called
+                            else "Model did not call write_file (may have described it in text)"
+                        )
+                    ),
+                )
+            except Exception as e:
+                wf_check = SmokeCheckResult(
+                    name="write_workflow", status="skip",
+                    message=f"Write workflow test failed to run: {e}",
+                )
 
         # sandbox_write is superseded by write_workflow — keep key for schema compat
         sw_check = SmokeCheckResult(
@@ -287,6 +346,27 @@ class AgenticSmokeTest:
             if c.status != "skip"
         )
 
+        debug_bundle = {
+            "mode": "dynamic" if dynamic_mode else "standard",
+            "resource_id": resource_id,
+            "model": model,
+            "role_id": role_id,
+            "goal": dynamic_goal or _SMOKE_GOAL,
+            "available_tools": dynamic_available_tools or ["memory_search"],
+            "expected_tool": expected_tool,
+            "planning_prompt": dynamic_planning_prompt,
+            "checks": {k: {"status": v.status, "message": v.message} for k, v in checks.items()},
+            "iterations_used": len(iteration_log),
+            "iteration_log": iteration_log,
+            "final_answer": final_answer,
+            "issue_note": issue_note or "",
+            "captured_at": int(time.time()),
+        }
+        if debug_artifact:
+            path = self._write_debug_bundle(debug_bundle)
+            if path:
+                debug_bundle["artifact_path"] = path
+
         return SmokeTestResult(
             resource_id=resource_id,
             model=model,
@@ -294,4 +374,5 @@ class AgenticSmokeTest:
             checks=checks,
             iterations_used=len(iteration_log),
             duration_seconds=time.time() - start,
+            debug_bundle=debug_bundle,
         )

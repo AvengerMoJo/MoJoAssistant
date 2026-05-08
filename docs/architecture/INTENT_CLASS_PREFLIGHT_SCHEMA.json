@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Intent Class Preflight Report",
+  "type": "object",
+  "required": ["ok", "required_classes", "class_status"],
+  "properties": {
+    "task_id": {"type": "string"},
+    "role_id": {"type": ["string", "null"]},
+    "ok": {"type": "boolean"},
+    "required_classes": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "class_status": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["ok", "providers_checked", "passing_providers", "failures"],
+        "properties": {
+          "ok": {"type": "boolean"},
+          "providers_checked": {"type": "array", "items": {"type": "string"}},
+          "passing_providers": {"type": "array", "items": {"type": "string"}},
+          "failures": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "remediation": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

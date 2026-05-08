@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -10,6 +11,8 @@ from typing import Optional
 from app.scheduler.executor_registry import ExecutorContext, TaskHandler
 from app.scheduler.models import Task, TaskResult
 from app.config.paths import get_memory_subpath
+
+logger = logging.getLogger(__name__)
 
 
 class DreamingHandler(TaskHandler):
@@ -101,6 +104,12 @@ class DreamingHandler(TaskHandler):
                             "error", "Unknown error during document dreaming"
                         ),
                     )
+
+            if mode == "chat_bridge":
+                return await self._execute_chat_bridge(task, ctx, quality_level)
+
+            if mode == "relationship_update":
+                return await self._execute_relationship_update(task, ctx)
 
             pipeline = ctx.get_dreaming_pipeline(quality_level)
             conv_role_id = task.config.get("role_id")
@@ -246,6 +255,293 @@ class DreamingHandler(TaskHandler):
         except Exception as e:
             ctx.log(f"Cluster indexing failed (non-fatal): {e}", "warning")
         return indexed
+
+    async def _execute_chat_bridge(
+        self,
+        task: Task,
+        ctx: ExecutorContext,
+        quality_level: str,
+    ) -> TaskResult:
+        """Process new chat sessions through the dreaming pipeline (Gap 4).
+
+        Scans all roles under ~/.memory/roles/ for unprocessed chat sessions,
+        converts them to conversation text, and runs them through the ABCD
+        pipeline.  Results are indexed into the role's knowledge store so
+        _orient_from_memory can retrieve them at next task start.
+
+        Watermark tracking at ~/.memory/roles/{role_id}/chat_dream_watermark.json
+        prevents re-processing already-dreamed sessions.
+        """
+        roles_dir = Path(get_memory_subpath("roles"))
+        if not roles_dir.is_dir():
+            return TaskResult(
+                success=True,
+                metrics={"skipped": True, "reason": "no_roles_dir"},
+            )
+
+        total_sessions = 0
+        total_indexed = 0
+        roles_processed = 0
+        errors: list[str] = []
+
+        for role_dir in sorted(roles_dir.iterdir()):
+            if not role_dir.is_dir():
+                continue
+            role_id = role_dir.name
+            chat_dir = role_dir / "chat_history"
+            if not chat_dir.is_dir():
+                continue
+
+            watermark_path = role_dir / "chat_dream_watermark.json"
+            watermark = self._load_watermark(watermark_path)
+            processed_ids = set(watermark.get("processed_session_ids", []))
+
+            session_files = sorted(chat_dir.glob("*.json"))
+            new_sessions = [
+                f for f in session_files
+                if f.stem not in processed_ids
+            ]
+
+            if not new_sessions:
+                continue
+
+            roles_processed += 1
+            # Create a fresh pipeline per role to avoid shared storage mutation
+            pipeline = ctx.get_dreaming_pipeline(quality_level)
+            try:
+                from dreaming.storage.json_backend import JsonFileBackend
+                role_storage_path = role_dir / "knowledge_units"
+                pipeline = ctx.get_dreaming_pipeline(quality_level)
+                pipeline.storage = JsonFileBackend(storage_path=role_storage_path)
+            except Exception as e:
+                ctx.log(f"Chat bridge: could not set role storage for {role_id}: {e}", "warning")
+
+            for session_file in new_sessions:
+                try:
+                    session_data = json.loads(session_file.read_text(encoding="utf-8"))
+                except Exception as e:
+                    errors.append(f"{session_file.name}: {e}")
+                    continue
+
+                exchanges = session_data.get("exchanges", [])
+                if len(exchanges) < 2:
+                    continue
+
+                lines = []
+                for ex in exchanges:
+                    user_msg = (ex.get("user") or "").strip()
+                    asst_msg = (ex.get("assistant") or "").strip()
+                    if user_msg:
+                        lines.append(f"[user] {user_msg}")
+                    if asst_msg:
+                        lines.append(f"[{role_id}] {asst_msg}")
+
+                if not lines:
+                    continue
+
+                conversation_text = "\n".join(lines)
+                conversation_id = f"chat_bridge_{session_file.stem}"
+
+                metadata = {
+                    "source": "chat_bridge",
+                    "role_id": role_id,
+                    "session_file": str(session_file),
+                    "exchange_count": len(exchanges),
+                    "bridged_at": datetime.now().isoformat(),
+                    "original_text": conversation_text,
+                }
+
+                results = await pipeline.process_conversation(
+                    conversation_id=conversation_id,
+                    conversation_text=conversation_text,
+                    metadata=metadata,
+                )
+
+                if results.get("status") == "success":
+                    total_sessions += 1
+                    if ctx._memory_service:
+                        indexed = self._index_clusters_to_knowledge_base(
+                            ctx=ctx,
+                            pipeline=pipeline,
+                            conversation_id=conversation_id,
+                            role_id=role_id,
+                            source="chat_bridge",
+                        )
+                        total_indexed += indexed
+                else:
+                    err = results.get("error", "unknown error")
+                    errors.append(f"{session_file.name}: {err}")
+
+                processed_ids.add(session_file.stem)
+                # Write watermark after each session for exactly-once processing
+                self._save_watermark(watermark_path, {
+                    "last_processed_at": datetime.now().isoformat(),
+                    "processed_session_ids": sorted(processed_ids),
+                })
+
+            # Final watermark update (redundant but ensures consistency)
+            self._save_watermark(watermark_path, {
+                "last_processed_at": datetime.now().isoformat(),
+                "processed_session_ids": sorted(processed_ids),
+            })
+
+        metrics = {
+            "mode": "chat_bridge",
+            "roles_processed": roles_processed,
+            "sessions_dreamed": total_sessions,
+            "clusters_indexed": total_indexed,
+            "quality_level": quality_level,
+            "errors": errors,
+            "error_count": len(errors),
+        }
+        if errors:
+            ctx.log(f"Chat bridge completed with {len(errors)} errors", "warning")
+
+        return TaskResult(success=True, metrics=metrics)
+
+    @staticmethod
+    def _load_watermark(path: Path) -> dict:
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _save_watermark(path: Path, data: dict) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Failed to save chat dream watermark: {e}")
+
+    async def _execute_relationship_update(
+        self,
+        task: Task,
+        ctx: ExecutorContext,
+    ) -> TaskResult:
+        """Analyze task history and update owner profile assistant_relationships.
+
+        Reads recent task reports for each role, identifies focus areas and
+        interaction patterns, and updates the owner profile's
+        assistant_relationships field accordingly.  Authored values are
+        preserved as seeds; this only adds or strengthens focus areas that
+        appear consistently in task outcomes.
+        """
+        owner_path = Path(get_memory_subpath("owner_profile.json"))
+        if not owner_path.exists():
+            return TaskResult(
+                success=True,
+                metrics={"skipped": True, "reason": "no_owner_profile"},
+            )
+
+        try:
+            owner_profile = json.loads(owner_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            return TaskResult(success=False, error_message=f"Failed to read owner profile: {e}")
+
+        relationships = owner_profile.get("assistant_relationships", {})
+        roles_dir = Path(get_memory_subpath("roles"))
+        if not roles_dir.is_dir():
+            return TaskResult(
+                success=True,
+                metrics={"skipped": True, "reason": "no_roles_dir"},
+            )
+
+        updated_roles: list[str] = []
+
+        for role_dir in sorted(roles_dir.iterdir()):
+            if not role_dir.is_dir():
+                continue
+            role_id = role_dir.name
+
+            # Read task history
+            task_history_dir = role_dir / "task_history"
+            if not task_history_dir.is_dir():
+                continue
+
+            recent_reports = []
+            for report_file in sorted(task_history_dir.glob("*.json"), reverse=True)[:20]:
+                try:
+                    report = json.loads(report_file.read_text(encoding="utf-8"))
+                    recent_reports.append(report)
+                except Exception:
+                    continue
+
+            if not recent_reports:
+                continue
+
+            # Analyze task goals to extract focus patterns
+            focus_counts: Dict[str, int] = {}
+            for report in recent_reports:
+                goal = (report.get("goal") or "").lower()
+                final_answer = (report.get("final_answer") or "").lower()
+                combined = f"{goal} {final_answer}"
+
+                # Count topic keywords
+                topic_keywords = {
+                    "analysis": ["analyze", "analysis", "compare", "evaluate", "assess"],
+                    "research": ["research", "investigate", "find", "search", "study"],
+                    "implementation": ["implement", "build", "create", "code", "write"],
+                    "review": ["review", "audit", "check", "validate", "verify"],
+                    "infrastructure": ["infrastructure", "server", "deploy", "config", "system"],
+                    "security": ["security", "vulnerability", "threat", "protect", "safe"],
+                    "testing": ["test", "spec", "coverage", "assert", "validate"],
+                    "documentation": ["document", "explain", "describe", "guide", "readme"],
+                    "debugging": ["debug", "fix", "error", "issue", "bug", "troubleshoot"],
+                    "design": ["design", "architect", "plan", "structure", "pattern"],
+                }
+
+                for topic, keywords in topic_keywords.items():
+                    if any(kw in combined for kw in keywords):
+                        focus_counts[topic] = focus_counts.get(topic, 0) + 1
+
+            if not focus_counts:
+                continue
+
+            # Get top focus areas (appearing in 20%+ of tasks)
+            threshold = max(2, len(recent_reports) * 0.2)
+            top_focus = [
+                topic for topic, count in sorted(focus_counts.items(), key=lambda x: -x[1])
+                if count >= threshold
+            ][:4]
+
+            if not top_focus:
+                continue
+
+            # Update or create relationship entry
+            existing = relationships.get(role_id, {})
+            existing_focus = set(existing.get("focus", []))
+            merged_focus = sorted(set(top_focus) | existing_focus)[:6]
+
+            if set(merged_focus) != existing_focus:
+                relationships[role_id] = {
+                    "relationship": existing.get("relationship", f"{role_id} assistant"),
+                    "focus": merged_focus,
+                    "last_analyzed": datetime.now().isoformat(),
+                    "tasks_analyzed": len(recent_reports),
+                }
+                updated_roles.append(role_id)
+
+        if updated_roles:
+            owner_profile["assistant_relationships"] = relationships
+            owner_profile["updated_at"] = datetime.now().isoformat()
+            owner_path.write_text(
+                json.dumps(owner_profile, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            ctx.log(f"Updated assistant_relationships for: {', '.join(updated_roles)}")
+
+        return TaskResult(
+            success=True,
+            metrics={
+                "mode": "relationship_update",
+                "roles_analyzed": len(list(roles_dir.iterdir())) if roles_dir.is_dir() else 0,
+                "roles_updated": len(updated_roles),
+                "updated_role_ids": updated_roles,
+            },
+        )
 
     @staticmethod
     def _is_within_off_peak(start_hhmm: str, end_hhmm: str) -> bool:

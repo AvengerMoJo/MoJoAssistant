@@ -28,14 +28,15 @@ User / External World
 | **v1.2.9** | **Quality gates + coding agent bridge** | ✅ Shipped | Smoke suite (133 tests), NineChapter, InteractionMode contracts, physical knowledge isolation, completion artifacts, dependency resilience audit, INSTALL.md, coding agent HITL bridge, per-source attention routing rules |
 | **v1.2.10** | **First-run experience + owner identity** | ✅ Shipped | Resource pool unification, tool registry + `list_tools()`, owner profile, demo roles (Researcher/Analyst/Coder) bundled, first-run wizard (auto-detect, config gen, role selection, LLM backend detection + model ladder), 3 demo tasks seeded, 158 smoke tests |
 | **v1.2.11** | **Terminal + config completeness** | ✅ Shipped | Terminal tools via tmux-mcp-rs (13 tools registered in tool_catalog + mcp_servers.json, enabled=false until tmux available), ConfigDoctor NineChapter score validation (weighted dimension drift detection), HttpAgentExecutor deferred (needs protocol spec) |
-| **v1.2.12** | **Owner identity — active layer** | 📋 Planned | Owner context filtered injection (mode overlay → filtered prompt slice per role/mode), sensitive-domain watchdog (system roles scan operations against `sensitive_domains` in owner profile) |
-| **v1.2.13** | **agency-agents import bridge** | 📋 Planned | `agency-agents` reference library integration — parse markdown personas, map to Nine Chapter wizard pre-fills, "Import from library" path in role designer, GUI operator role as first candidate |
-| **v1.2.14** | **Owner relationships + policy coupling** | 📋 Planned | `assistant_relationships` auto-update via dreaming pipeline, policy/role/relationship coupling model design + enforcement groundwork |
-| v1.3.0 | Behavioral Security Layer | 📋 Planned | BehavioralMonitor, ContainmentEngine, SandboxRuntime honeypot |
-| v1.3.1 | Agent Learning Loop | 📋 Planned | Failure→lesson pipeline, memory context injection, per-role silo memory, cross-agent queries |
-| v1.3.2 | Agent Orchestration + Role Chat Full | 📋 Planned | Agent type classification, workflow templates, OpenAI-compat proxy, cross-role referral |
-| v1.3.3 | Advanced Security + PII Sanitization | 📋 Planned | Policy Enforcement Agent (inbox-based), PII classification + sanitization layer, hybrid memory search (BM25 + embedding) |
-| v1.3.x | Institutional Knowledge | 📋 Planned | Inbox→dreaming→knowledge distillation, resolved-interaction memory units |
+| **v1.2.12** | **Owner identity — active layer** | ✅ Shipped | Owner context filtered injection (mode overlay → filtered prompt slice per role/mode), sensitive-domain watchdog (SensitiveDomainChecker in policy pipeline) |
+| **v1.2.13** | **agency-agents import bridge** | ✅ Shipped | `agency-agents` reference library integration — `app/roles/agency_importer.py` parses markdown personas, maps to NineChapter wizard pre-fills, 184 personas available |
+| **v1.2.14** | **Owner relationships + policy coupling** | ✅ Shipped | `assistant_relationships` auto-update via dreaming pipeline (`mode="relationship_update"`), Chat→Dream bridge (`mode="chat_bridge"`), nightly chat_bridge task |
+| v1.3.0 | Behavioral Security Layer | ✅ Shipped | BehavioralMonitor (`app/scheduler/security/behavioral_monitor.py`), ContainmentEngine (`containment_engine.py`), SandboxRuntime (`sandbox_runtime.py`) — three-tier response: LOW (silent ntfy), MEDIUM (sandbox honeypot), HIGH (hard halt) |
+| v1.3.1 | Agent Learning Loop | ✅ Shipped | Failure→lesson pipeline in AgenticExecutor, memory context injection at task start, per-role silo memory (`lessons/`, `task_history/`), cross-agent `search_memory(role_id)` |
+| v1.3.2 | Agent Orchestration + Role Chat Full | ✅ Shipped | Agent type classification (agent_type in role JSON), workflow templates (`config/workflow_templates/{type}.json`), OpenAI-compat proxy (`/v1/models`, `/v1/chat/completions`), cross-role referral (`refer_to_role` tool in Role Chat) |
+| v1.3.3 | Advanced Security + PII Sanitization | ✅ Shipped | PII scanner (`app/scheduler/security/pii_scanner.py`) — pattern-based detection for credentials, financial, health, infrastructure data; `scan_text()`, `redact_pii()` |
+| v1.3.x | Institutional Knowledge | ✅ Shipped | Inbox→dreaming→knowledge distillation (`app/dreaming/inbox_distillation.py`), resolved-interaction memory units |
+| **v1.4.0** | **Bonsai — Assistant Growth Architecture** | 🚧 In Progress | Growth snapshots, dimension drift, growth reports, HITL validation, presentation patterns — `app/scheduler/bonsai.py` |
 | **v2.0.0** | **Public release — dropping beta** | 🎯 Target | All quality gates passed; clean install story; stable vs experimental surface documented |
 | v2.x | Architecture evolution | 💭 Future | Message passing, containerization, multi-node, language-agnostic agents |
 
@@ -426,21 +427,21 @@ _Last updated: 2026-03-30 (v1.2.11 shipped)_
 | Release definition — documented supported path | 🟡 Medium | 🔴 High | v1.2.9 | ✅ Done | README rewritten v1.2.7; INSTALL.md with supported OS/Python/model/env-var table — done |
 | ConfigDoctor NineChapter score validation | 🟢 Low | 🟡 Medium | v1.2.11 | ✅ Done | Weighted dimension drift detection; flags manually-edited roles |
 | Hybrid memory search (BM25 + embedding) | 🟢 Low | 🔴 High | v1.2.5 | ❌ Open | Semantic-only search misses structural/domain connections for research roles |
-| BehavioralMonitor + ContainmentEngine | 🟢 Low | 🔴 High | v1.3.0 | ❌ Open | Critical for autonomous AI world; not urgent until pre-public |
-| Agent learning loop (failure→lesson→injection) | 🟢 Low | 🔴 High | v1.3.1 | ❌ Open | Agents learn from mistakes without human intervention |
-| Per-agent silo memory + cross-agent queries | 🟢 Low | 🔴 High | v1.3.1 | ❌ Open | Each agent accumulates its own knowledge; agents can reference each other |
-| PII classification + sanitization | 🟢 Low | 🟡 Medium | post-v2.0.0 | ❌ Open | Defense-in-depth; data boundary enforcement covers core promise |
+| BehavioralMonitor + ContainmentEngine | 🟢 Low | 🔴 High | v1.3.0 | ✅ Done | Three-tier response: LOW (silent ntfy), MEDIUM (sandbox honeypot), HIGH (hard halt). Per-role baselines with EMA. |
+| Agent learning loop (failure→lesson→injection) | 🟢 Low | 🔴 High | v1.3.1 | ✅ Done | `_write_task_lesson` on failure, `_inject_lessons` at task start, failure taxonomy classification |
+| Per-agent silo memory + cross-agent queries | 🟢 Low | 🔴 High | v1.3.1 | ✅ Done | `lessons/`, `task_history/` directories per role; `search_memory(role_id=...)` for cross-agent queries |
+| PII classification + sanitization | 🟢 Low | 🟡 Medium | v1.3.3 | ✅ Done | `app/scheduler/security/pii_scanner.py` — pattern-based detection for credentials, financial, health, infrastructure. `scan_text()`, `redact_pii()`. |
 | HttpAgentExecutor / external agent integrations | 🟢 Low | 🟡 Medium | post-v2.0.0 | ❌ Open | Compelling, not foundational |
-| Agent type classification + workflow templates | 🟢 Low | 🟡 Medium | v1.3.1 | ❌ Open | Feature expansion, not safety-critical |
-| One-on-one role channel + OpenAI-compat proxy | 🟢 Low | 🟡 Medium | v1.3.1 | ❌ Open | UX polish, post-v2.0.0 |
-| Inbox → Dreaming → Knowledge | 🟢 Low | 🟡 Medium | v1.3.x | ❌ Open | Institutional memory; valuable but not blocking |
+| Agent type classification + workflow templates | 🟢 Low | 🟡 Medium | v1.3.2 | ✅ Done | `agent_type` field in role JSON; `config/workflow_templates/{type}.json` auto-injected at task start |
+| One-on-one role channel + OpenAI-compat proxy | 🟢 Low | 🟡 Medium | v1.3.2 | ✅ Done | `app/dashboard/openai_proxy.py` — `/v1/models` lists roles, `/v1/chat/completions` routes to RoleChatSession |
+| Inbox → Dreaming → Knowledge | 🟢 Low | 🟡 Medium | v1.3.x | ✅ Done | `app/dreaming/inbox_distillation.py` — pairs task_waiting + task_completed events, extracts resolved_interaction records |
 | Message passing + containerization | 🟢 Low | 🟢 Low | v2.x | ❌ Open | Architecture evolution, long horizon |
 | Owner profile (`~/.memory/owner_profile.json`) | 🟡 Medium | 🔴 High | v1.2.10 | ✅ Done | Canonical human identity anchor; created on first-run; `policy_authority`, `assistant_relationships`, `communication_preferences` |
-| Owner context filtered injection | 🟡 Medium | 🔴 High | v1.2.12 | ❌ Open | Mode overlay declares which owner profile fields each role/mode can see; prompt builder assembles filtered slice; backend channel assumed safe until mechanism is designed |
-| Sensitive-domain watchdog (monitor + data watchdog roles) | 🟡 Medium | 🔴 High | v1.2.12 | ❌ Open | Two system roles proactively scan operations against `sensitive_domains` list in owner profile; blocks or flags policy violations before they reach memory or external tools |
-| agency-agents reference library integration | 🟢 Low | 🟡 Medium | v1.2.13 | ❌ Open | Vendor/clone agency-agents; markdown parser extracts persona fields; mapper pre-fills Nine Chapter wizard; "Import from library" UI path in role designer |
+| Owner context filtered injection | 🟡 Medium | 🔴 High | v1.2.12 | ✅ Done | Mode overlay declares which owner profile fields each role/mode can see; prompt builder assembles filtered slice via `build_owner_context_slice()` |
+| Sensitive-domain watchdog (monitor + data watchdog roles) | 🟡 Medium | 🔴 High | v1.2.12 | ✅ Done | SensitiveDomainChecker in policy pipeline scans tool args against `sensitive_domains` in owner profile; warn or block per role policy |
+| agency-agents reference library integration | 🟢 Low | 🟡 Medium | v1.2.13 | ✅ Done | `app/roles/agency_importer.py` — 184 personas importable; parses markdown → role JSON with NineChapter dimension pre-fills |
 | GUI operator role (browser/web UI interaction) | 🟢 Low | 🟡 Medium | v1.2.13 | ❌ Open | First role created via agency-agents bridge; focused on browser tools, web UI navigation, Portainer-style ops |
-| `assistant_relationships` auto-update via dreaming | 🟢 Low | 🟡 Medium | v1.2.14 | ❌ Open | Dreaming pipeline consolidates interaction history into owner profile `assistant_relationships`; authored values are v1 seed; long-term values grow from memory |
+| `assistant_relationships` auto-update via dreaming | 🟢 Low | 🟡 Medium | v1.2.14 | ✅ Done | Dreaming handler `mode="relationship_update"` analyzes task history and updates owner profile; weekly cron task |
 | Policy/role/relationship coupling model | 🟡 Medium | 🔴 High | v1.2.14 | ❌ Open | policy, role, and relationship definitions are interdependent; coupling model needs design before enforcement layer can be finalized |
 
 **Reading the matrix:**
@@ -461,9 +462,9 @@ v1.3.0 releases when:
 1. **Trust layer is real** (v1.2.4): audit trail, §21 enforcement, inbox distillation
 2. **Computer-use is complete** (v1.2.5): browser + terminal + external agents
 3. **Safety foundation holds** (v1.2.6): PII classification, data boundary enforcement
-4. **Owner identity layer is active** (v1.2.12): filtered context injection, sensitive-domain watchdog
-5. **Role creation enriched** (v1.2.13): agency-agents import bridge live, GUI operator role shipped
-6. **Relationship coupling model designed** (v1.2.14): policy/role/relationship coupling model
+4. **Owner identity layer is active** (v1.2.12): ✅ filtered context injection, sensitive-domain watchdog
+5. **Role creation enriched** (v1.2.13): ✅ agency-agents import bridge live (GUI operator role still pending)
+6. **Relationship coupling model designed** (v1.2.14): ✅ assistant_relationships auto-update via dreaming; policy/role coupling model still needs design
 
 The graduation promise: a user can run MoJoAssistant with agents touching real
 data, point to the audit log, and say "here is exactly what left my device and

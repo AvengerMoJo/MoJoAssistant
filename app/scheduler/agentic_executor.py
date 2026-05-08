@@ -9,13 +9,18 @@ using resources from the ResourceManager.
 import asyncio
 import inspect
 import json
+import logging
 import os
 import re
 import time
+from contextvars import ContextVar
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from app.scheduler.models import Task, TaskResult
 from app.scheduler.resource_pool import LLMResource, ResourceManager, ResourceTier
@@ -29,6 +34,25 @@ from app.roles.owner_context import load_owner_profile, infer_context_tier, buil
 from app.scheduler.capability_resolver import CapabilityResolver
 from app.scheduler.role_template_engine import RoleTemplateEngine
 from app.scheduler.capability_gap_checker import CapabilityGapChecker
+from app.scheduler.intent_class_preflight import (
+    evaluate_intent_class_preflight,
+    provider_health_from_tools,
+)
+
+# Per-execution isolated state.  Each scheduler task runs as a separate
+# asyncio.Task (via asyncio.create_task), so ContextVars give automatic
+# per-task isolation with no locks and no dict lookups.
+_cv_waiting_q:    ContextVar = ContextVar("exec_waiting_q",    default=None)
+_cv_waiting_c:    ContextVar = ContextVar("exec_waiting_c",    default=None)
+_cv_gate_pending: ContextVar = ContextVar("exec_gate_pending", default=False)
+_cv_tool_calls:   ContextVar = ContextVar("exec_tool_calls",   default=0)
+_cv_consec_notool:ContextVar = ContextVar("exec_consec_notool",default=0)
+_cv_budget_ext:   ContextVar = ContextVar("exec_budget_ext",   default=0)
+_cv_exhausts_ask: ContextVar = ContextVar("exec_exhausts_ask", default=False)
+_cv_requires_tool:ContextVar = ContextVar("exec_requires_tool",default=False)
+_cv_task_id:      ContextVar = ContextVar("exec_task_id",      default=None)
+_cv_role_id:      ContextVar = ContextVar("exec_role_id",      default=None)
+_cv_enabled_tools: ContextVar = ContextVar("exec_enabled_tools", default=None)
 
 # Tools whose output commonly bloats context (bash stdout, file reads).
 # Results longer than this cap are truncated before being added to messages.
@@ -481,6 +505,12 @@ class AgenticExecutor:
         self._openrouter_model_cache_ttl_seconds = 600
         self._role_id: Optional[str] = None
 
+        # Behavioral security layer (v1.3.0)
+        from app.scheduler.security.behavioral_monitor import BehavioralMonitor
+        from app.scheduler.security.containment_engine import ContainmentEngine
+        self._behavioral_monitor = BehavioralMonitor()
+        self._containment_engine = ContainmentEngine()
+
     def _log(self, message: str, level: str = "info"):
         if self._logger:
             getattr(self._logger, level)(f"[AgenticExecutor] {message}")
@@ -512,17 +542,18 @@ class AgenticExecutor:
             resume_from_task_id (str, optional): Load previous session and continue.
             reply_to_question (str, optional): User reply injected after WAITING_FOR_INPUT resume.
         """
-        # Per-execution state for ask_user
-        self._waiting_for_input_question: Optional[str] = None
-        self._waiting_for_input_choices: Optional[list] = None
-        self._gate_escalation_pending: bool = False  # True when pause was from SecurityGate
-        self._tool_calls_made: int = 0          # non-ask_user tool calls this execution
-        self._consecutive_no_tool: int = 0      # iterations with tools available but unused
-        self._budget_extension_granted: int = 0  # extra iterations granted via BUDGET_EXTENSION_REQUEST
-        self._exhausts_tools_before_asking: bool = False
-        self._requires_tool_use: bool = False   # reject final answer if no tools called yet
-        # Task id stored so _execute_single_tool can inject per-task tmux socket
-        self._current_task_id: Optional[str] = task.id
+        # Per-execution state — stored in ContextVars so concurrent asyncio tasks
+        # each get their own isolated copy (no cross-task contamination).
+        _cv_waiting_q.set(None)
+        _cv_waiting_c.set(None)
+        _cv_gate_pending.set(False)
+        _cv_tool_calls.set(0)
+        _cv_consec_notool.set(0)
+        _cv_budget_ext.set(0)
+        _cv_exhausts_ask.set(False)
+        _cv_requires_tool.set(False)
+        _cv_task_id.set(task.id)
+        self._tool_calls_made = 0
         # Propagate task context to registry for sub-agent dispatch linkage + role scoping
         _task_role_id = (task.config or {}).get("role_id") if task.config else None
         self._tool_registry.set_task_context(task.id, task.dispatch_depth, role_id=_task_role_id)
@@ -554,8 +585,10 @@ class AgenticExecutor:
 
         # Load role personality if role_id is specified
         role_model_preference = None
+        role_preferred_resource_id = None
         role_id = config.get("role_id")
         self._role_id = role_id  # make role_id available to tool dispatch
+        _cv_role_id.set(role_id)
         from app.scheduler.policy_monitor import PolicyMonitor
         self._policy_monitor = PolicyMonitor(role_id=None, policy=None)
         if not role_id:
@@ -575,18 +608,43 @@ class AgenticExecutor:
                     self._policy_monitor = PolicyMonitor.from_role(role_id, role, task_id=task.id)
                     self._log(f"Loaded role: {role.get('name')} (id={role_id})")
                     behavior_rules = role.get("behavior_rules", {})
-                    self._exhausts_tools_before_asking = behavior_rules.get(
+                    _cv_exhausts_ask.set(behavior_rules.get(
                         "exhausts_tools_before_asking", False
-                    )
-                    self._requires_tool_use = behavior_rules.get(
+                    ))
+                    _cv_requires_tool.set(behavior_rules.get(
                         "requires_tool_use", False
-                    )
+                    ))
                     # Pull expanded data_boundary from monitor (local_only expansion applied)
                     self._data_boundary = self._policy_monitor.data_boundary
                 else:
-                    self._log(f"Role '{role_id}' not found — continuing without role")
+                    msg = (
+                        f"Role resolution failed for role_id='{role_id}'. "
+                        "Agentic tasks require a valid role and must not fallback."
+                    )
+                    self._log(msg, level="error")
+                    return TaskResult(success=False, error_message=msg)
             except Exception as e:
-                self._log(f"Failed to load role '{role_id}': {e}")
+                msg = (
+                    f"Role load failed for role_id='{role_id}': {e}. "
+                    "Agentic tasks require a valid role and must not fallback."
+                )
+                self._log(msg, level="error")
+                return TaskResult(success=False, error_message=msg)
+
+        # Compatibility: some roles may store a resource ID in model_preference
+        # (e.g. "lmstudio_qwen35b"). Treat that as a resource pin instead of
+        # passing it as a literal model name to providers.
+        if role_model_preference:
+            try:
+                if self._rm.get_resource(role_model_preference) is not None:
+                    role_preferred_resource_id = role_model_preference
+                    role_model_preference = None
+                    self._log(
+                        f"Role model_preference resolved as resource id: "
+                        f"{role_preferred_resource_id}"
+                    )
+            except Exception:
+                pass
 
         # Setup-time ceiling: validate available_tools against role policy
         available_tools = config.get("available_tools", [])
@@ -627,13 +685,37 @@ class AgenticExecutor:
         role_overlay = (role.get("mode_overlays") or {}).get(
             InteractionMode.SCHEDULER_AGENTIC_TASK.value
         ) if role else None
-        mode_overlay = role_overlay if role_overlay else mode_contract.prompt_overlay
+        mode_overlay = self._compose_mode_overlay(
+            mode_contract.prompt_overlay,
+            role_overlay,
+        )
 
         # Resolve tool names: system defaults + role capabilities + runtime override.
         enabled_tool_names = self._capability_resolver.resolve(
             role, config.get("available_tools"), self._tool_registry
         )
         self._enabled_tool_names = enabled_tool_names
+        _cv_enabled_tools.set(enabled_tool_names)
+
+        # Intent-class preflight (provider-agnostic contract gate).
+        # If required intent classes are declared for this task, at least one
+        # healthy provider must exist per class before execution can start.
+        required_intent_classes = config.get("required_intent_classes") or []
+        if required_intent_classes:
+            provider_health = provider_health_from_tools(enabled_tool_names)
+            preflight = evaluate_intent_class_preflight(required_intent_classes, provider_health)
+            if not preflight.ok:
+                report = preflight.to_dict()
+                msg = (
+                    "Intent-class preflight failed: "
+                    + "; ".join(report.get("remediation") or [])
+                )
+                self._log(msg, level="error")
+                return TaskResult(
+                    success=False,
+                    error_message=msg,
+                    metrics={"intent_preflight": report},
+                )
 
         from datetime import datetime, timezone
         _now = datetime.now(timezone.utc).astimezone()
@@ -643,16 +725,28 @@ class AgenticExecutor:
         )
 
         character_block = self._role_template_engine.build(role) if role else ""
+
+        # Load workflow template based on agent_type
+        workflow_template_block = ""
+        if role:
+            agent_type = role.get("agent_type")
+            if agent_type:
+                template = self._load_workflow_template(agent_type)
+                if template:
+                    workflow_template_block = self._build_workflow_template_prompt(template)
+                    self._log(f"Loaded workflow template for agent_type={agent_type}")
+
         if character_block:
             system_prompt = (
                 mode_overlay
                 + runtime_context
                 + character_block
+                + workflow_template_block
                 + "\n\n---\n\n"
                 + workflow_prompt
             )
         else:
-            system_prompt = mode_overlay + runtime_context + workflow_prompt
+            system_prompt = mode_overlay + runtime_context + workflow_template_block + workflow_prompt
 
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get(
@@ -678,7 +772,15 @@ class AgenticExecutor:
         if _owner_profile:
             _context_tier = infer_context_tier(tier_preference)
             _owner_fields = role.get("owner_context_fields") if role else None
-            _owner_slice = build_owner_context_slice(_owner_profile, _context_tier, _owner_fields)
+            try:
+                _owner_slice = build_owner_context_slice(_owner_profile, _context_tier, _owner_fields)
+            except TypeError as e:
+                msg = (
+                    f"Owner context build failed for task {task.id}: {e}. "
+                    "Runtime must not fallback to legacy owner_context call signature."
+                )
+                self._log(msg, level="error")
+                return TaskResult(success=False, error_message=msg)
             if _owner_slice:
                 system_prompt = system_prompt + _owner_slice
                 self._log(f"Owner context injected (tier={_context_tier}, fields={_owner_fields or 'all'})")
@@ -692,8 +794,12 @@ class AgenticExecutor:
                 if count:
                     self._log(f"Registered {count} tools from external MCP servers")
             except BaseException as e:
-                self._log(f"External MCP discovery failed (continuing): {e}", level="warning")
-                self._mcp_tools_discovered = True  # don't retry on every task
+                msg = (
+                    f"External MCP discovery failed for task {task.id}: {e}. "
+                    "Agentic runtime must not continue after discovery failure."
+                )
+                self._log(msg, level="error")
+                return TaskResult(success=False, error_message=msg)
 
         # Tool names already resolved above (before capability_summary build).
         # self._enabled_tool_names is set; nothing to re-resolve here.
@@ -716,13 +822,14 @@ class AgenticExecutor:
             for w in gap_result.warnings:
                 self._log(f"CapabilityGapChecker warning: {w}", "warning")
             if gap_result.has_blockers:
-                self._log(
-                    f"CapabilityGapChecker BLOCKER for task {task.id}: {gap_result.blockers}"
+                blocker_msg = (
+                    f"CapabilityGapChecker BLOCKER for task {task.id}: {gap_result.blockers}. "
+                    "Execution halted. Add required capabilities/tools and retry."
                 )
+                self._log(blocker_msg, "error")
                 return TaskResult(
                     success=False,
-                    waiting_for_input=gap_result.ask_user_question(),
-                    waiting_for_input_choices=["add capabilities", "proceed anyway"],
+                    error_message=blocker_msg,
                 )
 
         # --- Resume support ---
@@ -739,16 +846,27 @@ class AgenticExecutor:
                 task.id,
                 budget=int(task_danger_budget) if task_danger_budget else None,
             )
+        elif resume_from and not config.get("reply_to_question"):
+            # Resume from failed task (not HITL reply) — reset gate with extended budget
+            task_danger_budget = config.get("danger_budget")
+            self._gate.reset_task(
+                task.id,
+                budget=int(task_danger_budget) if task_danger_budget else None,
+            )
+            self._log(f"Gate reset on failed resume for task {task.id}")
+
         if resume_from:
             messages, start_iteration = self._load_resume_messages(
                 resume_from, system_prompt
             )
             if messages is None:
-                return TaskResult(
-                    success=False,
-                    error_message=f"Cannot resume: session '{resume_from}' not found",
+                msg = (
+                    f"Resume session '{resume_from}' not found for task {task.id}. "
+                    "Runtime must not fallback to fresh start for explicit resume requests."
                 )
-            if reply_to_question:
+                self._log(msg, "error")
+                return TaskResult(success=False, error_message=msg)
+            if messages is not None and reply_to_question:
                 # If the pause was a SecurityGate budget escalation and the user approved,
                 # grant a budget extension so the gate doesn't immediately re-fire.
                 # Detection uses task.pending_question (persisted in the scheduler DB)
@@ -777,7 +895,7 @@ class AgenticExecutor:
                     f"User's reply: {reply_to_question}",
                     iteration=start_iteration,
                 )
-            else:
+            elif messages is not None:
                 # Normal resume after timeout/failure
                 messages.append(
                     {
@@ -789,7 +907,7 @@ class AgenticExecutor:
                         ),
                     }
                 )
-        else:
+        if not resume_from:
             start_iteration = 0
             # Build initial messages
             messages: List[Dict[str, str]] = [
@@ -800,7 +918,12 @@ class AgenticExecutor:
             if not resume_from:
                 orient_block = await self._orient_from_memory(goal, role_id)
 
-            # Build first user message with goal + optional context + orientation
+            # LEARN: inject relevant lessons from role's private lesson store
+            lessons_block = ""
+            if not resume_from and role_id:
+                lessons_block = await self._inject_lessons(goal, role_id)
+
+            # Build first user message with goal + optional context + orientation + lessons
             user_content = f"Goal: {goal}"
             context = config.get("context")
             if context:
@@ -809,6 +932,8 @@ class AgenticExecutor:
                 )
             if orient_block:
                 user_content += orient_block
+            if lessons_block:
+                user_content += lessons_block
             messages.append({"role": "user", "content": user_content})
 
         # --- Create session ---
@@ -836,15 +961,10 @@ class AgenticExecutor:
         iteration_log: List[Dict[str, Any]] = []
         start_time = time.time()
         final_answer: Optional[str] = None
-        auto_extracted: bool = False  # provenance flag for fallback completion
         _context_trim_count: int = 0
         _last_resource_id: Optional[str] = None
         _last_used_model: Optional[str] = None
         _failed_resource_ids: set = set()  # skip recently-failed resources within this task
-
-        # Tracked across iterations for fallback completion recovery
-        _last_response_text: str = ""
-        _last_turn_had_tool_calls: bool = False
 
         self._log(
             f"Starting agentic loop for task {task.id} (max {max_iterations} iterations)"
@@ -854,13 +974,14 @@ class AgenticExecutor:
         while True:
             iteration += 1
             # Apply any budget extension granted by BUDGET_EXTENSION_REQUEST ask_user calls
-            if self._budget_extension_granted > 0:
-                max_iterations += self._budget_extension_granted
+            if _cv_budget_ext.get() > 0:
+                _ext = _cv_budget_ext.get()
+                max_iterations += _ext
                 self._log(
-                    f"Task {task.id}: budget extended +{self._budget_extension_granted} "
+                    f"Task {task.id}: budget extended +{_ext} "
                     f"iterations (new max: {max_iterations})"
                 )
-                self._budget_extension_granted = 0
+                _cv_budget_ext.set(0)
             if iteration > max_iterations:
                 break
             abs_iteration = start_iteration + iteration
@@ -883,45 +1004,55 @@ class AgenticExecutor:
                 config=config,
                 iteration_log=iteration_log,
             )
-            pinned_resource_id = config.get("pinned_resource")
+            pinned_resource_id = config.get("pinned_resource") or role_preferred_resource_id
             if pinned_resource_id:
                 resource = self._rm.acquire_by_id(pinned_resource_id)
                 if resource is None:
-                    self._log(f"Pinned resource '{pinned_resource_id}' unavailable, falling back to tier selection")
-                    resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
+                    msg = (
+                        f"Pinned resource '{pinned_resource_id}' unavailable for task {task.id}. "
+                        "Runtime must not fallback to alternate resource selection."
+                    )
+                    self._log(msg, "error")
+                    return TaskResult(success=False, error_message=msg)
             elif role_resource_requirements:
                 resource = self._rm.acquire_by_requirements(role_resource_requirements, exclude_ids=_failed_resource_ids)
                 if resource is None:
-                    # Fall back to tier-only acquire if requirements can't be fully satisfied
-                    resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
+                    msg = (
+                        f"Resource requirements not satisfiable for task {task.id}: "
+                        f"{role_resource_requirements}. Runtime must not fallback to tier-only acquire."
+                    )
+                    self._log(msg, "error")
+                    return TaskResult(success=False, error_message=msg)
             else:
                 resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
-            if resource is None and _failed_resource_ids:
-                # All preferred resources failed — retry without exclusion list (last resort)
-                self._log(
-                    f"All non-failed resources exhausted, retrying without exclusion (iteration {iteration})",
-                    "warning",
-                )
-                resource = self._rm.acquire(tier_preference=iter_tiers)
             if resource is None:
-                self._log(f"No resource available, waiting 30s (iteration {iteration})")
-                # Wait and retry once
-                import asyncio
-
-                await asyncio.sleep(30)
-                resource = self._rm.acquire(tier_preference=iter_tiers)
-                if resource is None:
-                    self._log("Still no resource available, aborting")
-                    iteration_log.append(
-                        {
-                            "iteration": iteration,
-                            "status": "no_resource",
-                            "tier_preference": [t.value for t in iter_tiers],
-                            "selection_reason": selection_reason,
-                            "elapsed_s": round(time.time() - start_time, 1),
-                        }
-                    )
-                    break
+                msg = (
+                    f"No resource available for task {task.id} at iteration {iteration}. "
+                    "Runtime must fail explicitly and must not retry fallback paths."
+                )
+                self._log(msg, "error")
+                iteration_log.append(
+                    {
+                        "iteration": iteration,
+                        "status": "no_resource",
+                        "tier_preference": [t.value for t in iter_tiers],
+                        "selection_reason": selection_reason,
+                        "elapsed_s": round(time.time() - start_time, 1),
+                    }
+                )
+                # LEARN: write lesson on resource exhaustion
+                if role_id:
+                    try:
+                        await self._write_task_lesson(
+                            task_id=task.id,
+                            role_id=role_id,
+                            goal=goal,
+                            error_message=msg,
+                            iteration_log=iteration_log,
+                        )
+                    except Exception:
+                        pass
+                return TaskResult(success=False, error_message=msg, metrics={"iteration_log": iteration_log})
 
             # Data boundary: enforce allowed_tiers constraint from role
             allowed_tiers = self._data_boundary.get("allowed_tiers")
@@ -963,7 +1094,12 @@ class AgenticExecutor:
                 )
 
             # Call LLM
-            effective_model = role_model_preference or resource.model
+            # Only apply role_model_preference to local resources — applying a
+            # local model name (e.g. "qwen/qwen3.5-35b-a3b") to a cloud API
+            # provider (Gemini, Anthropic, OpenRouter) causes a guaranteed HTTP
+            # error since those providers don't recognise the model ID.
+            _model_override = role_model_preference if resource.type == "local" else None
+            effective_model = _model_override or resource.model
             self._log(
                 f"Iteration {iteration}: calling {effective_model} via {resource.id} "
                 f"(~{_estimate_tokens(messages)}t input)"
@@ -972,7 +1108,7 @@ class AgenticExecutor:
             try:
                 response = await self._call_llm(
                     resource, messages, tools=tool_defs or None,
-                    model_override=role_model_preference,
+                    model_override=_model_override,
                 )
                 self._rm.record_usage(resource.id, success=True)
                 # Audit trail — log every non-free external boundary crossing
@@ -1014,9 +1150,7 @@ class AgenticExecutor:
             used_model = response.get("_selected_model", resource.model)
             _last_resource_id = resource.id
             _last_used_model = used_model
-            # Thinking models (e.g. Qwen3) return reasoning in reasoning_content
-            # with content empty. Fall back so the executor can see the response.
-            raw_content = message.get("content", "") or message.get("reasoning_content", "") or ""
+            raw_content = message.get("content", "") or ""
             # Extract <think>...</think> blocks before stripping — preserved as
             # metadata on the session message so the dreaming pipeline and debugger
             # can use the chain-of-thought without it polluting the visible response.
@@ -1024,9 +1158,6 @@ class AgenticExecutor:
             _reasoning = "\n---\n".join(b.strip() for b in _think_blocks if b.strip()) or None
             # Strip think blocks from the visible response the executor acts on
             response_text = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
-            # Also accept reasoning_content as a separate field (LMStudio --jinja mode)
-            if not _reasoning and message.get("reasoning_content"):
-                _reasoning = message["reasoning_content"].strip() or None
             tool_calls = message.get("tool_calls")
 
             # ----------------------------------------------------------------
@@ -1079,13 +1210,9 @@ class AgenticExecutor:
                         r"<tool_call>.*?</tool_call>", "", response_text, flags=re.DOTALL
                     ).strip()
 
-            # Track last substantive assistant turn for fallback completion recovery
-            _last_response_text = response_text
-            _last_turn_had_tool_calls = bool(tool_calls)
-
             # Handle tool calls if present
             if tool_calls:
-                self._consecutive_no_tool = 0  # reset drift counter on actual tool use
+                _cv_consec_notool.set(0)  # reset drift counter on actual tool use
                 # Append assistant message with tool calls
                 messages.append(message)
                 self._record(
@@ -1099,7 +1226,7 @@ class AgenticExecutor:
                 )
 
                 tool_results = await self._execute_tool_calls(tool_calls)
-                waiting = self._waiting_for_input_question
+                waiting = _cv_waiting_q.get()
                 for tc, result_content in zip(tool_calls, tool_results):
                     messages.append(
                         {
@@ -1157,7 +1284,7 @@ class AgenticExecutor:
             )
 
             # Detect plain-text BUDGET_EXTENSION_REQUEST (agent wrote it as text, not a tool call)
-            if _BUDGET_EXTENSION_PREFIX in response_text and self._budget_extension_granted == 0:
+            if _BUDGET_EXTENSION_PREFIX in response_text and _cv_budget_ext.get() == 0:
                 import re as _re
                 match = _re.search(r"Need\s+(\d+)\s+more", response_text, _re.IGNORECASE)
                 grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
@@ -1180,8 +1307,8 @@ class AgenticExecutor:
             # inject a targeted forcing message so the next iteration acts.
             if (
                 candidate_final_answer is not None
-                and self._requires_tool_use
-                and self._tool_calls_made == 0
+                and _cv_requires_tool.get()
+                and _cv_tool_calls.get() == 0
             ):
                 forcing_msg = (
                     "Your plan is noted but you have not called any tools yet. "
@@ -1238,8 +1365,8 @@ class AgenticExecutor:
                 # Bug #3: clear any pending HITL question (e.g. SecurityGate fired on a
                 # prior iteration but the model still produced a final answer this turn).
                 # The task is done — HITL should not override completion.
-                self._waiting_for_input_question = None
-                self._waiting_for_input_choices = None
+                _cv_waiting_q.set(None)
+                _cv_waiting_c.set(None)
                 self._log(f"Task {task.id}: got final answer at iteration {iteration}")
                 self._session_storage.update_status(
                     task.id,
@@ -1254,7 +1381,6 @@ class AgenticExecutor:
                         final_answer=final_answer,
                         iteration_log=iteration_log,
                         duration_seconds=round(time.time() - start_time, 1),
-                        auto_extracted=False,
                         resource_id=_last_resource_id,
                         model=_last_used_model,
                     )
@@ -1273,20 +1399,20 @@ class AgenticExecutor:
             # After 2 such iterations inject a brief forcing nudge so the model
             # doesn't keep drifting in prose land when it should be acting.
             if tool_defs:
-                self._consecutive_no_tool += 1
+                _cv_consec_notool.set(_cv_consec_notool.get() + 1)
             else:
-                self._consecutive_no_tool = 0
+                _cv_consec_notool.set(0)
 
-            if tool_defs and self._consecutive_no_tool >= 2:
+            if tool_defs and _cv_consec_notool.get() >= 2:
                 available_names = [t["function"]["name"] for t in tool_defs]
                 next_msg = (
-                    f"You have responded {self._consecutive_no_tool} times without "
+                    f"You have responded {_cv_consec_notool.get()} times without "
                     "calling any tools. You have the following tools available: "
                     f"{available_names}. "
                     "Call a tool now to make progress, or provide your "
                     "<FINAL_ANSWER> if the task is complete."
                 )
-                self._consecutive_no_tool = 0  # reset after nudge
+                _cv_consec_notool.set(0)  # reset after nudge
             elif iteration >= max_iterations - 1:
                 remaining = max_iterations - iteration
                 next_msg = NEAR_LIMIT_PROMPT.format(
@@ -1300,7 +1426,7 @@ class AgenticExecutor:
         total_elapsed = round(time.time() - start_time, 1)
 
         # If the agent paused to ask the user a question, return early
-        if self._waiting_for_input_question:
+        if _cv_waiting_q.get():
             self._session_storage.update_status(
                 task.id,
                 "waiting_for_input",
@@ -1308,8 +1434,8 @@ class AgenticExecutor:
             session_file = str(self._session_storage._path(task.id))
             return TaskResult(
                 success=False,
-                waiting_for_input=self._waiting_for_input_question,
-                waiting_for_input_choices=self._waiting_for_input_choices,
+                waiting_for_input=_cv_waiting_q.get(),
+                waiting_for_input_choices=_cv_waiting_c.get(),
                 output_file=session_file,
                 metrics={
                     "iterations": len(iteration_log),
@@ -1317,43 +1443,6 @@ class AgenticExecutor:
                     "session_file": session_file,
                 },
             )
-
-        # ── Fallback completion recovery ──────────────────────────────────────
-        # If the agent finished its work but forgot to write <FINAL_ANSWER> tags,
-        # auto-extract the last response rather than sending the user a HITL question
-        # for a task that's effectively done.
-        #
-        # Conditions (all must hold):
-        #   - no final_answer found by tag parsing
-        #   - no pending waiting_for_input (model didn't ask a question)
-        #   - last turn had NO tool calls (model was writing, not acting)
-        #   - last response is substantive (length + no in-progress patterns)
-        #
-        # This is a recovery mechanism, not the primary path. A proper
-        # forced-finalization phase on the last iteration should be added later.
-        if (
-            final_answer is None
-            and not self._waiting_for_input_question
-            and not _last_turn_had_tool_calls
-        ):
-            text = _last_response_text.strip()
-            _IN_PROGRESS_PATTERNS = [
-                "let me continue", "i'll now", "i will now", "next i will",
-                "next, i", "i need more information", "i need to", "i'll need to",
-                "let me check", "let me look", "i should", "i'll start",
-                "first, i", "first i'll",
-            ]
-            _looks_complete = (
-                len(text) > 150
-                and not any(p in text.lower() for p in _IN_PROGRESS_PATTERNS)
-            )
-            if _looks_complete:
-                final_answer = text
-                auto_extracted = True
-                self._log(
-                    f"Task {task.id}: fallback completion recovery — "
-                    "auto-extracted last response (no FINAL_ANSWER tags found)"
-                )
 
         success = final_answer is not None
 
@@ -1367,24 +1456,23 @@ class AgenticExecutor:
                     final_answer=final_answer,
                 )
             else:
-                # Instead of hard-failing, surface a HITL question so the user
-                # can grant more iterations and resume the session.
                 _actual_iters = len(iteration_log)
-                self._waiting_for_input_question = (
-                    f"Iteration budget exhausted ({_actual_iters} of {max_iterations} iterations used) "
-                    "without a final answer. Reply 'yes' to grant more iterations and "
-                    "resume, or 'no' to mark the task as failed."
+                self._session_storage.update_status(
+                    task.id,
+                    "failed",
+                    error_message=(
+                        f"Iteration budget exhausted ({_actual_iters}/{max_iterations}) "
+                        "without FINAL_ANSWER."
+                    ),
                 )
-                self._waiting_for_input_choices = ["yes", "no"]
-                self._session_storage.update_status(task.id, "waiting_for_input")
 
         session_file = str(self._session_storage._path(task.id))
 
-        if self._waiting_for_input_question:
+        if _cv_waiting_q.get():
             return TaskResult(
                 success=False,
-                waiting_for_input=self._waiting_for_input_question,
-                waiting_for_input_choices=self._waiting_for_input_choices,
+                waiting_for_input=_cv_waiting_q.get(),
+                waiting_for_input_choices=_cv_waiting_c.get(),
                 output_file=session_file,
                 metrics={
                     "iterations": len(iteration_log),
@@ -1393,23 +1481,21 @@ class AgenticExecutor:
                     "session_file": session_file,
                 },
             )
-
-        # Write completion artifact for auto-extracted completions too.
-        # The clean FINAL_ANSWER path writes inside the loop (line above the break).
-        # Auto-extracted completions fall through the loop without hitting that path.
-        if success and auto_extracted:
-            if get_mode_contract(InteractionMode.SCHEDULER_AGENTIC_TASK).stores_completion_artifact:
-                self._store_completion_artifact(
-                    task=task,
-                    role_id=config.get("role_id"),
-                    goal=goal,
-                    final_answer=final_answer,
-                    iteration_log=iteration_log,
-                    duration_seconds=total_elapsed,
-                    auto_extracted=True,
-                    resource_id=_last_resource_id,
-                    model=_last_used_model,
-                )
+        if not success:
+            return TaskResult(
+                success=False,
+                error_message=(
+                    f"Iteration budget exhausted ({len(iteration_log)}/{max_iterations}) "
+                    "without FINAL_ANSWER."
+                ),
+                output_file=session_file,
+                metrics={
+                    "iterations": len(iteration_log),
+                    "iteration_log": iteration_log,
+                    "duration_seconds": total_elapsed,
+                    "session_file": session_file,
+                },
+            )
 
         metrics: Dict[str, Any] = {
             "iterations": len(iteration_log),
@@ -1421,9 +1507,6 @@ class AgenticExecutor:
             "resource_id": _last_resource_id,
             "model": _last_used_model,
         }
-        if auto_extracted:
-            metrics["completion_mode"] = "auto_extracted"
-            metrics["auto_extracted_final_answer"] = True
 
         # REFLECT: write task learnings back to memory (non-blocking, errors swallowed)
         if success and final_answer:
@@ -1433,6 +1516,60 @@ class AgenticExecutor:
                 final_answer=final_answer,
                 iteration_log=iteration_log,
             )
+
+        # LEARN: write success-path lesson (v1.3.1)
+        if success and role_id and final_answer:
+            try:
+                await self._write_success_lesson(
+                    task_id=task.id,
+                    role_id=role_id,
+                    goal=goal,
+                    iteration_log=iteration_log,
+                    final_answer=final_answer,
+                )
+            except Exception:
+                pass
+
+        # LEARN: write structured lesson on failure (v1.3.1)
+        if not success and role_id:
+            await self._write_task_lesson(
+                task_id=task.id,
+                role_id=role_id,
+                goal=goal,
+                error_message=f"Iteration budget exhausted ({len(iteration_log)}/{max_iterations}) without FINAL_ANSWER.",
+                iteration_log=iteration_log,
+                final_answer=final_answer,
+            )
+
+        # SECURITY: BehavioralMonitor session-end assessment (v1.3.0)
+        _tools_used = []
+        for entry in iteration_log:
+            for t in entry.get("tool_calls", []):
+                if t not in _tools_used:
+                    _tools_used.append(t)
+        try:
+            _role = role_id or "unknown"
+            assessment = self._behavioral_monitor.observe_session_end(
+                task_id=task.id,
+                role_id=_role,
+                tools_used=_tools_used,
+                iteration_count=len(iteration_log),
+                success=success,
+            )
+            if assessment.get("suspicion_level") != "NONE":
+                containment = await self._containment_engine.respond(
+                    task_id=task.id,
+                    role_id=_role,
+                    suspicion_level=assessment["suspicion_level"],
+                    suspicion_score=assessment["suspicion_score"],
+                    assessment=assessment,
+                )
+                metrics["behavioral_assessment"] = assessment
+                metrics["containment_action"] = containment.get("action")
+                if containment.get("action") == "halt":
+                    self._log(f"Session halted by containment: {containment.get('reason')}", "error")
+        except Exception as sec_err:
+            self._log(f"BehavioralMonitor session-end failed (non-fatal): {sec_err}", "debug")
 
         return TaskResult(
             success=True,
@@ -1448,7 +1585,6 @@ class AgenticExecutor:
         final_answer: str,
         iteration_log: Optional[List[Dict]] = None,
         duration_seconds: float = 0.0,
-        auto_extracted: bool = False,
         resource_id: Optional[str] = None,
         model: Optional[str] = None,
     ) -> None:
@@ -1459,8 +1595,7 @@ class AgenticExecutor:
         execution metrics, provenance, and a promotion block, while keeping the
         legacy `content` field for backwards-compatible readers.
 
-        In task_report_v2, `status` records execution outcome (for example
-        completed or completed_fallback) and `review_status` starts as
+        In task_report_v2, `status` records execution outcome and `review_status` starts as
         pending_review so the user can inspect and promote the report to the
         knowledge base. Called only when the mode contract has
         stores_completion_artifact=True (i.e. SCHEDULER_AGENTIC_TASK).
@@ -1485,11 +1620,7 @@ class AgenticExecutor:
             ilog = iteration_log or []
             tool_call_count = sum(1 for e in ilog if e.get("status") == "tool_use")
 
-            # Completion mode
-            if auto_extracted:
-                completion_mode = "auto_extracted_last_response"
-            else:
-                completion_mode = "model_final_answer"
+            completion_mode = "model_final_answer"
 
             # Paths
             session_file = str(self._session_storage._path(task.id))
@@ -1497,7 +1628,7 @@ class AgenticExecutor:
             now = _dt.now().isoformat()
 
             # Execution outcome status
-            exec_status = "completed_fallback" if auto_extracted else "completed"
+            exec_status = "completed"
 
             report = {
                 # ── Legacy fields (kept for backwards-compatible readers) ──
@@ -1520,7 +1651,6 @@ class AgenticExecutor:
                 "final_answer": {
                     "raw_text": final_answer,
                     "completion_mode": completion_mode,
-                    "auto_extracted": auto_extracted,
                     "validation_notes": [],
                 },
                 "artifacts": {
@@ -1920,6 +2050,227 @@ class AgenticExecutor:
         except Exception as e:
             self._log(f"Memory reflection failed (non-fatal): {e}", "warning")
 
+    # ------------------------------------------------------------------
+    # LEARN — Phase 5b: write structured lesson on failure (v1.3.1)
+    # ------------------------------------------------------------------
+
+    # Failure taxonomy — maps error patterns to lesson categories
+    _FAILURE_TAXONOMY = {
+        "missing_resource": ["not found", "unavailable", "no results", "404", "does not exist"],
+        "wrong_tool": ["not supported", "platform", "javascript", "requires browser", "fetch_url"],
+        "missing_permission": ["blocked by policy", "permission denied", "not allowed", "forbidden"],
+        "ambiguous_goal": ["unclear", "ambiguous", "what do you mean", "clarify", "specify"],
+        "external_unavailable": ["rate limit", "timeout", "service down", "503", "429", "connection"],
+        "knowledge_gap": ["don't know", "no information", "not enough context", "need more"],
+    }
+
+    def _classify_failure(self, error_message: str, iteration_log: List[Dict[str, Any]]) -> str:
+        """Classify a failure into a taxonomy category based on error message and iteration log."""
+        lower_err = (error_message or "").lower()
+        combined = lower_err
+        for entry in iteration_log:
+            for t in entry.get("tool_calls", []):
+                combined += f" {t}"
+            if entry.get("status") == "final_rejected":
+                combined += " rejected"
+
+        for category, patterns in self._FAILURE_TAXONOMY.items():
+            if any(p in combined for p in patterns):
+                return category
+        return "unknown"
+
+    async def _write_task_lesson(
+        self,
+        task_id: str,
+        role_id: str,
+        goal: str,
+        error_message: str,
+        iteration_log: List[Dict[str, Any]],
+        final_answer: Optional[str] = None,
+    ) -> None:
+        """Write a structured task_lesson record on failure or incomplete.
+
+        Stored at ~/.memory/roles/{role_id}/task_history/{task_id}.json
+        so the dreaming pass can synthesize durable agent_lesson records.
+        """
+        try:
+            from app.config.paths import get_memory_subpath
+            task_history_dir = (
+                Path(get_memory_subpath("roles")) / role_id / "task_history"
+            )
+            task_history_dir.mkdir(parents=True, exist_ok=True)
+
+            # Collect tools tried
+            tools_tried: List[str] = []
+            seen = set()
+            for entry in iteration_log:
+                for t in entry.get("tool_calls", []):
+                    if t not in seen:
+                        seen.add(t)
+                        tools_tried.append(t)
+
+            failure_type = self._classify_failure(error_message, iteration_log)
+
+            # Extract what would unblock from final_answer if present
+            what_would_unblock = ""
+            if final_answer:
+                lower = final_answer.lower()
+                for phrase in ["would need", "would require", "to unblock", "to proceed", "need to"]:
+                    idx = lower.find(phrase)
+                    if idx >= 0:
+                        # Walk backward to sentence boundary
+                        start = idx
+                        for delim in [". ", "\n", "! ", "? "]:
+                            delim_idx = final_answer.rfind(delim, max(0, idx - 200), idx)
+                            if delim_idx >= 0:
+                                start = delim_idx + len(delim)
+                                break
+
+                        # Walk forward to sentence boundary
+                        end = min(idx + 300, len(final_answer))
+                        for delim in [". ", "\n\n", "\n", "! ", "? "]:
+                            delim_idx = final_answer.find(delim, idx + len(phrase))
+                            if delim_idx >= 0 and delim_idx < end:
+                                end = delim_idx + len(delim)
+                                break
+
+                        what_would_unblock = final_answer[start:end].strip()
+                        break
+
+            lesson = {
+                "type": "task_lesson",
+                "task_id": task_id,
+                "role_id": role_id,
+                "objective": goal[:300],
+                "what_was_tried": tools_tried[:15],
+                "what_failed": (error_message or "iteration budget exhausted")[:300],
+                "failure_type": failure_type,
+                "what_would_unblock": what_would_unblock[:300],
+                "iterations_used": len(iteration_log),
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            lesson_path = task_history_dir / f"{task_id}.json"
+            lesson_path.write_text(
+                json.dumps(lesson, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            self._log(f"LEARN: wrote task_lesson for {task_id} (type={failure_type})")
+        except Exception as e:
+            self._log(f"Task lesson write failed (non-fatal): {e}", "warning")
+
+    async def _write_success_lesson(
+        self,
+        task_id: str,
+        role_id: str,
+        goal: str,
+        iteration_log: List[Dict[str, Any]],
+        final_answer: str,
+    ) -> None:
+        """Write a lightweight success record for future pattern learning.
+
+        Stored at ~/.memory/roles/{role_id}/task_history/{task_id}.json
+        so the dream pass can synthesize positive strategy patterns.
+        """
+        try:
+            from app.config.paths import get_memory_subpath
+            task_history_dir = (
+                Path(get_memory_subpath("roles")) / role_id / "task_history"
+            )
+            task_history_dir.mkdir(parents=True, exist_ok=True)
+
+            tools_tried: List[str] = []
+            seen = set()
+            for entry in iteration_log:
+                for t in entry.get("tool_calls", []):
+                    if t not in seen:
+                        seen.add(t)
+                        tools_tried.append(t)
+
+            lesson = {
+                "type": "success_lesson",
+                "task_id": task_id,
+                "role_id": role_id,
+                "objective": goal[:300],
+                "tools_used": tools_tried[:15],
+                "iterations_used": len(iteration_log),
+                "answer_excerpt": (final_answer or "").strip()[:300],
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            lesson_path = task_history_dir / f"{task_id}.json"
+            lesson_path.write_text(
+                json.dumps(lesson, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            self._log(f"LEARN: wrote success_lesson for {task_id}")
+        except Exception as e:
+            self._log(f"Success lesson write failed (non-fatal): {e}", "warning")
+
+    async def _inject_lessons(self, goal: str, role_id: Optional[str]) -> str:
+        """Query role's private lessons for relevant context at task start.
+
+        Reads from ~/.memory/roles/{role_id}/lessons/ — synthesized lesson
+        knowledge units produced by the dream pass from task_history records.
+        Returns a formatted block or "" if nothing relevant found.
+        """
+        if not role_id or not self._memory_service:
+            return ""
+        try:
+            from app.config.paths import get_memory_subpath
+            lessons_dir = Path(get_memory_subpath("roles")) / role_id / "lessons"
+            if not lessons_dir.is_dir():
+                return ""
+
+            # Read recent lessons
+            lessons = []
+            for f in sorted(lessons_dir.glob("*.json"), reverse=True)[:10]:
+                try:
+                    lessons.append(json.loads(f.read_text(encoding="utf-8")))
+                except Exception:
+                    continue
+
+            if not lessons:
+                return ""
+
+            # Simple relevance: check if goal keywords appear in lesson content
+            goal_words = set(goal.lower().split())
+            relevant = []
+            for lesson in lessons:
+                content = (lesson.get("lesson") or lesson.get("content") or "").lower()
+                pattern = (lesson.get("pattern") or "").lower()
+                combined = f"{content} {pattern}"
+                matches = sum(1 for w in goal_words if w in combined and len(w) > 3)
+                if matches >= 2:
+                    relevant.append(lesson)
+
+            if not relevant:
+                return ""
+
+            lines = []
+            for lesson in relevant[:3]:
+                pattern = lesson.get("pattern", "")
+                content = lesson.get("lesson", "")
+                confidence = lesson.get("confidence", 0.5)
+                if content:
+                    lines.append(
+                        f"[lesson:{lesson.get('role_id', role_id)}] "
+                        f"{pattern}: {content} (confidence: {confidence:.0%})"
+                    )
+
+            if not lines:
+                return ""
+
+            self._log(f"LEARN: injecting {len(lines)} lessons for role={role_id}")
+            return (
+                "\n\n## Memory notes (from past lessons)\n"
+                + "\n".join(lines)
+                + "\n"
+            )
+        except Exception as e:
+            self._log(f"Lesson injection failed (non-fatal): {e}", "warning")
+            return ""
+
     async def _execute_tool_calls(self, tool_calls: List[Dict]) -> List[str]:
         """Execute tool calls and return results as strings."""
         # Defensive dedup: some local models (e.g. Gemma 4) ignore
@@ -1999,7 +2350,9 @@ class AgenticExecutor:
         """Execute a single tool from dynamic registry or built-in tools."""
         # Enforce capabilities: reject calls to tools not in the enabled list.
         # ask_user is always permitted (HITL escape hatch injected unconditionally).
-        enabled = getattr(self, "_enabled_tool_names", None)
+        enabled = _cv_enabled_tools.get()
+        if enabled is None:
+            enabled = getattr(self, "_enabled_tool_names", None)
         if enabled is not None and name != "ask_user" and name not in enabled:
             self._log(
                 f"Tool '{name}' blocked: not in role/task capabilities list "
@@ -2018,7 +2371,7 @@ class AgenticExecutor:
 
         # SecurityGate: composes SafetyPolicy + danger budget + plan scope.
         gate_result = self._gate.check(
-            task_id=self._current_task_id or "",
+            task_id=_cv_task_id.get() or "",
             tool_name=name,
             tool_def=tool.to_dict() if tool else None,
             args=args,
@@ -2026,7 +2379,7 @@ class AgenticExecutor:
         if gate_result.decision == SecurityDecision.HARD_STOP:
             self._log(f"Tool '{name}' hard-blocked by gate: {gate_result.reason}", "warning")
             await self._emit_policy_violation(
-                task_id=self._current_task_id,
+                task_id=_cv_task_id.get(),
                 tool_name=name,
                 layer="security_gate",
                 checker=gate_result.rule_source or "safety",
@@ -2037,12 +2390,35 @@ class AgenticExecutor:
             return {"error": f"Security gate blocked: {gate_result.reason}"}
         if gate_result.decision == SecurityDecision.STOP_ASK_USER:
             self._log(f"Gate escalating '{name}' to ask_user: {gate_result.reason}", "warning")
-            self._waiting_for_input_question = gate_result.ask_question or gate_result.reason
-            self._waiting_for_input_choices = ["continue", "cancel"]
-            self._gate_escalation_pending = True
+            _cv_waiting_q.set(gate_result.ask_question or gate_result.reason)
+            _cv_waiting_c.set(["continue", "cancel"])
+            _cv_gate_pending.set(True)
             return {"success": True, "message": f"Security gate paused: {gate_result.reason}"}
         if gate_result.decision == SecurityDecision.WARN_ALLOW:
             self._log(gate_result.warn_message or gate_result.reason, "warning")
+
+        # BehavioralMonitor: observe every tool call (non-blocking)
+        try:
+            _role = _cv_role_id.get() or self._role_id or "unknown"
+            _task = _cv_task_id.get() or ""
+            self._behavioral_monitor.observe_tool_call(_task, _role, name, args)
+        except Exception as bm_err:
+            self._log(f"BehavioralMonitor observe failed (non-fatal): {bm_err}", "debug")
+
+        # PII Scanner: scan tool args for sensitive data (v1.3.3)
+        try:
+            from app.scheduler.security.pii_scanner import scan_tool_args
+            pii_result = scan_tool_args(name, args)
+            if pii_result.has_pii:
+                high_conf = [m for m in pii_result.matches if m.confidence >= 0.7]
+                if high_conf:
+                    cats = sorted(set(m.category for m in high_conf))
+                    self._log(
+                        f"PII detected in {name} args: {cats} ({len(high_conf)} matches)",
+                        "warning",
+                    )
+        except Exception as pii_err:
+            self._log(f"PII scan failed (non-fatal): {pii_err}", "debug")
 
         # Check role policy (allowed_tools ceiling, denied_tools, per-task limits)
         role_decision = self._policy_monitor.check(name, args)
@@ -2055,7 +2431,7 @@ class AgenticExecutor:
                 else "error"
             )
             await self._emit_policy_violation(
-                task_id=self._current_task_id,
+                task_id=_cv_task_id.get(),
                 tool_name=name,
                 layer="role",
                 checker=role_decision.checker,
@@ -2071,11 +2447,20 @@ class AgenticExecutor:
 
         # Handle ask_user: pause execution and wait for user reply
         if name == "ask_user":
+            # HITL is reserved for explicit security-gate escalations.
+            # Execution blockers should fail explicitly instead of stalling.
+            if not _cv_gate_pending.get():
+                return {
+                    "error": (
+                        "ask_user is blocked for normal execution flow. "
+                        "Only security-gate escalations may pause for user input."
+                    )
+                }
             # Enforce behavior_rules.exhausts_tools_before_asking — agent must
             # attempt at least one other tool before escalating to the user.
-            if self._exhausts_tools_before_asking and self._tool_calls_made == 0:
+            if _cv_exhausts_ask.get() and _cv_tool_calls.get() == 0:
                 available = [
-                    t for t in getattr(self, "_enabled_tool_names", [])
+                    t for t in (_cv_enabled_tools.get() or getattr(self, "_enabled_tool_names", []))
                     if t != "ask_user"
                 ]
                 hint = f" Try one of: {available}." if available else ""
@@ -2095,9 +2480,9 @@ class AgenticExecutor:
                 import re as _re
                 match = _re.search(r"Need\s+(\d+)\s+more", question, _re.IGNORECASE)
                 grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
-                self._budget_extension_granted += grant
+                _cv_budget_ext.set(_cv_budget_ext.get() + grant)
                 self._log(
-                    f"Task {self._current_task_id}: budget extension granted (+{grant} iterations). "
+                    f"Task {_cv_task_id.get()}: budget extension granted (+{grant} iterations). "
                     f"Message: {question[:120]}"
                 )
                 return {
@@ -2105,15 +2490,18 @@ class AgenticExecutor:
                     "message": f"Budget extended by {grant} iterations. Continue your work.",
                 }
 
-            self._waiting_for_input_question = question
-            self._waiting_for_input_choices = choices if isinstance(choices, list) else None
+            _cv_waiting_q.set(question)
+            _cv_waiting_c.set(choices if isinstance(choices, list) else None)
             result_msg = f"Question submitted to user: {question}"
             if choices:
                 result_msg += f" (choices: {choices})"
             return {"success": True, "message": result_msg}
 
-        # Count non-ask_user tool calls for behavior_rules enforcement
-        self._tool_calls_made += 1
+        # Count non-ask_user tool calls for behavior_rules enforcement.
+        # Mirror into instance state too so validation paths and unit tests can
+        # use a deterministic counter even outside a live ContextVar loop.
+        _cv_tool_calls.set(_cv_tool_calls.get() + 1)
+        self._tool_calls_made = getattr(self, "_tool_calls_made", 0) + 1
 
         # tmux tools may accept a per-call "socket" override, but do not force
         # one here. The tmux MCP backend may already be configured with a fixed
@@ -2125,10 +2513,12 @@ class AgenticExecutor:
             result = await self._tool_registry.execute_tool(name, args)
             # Registry signals "ask the user" on behalf of the tool (e.g. non-existent role dispatch)
             if result.get("__ask_user__"):
-                return await self._execute_tool(
-                    "ask_user",
-                    {"question": result["question"], "choices": result.get("choices")},
-                )
+                return {
+                    "error": (
+                        "Tool requested user input during execution, which is disallowed. "
+                        f"Reason: {result.get('question', 'unspecified')}"
+                    )
+                }
             if result.get("success"):
                 self._policy.track_operation(
                     operation="execute", tool_name=name, success=True
@@ -2145,8 +2535,9 @@ class AgenticExecutor:
         # Fallback to built-in tools
         if name == "memory_search" and self._memory_service:
             query = args.get("query", "")
+            _role_id = _cv_role_id.get() or self._role_id
             results = await self._memory_service._search_knowledge_base_async(
-                query, max_items=5, role_id=self._role_id
+                query, max_items=5, role_id=_role_id
             )
             return {"query": query, "results": results, "count": len(results)}
 
@@ -2301,7 +2692,7 @@ class AgenticExecutor:
                 "notify_user": True,
                 "title": f"Policy blocked: {tool_name}",
                 "task_id": task_id,
-                "role_id": self._role_id,
+                "role_id": _cv_role_id.get() or self._role_id,
                 "layer": layer,
                 "checker": checker,
                 "tool_name": tool_name,
@@ -2546,7 +2937,7 @@ class AgenticExecutor:
         calls during this execution.
         """
         lower = final_answer.lower()
-        enabled = set(getattr(self, "_enabled_tool_names", []) or [])
+        enabled = set((_cv_enabled_tools.get() or getattr(self, "_enabled_tool_names", [])) or [])
 
         blocker_markers = [
             "tool constraints",
@@ -2566,7 +2957,12 @@ class AgenticExecutor:
             {"read_file", "list_files", "search_in_files", "task_session_read", "task_report_read"} & enabled
         )
 
-        if mentions_blocker and has_relevant_tools and self._tool_calls_made == 0:
+        tool_attempts = max(
+            int(_cv_tool_calls.get() or 0),
+            int(getattr(self, "_tool_calls_made", 0) or 0),
+        )
+
+        if mentions_blocker and has_relevant_tools and tool_attempts == 0:
             return (
                 False,
                 "final answer claims missing/unavailable file or task-session access "
@@ -2575,7 +2971,7 @@ class AgenticExecutor:
 
         # Optional task-level contract for callers that need stricter semantics.
         contract = config.get("result_contract") or {}
-        if contract.get("requires_tool_use") and self._tool_calls_made == 0:
+        if contract.get("requires_tool_use") and tool_attempts == 0:
             return False, "result_contract requires at least one successful tool attempt"
 
         if contract.get("requires_output_file"):
@@ -2586,6 +2982,78 @@ class AgenticExecutor:
                     return False, f"required output files not written: {missing}"
 
         return True, None
+
+    def _compose_mode_overlay(self, base_overlay: str, role_overlay: Optional[str]) -> str:
+        """
+        Keep scheduler execution constraints always-on.
+
+        Role overlays are additive guidance and must not replace the core
+        scheduler-agentic execution contract.
+        """
+        base = (base_overlay or "").strip()
+        extra = (role_overlay or "").strip()
+        if not extra:
+            return base + ("\n\n" if base else "")
+        if not base:
+            return extra + "\n\n"
+        return base + "\n\n" + extra + "\n\n"
+
+    def _load_workflow_template(self, agent_type: str) -> Optional[Dict[str, Any]]:
+        """Load workflow template for an agent type.
+
+        Two-layer lookup:
+          1. System defaults: config/workflow_templates/{type}.json
+          2. User overrides: ~/.memory/config/workflow_templates/{type}.json
+
+        User overrides take precedence if they exist.
+        """
+        from app.config.paths import get_memory_subpath
+
+        # User override layer
+        user_path = Path(get_memory_subpath("config")) / "workflow_templates" / f"{agent_type}.json"
+        if user_path.exists():
+            try:
+                return json.loads(user_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        # System default layer — use absolute path from project root
+        _PROJECT_ROOT = Path(__file__).parent.parent.parent
+        system_path = _PROJECT_ROOT / "config" / "workflow_templates" / f"{agent_type}.json"
+        if system_path.exists():
+            try:
+                return json.loads(system_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        else:
+            logger.debug(f"Workflow template not found: {system_path}")
+
+        return None
+
+    def _build_workflow_template_prompt(self, template: Dict[str, Any]) -> str:
+        """Convert a workflow template dict into a prompt block."""
+        lines = [f"\n## Workflow: {template.get('type', 'unknown')}"]
+        if template.get("description"):
+            lines.append(template["description"])
+
+        for phase in template.get("phases", []):
+            name = phase.get("name", "unknown")
+            instruction = phase.get("instruction", "")
+            tools = phase.get("tools", [])
+            lines.append(f"\n### {name.title()}")
+            lines.append(instruction)
+            if tools:
+                lines.append(f"Tools: {', '.join(tools)}")
+
+        if template.get("success_criteria"):
+            lines.append(f"\n**Success criteria:** {template['success_criteria']}")
+
+        if template.get("escalation_triggers"):
+            lines.append("\n**Escalate when:**")
+            for trigger in template["escalation_triggers"]:
+                lines.append(f"- {trigger}")
+
+        return "\n".join(lines) + "\n"
 
     def _infer_exact_text_from_goal(self, goal: str) -> Optional[str]:
         """Infer exact output requirement from goal text when user asks for exact output."""

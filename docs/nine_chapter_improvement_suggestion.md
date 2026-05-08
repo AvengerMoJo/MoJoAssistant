@@ -952,3 +952,69 @@ It first needs strict separation between:
 
 Once those contracts are made explicit and enforced, richer personas and deeper
 agency can be added without creating confusion or trust erosion.
+
+---
+
+## 17. Agentic Prompt Stability Study (2026-04-29)
+
+This section captures a concrete failure mode observed in production:
+tool-calling degraded when strong role personality text overrode or diluted
+agentic execution instructions.
+
+### Observed failure pattern
+
+- Symptom: assistant enters low-action or no-action loops, emits prose/plans,
+  and under-calls tools even when tools are available.
+- Trigger: role-level personality overlays and character-heavy prompt blocks
+  become behaviorally dominant over execution-mode instructions.
+
+### Prompt components that most affected tool-calling
+
+1. Role mode overlay replacement (highest risk)
+- In scheduler-agentic mode, a role-specific overlay could replace the base
+  execution overlay rather than extend it.
+- Effect: hard execution contract language ("autonomous scheduled task",
+  methodical tool use, lifecycle governance) was no longer guaranteed to be
+  present in the final system prompt.
+- Code path: [app/scheduler/agentic_executor.py](/home/alex/Development/Personal/MoJoAssistant/app/scheduler/agentic_executor.py)
+
+2. Identity directives that globally prioritize style
+- Example directive: "Stay in character. Your personality should come through
+  in every response."
+- Effect: some models over-prioritize voice/persona continuity and produce
+  narrative responses instead of function calls under budget pressure.
+- Code path: [app/roles/role_designer.py](/home/alex/Development/Personal/MoJoAssistant/app/roles/role_designer.py)
+
+3. Clarification/escalation phrasing without strict execution precedence
+- Behavioral phrasing like "ask one focused question" is useful, but without a
+  stronger "tools first in agentic mode" precedence it can bias toward early
+  ask_user or explanatory prose.
+- Code path: [app/scheduler/ninechapter.py](/home/alex/Development/Personal/MoJoAssistant/app/scheduler/ninechapter.py)
+
+### Guard rules adopted
+
+1. Execution overlay is non-overridable in scheduler-agentic mode
+- Base scheduler execution contract is always included.
+- Role overlay is additive only.
+
+2. Tool-attempt validation is deterministic
+- Semantic completion checks now use a stable tool-attempt counter and do not
+  rely on a single runtime variable path.
+
+3. Role personality is scoped as style, not control-plane policy
+- Persona text can influence tone and explanation style.
+- Persona text must not weaken tool-use requirements, completion contract, or
+  mode constraints.
+
+### Validation evidence
+
+- Reliability unit suite:
+  [tests/unit/test_tool_call_reliability.py](/home/alex/Development/Personal/MoJoAssistant/tests/unit/test_tool_call_reliability.py)
+  passed after guard changes.
+- Agentic smoke checks across target resources passed for:
+  `tool_calling`, `final_answer`, and `write_workflow`.
+
+### Design principle for future role work
+
+When personality and execution instructions conflict, execution-mode policy
+wins. Persona is an expression layer; mode contract is the operating law.

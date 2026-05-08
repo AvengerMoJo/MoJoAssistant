@@ -10,3 +10,6 @@
 [submodule "submodules/HITLOrchestrator"]
 	path = submodules/HITLOrchestrator
 	url = https://github.com/AvengerMoJo/HITLOrchestrator.git
+[submodule "submodules/mojo-voice"]
+	path = submodules/mojo-voice
+	url = git@github.com:AvengerMoJo/mojo-voice.git

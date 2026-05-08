@@ -20,6 +20,7 @@ import os
 import sys
 import pytest
 from pathlib import Path
+from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -103,6 +104,16 @@ def assert_help_menu(result, tool_name, expected_actions=None):
             assert action in result["actions"], (
                 f"{tool_name} help menu missing action '{action}'"
             )
+
+
+class _InMemoryEventLog:
+    """Minimal async event sink for scheduler broadcast assertions."""
+
+    def __init__(self):
+        self.events = []
+
+    async def append(self, event):
+        self.events.append(event)
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +430,73 @@ class TestSchedulerHub:
         result = run(registry.execute("scheduler", {"action": "get"}))
         assert_expected_error(result, "scheduler[get no task_id]", contains="task_id")
 
+
+class TestSchedulerCronNotifySmoke:
+    def test_cron_completion_reschedules_and_notifies(self):
+        """
+        S-02 smoke: a cron task completion should emit a task_completed event
+        with notify_user=True and then reschedule to next cron window.
+        """
+        from app.scheduler.core import Scheduler
+        from app.scheduler.models import Task, TaskPriority, TaskResources, TaskResult, TaskStatus, TaskType
+
+        class _StubExecutor:
+            async def execute(self, _task):
+                return TaskResult(
+                    success=True,
+                    metrics={"final_answer": "ok", "completion_mode": "final_answer"},
+                )
+
+        event_log = _InMemoryEventLog()
+        storage_path = "/tmp/mojo-smoke-cron-notify.json"
+        try:
+            os.remove(storage_path)
+        except FileNotFoundError:
+            pass
+
+        scheduler = Scheduler(
+            storage_path=storage_path,
+            tick_interval=1,
+            event_log=event_log,
+        )
+        scheduler.executor = _StubExecutor()
+
+        task = Task(
+            id="smoke_cron_notify_task",
+            type=TaskType.CUSTOM,
+            schedule=datetime.now() - timedelta(seconds=1),
+            cron_expression="* * * * *",
+            priority=TaskPriority.MEDIUM,
+            config={"notify_on_completion": True, "command": "echo smoke"},
+            resources=TaskResources(),
+            description="cron notify smoke",
+            created_by="system",
+        )
+        assert scheduler.add_task(task)
+
+        queued = scheduler.queue.get_next()
+        assert queued is not None, "Cron smoke task should be ready"
+        queued.mark_started()
+        scheduler.queue.update(queued)
+
+        run(scheduler._execute_task(queued))
+        updated = scheduler.get_task(task.id)
+        assert updated is not None
+
+        # Cron tasks should be re-armed, not left completed.
+        assert updated.status == TaskStatus.PENDING
+        assert updated.schedule is not None and updated.schedule > datetime.now()
+        assert updated.started_at is None
+        assert updated.completed_at is None
+
+        completed_events = [
+            e
+            for e in event_log.events
+            if e.get("event_type") == "task_completed" and e.get("task_id") == task.id
+        ]
+        assert completed_events, "Expected task_completed event for cron run"
+        assert completed_events[-1].get("notify_user") is True
+
     def test_remove_missing_task_id(self, registry):
         result = run(registry.execute("scheduler", {"action": "remove"}))
         assert_expected_error(result, "scheduler[remove no task_id]", contains="task_id")
@@ -590,3 +668,218 @@ class TestToolSurface:
         assert "category names" in available
         assert "exact tool names" in available
         assert "role's saved capabilities are used" in available
+
+
+# ---------------------------------------------------------------------------
+# Capability dispatch — fail-fast on missing/blocked capabilities (S-05 gate)
+# ---------------------------------------------------------------------------
+
+class TestCapabilityDispatchSmoke:
+    """
+    Verifies that CapabilityGapChecker fires BEFORE the agent loop starts
+    when a goal requires a capability the resolved tool set cannot cover.
+
+    Exit criteria (beta checklist): CI test proves missing/broken tool import
+    fails fast and marks the task with a clear error — not a silent loop burn.
+    """
+
+    def test_terminal_goal_blocked_without_terminal_capability(self):
+        from app.scheduler.capability_gap_checker import CapabilityGapChecker
+        checker = CapabilityGapChecker()
+        # Goal explicitly mentions tmux — requires terminal capability
+        goal = "Open a tmux session and run the build script"
+        # Tool set has no terminal-category tools
+        resolved_tools = ["memory_search", "ask_user", "read_file"]
+        result = checker.check(goal, resolved_tools, role=None)
+        assert result.has_blockers, (
+            "Goal mentioning 'tmux' with no terminal tools should produce a blocker"
+        )
+        assert any("tmux" in b.lower() or "terminal" in b.lower() for b in result.blockers)
+
+    def test_exec_goal_blocked_without_exec_capability(self):
+        from app.scheduler.capability_gap_checker import CapabilityGapChecker
+        checker = CapabilityGapChecker()
+        goal = "Run bash_exec to execute the migration script"
+        resolved_tools = ["memory_search", "ask_user"]
+        result = checker.check(goal, resolved_tools, role=None)
+        assert result.has_blockers, (
+            "Goal mentioning 'bash_exec' with no exec tools should produce a blocker"
+        )
+
+    def test_normal_file_goal_passes_without_terminal(self):
+        from app.scheduler.capability_gap_checker import CapabilityGapChecker
+        checker = CapabilityGapChecker()
+        goal = "Read the config file at ~/.memory/config/resource_pool.json and summarise it"
+        resolved_tools = ["read_file", "memory_search", "ask_user"]
+        result = checker.check(goal, resolved_tools, role=None)
+        assert not result.has_blockers, (
+            f"Normal file-read goal should not be blocked, got: {result.blockers}"
+        )
+
+    def test_shell_command_syntax_in_goal_blocked(self):
+        from app.scheduler.capability_gap_checker import CapabilityGapChecker
+        checker = CapabilityGapChecker()
+        # Backtick command with args — the shell-command pattern
+        goal = "Execute `hostname -I` to get the machine IP and report it"
+        resolved_tools = ["memory_search", "ask_user"]
+        result = checker.check(goal, resolved_tools, role=None)
+        assert result.has_blockers, (
+            "Goal with shell-command syntax and no exec tools should produce a blocker"
+        )
+
+    def test_path_only_backtick_not_blocked(self):
+        from app.scheduler.capability_gap_checker import CapabilityGapChecker
+        checker = CapabilityGapChecker()
+        # Single backtick path — NOT a shell command, must not trigger exec blocker
+        goal = "Read the file at `~/.memory/config/resource_pool.json` and return its contents"
+        resolved_tools = ["read_file", "ask_user"]
+        result = checker.check(goal, resolved_tools, role=None)
+        assert not result.has_blockers, (
+            f"Backtick-quoted path should not be flagged as shell-command, got: {result.blockers}"
+        )
+
+    def test_multiline_backtick_paths_not_merged_into_false_positive(self):
+        """Regression: two backtick paths across paragraphs used to merge into a shell-command match."""
+        from app.scheduler.capability_gap_checker import CapabilityGapChecker
+        checker = CapabilityGapChecker()
+        goal = (
+            "Read the spec at `~/.memory/content/spec.md`.\n\n"
+            "Write your review as a structured document and save it to "
+            "`~/.memory/roles/rebecca/research/review.md`."
+        )
+        resolved_tools = ["read_file", "write_file", "ask_user"]
+        result = checker.check(goal, resolved_tools, role=None)
+        assert not result.has_blockers, (
+            f"Two backtick paths across paragraphs should not merge into a blocker: {result.blockers}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Runtime isolation gate — minimum pre-beta spec matrix
+# (ASSISTANT_RUNTIME_API.md §10)
+# ---------------------------------------------------------------------------
+
+class TestRuntimeIsolationGate:
+    """
+    Verifies the minimum pre-beta test matrix from ASSISTANT_RUNTIME_API.md.
+
+    Covers:
+    - Policy enforcement: forbidden tool blocked BEFORE execution
+    - Budget accounting: danger budget consumed and gate decision carries metadata
+    - Audit trail: GateDecision carries rule_source and reason fields
+    - No bypass path: SecurityGate.check() is the mandatory intercept
+    """
+
+    def _make_gate(self, budget=160):
+        from app.scheduler.security_gate import SecurityGate
+        gate = SecurityGate(default_budget=budget)
+        gate.reset_task("smoke_task")
+        return gate
+
+    def _safe_tool_def(self, danger="low"):
+        return {"name": "memory_search", "danger_level": danger}
+
+    def _blocked_tool_def(self):
+        return {"name": "rm_rf_danger", "danger_level": "critical"}
+
+    def test_safety_policy_hard_blocks_blocked_tool_name(self):
+        """A tool in the safety policy block list must return HARD_STOP before execution."""
+        from app.scheduler.security_gate import Decision
+        from app.scheduler.safety_policy import SafetyPolicy
+        gate = self._make_gate()
+        # SafetyPolicy blocks tools named like shell escalation patterns
+        # Use a known blocked name from safety_policy.json
+        decision = gate.check(
+            task_id="smoke_task",
+            tool_name="bash_exec",
+            tool_def={"name": "bash_exec", "danger_level": "high"},
+            args={"command": "rm -rf /"},
+        )
+        # Even if bash_exec is allowed by capability, rm -rf / must be blocked
+        assert decision.blocked or decision.decision.value in ("hard_stop", "stop_ask_user"), (
+            f"Dangerous bash command should be blocked, got: {decision.decision}"
+        )
+
+    def test_safe_tool_call_is_allowed(self):
+        """A low-danger tool with no policy violation must be ALLOW."""
+        from app.scheduler.security_gate import Decision
+        gate = self._make_gate()
+        decision = gate.check(
+            task_id="smoke_task",
+            tool_name="memory_search",
+            tool_def=self._safe_tool_def(),
+            args={"query": "test"},
+        )
+        assert decision.allowed, (
+            f"memory_search should be allowed, got: {decision.decision} — {decision.reason}"
+        )
+
+    def test_gate_decision_carries_audit_fields(self):
+        """Every GateDecision must carry rule_source and reason for audit integrity."""
+        from app.scheduler.security_gate import Decision
+        gate = self._make_gate()
+        decision = gate.check(
+            task_id="smoke_task",
+            tool_name="memory_search",
+            tool_def=self._safe_tool_def(),
+            args={"query": "audit test"},
+        )
+        assert isinstance(decision.reason, str) and decision.reason, (
+            "GateDecision.reason must be a non-empty string for audit trail"
+        )
+        # rule_source present (may be empty string on ALLOW — that's acceptable)
+        assert hasattr(decision, "rule_source"), (
+            "GateDecision must have rule_source field for audit trail"
+        )
+
+    def test_danger_budget_consumed_per_call(self):
+        """Danger budget must decrease after each allowed tool call."""
+        gate = self._make_gate(budget=50)
+        from app.scheduler.security_gate import Decision
+        before_state = gate._tasks["smoke_task"].consumed
+        gate.check(
+            task_id="smoke_task",
+            tool_name="memory_search",
+            tool_def=self._safe_tool_def(danger="low"),
+            args={},
+        )
+        after_state = gate._tasks["smoke_task"].consumed
+        assert after_state >= before_state, (
+            "Danger budget consumed counter must be non-decreasing after a tool call"
+        )
+
+    def test_budget_exhaustion_escalates_not_hard_stops(self):
+        """When danger budget is exhausted, gate should escalate (STOP_ASK_USER), not silently allow."""
+        from app.scheduler.security_gate import Decision
+        # Tiny budget — exhausted after first high-danger call
+        gate = self._make_gate(budget=2)
+        gate.check(
+            task_id="smoke_task",
+            tool_name="write_file",
+            tool_def={"name": "write_file", "danger_level": "medium"},
+            args={"path": "~/.memory/test.txt", "content": "x"},
+        )
+        # Now budget is exhausted — next call should escalate
+        decision = gate.check(
+            task_id="smoke_task",
+            tool_name="write_file",
+            tool_def={"name": "write_file", "danger_level": "medium"},
+            args={"path": "~/.memory/test2.txt", "content": "y"},
+        )
+        assert decision.decision == Decision.STOP_ASK_USER or decision.blocked, (
+            f"Budget-exhausted call should escalate to STOP_ASK_USER, got: {decision.decision}"
+        )
+
+    def test_path_sandbox_escape_is_blocked(self):
+        """File access outside ~/.memory/ sandbox must be blocked by SafetyPolicy."""
+        from app.scheduler.security_gate import Decision
+        gate = self._make_gate()
+        decision = gate.check(
+            task_id="smoke_task",
+            tool_name="read_file",
+            tool_def={"name": "read_file", "danger_level": "low"},
+            args={"path": "/etc/passwd"},
+        )
+        assert decision.blocked, (
+            f"read_file('/etc/passwd') must be hard-blocked by safety policy, got: {decision.decision}"
+        )

@@ -1,0 +1,31 @@
+{
+  "type": "monitor",
+  "description": "Monitoring agent workflow — observation and alerting",
+  "phases": [
+    {
+      "name": "collect",
+      "instruction": "Gather current system metrics and logs. Check recent events.",
+      "tools": ["bash_exec", "read_file"]
+    },
+    {
+      "name": "analyze",
+      "instruction": "Compare against baselines. Identify anomalies. Check for known failure patterns.",
+      "tools": ["memory_search"]
+    },
+    {
+      "name": "assess",
+      "instruction": "Determine severity. Is this a new issue or recurring? What's the impact?",
+      "tools": []
+    },
+    {
+      "name": "report",
+      "instruction": "Generate clear status report. Alert on critical issues. Suggest remediation steps.",
+      "tools": ["add_conversation"]
+    }
+  ],
+  "success_criteria": "All anomalies are identified and categorized. Critical issues are escalated with clear remediation steps.",
+  "escalation_triggers": [
+    "A critical system component is failing",
+    "Security anomaly detected"
+  ]
+}

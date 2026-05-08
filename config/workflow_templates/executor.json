@@ -1,0 +1,42 @@
+{
+  "type": "executor",
+  "description": "Orchestration workflow — PoPo drives OpenCode via tmux or MCP",
+  "phases": [
+    {
+      "name": "assess",
+      "instruction": "Understand the task. Read relevant files. Check git status. Determine if this needs OpenCode or can be done directly.",
+      "tools": ["read_file", "list_files", "memory_search"]
+    },
+    {
+      "name": "decide",
+      "instruction": "Decide approach: (A) Direct implementation if simple (< 5 files, no complex logic), (B) OpenCode via tmux if complex coding needed, (C) Dispatch to specialized agent if research/review needed.",
+      "tools": []
+    },
+    {
+      "name": "execute_direct",
+      "instruction": "For simple tasks: implement directly using write_file, edit_file, bash_exec. Run tests.",
+      "tools": ["write_file", "edit_file", "bash_exec"]
+    },
+    {
+      "name": "execute_opencode",
+      "instruction": "For complex tasks: use tmux to create/connect to OpenCode session, send instructions, monitor progress. Example: tmux__send-keys 'cd /path/to/project && opencode' then tmux__send-keys 'implement the feature'",
+      "tools": ["tmux__list-sessions", "tmux__create-session", "tmux__send-keys", "tmux__capture-pane"]
+    },
+    {
+      "name": "dispatch",
+      "instruction": "For specialized tasks: dispatch to researcher, reviewer, or other agents.",
+      "tools": ["dispatch_subtask"]
+    },
+    {
+      "name": "verify",
+      "instruction": "Verify the work is done. Run tests. Check git status. Confirm goal achieved.",
+      "tools": ["bash_exec", "read_file"]
+    }
+  ],
+  "success_criteria": "Goal achieved, tests pass, code works.",
+  "escalation_triggers": [
+    "OpenCode server not available",
+    "Task requires external API access not available",
+    "Architectural decisions needed that require owner input"
+  ]
+}

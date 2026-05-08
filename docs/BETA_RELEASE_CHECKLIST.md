@@ -13,15 +13,51 @@
 | URGENT | Cron tasks never notify user — `created_by: system` fallback silently drops push | Fixed (add `notify_on_completion` to role) |
 | URGENT | `add_conversation` crashes with `asyncio not defined` — agents cannot save to knowledge store | Fixed (import added) |
 | URGENT | Briefing output written nowhere persistent — output dies in session file | Fixed (write_file added to tools) |
-| HIGH | No smoke test coverage for cron→notify path | Pending |
-| HIGH | No smoke test coverage for capability tool dispatch (import errors invisible) | Pending |
+| HIGH | No smoke test coverage for cron→notify path | Fixed (S-02 smoke added in `tests/integration/test_mcp_surface_smoke.py`) |
+| HIGH | No smoke test coverage for capability tool dispatch (import errors invisible) | Fixed (TestCapabilityDispatchSmoke in `tests/integration/test_mcp_surface_smoke.py`) |
+| HIGH | Assistant runtime modular isolation boundary not enforced by release gate | Fixed (TestRuntimeIsolationGate in `tests/integration/test_mcp_surface_smoke.py`) |
 | HIGH | `memory` category in agent_defaults resolves to zero tools — dead default | Fixed |
-| HIGH | Config doctor missing from CI — silent drift goes undetected | Pending |
+| HIGH | Config doctor missing from CI — silent drift goes undetected | Fixed (smoke-test workflow now runs doctor gate and fails on errors) |
 | MEDIUM | Role overlays had hardcoded tool names — drift when tool names change | Fixed |
 | MEDIUM | Coder missing dimensions block — Nine Chapter score unvalidatable | Fixed |
 | MEDIUM | Christmas writing pipeline: `alex_writing_profile.md` never written to disk | Fixed |
-| MEDIUM | `http_agent`, `get_verge_tech_news`, `curl_request` — test roles/tools polluting catalog | Partially cleaned |
-| LOW | Orphaned role dirs from old installs — stale personal configs may need cleanup | Pending cleanup |
+| MEDIUM | `http_agent`, `get_verge_tech_news`, `curl_request` — test roles/tools polluting catalog | Already Clean (`http_agent`/`get_verge_tech_news` absent from active catalog; `curl_request` is legitimate production tool used by Ahman) |
+| LOW | Orphaned role dirs from old installs — stale personal configs may need cleanup | In progress (planned in Beta Gap Closure Plan) |
+
+---
+
+## Beta Gap Closure Plan (as of 2026-05-07)
+
+> Goal: close every non-fixed item above and enforce them as release gates before beta sign-off.
+
+| Gap | Owner | Effort Budget | Target Date | Exit Criteria | Status |
+|---|---|---:|---|---|---|
+| Smoke coverage for cron→notify path | PoPo + Alex | 0.5 dev day + 0.5 validation day | 2026-05-09 | S-02 runs in CI; fail if notification event not emitted for cron completion | Fixed (test `TestSchedulerCronNotifySmoke::test_cron_completion_reschedules_and_notifies`) |
+| Smoke coverage for capability tool dispatch/import errors | PoPo + Alex | 1 dev day + 0.5 validation day | 2026-05-10 | CI test proves missing/broken tool import fails fast and marks resource/task appropriately | Fixed (6 tests in `TestCapabilityDispatchSmoke` — multiline backtick regression included) |
+| Assistant runtime modular isolation release gate | Ahman + PoPo + Alex | 2 dev days + 1 validation day | 2026-05-13 | CI gate enforces policy-gateway-only tool path and process/module boundary checks from `ASSISTANT_RUNTIME_API.md` | Fixed (6 tests in `TestRuntimeIsolationGate` — policy, audit trail, danger budget, sandbox escape) |
+| Config doctor in CI | Ahman + Alex | 0.5 dev day + 0.5 validation day | 2026-05-09 | CI blocks merge when `doctor(action=\"check\")` returns errors | Fixed (implemented in `.github/workflows/smoke-test.yml`) |
+| Remove test-role/tool catalog pollution (`http_agent`, `get_verge_tech_news`, `curl_request`) | PoPo + Alex | 0.5 dev day + 0.5 validation day | 2026-05-10 | Catalog/roles contain only production-safe entries; migration notes added if renamed/removed | Already Clean (http_agent/get_verge_tech_news only in historical dream archives; curl_request is a live Ahman production tool) |
+| Cleanup stale/orphaned legacy role dirs | Alex | 0.5 day | 2026-05-11 | One-time cleanup script + dry-run mode + docs for user-safe execution under `~/.memory/roles/` | Scheduled |
+
+### Execution Cadence
+
+1. Daily 30-minute beta gap review with explicit pass/fail per row (start: 2026-05-08).
+2. No new feature work merged until all HIGH gaps above are marked Fixed.
+3. Every gap closure PR must update this checklist and attach CI proof (job URL or local command transcript).
+
+### Beta Readiness Gate
+
+Beta sign-off is blocked until all of the following are true:
+1. Every row in the **Urgent / Important Before Release** table is `Fixed`.
+2. S-01 through S-08 smoke workflows pass on mainline CI.
+3. Config doctor CI gate is mandatory and green.
+4. Modular isolation gate is mandatory and green.
+
+### Time and Resource Guardrail
+
+- Planned burn window: **2026-05-08 to 2026-05-13** (6 calendar days).
+- Minimum allocation: **1.5 focused engineering days per day** across PoPo/Ahman/Alex combined.
+- If any HIGH item misses target by >1 day, trigger scope freeze + escalation review before further feature merges.
 
 ---
 
@@ -89,6 +125,8 @@
 - **Policy monitor**: behavioral pattern matching on tool calls (content, sensitive domain, data boundary)
 - **Event log**: all tool executions logged with timestamp, role, result, block reason
 - **Security gate**: pre-execution check before every tool call in agentic loop
+- **Sensitive domain checker**: scans tool args against owner's sensitive_domains list
+- **PII scanner**: pattern-based detection for credentials, financial, health, infrastructure data
 
 ### 8. Built-in Capability Tools
 - `read_file`, `write_file`, `list_files`, `search_in_files` — sandboxed file ops
@@ -125,6 +163,46 @@
 - **SSE streaming**: real-time browser/client event stream
 - **Event types**: task_started, task_completed, task_failed, task_waiting_for_input, system_notification
 - **Filters**: min_severity, notify_user_only, event_types whitelist
+
+### 13. Assistant Runtime Modularization (Pre-Beta Gate)
+- **Spec**: `docs/architecture/ASSISTANT_RUNTIME_API.md`
+- **Required modules**: assistant runtime, role kernel, policy gateway, assistant supervisor
+- **Hard rule**: all tool calls pass policy gateway; no direct bypass
+- **Isolation**: one assistant per process space; per-assistant memory/policy context
+- **Gate**: beta blocked until modular boundary is implemented and smoke matrix passes
+
+### 14. Behavioral Security Layer (v1.3.0)
+- **BehavioralMonitor**: parallel observer with per-role baselines (exponential moving average)
+- **ContainmentEngine**: three-tier response — LOW (silent ntfy), MEDIUM (sandbox honeypot), HIGH (hard halt)
+- **SandboxRuntime**: honeypot containment — bash in tmpdir, file ops in sandbox, network blocked
+- **Forensics logging**: containment events written to `~/.memory/security/containment_log.jsonl`
+
+### 15. Agent Learning Loop (v1.3.1)
+- **Failure→lesson pipeline**: `_write_task_lesson()` writes structured records on failure
+- **Memory context injection**: `_inject_lessons()` reads relevant lessons at task start
+- **Failure taxonomy**: classifies failures (missing_resource, wrong_tool, missing_permission, ambiguous_goal, external_unavailable, knowledge_gap)
+- **Per-role silo memory**: `lessons/`, `task_history/` directories per role
+
+### 16. PII Scanner (v1.3.3)
+- **Pattern-based detection**: emails, SSNs, credit cards, API keys, AWS keys, private keys, crypto wallets, IPs, medical records
+- **Tool args scanning**: `scan_tool_args()` checks tool call arguments
+- **Redaction**: `redact_pii()` replaces PII with `[REDACTED:type]`
+
+### 17. Agent Orchestration (v1.3.2)
+- **Workflow templates**: `config/workflow_templates/{type}.json` for 6 agent types (researcher, executor, reviewer, provisioner, monitor, orchestrator)
+- **Template auto-injection**: loaded at task start based on role's `agent_type`
+- **OpenAI-compatible proxy**: `/v1/models`, `/v1/chat/completions` endpoints
+- **Cross-role referral**: `refer_to_role` tool in Role Chat
+
+### 18. Chat→Dream Bridge (v1.2.14)
+- **Nightly scheduled task**: scans all roles' chat_history for unprocessed sessions
+- **Watermark tracking**: prevents re-processing already-dreamed sessions
+- **Knowledge indexing**: C-clusters indexed into role's searchable knowledge base
+
+### 19. agency-agents Import Bridge (v1.2.13)
+- **Markdown persona parser**: extracts frontmatter, identity, critical rules, communication style
+- **NineChapter dimension inference**: generates dimension scores from persona traits
+- **184 personas available**: from submodules/agency-agents library
 
 ---
 

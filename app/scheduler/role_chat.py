@@ -134,6 +134,36 @@ _TOOL_DEFS: Dict[str, Dict] = {
             },
         },
     },
+    "refer_to_role": {
+        "type": "function",
+        "function": {
+            "name": "refer_to_role",
+            "description": (
+                "Refer the user to another assistant who may be better suited for this question. "
+                "Use this when the question falls outside your expertise or when another role has "
+                "specific knowledge that would provide a better answer. The referral includes a "
+                "brief explanation of why the other role is better suited."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {
+                        "type": "string",
+                        "description": "The role_id of the assistant to refer to (e.g., 'researcher', 'analyst', 'coder').",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Brief explanation of why this role is better suited for the question.",
+                    },
+                    "context_summary": {
+                        "type": "string",
+                        "description": "Summary of the current conversation context to pass to the referred role.",
+                    },
+                },
+                "required": ["role_id", "reason"],
+            },
+        },
+    },
 }
 
 _FINAL_TOOL_LOOP_PROMPT = (
@@ -648,6 +678,36 @@ class RoleChatSession:
                 return json.dumps({"success": True, "count": len(results), "tasks": results}, ensure_ascii=False)
             except Exception as e:
                 return json.dumps({"success": False, "error": str(e)})
+
+        # refer_to_role — cross-role referral
+        if name == "refer_to_role":
+            target_role_id = args.get("role_id", "")
+            reason = args.get("reason", "")
+            context_summary = args.get("context_summary", "")
+
+            # Verify the target role exists
+            rm = RoleManager()
+            target_role = rm.get(target_role_id)
+            if not target_role:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Role '{target_role_id}' not found. Available roles: {[r['id'] for r in rm.list_roles()]}",
+                })
+
+            # Return a structured referral response
+            referral = {
+                "success": True,
+                "type": "referral",
+                "referral_to": target_role_id,
+                "referral_reason": reason,
+                "context_summary": context_summary,
+                "message": (
+                    f"I'm referring you to {target_role.get('name', target_role_id)} — "
+                    f"{reason}. "
+                    f"Start a new chat with {target_role_id} for a better answer."
+                ),
+            }
+            return json.dumps(referral, ensure_ascii=False)
 
         try:
             from app.scheduler.capability_registry import CapabilityRegistry

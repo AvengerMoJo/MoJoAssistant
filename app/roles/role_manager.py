@@ -61,7 +61,20 @@ class RoleManager:
         """Load a role by id. Returns None if not found."""
         path = os.path.join(self._dir, f"{role_id}.json")
         if not os.path.exists(path):
-            return None
+            # Backward-compat: accept case-mismatched role_id values from old
+            # tasks/configs (e.g. "Ahman" vs canonical "ahman").
+            target = (role_id or "").strip().lower()
+            if not target:
+                return None
+            for fname in os.listdir(self._dir):
+                if not fname.endswith(".json"):
+                    continue
+                stem = fname[:-5]
+                if stem.lower() == target:
+                    path = os.path.join(self._dir, fname)
+                    break
+            else:
+                return None
         with open(path, "r", encoding="utf-8") as f:
             role = json.load(f)
         return _migrate_role(role)
