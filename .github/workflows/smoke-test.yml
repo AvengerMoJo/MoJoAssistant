@@ -56,6 +56,10 @@ jobs:
           }, indent=2))
 
           if status == "error" or errors > 0:
+              print("\n--- ERROR CHECKS ---")
+              for c in report.get("checks", []):
+                  if c.get("status") == "error":
+                      print(json.dumps(c, indent=2))
               print("Config doctor gate failed: errors detected.")
               sys.exit(1)
           PY
