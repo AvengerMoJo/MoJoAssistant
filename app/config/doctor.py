@@ -300,10 +300,12 @@ class ConfigDoctor:
                     probe_targets.append(server_id)
                 else:
                     hint = f" — install: {server.install_hint}" if server.install_hint else ""
+                    # Servers with install_hint require manual setup — warn, don't error
+                    severity = "warn" if server.install_hint else "error"
                     report.add(CheckResult(
                         category="mcp", id=server_id, field="command",
                         value=server.command,
-                        status="error",
+                        status=severity,
                         message=f"Command not found on PATH / filesystem{hint}",
                     ))
             elif server.transport in ("http", "streamable_http"):
