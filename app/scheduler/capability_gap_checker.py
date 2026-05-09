@@ -66,7 +66,7 @@ _BLOCKER_SIGNALS: Dict[str, List[str]] = {
 _SHELL_COMMAND_PATTERNS: List[re.Pattern[str]] = [
     # Backtick command with args: `cmd arg` — but NOT `key: value` or `key = value`
     # patterns which are property references, not shell commands.
-    re.compile(r"`[^`\s]+\s+(?![=:>])[^`\n]+`"),  # e.g. `hostname -I` but not `core_values: 95`; no newlines — prevents spanning two separate backtick paths
+    re.compile(r"`[^`\s]+[ \t]+(?![=:>])[^`\n]+`"),  # e.g. `hostname -I` but not `core_values: 95`; [ \t] (not \s) prevents spanning paragraph breaks via closing-backtick + period + newline
     re.compile(r"\b[a-z0-9_.-]+\s+\|\s+[a-z0-9_.-]+"),  # pipeline, e.g. a | b
 ]
 

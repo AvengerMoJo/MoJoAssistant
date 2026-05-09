@@ -96,28 +96,22 @@ class SafetyPolicy:
                 "reason": f"Tool name '{tool_name}' is blocked by immutable rules",
             }
 
-        # For write operations, check sandbox (bash_exec has its own whitelist)
-        if tool_name == "write_file":
+        # Path sandbox: enforce for write_file and read_file
+        if tool_name in ("write_file", "read_file"):
             path_arg = args.get("path", "")
-
-            # Check if path is in allowed sandbox.
-            # Always include the runtime memory path (respects MEMORY_PATH env var)
-            # alongside any configured allowed_paths.
             memory_root = os.path.abspath(get_memory_path())
             runtime_allowed = [memory_root] + [
                 os.path.abspath(os.path.expanduser(p))
                 for p in sandbox["allowed_paths"]
             ]
             abs_path = os.path.abspath(os.path.expanduser(path_arg))
-            allowed = any(abs_path.startswith(ap) for ap in runtime_allowed)
-
-            if not allowed:
+            if not any(abs_path.startswith(ap) for ap in runtime_allowed):
                 return {
                     "allowed": False,
                     "reason": f"Path '{path_arg}' not in sandbox. Allowed: {sandbox['allowed_paths']}",
                 }
 
-        # Check bash tool danger level
+        # Check bash tool danger level AND block commands targeting blocked paths
         if tool_name == "bash_exec":
             danger = tool.get("danger_level", "low") if tool else "low"
             min_danger = immutable["min_danger_level_for_bash"]
@@ -127,6 +121,14 @@ class SafetyPolicy:
                     "allowed": False,
                     "reason": f"Bash tool must be '{min_danger}' danger or higher",
                 }
+
+            command = args.get("command", "")
+            for blocked in immutable.get("blocked_paths", []):
+                if blocked in command:
+                    return {
+                        "allowed": False,
+                        "reason": f"Command targets blocked path '{blocked}'",
+                    }
 
         return {"allowed": True}
 
