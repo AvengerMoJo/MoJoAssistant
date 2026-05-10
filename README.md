@@ -6,7 +6,7 @@ MoJoAssistant sits between you and your AI systems. It keeps your memory, contex
 workflow state on your own machine, then exposes everything through a clean 14-tool MCP
 surface that any MCP-capable client (Claude Desktop, Claude Code, etc.) can use directly.
 
-Current release: `v1.3.3-beta`
+Current release: `v1.3.7-beta`
 
 ---
 
@@ -24,7 +24,7 @@ Current release: `v1.3.3-beta`
 | **Dashboard** | Browser UI at `/dashboard` — event log, tasks (incl. cron history), role chat, policy violations, news briefing |
 | **Dreaming** | Nightly memory consolidation: raw sessions → ABCD semantic archives → searchable knowledge base; chat→dream bridge |
 | **Agent Learning** | Failure→lesson pipeline; memory context injection at task start; per-role silo memory |
-| **Bonsai** | Assistant growth architecture — personality evolution via one-on-one calibration, dreaming synthesis, HITL validation |
+| **BRIDLE** | Bonsai Refinement through Iterative Directed Learning and Evolution — four pillars: GROWTH (memory), DIRECTION (one-on-one), DNA (dreaming), PRESENT (HITL validation) |
 | **External MCP** | Plug in external MCP servers (tmux terminal, Playwright browser) via `config/mcp_servers.json` |
 | **Google Workspace** | Calendar, Drive, Gmail via `external_agent` hub |
 | **Notifications** | ntfy / FCM push, SSE stream, persistent event log |
@@ -72,8 +72,8 @@ python unified_mcp_server.py --mode stdio
 # HTTP + MCP (dashboard, REST, scheduler daemon)
 python unified_mcp_server.py --mode http --port 8000
 
-# Docker
-docker compose -f docker/docker-compose.yml up mojoassistant
+# Docker (CPU — recommended for new users)
+docker compose up
 ```
 
 ### Run as a persistent service (optional)
@@ -94,7 +94,7 @@ docker compose -f docker/docker-compose.yml up mojoassistant
 
 Both service scripts auto-update the Claude MCP config to HTTP mode.
 
-See [Installation Guide](docs/installation/INSTALL.md) and [Quick Start](docs/installation/QUICKSTART.md) for full setup.
+See [Installation Guide](docs/INSTALL.md) and [Quick Start](docs/QUICKSTART.md) for full setup.
 
 ---
 
@@ -298,8 +298,9 @@ The preflight checker validates required binaries (`tmux`, `node`, `cargo`) befo
 ## Documentation
 
 ### Getting Started
-- [Installation Guide](docs/installation/INSTALL.md)
-- [Quick Start](docs/installation/QUICKSTART.md)
+- [Installation Guide](docs/INSTALL.md)
+- [Quick Start](docs/QUICKSTART.md)
+- [Use Case Catalog](docs/USE_CASES.md) — 10 validated scenarios with exact API steps and pass criteria
 - [MCP Client Setup](docs/configuration/MCP_CLIENT_SETUP.md)
 - [MCP Smoke Checklist](docs/guides/MCP_SMOKE_CHECKLIST.md)
 
@@ -321,19 +322,21 @@ The preflight checker validates required binaries (`tmux`, `node`, `cargo`) befo
 - [Chat→Dream Bridge](docs/architecture/CHAT_DREAM_BRIDGE_PROPOSAL.md)
 
 ### Releases
+- [v1.3.7-beta](https://github.com/AvengerMoJo/MoJoAssistant/releases/tag/v1.3.7-beta) — Install infrastructure + use case catalog
+- [v1.3.6-beta](https://github.com/AvengerMoJo/MoJoAssistant/releases/tag/v1.3.6-beta) — CI hardening
+- [v1.3.5-beta](https://github.com/AvengerMoJo/MoJoAssistant/releases/tag/v1.3.5-beta) — Beta checklist closed
+- [v1.3.4-beta](https://github.com/AvengerMoJo/MoJoAssistant/releases/tag/v1.3.4-beta) — BRIDLE framework + security hardening
 - [v1.2.16-beta Release Notes](docs/releases/RELEASE_NOTES_v1.2.16-beta.md)
-- [v1.2.14-beta Release Notes](docs/releases/RELEASE_NOTES_v1.2.14-beta.md)
-- [v1.2.8-beta Release Notes](docs/releases/RELEASE_NOTES_v1.2.8-beta.md)
 - [Roadmap](docs/releases/ROADMAP_future.md)
-- [All Releases](docs/releases/)
+- [All Releases](https://github.com/AvengerMoJo/MoJoAssistant/releases)
 
 ---
 
 ## Docker
 
 ```bash
-# CPU
-docker compose -f docker/docker-compose.yml up mojoassistant
+# CPU (recommended — uses root-level docker-compose.yml)
+docker compose up
 
 # AMD ROCm GPU
 docker compose -f docker/docker-compose.yml up mojoassistant-rocm
@@ -341,6 +344,12 @@ docker compose -f docker/docker-compose.yml up mojoassistant-rocm
 
 HuggingFace model cache is mounted from the host — no re-download on rebuild.
 Health check: `GET /health`.
+
+Configure your LM Studio endpoint and memory path in `.env` before starting:
+```bash
+cp .env.example .env
+# edit .env — set LM_STUDIO_URL, MEMORY_PATH, DASHBOARD_PASSWORD
+```
 
 ---
 
@@ -367,8 +376,8 @@ Before merging:
 
 ## Status
 
-Active beta (`v1.4.0`). Core memory, MCP, scheduler, policy, role chat, dreaming
-pipeline, behavioral security, agent learning loop, Bonsai growth architecture,
+Active beta (`v1.3.7-beta`). Core memory, MCP, scheduler, policy, role chat, dreaming
+pipeline, behavioral security, agent learning loop, BRIDLE growth framework,
 and PII scanning are production-ready for personal use.
 
 ### Stable vs Experimental
@@ -380,9 +389,10 @@ and PII scanning are production-ready for personal use.
 - Policy pipeline (static, content, data_boundary, context, sensitive_domain)
 - Role system (NineChapter dimensions, dynamic prompts, two-tier growth)
 - Dashboard (event log, tasks, role chat, news briefing)
-- Dreaming pipeline (A→B→C→D, chat→dream bridge, inbox distillation)
+- Dreaming pipeline (A→B→C→D, inbox distillation)
 - Notifications (ntfy push, SSE stream)
-- Bonsai growth architecture (snapshots, dimension drift, HITL validation)
+- BRIDLE growth framework (snapshots, dimension drift, HITL validation)
+- Docker install path (Dockerfile + docker-compose.yml in repo root)
 
 **Experimental (may change):**
 - LLM resource selection (local models, LMStudio integration)
