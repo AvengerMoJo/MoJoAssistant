@@ -1,0 +1,35 @@
+# MoJoAssistant — Docker Compose
+#
+# One service — CPU only (works everywhere).
+# AMD ROCm variant lives in docker/docker-compose.yml.
+#
+# Run:
+#   docker compose up
+#
+# Stop:
+#   docker compose down
+
+services:
+
+  mojoassistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mojoassistant:latest
+    container_name: mojoassistant
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - MEMORY_PATH=/home/mojo/.memory
+    volumes:
+      - ~/.memory:/home/mojo/.memory
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
