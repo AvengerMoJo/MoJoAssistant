@@ -331,7 +331,7 @@ try:
     from app.dreaming.pipeline import DreamingPipeline
     print("✓ Dreaming pipeline import successful")
     
-    from app.services.memory_service import MemoryService
+    from mojo_memory.services.memory_service import MemoryService
     print("✓ Memory service import successful")
     
     print("\\n✓ All core modules imported successfully")

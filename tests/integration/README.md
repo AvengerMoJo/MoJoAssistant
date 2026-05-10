@@ -159,7 +159,7 @@ If a test fails and doesn't clean up properly:
 python -c "
 import asyncio
 from app.mcp.core.tools import ToolRegistry
-from app.services.memory_service import MemoryService
+from mojo_memory.services.memory_service import MemoryService
 
 async def main():
     tools = ToolRegistry(MemoryService())
@@ -173,7 +173,7 @@ asyncio.run(main())
 python -c "
 import asyncio
 from app.mcp.core.tools import ToolRegistry
-from app.services.memory_service import MemoryService
+from mojo_memory.services.memory_service import MemoryService
 
 async def main():
     tools = ToolRegistry(MemoryService())
@@ -201,7 +201,7 @@ Example:
 ```python
 import asyncio
 from app.mcp.core.tools import ToolRegistry
-from app.services.memory_service import MemoryService
+from mojo_memory.services.memory_service import MemoryService
 
 async def test_my_feature():
     tools = ToolRegistry(MemoryService())

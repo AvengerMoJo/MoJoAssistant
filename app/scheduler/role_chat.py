@@ -711,10 +711,10 @@ class RoleChatSession:
 
         try:
             from app.scheduler.capability_registry import CapabilityRegistry
-            from app.services.memory_service import MemoryService
+            from app.services.memory_backend import create_memory_service
 
             registry = CapabilityRegistry()
-            registry.set_memory_service(MemoryService())
+            registry.set_memory_service(create_memory_service())
             registry.set_task_context(task_id=None, dispatch_depth=0, role_id=self.role_id)
             result = await registry.execute_tool(name, args)
             return json.dumps(result, ensure_ascii=False)

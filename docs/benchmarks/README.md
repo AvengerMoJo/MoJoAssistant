@@ -28,6 +28,7 @@ docs/benchmarks/
     METRICS.md
     EVALUATION_POLICY.md
     RESULT_SCHEMA.md
+    ABCD_VALIDATION_CHECKLIST_v1.md
   locomo/
     DESIGN.md
     RUNBOOK.md
@@ -59,6 +60,7 @@ Accepted claims must point to:
 - a documented method
 - a stored result artifact
 - a clearly scoped dataset/run configuration
+- ABCD stage validation evidence when dreaming output is part of the claim
 
 ## Core Product Question
 
@@ -75,3 +77,11 @@ That means benchmark reports should favor:
 - reproducibility
 
 over isolated one-off scores.
+
+## Memory/Dream Implementation Ownership
+
+Core memory+dream implementation ownership is centralized in:
+
+- `submodules/dreaming-memory-pipeline/docs/MEMORY_DREAM_WORKFLOW_STANDARD.md`
+
+Top-level app modules under `app/memory` and `app/services/*memory*` are compatibility shims.

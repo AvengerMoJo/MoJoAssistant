@@ -105,7 +105,7 @@ REM Function to download initial models (optional)
 call :print_status "Checking for embedding models..."
 
 REM Try to initialize the embedding system
-python -c "import sys; sys.path.insert(0, 'app'); from app.memory.simplified_embeddings import SimpleEmbedding; embeddings = SimpleEmbedding(); print('Embedding system initialized successfully')" 2>nul
+python -c "import sys; sys.path.insert(0, 'app'); from mojo_memory.memory.simplified_embeddings import SimpleEmbedding; embeddings = SimpleEmbedding(); print('Embedding system initialized successfully')" 2>nul
 if %errorlevel% equ 0 (
     call :print_success "Embedding system ready"
 ) else (

@@ -49,9 +49,12 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+SUBMODULE_SRC = PROJECT_ROOT / "submodules" / "dreaming-memory-pipeline" / "src"
+if SUBMODULE_SRC.exists():
+    sys.path.insert(0, str(SUBMODULE_SRC))
 
-from app.memory.knowledge_manager import KnowledgeManager
-from app.memory.simplified_embeddings import SimpleEmbedding
+from mojo_memory.memory.knowledge_manager import KnowledgeManager
+from mojo_memory.memory.simplified_embeddings import SimpleEmbedding
 
 
 # ---------------------------------------------------------------------------

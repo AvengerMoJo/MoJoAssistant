@@ -22,7 +22,7 @@ except ImportError:
 # Ensure the app module can be found
 sys.path.append(".")
 
-from app.services.memory_service import MemoryService
+from app.services.memory_backend import create_memory_service
 from app.llm.llm_interface import create_llm_interface
 from app.config.config_loader import load_embedding_config, get_env_config_help
 from app.config.logging_config import (
@@ -803,7 +803,7 @@ def main() -> int:
         embed_config = embedding_config["embedding_models"][embed_model_name]
 
         # Initialize memory service with the selected embedding model
-        memory_service = MemoryService(
+        memory_service = create_memory_service(
             data_dir=embedding_config.get("memory_settings", {}).get(
                 "data_directory"
             ) or os.getenv("MEMORY_PATH", str(Path.home() / ".memory")),

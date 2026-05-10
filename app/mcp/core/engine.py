@@ -34,9 +34,9 @@ class MCPEngine:
         self.logger.info("Initializing MCP Engine")
 
         if not self.memory_service:
-            from app.services.hybrid_memory_service import HybridMemoryService
+            from app.services.memory_backend import create_hybrid_memory_service
 
-            self.memory_service = HybridMemoryService(
+            self.memory_service = create_hybrid_memory_service(
                 data_dir=get_memory_path(),
                 config=self.config,
             )

@@ -136,7 +136,7 @@ download_models() {
     if python3 -c "
 import sys
 sys.path.insert(0, 'app')
-from app.memory.simplified_embeddings import SimpleEmbedding
+from mojo_memory.memory.simplified_embeddings import SimpleEmbedding
 try:
     embeddings = SimpleEmbedding()
     print('Embedding system initialized successfully')

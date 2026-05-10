@@ -41,8 +41,11 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+SUBMODULE_SRC = PROJECT_ROOT / "submodules" / "dreaming-memory-pipeline" / "src"
+if SUBMODULE_SRC.exists():
+    sys.path.insert(0, str(SUBMODULE_SRC))
 
-from app.services.memory_service import MemoryService
+from mojo_memory.services.memory_service import MemoryService
 
 
 # ---------------------------------------------------------------------------

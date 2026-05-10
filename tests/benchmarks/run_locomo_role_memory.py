@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import datetime
 import json
+import re
 import shutil
 import statistics
 import sys
@@ -23,12 +24,15 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+SUBMODULE_SRC = PROJECT_ROOT / "submodules" / "dreaming-memory-pipeline" / "src"
+if SUBMODULE_SRC.exists():
+    sys.path.insert(0, str(SUBMODULE_SRC))
 
 from app.config.paths import get_memory_subpath
 from app.dreaming.pipeline import DreamingPipeline
 from app.llm.llm_interface import LLMInterface
 from app.roles.role_manager import RoleManager
-from app.services.hybrid_memory_service import HybridMemoryService
+from mojo_memory.services.hybrid_memory_service import HybridMemoryService
 from tests.benchmarks.run_locomo import (
     build_run_id,
     llm_judge,
@@ -80,6 +84,17 @@ def parse_args():
                    help="Ingest facts + build ABCD dreams, then exit. Run once per dataset.")
     p.add_argument("--eval-only", action="store_true",
                    help="Skip ingest/dreams, use existing memory. Fast repeated evaluations.")
+    p.add_argument(
+        "--validation-mode",
+        default="none",
+        choices=("none", "abcd_v1"),
+        help="Validation profile. abcd_v1 enables stage checks + run validity artifacts.",
+    )
+    p.add_argument(
+        "--fail-on-empty-facts",
+        action="store_true",
+        help="Fail fast when factual retrieval is unexpectedly empty in facts-first variants.",
+    )
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -179,6 +194,105 @@ def _session_text(dialogue_idx: int, session_idx: int, session_date: str, turns:
         if text:
             lines.append(f"{speaker}: {text}")
     return "\n".join(lines).strip()
+
+
+def _is_output_format_invalid(text: str) -> tuple[bool, str | None]:
+    t = (text or "").strip()
+    if not t:
+        return True, "empty_answer"
+    if "<SPECIAL_" in t:
+        return True, "special_token_artifact"
+    if re.search(r"<\|[^>]+?\|>", t):
+        return True, "tokenizer_control_token_leakage"
+    if "Thinking Process:" in t:
+        return True, "reasoning_leakage"
+    return False, None
+
+
+def _validate_stage_a_input(dialogues: list[dict], max_sessions: int | None = None) -> dict[str, Any]:
+    issues: list[str] = []
+    sessions_total = 0
+    sessions_empty = 0
+    missing_dates = 0
+    turns_total = 0
+    turns_empty_text = 0
+
+    for d_idx, dialogue in enumerate(dialogues):
+        conv = dialogue.get("conversation", {})
+        i = 1
+        session_indices: list[int] = []
+        while f"session_{i}" in conv:
+            session_indices.append(i)
+            i += 1
+        if max_sessions:
+            session_indices = session_indices[:max_sessions]
+
+        for session_idx in session_indices:
+            sessions_total += 1
+            session_date = conv.get(f"session_{session_idx}_date_time", "")
+            if not str(session_date).strip():
+                missing_dates += 1
+                issues.append(f"missing_date:d{d_idx:02d}s{session_idx:02d}")
+            turns = conv.get(f"session_{session_idx}", [])
+            if not turns:
+                sessions_empty += 1
+                issues.append(f"empty_session:d{d_idx:02d}s{session_idx:02d}")
+            for turn_idx, turn in enumerate(turns):
+                turns_total += 1
+                if not str(turn.get("text", "")).strip():
+                    turns_empty_text += 1
+                    issues.append(f"empty_turn_text:d{d_idx:02d}s{session_idx:02d}t{turn_idx:02d}")
+
+    return {
+        "stage": "A_input_integrity",
+        "sessions_total": sessions_total,
+        "sessions_empty": sessions_empty,
+        "missing_dates": missing_dates,
+        "turns_total": turns_total,
+        "turns_empty_text": turns_empty_text,
+        "passed": sessions_total > 0 and sessions_empty == 0 and missing_dates == 0,
+        "issues": issues[:50],
+    }
+
+
+def _validate_stage_bc_archives(archives: list[dict[str, Any]]) -> dict[str, Any]:
+    issues: list[str] = []
+    total = len(archives)
+    missing_b = 0
+    missing_c = 0
+    malformed = 0
+
+    for i, arch in enumerate(archives):
+        if not isinstance(arch, dict):
+            malformed += 1
+            issues.append(f"malformed_archive:{i}")
+            continue
+        b_chunks = arch.get("b_chunks", [])
+        c_clusters = arch.get("c_clusters", [])
+        if not isinstance(b_chunks, list):
+            malformed += 1
+            issues.append(f"malformed_b_chunks:{i}")
+            b_chunks = []
+        if not isinstance(c_clusters, list):
+            malformed += 1
+            issues.append(f"malformed_c_clusters:{i}")
+            c_clusters = []
+        if not b_chunks:
+            missing_b += 1
+            issues.append(f"missing_b_chunks:{i}")
+        if not c_clusters:
+            missing_c += 1
+            issues.append(f"missing_c_clusters:{i}")
+
+    return {
+        "stage": "B_C_archive_integrity",
+        "archives_total": total,
+        "missing_b_chunks": missing_b,
+        "missing_c_clusters": missing_c,
+        "malformed_archives": malformed,
+        "passed": total > 0 and missing_b == 0 and missing_c == 0 and malformed == 0,
+        "issues": issues[:50],
+    }
 
 
 def ingest_dialogues_to_role_memory(
@@ -375,6 +489,7 @@ def summarize_results(
     f1_by_cat: dict[str, list[float]],
     j_by_cat: dict[str, list[float]],
     adv_by_cat: dict[str, dict[str, int]],
+    validation: dict[str, Any],
 ) -> dict[str, Any]:
     all_f1 = [r["f1"] for r in all_results if not r["adversarial"]]
     all_j = [r["j_score"] for r in all_results if not r["adversarial"] and r.get("j_score") is not None]
@@ -426,6 +541,7 @@ def summarize_results(
             "reset_role_memory": args.reset_role_memory,
             "detailed_output": str(Path(args.output).expanduser()),
         },
+        "validation": validation,
         "per_category": per_category,
         "notes": [
             "This benchmark follows the intended MoJo design: conversation facts first, ABCD second.",
@@ -443,6 +559,23 @@ async def run_benchmark(args) -> None:
     dialogues = load_locomo(args.data_dir)
     if args.max_dialogues:
         dialogues = dialogues[:args.max_dialogues]
+
+    validation_mode = args.validation_mode == "abcd_v1"
+    validation: dict[str, Any] = {
+        "mode": args.validation_mode,
+        "run_valid": True,
+        "invalid_reasons": [],
+        "stage_checks": [],
+        "counters": {
+            "invalid_output_count": 0,
+            "empty_facts_count": 0,
+            "questions_checked": 0,
+        },
+    }
+    if validation_mode:
+        validation["stage_checks"].append(
+            _validate_stage_a_input(dialogues, max_sessions=args.max_sessions)
+        )
 
     if args.dry_run:
         total_sessions = sum(
@@ -500,6 +633,8 @@ async def run_benchmark(args) -> None:
     archives = []
     if args.variant in ("facts_plus_abcd", "abcd_only"):
         archives = load_dream_archives(role_memory_dir)
+        if validation_mode:
+            validation["stage_checks"].append(_validate_stage_bc_archives(archives))
     embedding = svc.embedding
 
     all_results: list[dict[str, Any]] = []
@@ -544,7 +679,21 @@ async def run_benchmark(args) -> None:
 
             retrieval_ms = facts_ms + dream_ms
             latencies.append(retrieval_ms)
+
+            if args.variant in ("facts_only", "facts_plus_abcd") and not facts_hits:
+                validation["counters"]["empty_facts_count"] += 1
+                if args.fail_on_empty_facts or validation_mode:
+                    raise RuntimeError(
+                        "Validation failed: empty factual retrieval in facts-first variant. "
+                        f"dialogue={d_idx} category={category} question={question[:80]!r}"
+                    )
+
             answer = answer_question(llm, role, question, facts_hits, dream_hits, args.variant)
+            invalid_output, invalid_reason = _is_output_format_invalid(answer)
+            if invalid_output:
+                validation["run_valid"] = False
+                validation["counters"]["invalid_output_count"] += 1
+                validation["invalid_reasons"].append(invalid_reason or "unknown_output_invalid")
 
             if adversarial:
                 abstained = answer.strip() == "I don't have that information."
@@ -593,9 +742,14 @@ async def run_benchmark(args) -> None:
                     for text, score in combined
                 ],
                 "timestamp": datetime.datetime.now().isoformat(),
+                "run_validity": {
+                    "valid_output_format": not invalid_output,
+                    "invalid_reason": invalid_reason,
+                },
             }
             all_results.append(result)
             question_count += 1
+            validation["counters"]["questions_checked"] = question_count
 
             cat_name = {"1": "single-hop", "2": "multi-hop", "3": "temporal", "4": "commonsense", "5": "adversarial"}.get(category, category)
             print(f"  Q{question_count} [{cat_name:12s}] F1={f1:.2f} lat={retrieval_ms:.0f}ms | GT: {ground_truth[:25]!r} | A: {answer[:45]!r}")
@@ -607,6 +761,26 @@ async def run_benchmark(args) -> None:
         for r in all_results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+    if validation_mode:
+        for stage in validation["stage_checks"]:
+            if not stage.get("passed", False):
+                validation["run_valid"] = False
+                validation["invalid_reasons"].append(f"stage_failed:{stage.get('stage','unknown')}")
+        # Stage D check: if we evaluated questions and combined retrieval is always empty, fail.
+        if question_count > 0:
+            all_combined_empty = all(r.get("combined_hits", 0) == 0 for r in all_results)
+            stage_d = {
+                "stage": "D_retrieval_probe",
+                "questions_checked": question_count,
+                "all_combined_empty": all_combined_empty,
+                "passed": not all_combined_empty,
+                "issues": ["all_combined_hits_empty"] if all_combined_empty else [],
+            }
+            validation["stage_checks"].append(stage_d)
+            if all_combined_empty:
+                validation["run_valid"] = False
+                validation["invalid_reasons"].append("stage_failed:D_retrieval_probe")
+
     summary = summarize_results(
         args=args,
         run_id=run_id,
@@ -617,6 +791,7 @@ async def run_benchmark(args) -> None:
         f1_by_cat=f1_by_cat,
         j_by_cat=j_by_cat,
         adv_by_cat=adv_by_cat,
+        validation=validation,
     )
     paths["summary_output"].write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 

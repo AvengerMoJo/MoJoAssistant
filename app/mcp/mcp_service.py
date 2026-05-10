@@ -28,7 +28,7 @@ import uvicorn
 # Import MoJoAssistant components
 import sys
 sys.path.append('.')
-from app.services.memory_service import MemoryService
+from app.services.memory_backend import create_memory_service
 from app.config.logging_config import setup_logging, get_logger
 from app.config.config_loader import load_embedding_config
 from app.config.paths import get_memory_path
@@ -106,7 +106,7 @@ class ErrorResponse(BaseModel):
 
 
 # Global variables
-memory_service: Optional[MemoryService] = None
+memory_service: Optional[Any] = None
 logger: Optional[Any] = None
 start_time = time.time()
 
@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
         
         # Initialize memory service
         embed_config = embedding_config["embedding_models"]["default"]
-        memory_service = MemoryService(
+        memory_service = create_memory_service(
             data_dir=embedding_config.get("memory_settings", {}).get("data_directory") or get_memory_path(),
             embedding_model=embed_config.get("model_name", "nomic-ai/nomic-embed-text-v2-moe"),
             embedding_backend=embed_config.get("backend", "huggingface"),
