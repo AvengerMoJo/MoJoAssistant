@@ -33,7 +33,7 @@ Everything else below should be extracted or is already extracted.
 
 ## Memory + Dream Modules
 
-### 1. `memory-provider` ✅ Done (Phase 1)
+### 1. `memory-provider` 🔄 In progress (Phase 1 core complete)
 **Lives in:** `submodules/dreaming-memory-pipeline/src/mojo_memory/`  
 **Core shims:** `app/memory/*.py`, `app/services/memory_service.py`, `app/services/hybrid_memory_service.py`  
 **Boundary:** conversation CRUD/search, knowledge CRUD/search, archive operations  
@@ -58,16 +58,17 @@ Everything else below should be extracted or is already extracted.
 
 ---
 
-### 3. `provider-contracts` ✅ Done (renamed)
-**Now lives in:** [DATA_CONTRACTS.md](DATA_CONTRACTS.md)  
-Canonical versioned schemas for ConversationStore, TaskSession, RoleDefinition, DreamArchive, DynamicTool, NineChapterScore.  
+### 3. `provider-contracts` 🔄 In progress
+**Runtime interfaces live in:** `app/services/provider_contracts.py`  
+**Spec/data contracts live in:** [DATA_CONTRACTS.md](DATA_CONTRACTS.md)  
+Canonical schemas (ConversationStore, TaskSession, RoleDefinition, DreamArchive, DynamicTool, NineChapterScore) are documented in `DATA_CONTRACTS.md`, while executable provider interfaces and registry logic live in Python.  
 Any module reading/writing these stores must conform. Schema versions increment on breaking changes.
 
 ---
 
-### 4. `provider-registry` 📋 Planned (Phase 5, v2.0.0)
+### 4. `provider-registry` 🔄 In progress (Phase 1 baseline, v2.0.0 hardening pending)
 **Boundary:** module registration, discovery, startup validation, compatibility checks  
-**Currently:** no formal registry — submodules are loaded by hardcoded imports  
+**Currently:** baseline registry exists in `app/services/provider_contracts.py` (provider registration + resolution).  
 **Remaining work:**
 - [ ] Scan `submodules/*/module.json` at startup
 - [ ] Run each module's `health_check` command
@@ -190,9 +191,9 @@ The `app/memory/*.py` and `app/services/*.py` shims are the adapter layer.
 
 ---
 
-### 13. `conformance-suite` 📋 Planned
+### 13. `conformance-suite` 🔄 In progress
 **Boundary:** provider contract tests — any module claiming `MemoryModule@1.0` must pass these  
-**Currently:** no formal conformance tests; smoke tests exist but are Core-coupled  
+**Currently:** baseline conformance tests exist in `tests/conformance/test_provider_conformance.py`; expansion to all module types is pending.  
 **Remaining work:**
 - [ ] Define conformance test suite per interface (`MemoryModule`, `PersonaModule`, `GrowthModule`, `SkillModule`)
 - [ ] CI gate: new submodule must pass conformance before merging
@@ -207,7 +208,7 @@ The `app/memory/*.py` and `app/services/*.py` shims are the adapter layer.
 
 ---
 
-### 15. `docs-specs` ✅ Done (in progress)
+### 15. `docs-specs` 🔄 In progress
 **Lives in:** `docs/architecture/`  
 - [MOJO_MODULE_SYSTEM.md](MOJO_MODULE_SYSTEM.md) — modular architecture vision
 - [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — versioned schemas
@@ -220,8 +221,8 @@ The `app/memory/*.py` and `app/services/*.py` shims are the adapter layer.
 
 Unchanged from original — rationale still holds:
 
-1. **`provider-contracts`** ✅ → now `DATA_CONTRACTS.md`
-2. **`provider-registry`** → v2.0.0 (depends on stable contracts)
+1. **`provider-contracts`** 🔄 → runtime interfaces (`app/services/provider_contracts.py`) + schemas (`DATA_CONTRACTS.md`)
+2. **`provider-registry`** 🔄 baseline exists, v2.0.0 hardening pending
 3. **`memory-provider`** ✅ + **`dream-provider`** 🔄 → parallel tracks, Phase 1
 4. **`persona-provider`** 🔄 → Phase 1b (agency-agents + NineChapter)
 5. **`skill-blueprints`** → Phase 2, v1.4.x (new submodule)
