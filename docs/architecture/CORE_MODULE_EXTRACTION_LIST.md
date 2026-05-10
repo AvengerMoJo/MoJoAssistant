@@ -66,13 +66,19 @@ Any module reading/writing these stores must conform. Schema versions increment 
 
 ---
 
-### 4. `provider-registry` 🔄 In progress (Phase 1 baseline, v2.0.0 hardening pending)
+### 4. `provider-registry` ✅ Done (this fix scope)
+**Lives in:** `app/services/provider_contracts.py`  
 **Boundary:** module registration, discovery, startup validation, compatibility checks  
-**Currently:** baseline registry exists in `app/services/provider_contracts.py` (provider registration + resolution).  
-**Remaining work:**
-- [ ] Scan `submodules/*/module.json` at startup
-- [ ] Run each module's `health_check` command
-- [ ] Surface failures in `config(action="doctor")`
+**Completed 2026-05-11:**
+- Fixed submodule/src injection for import path handling
+- Fixed health-check instance keying
+- Added module load error tracking and introspection
+- Registry discovers and registers `mojo_memory` + `mojo_dream`
+- `resolve_memory_provider()` works via discovered provider
+- Conformance tests pass (13 passed)
+
+**Remaining (v2.0.0 hardening):**
+- [ ] Scan `submodules/*/module.json` at startup (declarative discovery)
 - [ ] Version compatibility check: warn if module `data_contracts` version mismatches Core
 
 ---
@@ -209,11 +215,15 @@ The `app/memory/*.py` and `app/services/*.py` shims are the adapter layer.
 ---
 
 ### 15. `docs-specs` 🔄 In progress
-**Lives in:** `docs/architecture/`  
+**Lives in:** `docs/architecture/` + `docs/guides/` + `docs/schemas/`  
 - [MOJO_MODULE_SYSTEM.md](MOJO_MODULE_SYSTEM.md) — modular architecture vision
 - [DATA_CONTRACTS.md](DATA_CONTRACTS.md) — versioned schemas
 - [MODULE_MIGRATION_PLAN.md](MODULE_MIGRATION_PLAN.md) — phased migration to v2.0.0
 - [CORE_MODULE_EXTRACTION_LIST.md](CORE_MODULE_EXTRACTION_LIST.md) — this document
+- `docs/guides/COMPATIBILITY_MATRIX.md` — module × Core version compatibility
+- `docs/guides/MIGRATION_GUIDE.md` — upgrade path for module consumers
+- `docs/guides/PLUGIN_AUTHOR_GUIDE.md` — how to build a conforming module
+- `docs/schemas/` — machine-readable contract schemas
 
 ---
 

@@ -241,6 +241,7 @@ class ConfigDoctor:
         self._check_memory_path(report)
         self._check_scheduler_config(report)
         self._check_capabilities(report)
+        self._check_modules(report)
         return report
 
     # ------------------------------------------------------------------
@@ -1448,6 +1449,78 @@ class ConfigDoctor:
                         value=tool_like, status="pass",
                         message=f"All {len(tool_like)} tool name(s) in overlay match registry",
                     ))
+
+    # ------------------------------------------------------------------
+    # Module health checks
+    # ------------------------------------------------------------------
+
+    def _check_modules(self, report: DoctorReport) -> None:
+        """Check provider module health and version compatibility."""
+        try:
+            from app.services.provider_contracts import get_registry
+            registry = get_registry()
+        except Exception as e:
+            report.add(CheckResult(
+                category="module", id="registry", field="load",
+                value=None, status="error",
+                message=f"Failed to load provider registry: {e}",
+            ))
+            return
+
+        # Discover modules
+        try:
+            modules = registry.discover_modules()
+            report.add(CheckResult(
+                category="module", id="registry", field="discovery",
+                value=len(modules), status="pass" if modules else "warn",
+                message=f"Discovered {len(modules)} module(s)" if modules else "No modules discovered",
+            ))
+            load_errors = registry.get_module_load_errors()
+            for mod_name, err in load_errors.items():
+                report.add(CheckResult(
+                    category="module", id=mod_name, field="load",
+                    value=None, status="error",
+                    message=f"Failed to load provider entry_point: {err}",
+                ))
+        except Exception as e:
+            report.add(CheckResult(
+                category="module", id="registry", field="discovery",
+                value=None, status="error",
+                message=f"Module discovery failed: {e}",
+            ))
+            return
+
+        # Version compatibility
+        warnings = registry.check_version_compatibility()
+        for warning in warnings:
+            report.add(CheckResult(
+                category="module", id="registry", field="version",
+                value=None, status="warn",
+                message=warning,
+            ))
+
+        # Health checks
+        health = registry.run_health_checks()
+        for name, result in health.items():
+            status = result.get("status", "unknown")
+            if status == "error":
+                report.add(CheckResult(
+                    category="module", id=name, field="health",
+                    value=result, status="error",
+                    message=f"Health check failed: {result.get('error', 'unknown')}",
+                ))
+            elif status == "skipped":
+                report.add(CheckResult(
+                    category="module", id=name, field="health",
+                    value=result, status="warn",
+                    message=f"Skipped: {result.get('reason', 'not instantiated')}",
+                ))
+            else:
+                report.add(CheckResult(
+                    category="module", id=name, field="health",
+                    value=result, status="pass",
+                    message=f"Health check passed",
+                ))
 
 
 # ===========================================================================

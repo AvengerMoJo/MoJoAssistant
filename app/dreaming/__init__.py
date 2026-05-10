@@ -44,6 +44,10 @@ from dreaming.chunker import ConversationChunker  # noqa: E402, F401
 from dreaming.synthesizer import DreamingSynthesizer  # noqa: E402, F401
 from dreaming.storage.base import StorageBackend  # noqa: E402, F401
 from dreaming.storage.json_backend import JsonFileBackend  # noqa: E402, F401
+from dreaming.dream_provider import DreamProviderAdapter  # noqa: E402, F401
+
+# Provider registry for dream module
+from app.services.memory_backend import get_dream_provider  # noqa: E402, F401
 
 __all__ = [
     'BChunk',
@@ -54,4 +58,6 @@ __all__ = [
     'DreamingSynthesizer',
     'StorageBackend',
     'JsonFileBackend',
+    'DreamProviderAdapter',
+    'get_dream_provider',
 ]

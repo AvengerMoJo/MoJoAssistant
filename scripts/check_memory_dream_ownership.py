@@ -3,6 +3,7 @@
 
 Policy:
 - `app/memory/*.py` and app memory service files must remain compatibility shims.
+- `app/dreaming/*.py` must remain compatibility shims.
 - Non-doc code must not import legacy `app.memory` / `app.services.memory_service`
   / `app.services.hybrid_memory_service` paths.
 """
@@ -15,7 +16,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-SHIM_FILES = {
+# Memory shim files
+MEMORY_SHIM_FILES = {
     ROOT / "app/memory/active_memory.py",
     ROOT / "app/memory/archival_memory.py",
     ROOT / "app/memory/knowledge_manager.py",
@@ -26,6 +28,18 @@ SHIM_FILES = {
     ROOT / "app/services/memory_service.py",
     ROOT / "app/services/hybrid_memory_service.py",
 }
+
+# Dream shim files
+DREAM_SHIM_FILES = {
+    ROOT / "app/dreaming/__init__.py",
+    ROOT / "app/dreaming/pipeline.py",
+    ROOT / "app/dreaming/chunker.py",
+    ROOT / "app/dreaming/synthesizer.py",
+    ROOT / "app/dreaming/models.py",
+}
+
+# All shim files (combined)
+SHIM_FILES = MEMORY_SHIM_FILES | DREAM_SHIM_FILES
 
 LEGACY_IMPORT_PATTERNS = [
     re.compile(r"\bfrom\s+app\.memory\.[\w_]+\s+import\b"),
@@ -57,9 +71,14 @@ def _iter_py_files() -> list[Path]:
 
 def check_shims() -> list[str]:
     errors: list[str] = []
-    required_markers = (
+    memory_required_markers = (
         "Compatibility shim",
         "from mojo_memory.",
+    )
+    # Dream shims need submodule path and dreaming imports
+    dream_required_markers = (
+        "dreaming-memory-pipeline",
+        "from dreaming.",
     )
 
     for path in sorted(SHIM_FILES):
@@ -68,10 +87,20 @@ def check_shims() -> list[str]:
             continue
 
         text = path.read_text(encoding="utf-8")
-        if not all(marker in text for marker in required_markers):
-            errors.append(
-                f"non-shim content detected in {path}: expected compatibility marker and mojo_memory import"
-            )
+        
+        # Check memory shims
+        if path in MEMORY_SHIM_FILES:
+            if not all(marker in text for marker in memory_required_markers):
+                errors.append(
+                    f"non-shim content detected in {path}: expected compatibility marker and mojo_memory import"
+                )
+        
+        # Check dream shims
+        elif path in DREAM_SHIM_FILES:
+            if not all(marker in text for marker in dream_required_markers):
+                errors.append(
+                    f"non-shim content detected in {path}: expected submodule path and dreaming import"
+                )
 
     return errors
 
