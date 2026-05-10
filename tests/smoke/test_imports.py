@@ -22,6 +22,8 @@ CORE_MODULES = [
     "app.scheduler.policy.data_boundary_checker",
     "app.scheduler.capability_registry",
     "app.memory.simplified_embeddings",
+    "mojo_memory.services.memory_service",
+    "mojo_memory.services.hybrid_memory_service",
     "app.mcp.adapters.audit_log",
     "app.mcp.adapters.event_log",
     "app.mcp.adapters.attention_classifier",

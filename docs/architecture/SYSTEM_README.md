@@ -22,6 +22,24 @@ MoJoAssistant follows the same layering convention as Linux system configuration
 
 ---
 
+## Modular Architecture
+
+MoJo Core is an orchestration engine. Every major intellectual component — memory consolidation, persona generation, role growth, skill definitions — is a pluggable **module** delivered as a git submodule.
+
+The data stores are the interface. Any module that honors the [Data Contracts](DATA_CONTRACTS.md) can be swapped in without touching Core. A better memory model, a different persona system, an alternate growth framework: one `git submodule add` + `pip install`.
+
+See [MOJO_MODULE_SYSTEM.md](MOJO_MODULE_SYSTEM.md) for the full design and [MODULE_MIGRATION_PLAN.md](MODULE_MIGRATION_PLAN.md) for the v2.0.0 migration roadmap.
+
+**Current modules:**
+| Module | Type | Submodule |
+|--------|------|-----------|
+| dreaming-memory-pipeline | Memory (ABCD pipeline) | `submodules/dreaming-memory-pipeline` |
+| agency-agents | Persona (185 personas, NineChapter) | `submodules/agency-agents` |
+| BRIDLE/Bonsai | Growth (built-in, extraction in v1.5.x) | — |
+| Skill Blueprint | Skill (planned v1.4.x) | — |
+
+---
+
 ## Core Architecture
 
 ### Memory System Tiers

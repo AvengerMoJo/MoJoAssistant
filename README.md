@@ -311,6 +311,9 @@ The preflight checker validates required binaries (`tmux`, `node`, `cargo`) befo
 
 ### Architecture
 - [System Overview](docs/architecture/SYSTEM_README.md)
+- [Module System](docs/architecture/MOJO_MODULE_SYSTEM.md) — pluggable modules, data store contracts, upgrade path
+- [Data Contracts](docs/architecture/DATA_CONTRACTS.md) — stable schemas for all data stores (v1.0)
+- [Module Migration Plan](docs/architecture/MODULE_MIGRATION_PLAN.md) — migration roadmap to v2.0.0
 - [Scheduler Architecture](docs/architecture/SCHEDULER_ARCHITECTURE.md)
 - [MCP Design](docs/architecture/MCP_DESIGN.md)
 - [Sub-Agent Dispatch](docs/architecture/SUB_AGENT_DISPATCH.md)

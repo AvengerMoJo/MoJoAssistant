@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.mcp.core.tools import ToolRegistry
-from app.services.hybrid_memory_service import HybridMemoryService
+from mojo_memory.services.hybrid_memory_service import HybridMemoryService
 
 
 @pytest.mark.asyncio

@@ -36,7 +36,7 @@ os.environ.setdefault("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 @pytest.fixture(scope="session")
 def registry():
     """Single ToolRegistry instance shared across all tests."""
-    from app.services.hybrid_memory_service import HybridMemoryService
+    from mojo_memory.services.hybrid_memory_service import HybridMemoryService
     from app.mcp.core.tools import ToolRegistry
 
     memory_path = "/tmp/mojo-smoke-test"

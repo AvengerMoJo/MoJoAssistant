@@ -45,8 +45,8 @@ def test_add_document():
     print("="*70)
 
     try:
-        from app.memory.simplified_embeddings import SimpleEmbedding
-        from app.memory.knowledge_manager import KnowledgeManager
+        from mojo_memory.memory.simplified_embeddings import SimpleEmbedding
+        from mojo_memory.memory.knowledge_manager import KnowledgeManager
 
         print("✅ Imports successful")
 

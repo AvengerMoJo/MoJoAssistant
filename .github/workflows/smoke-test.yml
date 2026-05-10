@@ -31,6 +31,10 @@ jobs:
           pip install -r requirements-runtime.txt
           pip install submodules/dreaming-memory-pipeline/
 
+      - name: Enforce memory/dream ownership boundary
+        run: |
+          python scripts/check_memory_dream_ownership.py
+
       - name: Config doctor gate (error-only)
         env:
           ENVIRONMENT: ci
