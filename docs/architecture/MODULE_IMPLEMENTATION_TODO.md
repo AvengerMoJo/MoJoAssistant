@@ -130,7 +130,7 @@ Acceptance:
 ---
 
 ### 7. Persona Provider Completion
-Status: `IN PROGRESS (Interface Baseline Done)`
+Status: `DONE (Phase 1b core goals)`
 
 Scope:
 - Finish extraction of persona generation/scoring logic.
@@ -146,12 +146,12 @@ Completed:
 3. Persona module descriptor added: `submodules/agency-agents/module.json`.
 4. MCP `role(action="create")` supports persona-module generation path via `persona_spec` / `persona_file`.
 5. Persona conformance baseline test added: `tests/conformance/test_persona_provider_conformance.py`.
+6. NineChapter canonical implementation moved into submodule: `submodules/agency-agents/src/agency_agents/ninechapter.py`.
+7. Core `app/scheduler/ninechapter.py` converted to compatibility shim.
 
 Still missing for #7:
-1. Move `app/scheduler/ninechapter.py` scoring logic into persona submodule canonical path.
-2. Add core shim for `app/scheduler/ninechapter.py` after move.
-3. Route additional persona-related flows (beyond role create) through provider interface where applicable.
-4. Add submodule-local interface docs/README for `PersonaModule@1.0`.
+1. Route additional persona-related flows (beyond role create) through provider interface where applicable.
+2. Add submodule-local interface docs/README for `PersonaModule@1.0`.
 
 Acceptance:
 - Role creation/scoring path goes through persona module interface.
@@ -163,9 +163,8 @@ Acceptance:
 1. Dream extraction not complete: `app/dreaming/*` still has non-shim implementation pieces.
 2. Registry hardening not complete: descriptor schema validation and dependency graph enforcement still pending.
 3. Conformance expansion not complete: Growth/Skill conformance suites and CI matrix gate still pending.
-4. Persona completion not complete: NineChapter canonical move to submodule pending.
-5. Retrieval/Embedding/Storage modular splits not started beyond planning.
-6. Growth, Skill, Benchmark decoupling, Plugin SDK are still planned/research stages.
+4. Retrieval/Embedding/Storage modular splits not started beyond planning.
+5. Growth, Skill, Benchmark decoupling, Plugin SDK are still planned/research stages.
 
 ---
 

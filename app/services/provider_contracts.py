@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 from abc import ABC, abstractmethod
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
@@ -403,7 +404,6 @@ class ProviderRegistry:
         Also scans for module.*.json to support multiple modules per submodule.
         Returns list of discovered module descriptors.
         """
-        from pathlib import Path
         import importlib
 
         if submodule_dir is None:
@@ -413,6 +413,8 @@ class ProviderRegistry:
         if not submodule_path.exists():
             logger.warning("provider_registry: submodule dir not found: %s", submodule_dir)
             return []
+
+        strict = os.environ.get("MOJO_STRICT_MODULE_LOADING", "").lower() in ("1", "true", "yes")
 
         discovered = []
         # Scan for module.json and module.*.json patterns
@@ -464,11 +466,18 @@ class ProviderRegistry:
                                 "provider_registry: failed to load provider '%s' from %s: %s",
                                 name, entry_point, e
                             )
-                
+
                 logger.info("provider_registry: discovered module '%s' v%s", name, module_data.get("version"))
-                
+
             except Exception as e:
                 logger.warning("provider_registry: failed to parse %s: %s", module_json, e)
+
+        if strict and self._module_load_errors:
+            names = ", ".join(self._module_load_errors)
+            raise RuntimeError(
+                f"MOJO_STRICT_MODULE_LOADING: module load errors for: {names}. "
+                f"Errors: {self._module_load_errors}"
+            )
 
         return discovered
 

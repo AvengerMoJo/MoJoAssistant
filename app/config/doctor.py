@@ -1490,6 +1490,39 @@ class ConfigDoctor:
             ))
             return
 
+        # Descriptor schema validation
+        try:
+            descriptor_errors = registry.validate_all_descriptors()
+            for mod_name, errors in descriptor_errors.items():
+                for err in errors:
+                    report.add(CheckResult(
+                        category="module", id=mod_name, field="descriptor",
+                        value=None, status="error",
+                        message=f"Descriptor schema violation: {err}",
+                    ))
+        except Exception as e:
+            report.add(CheckResult(
+                category="module", id="registry", field="descriptor_validation",
+                value=None, status="warn",
+                message=f"Could not validate descriptors: {e}",
+            ))
+
+        # Dependency graph check
+        try:
+            missing_deps = registry.check_dependency_graph()
+            for mod_name, absent in missing_deps.items():
+                report.add(CheckResult(
+                    category="module", id=mod_name, field="dependencies",
+                    value=absent, status="error",
+                    message=f"Missing dependencies: {', '.join(absent)}",
+                ))
+        except Exception as e:
+            report.add(CheckResult(
+                category="module", id="registry", field="dependency_graph",
+                value=None, status="warn",
+                message=f"Could not check dependency graph: {e}",
+            ))
+
         # Version compatibility
         warnings = registry.check_version_compatibility()
         for warning in warnings:

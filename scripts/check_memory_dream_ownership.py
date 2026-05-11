@@ -36,6 +36,9 @@ DREAM_SHIM_FILES = {
     ROOT / "app/dreaming/chunker.py",
     ROOT / "app/dreaming/synthesizer.py",
     ROOT / "app/dreaming/models.py",
+    ROOT / "app/dreaming/session_compactor.py",
+    ROOT / "app/dreaming/inbox_distillation.py",
+    ROOT / "app/dreaming/setup.py",
 }
 
 # All shim files (combined)
