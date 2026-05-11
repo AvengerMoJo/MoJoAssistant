@@ -223,13 +223,13 @@ Acceptance:
 
 ---
 
-## Status Summary (2026-05-11)
+## Status Summary (2026-05-12)
 
 | # | Module | Status | Tests |
 |---|--------|--------|-------|
 | 1 | Dream Provider Extraction | DONE | via provider conformance |
 | 2 | Provider Registry Hardening | DONE | via smoke + doctor |
-| 3 | Conformance Suite Expansion | DONE | 85 passing, CI gated |
+| 3 | Conformance Suite Expansion | DONE | 121 passing, CI gated |
 | 4 | Retrieval Engine | DONE | 22 conformance tests |
 | 5 | Embedding Backends | DONE | 4 conformance tests |
 | 6 | Storage Backends | DONE | 3 conformance tests |
@@ -241,20 +241,19 @@ Acceptance:
 
 ## What's Still Missing
 
-### Active
-- **#11 Plugin SDK** — in progress.
-- Remaining:
-  - expand scaffolding templates for additional provider types
-  - add stronger validator checks (entry_point importability, optional schema checks)
-  - add conformance-oriented sample plugin that implements one full provider contract
-
 ### Structural gaps within completed modules
 - **Growth DIRECTION pillar** — owner one-on-one calibration; deferred pending chat→dream bridge.
 - **Growth PRESENT pillar** — HITL blocking validation; `hitl_callback` slot reserved in
   `BonsaiGrowthModule`, wiring deferred until DIRECTION exists.
 
 ### Planned (no code started)
-- No planned modules left in this list; all remaining work is active implementation or post-DONE enhancements.
+- **#11 Plugin SDK** — scaffolding templates, validation CLI, sample plugin package.
+  Natural deliverable once #9 and #10 are proven stable in production.
+
+### Runtime validation pending
+- **CubeSandbox end-to-end** — dispatch an agent with `docs/skills/skill_installer_prompt.md`
+  + CubeSandbox README URL against a live CubeSandbox server; agent should independently
+  produce the cubesandbox_exec/create blueprints. Requires a running KVM server.
 
 ### Runtime adoption validation target — CubeSandbox
 **https://github.com/tencentcloud/CubeSandbox** is the canonical integration test for #9.
