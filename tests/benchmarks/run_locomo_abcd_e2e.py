@@ -25,8 +25,6 @@ from types import SimpleNamespace
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.dreaming.pipeline import DreamingPipeline
-from app.llm.llm_interface import LLMInterface
 from tests.benchmarks.run_locomo import build_run_id, load_locomo
 
 
@@ -109,6 +107,8 @@ async def prepare_dreams(args, role_dir: Path) -> None:
         print(f"[DRY RUN] Would prepare dreams for {len(dialogues)} dialogues and {total_sessions} sessions under {role_dir}")
         return
 
+    from app.dreaming.pipeline import DreamingPipeline
+    from app.llm.llm_interface import LLMInterface
     llm = LLMInterface(config_file=str(PROJECT_ROOT / "config/llm_config.json"))
 
     for d_idx, dialogue in enumerate(dialogues):

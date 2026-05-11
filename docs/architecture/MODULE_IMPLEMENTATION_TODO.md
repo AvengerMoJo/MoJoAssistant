@@ -351,10 +351,9 @@ Progress:
 2. Refactored `tests/benchmarks/run_longmemeval.py` to use provider runtime (`get_memory_provider`) instead of concrete `MemoryService` import.
 3. Added smoke guard: `tests/smoke/test_benchmark_decoupling.py` to prevent regressions to direct `MemoryService` coupling.
 
-Remaining (for delegated agent):
-- `run_locomo.py:277` — one `from app.llm.llm_interface import LLMInterface` import; route through an `LLMProvider` contract or provider_runtime.
-- `run_locomo_abcd_e2e.py:28-29` — `from app.dreaming.pipeline import DreamingPipeline` and `from app.llm.llm_interface import LLMInterface`; replace with provider-runtime or skip/stub if abcd_e2e is intentionally app-coupled.
-- Extend `test_benchmark_decoupling.py` smoke guard to cover these two files once fixed.
+4. `run_locomo.py` — `LLMInterface` import already inside `build_llm()` function (lazy); no change needed.
+5. `run_locomo_abcd_e2e.py` — moved `DreamingPipeline` + `LLMInterface` imports from module level into `prepare_dreams()` body (lazy).
+6. `test_benchmark_decoupling.py` extended with guards for both `run_locomo.py` and `run_locomo_abcd_e2e.py`.
 
 ---
 
