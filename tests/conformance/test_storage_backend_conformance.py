@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+import pytest
 
 from mojo_memory.memory.multi_model_storage import MultiModelEmbeddingStorage
+from mojo_memory.memory.knowledge_manager import KnowledgeManager
 from mojo_memory.storage import (
+    DuckDBStorageBackend,
     LocalFileStorageBackend,
     StorageBackend,
     create_storage_backend,
@@ -61,6 +64,17 @@ def test_registry_supports_custom_backend():
     assert backend.health_check()["ok"] is True
 
 
+def test_duckdb_backend_roundtrip(tmp_path):
+    pytest.importorskip("duckdb")
+    db_path = tmp_path / "storage.duckdb"
+    backend = DuckDBStorageBackend(db_path=db_path)
+    backend.write_json("knowledge/test.json", {"x": 1})
+    assert backend.read_json("knowledge/test.json") == {"x": 1}
+    assert backend.exists("knowledge/test.json")
+    assert "knowledge/test.json" in backend.list_keys("knowledge/")
+    assert backend.delete("knowledge/test.json") is True
+
+
 def test_multi_model_storage_supports_injected_backend():
     backend = InMemoryStorageBackend()
     store = MultiModelEmbeddingStorage(data_dir="/tmp/unused", storage_backend=backend)
@@ -68,3 +82,28 @@ def test_multi_model_storage_supports_injected_backend():
     store2 = MultiModelEmbeddingStorage(data_dir="/tmp/unused", storage_backend=backend)
     assert len(store2.conversations) == 1
     assert store2.conversations[0]["message_id"] == "m1"
+
+
+def test_knowledge_manager_supports_injected_backend():
+    class DummyEmbedding:
+        def get_batch_embeddings(self, texts):
+            return [[0.1, 0.2] for _ in texts]
+
+        def get_text_embedding(self, text):
+            return [0.1, 0.2]
+
+    backend = InMemoryStorageBackend()
+    km = KnowledgeManager(
+        embedding=DummyEmbedding(),
+        collection_name="knowledge",
+        data_dir="/tmp/unused",
+        storage_backend=backend,
+    )
+    km.add_documents(["hello world"], [{"source": "test"}])
+    km2 = KnowledgeManager(
+        embedding=DummyEmbedding(),
+        collection_name="knowledge",
+        data_dir="/tmp/unused",
+        storage_backend=backend,
+    )
+    assert len(km2.documents) == 1

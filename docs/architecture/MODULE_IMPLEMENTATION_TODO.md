@@ -160,16 +160,17 @@ Scope:
 
 Deliverables:
 1. `StorageBackend` interface.
-2. JSON/local-file backend as reference.
-3. S3 backend stub with clear extension points.
+2. Local FS backend as baseline reference.
+3. DuckDB backend as advanced reference (relational + vector-ready extension point).
 
 Completed:
 1. Generic `StorageBackend` ABC in `mojo_memory/storage/base.py`.
 2. `LocalFileStorageBackend` in `mojo_memory/storage/local_fs_backend.py` — default reference backend.
-3. `S3StorageBackend` stub in `mojo_memory/storage/s3_backend.py`.
+3. `DuckDBStorageBackend` in `mojo_memory/storage/duckdb_backend.py`.
 4. Backend registry/factory (`register_storage_backend`, `create_storage_backend`) for dynamic plugin loading.
 5. `MultiModelEmbeddingStorage` refactored to consume injected/selected backend instead of hardcoded file I/O.
-6. Conformance coverage in `tests/conformance/test_storage_backend_conformance.py` (3 tests).
+6. `KnowledgeManager` migrated to the pluggable storage backend interface.
+7. Conformance coverage in `tests/conformance/test_storage_backend_conformance.py` (local fs, duckdb when installed, custom backend registration, injected backend behavior).
 
 Acceptance:
 - Memory provider uses storage interface, not concrete JSON assumptions.
@@ -211,7 +212,7 @@ Acceptance:
 2. ~~Registry hardening not complete~~ — DONE (2026-05-11).
 3. ~~Conformance expansion~~ — DONE (2026-05-11). Growth/Skill/Persona conformance + provider matrix + CI gate. Keep extending as new provider families are added.
 4. ~~Retrieval modular split~~ — DONE (2026-05-11).
-5. ~~Storage backend modularization~~ — DONE (2026-05-11). LocalFile + S3 stub + registry + conformance tests.
+5. ~~Storage backend modularization~~ — DONE (2026-05-11). LocalFile + DuckDB + registry + conformance tests.
 6. Persona (#7) core extraction and interface docs are complete; future work is optimization, not structural completion.
 7. **Embedding Backends (#5)** — interface design done, implementation pending. Needs: `EmbeddingBackend` ABC, built-in backends (HF/LocalServer/Random), `SimpleEmbedding` refactor, conformance suite, bridge installer prompt. This is the next active item.
 8. Growth (#8), Skill Blueprints (#9), Benchmark Decoupling (#10), Plugin SDK (#11) — still PLANNED/RESEARCH stages.
