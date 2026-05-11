@@ -45,7 +45,7 @@ Acceptance:
 ---
 
 ### 2. Provider Registry Hardening
-Status: `IN PROGRESS`
+Status: `DONE` (2026-05-11)
 
 Scope:
 - Strengthen module discovery/validation/runtime behavior.
@@ -55,6 +55,12 @@ Deliverables:
 2. Add dependency checks (`dependencies` graph in module descriptors).
 3. Add startup policy switch for strict mode (fail on module load errors).
 4. Extend doctor output with dependency/descriptor validation diagnostics.
+
+Completed:
+1. `validate_descriptor()` / `validate_all_descriptors()` in `provider_contracts.py` — checks each descriptor against `docs/schemas/module.json` via jsonschema.
+2. `check_dependency_graph()` — flags modules whose declared dependencies are not registered.
+3. `MOJO_STRICT_MODULE_LOADING` env var — `discover_modules()` raises `RuntimeError` on any load error when set.
+4. `doctor.py` `_check_modules()` surfaces descriptor violations and missing dependencies as `"error"` CheckResults.
 
 Acceptance:
 - Invalid descriptor -> deterministic doctor error.
@@ -160,11 +166,12 @@ Acceptance:
 
 ## Missing Now (Cross-Module Snapshot)
 
-1. Dream extraction not complete: `app/dreaming/*` still has non-shim implementation pieces.
-2. Registry hardening not complete: descriptor schema validation and dependency graph enforcement still pending.
-3. Conformance expansion not complete: Growth/Skill conformance suites and CI matrix gate still pending.
+1. ~~Dream extraction not complete~~ — DONE (2026-05-11).
+2. ~~Registry hardening not complete~~ — DONE (2026-05-11).
+3. Conformance expansion not complete: Growth and Skill conformance skeletons not written; CI workflow gate not wired up; plugin matrix test (default + mock provider) not added.
 4. Retrieval/Embedding/Storage modular splits not started beyond planning.
 5. Growth, Skill, Benchmark decoupling, Plugin SDK are still planned/research stages.
+6. Persona (#7): two trailing items — non-create persona flows not yet routed through provider interface; no submodule-local README for `PersonaModule@1.0`.
 
 ---
 
