@@ -153,7 +153,7 @@ Acceptance:
 ---
 
 ### 6. Storage Backends Module
-Status: `PLANNED`
+Status: `IN PROGRESS` (2026-05-11)
 
 Scope:
 - Abstract persistence layer.
@@ -162,6 +162,13 @@ Deliverables:
 1. `StorageBackend` interface.
 2. JSON backend as reference.
 3. SQLite/vector backend stubs with clear extension points.
+
+Completed in this phase:
+1. Generic `StorageBackend` contract added under submodule-owned `mojo_memory.storage`.
+2. `LocalFileStorageBackend` added as default reference backend.
+3. Backend registry/factory added (`register_storage_backend`, `create_storage_backend`) for dynamic plugin loading by name or import path.
+4. `MultiModelEmbeddingStorage` refactored to consume injected/selected backend instead of hardcoded file I/O.
+5. Conformance coverage added for local backend, custom backend registration, and injected-backend persistence.
 
 Acceptance:
 - Memory provider uses storage interface, not concrete JSON assumptions.
@@ -202,7 +209,7 @@ Acceptance:
 1. ~~Dream extraction not complete~~ — DONE (2026-05-11).
 2. ~~Registry hardening not complete~~ — DONE (2026-05-11).
 3. Conformance expansion completed for Persona/Growth/Skill and provider matrix; keep extending as new provider families are added.
-4. ~~Retrieval modular split~~ — DONE (2026-05-11). Embedding/Storage splits still planned.
+4. ~~Retrieval modular split~~ — DONE (2026-05-11). Embedding split remains planned; storage split is now in progress.
 5. Growth, Skill, Benchmark decoupling, Plugin SDK are still planned/research stages.
 6. Persona (#7) core extraction and interface docs are complete; future work is optimization, not structural completion.
 
