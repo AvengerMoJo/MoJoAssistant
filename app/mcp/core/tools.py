@@ -1981,6 +1981,20 @@ Agent resumes within seconds.
             search_types = all_types
 
         results: Dict[str, Any] = {}
+        if not getattr(self.memory_service, "is_available", True):
+            reason = getattr(self.memory_service, "reason", "Memory provider unavailable")
+            return {
+                "status": "degraded",
+                "query": query,
+                "types_searched": search_types,
+                "results": {},
+                "total": 0,
+                "message": (
+                    "Your memory provider is not configured or failed to load. "
+                    "Install/select a memory module, then retry."
+                ),
+                "reason": reason,
+            }
 
         if "conversations" in search_types:
             try:
@@ -2023,11 +2037,16 @@ Agent resumes within seconds.
                         item["content_truncated"] = True
 
         total = sum(len(v) for v in results.values())
+        message = None
+        if total == 0:
+            message = "Your memory model is empty. Add conversations/documents first."
         return {
+            "status": "ok",
             "query": query,
             "types_searched": search_types,
             "results": results,
             "total": total,
+            "message": message,
         }
 
     async def _execute_add_conversation(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -4590,8 +4609,29 @@ Agent resumes within seconds.
     async def _execute_role_create(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Save a role config (from a design session or provided directly)."""
         from app.roles.role_designer import RoleDesignSession
+        from app.services.provider_contracts import PersonaSpec, get_registry
         session_id = args.get("session_id")
         role_data = args.get("role")
+
+        if not role_data and (args.get("persona_spec") or args.get("persona_file")):
+            try:
+                registry = get_registry()
+                persona = registry.resolve_persona_provider()
+                raw_spec = args.get("persona_spec") or {}
+                if args.get("persona_file"):
+                    raw_spec = dict(raw_spec)
+                    raw_spec["persona_file"] = args.get("persona_file")
+
+                spec = PersonaSpec(
+                    name=str(raw_spec.get("name", "Imported Persona")),
+                    purpose=str(raw_spec.get("purpose", "Persona-generated role")),
+                    capabilities=list(raw_spec.get("capabilities", ["memory"])),
+                    persona_file=raw_spec.get("persona_file"),
+                    metadata=raw_spec.get("metadata", {}),
+                )
+                role_data = persona.generate(spec)
+            except Exception as e:
+                return {"status": "error", "message": f"Persona module generation failed: {e}"}
 
         if session_id and not role_data:
             session = RoleDesignSession.load(session_id)
