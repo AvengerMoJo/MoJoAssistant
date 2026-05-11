@@ -480,6 +480,7 @@ class ProviderRegistry:
         self._memory_providers: Dict[str, type] = {}
         self._dream_providers: Dict[str, type] = {}
         self._persona_providers: Dict[str, type] = {}
+        self._growth_providers: Dict[str, type] = {}
         self._instances: Dict[str, Any] = {}
         self._modules: Dict[str, Dict[str, Any]] = {}  # name -> module.json data
         self._health_status: Dict[str, Dict[str, Any]] = {}  # name -> health result
@@ -507,6 +508,13 @@ class ProviderRegistry:
             raise TypeError(f"{provider_class} must be a subclass of PersonaProvider")
         self._persona_providers[name] = provider_class
         logger.info("provider_registry: registered persona provider '%s'", name)
+
+    def register_growth_provider(self, name: str, provider_class: type) -> None:
+        """Register a growth provider class by name."""
+        if not issubclass(provider_class, GrowthProvider):
+            raise TypeError(f"{provider_class} must be a subclass of GrowthProvider")
+        self._growth_providers[name] = provider_class
+        logger.info("provider_registry: registered growth provider '%s'", name)
 
     # -- Module discovery ---------------------------------------------------
 
@@ -871,6 +879,36 @@ class ProviderRegistry:
             self._instances[cache_key] = self._persona_providers[name](**kwargs)
         return self._instances[cache_key]
 
+    def resolve_growth_provider(
+        self,
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> "GrowthProvider":
+        """
+        Resolve and instantiate a growth provider.
+        Resolution order:
+        1. Explicit name parameter
+        2. MOJO_GROWTH_PROVIDER env var
+        3. Default ("bonsai_growth")
+        """
+        if name is None:
+            name = os.getenv("MOJO_GROWTH_PROVIDER", "bonsai_growth")
+
+        if name not in self._growth_providers:
+            self._register_default_growth_provider(name)
+
+        if name not in self._growth_providers:
+            available = list(self._growth_providers.keys())
+            raise ValueError(
+                f"Growth provider '{name}' not registered. "
+                f"Available: {available}"
+            )
+
+        cache_key = f"growth:{name}"
+        if cache_key not in self._instances:
+            self._instances[cache_key] = self._growth_providers[name](**kwargs)
+        return self._instances[cache_key]
+
     # -- Startup validation -------------------------------------------------
 
     def validate_compatibility(self) -> List[str]:
@@ -923,6 +961,16 @@ class ProviderRegistry:
             self.register_persona_provider("agency_persona", AgencyPersonaModule)
         except ImportError:
             logger.warning("provider_registry: could not import agency persona provider")
+
+    def _register_default_growth_provider(self, name: str) -> None:
+        """Auto-register default growth provider."""
+        if name != "bonsai_growth":
+            return
+        try:
+            from app.scheduler.growth_provider import BonsaiGrowthModule
+            self.register_growth_provider("bonsai_growth", BonsaiGrowthModule)
+        except ImportError:
+            logger.warning("provider_registry: could not import bonsai growth provider")
 
 
 # ---------------------------------------------------------------------------

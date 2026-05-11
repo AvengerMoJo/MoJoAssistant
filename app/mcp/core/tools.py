@@ -4516,6 +4516,12 @@ Agent resumes within seconds.
             return await self._execute_role_persona_list(args)
         if action == "persona_score":
             return await self._execute_role_persona_score(args)
+        if action == "growth_snapshot":
+            return await self._execute_role_growth_snapshot(args)
+        if action == "growth_propose":
+            return await self._execute_role_growth_propose(args)
+        if action == "growth_validate":
+            return await self._execute_role_growth_validate(args)
         if action == "design_start":
             return await self._execute_role_design_start({
                 "description": args.get("description", "")
@@ -4538,8 +4544,11 @@ Agent resumes within seconds.
                 "get":           "Full role spec — params: role_id",
                 "create":        "Save role — params: session_id? | role?, capabilities?, model_preference?, policy?, notify_on_completion?",
                 "edit":          "Patch an existing role — params: role_id, capabilities? (replaces), capabilities_add? (appends), capabilities_remove? (removes), model_preference?, description?, notify_on_completion?, policy?",
-                "persona_list":  "List personas from persona module — params: filter?",
-                "persona_score": "Score a role with persona module — params: role? or role_id",
+                "persona_list":      "List personas from persona module — params: filter?",
+                "persona_score":     "Score a role with persona module — params: role? or role_id",
+                "growth_snapshot":   "Current growth state for a role — params: role_id",
+                "growth_propose":    "Evaluate signals and generate a growth proposal — params: role_id, signals",
+                "growth_validate":   "Accept or reject a growth proposal — params: role_id, proposal, decision (accept|reject)",
                 "design_start":  "Begin Nine Chapter interview — params: description?",
                 "design_answer": "Submit answer / advance interview — params: session_id, answer",
             },
@@ -4748,6 +4757,62 @@ Agent resumes within seconds.
             }
         except Exception as e:
             return {"status": "error", "message": f"Persona module score failed: {e}"}
+
+    async def _execute_role_growth_snapshot(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return current growth state for a role via GrowthModule provider."""
+        from app.services.provider_contracts import get_registry
+        role_id = args.get("role_id")
+        if not role_id:
+            return {"status": "error", "message": "role_id is required"}
+        try:
+            provider = get_registry().resolve_growth_provider()
+            snap = provider.snapshot(role_id)
+            return {
+                "status": "success",
+                "provider": provider.get_version().provider_name,
+                "role_id": snap.role_id,
+                "timestamp": snap.timestamp,
+                "dimensions": snap.dimensions,
+                "metadata": snap.metadata,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"Growth snapshot failed: {e}"}
+
+    async def _execute_role_growth_propose(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Evaluate growth signals and generate a proposal via GrowthModule provider."""
+        from app.services.provider_contracts import get_registry
+        role_id = args.get("role_id")
+        signals = args.get("signals")
+        if not role_id or signals is None:
+            return {"status": "error", "message": "role_id and signals are required"}
+        try:
+            provider = get_registry().resolve_growth_provider()
+            evaluation = provider.evaluate(role_id, signals)
+            proposal = provider.propose(role_id, evaluation)
+            return {
+                "status": "success",
+                "provider": provider.get_version().provider_name,
+                **proposal,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"Growth propose failed: {e}"}
+
+    async def _execute_role_growth_validate(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Accept or reject a growth proposal via GrowthModule provider."""
+        from app.services.provider_contracts import get_registry
+        role_id = args.get("role_id")
+        proposal = args.get("proposal")
+        decision = args.get("decision", "reject")
+        if not role_id or proposal is None:
+            return {"status": "error", "message": "role_id and proposal are required"}
+        if decision not in ("accept", "reject"):
+            return {"status": "error", "message": "decision must be 'accept' or 'reject'"}
+        try:
+            provider = get_registry().resolve_growth_provider()
+            result = provider.validate(role_id, proposal, decision)
+            return {"status": "success", "provider": provider.get_version().provider_name, **result}
+        except Exception as e:
+            return {"status": "error", "message": f"Growth validate failed: {e}"}
 
     async def _execute_role_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List all saved roles."""
