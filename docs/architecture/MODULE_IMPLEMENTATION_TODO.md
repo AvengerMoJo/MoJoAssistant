@@ -116,7 +116,7 @@ Acceptance:
 ---
 
 ### 5. Embedding Backends Module
-Status: `IN PROGRESS` (interface phase)
+Status: `DONE` (2026-05-11)
 
 Scope:
 - Decouple embedding implementations from memory provider.
@@ -149,6 +149,20 @@ Acceptance:
 - Switching backend requires only a config change (`embedding.backend = "sie"`).
 - Any conformance-passing bridge can be dropped into `backends/` and registered.
 - Bridge installer prompt is self-contained enough for any capable agent to execute.
+
+Completed:
+1. `EmbeddingBackend` contract added to `app/services/provider_contracts.py`.
+2. Built-in backends implemented in `mojo_memory/embeddings/backends/`:
+   - `HuggingFaceBackend`
+   - `LocalServerBackend`
+   - `RandomBackend`
+3. Backend registry/factory implemented in `mojo_memory/embeddings/registry.py`:
+   - `register_backend(name, factory)`
+   - `get_backend(name)`
+   - `create_backend(name, **kwargs)`
+4. `SimpleEmbedding` refactored to delegate embedding generation through registry-selected backend while preserving cache/similarity behavior.
+5. Conformance tests added: `tests/conformance/test_embedding_backend_conformance.py`.
+6. Bridge installer prompt added: `docs/bridges/embedding_backend_bridge_prompt.md`.
 
 ---
 
@@ -217,7 +231,7 @@ Acceptance:
 | 2 | Provider Registry Hardening | DONE | via smoke + doctor |
 | 3 | Conformance Suite Expansion | DONE | 85 passing, CI gated |
 | 4 | Retrieval Engine | DONE | 22 conformance tests |
-| 5 | Embedding Backends | IN PROGRESS (agent) | — |
+| 5 | Embedding Backends | DONE | 4 conformance tests |
 | 6 | Storage Backends | DONE | 3 conformance tests |
 | 7 | Persona Provider | DONE | 2 conformance tests |
 | 8 | Growth Provider | DONE | 21 conformance tests |
@@ -228,17 +242,14 @@ Acceptance:
 ## What's Still Missing
 
 ### Active
-- **#5 Embedding Backends** — agent working on it. Deliverables: `EmbeddingBackend` ABC,
-  built-in backends (HF/LocalServer/Random), `SimpleEmbedding` refactor, conformance suite,
-  bridge installer prompt at `docs/bridges/embedding_backend_bridge_prompt.md`.
+- No active core extraction modules at this moment.
 
 ### Structural gaps within completed modules
 - **Growth DIRECTION pillar** — owner one-on-one calibration; deferred pending chat→dream bridge.
 - **Growth PRESENT pillar** — HITL blocking validation; `hitl_callback` slot reserved in
   `BonsaiGrowthModule`, wiring deferred until DIRECTION exists.
 - **Skill conformance** — skeleton only; no real `SkillProvider` implementation behind it yet.
-- **Embedding bridge installer prompt** — part of #5; enables the Agentic Bridge Pattern for
-  any third-party embedding framework at runtime.
+- **Embedding bridge installer prompt** — complete (`docs/bridges/embedding_backend_bridge_prompt.md`).
 
 ### Planned (no code started)
 - **#9 Skill Blueprints** — define blueprint schema, install/test APIs, migrate current

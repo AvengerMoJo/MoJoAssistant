@@ -210,6 +210,34 @@ class RetrievalStrategy(ABC):
 
 
 # ---------------------------------------------------------------------------
+# Embedding Backend Contract
+# ---------------------------------------------------------------------------
+
+class EmbeddingBackend(ABC):
+    """
+    Contract for pluggable embedding backends.
+
+    Backends generate text embeddings while exposing stable model metadata.
+    """
+
+    @abstractmethod
+    def get_text_embedding(self, text: str, prompt_name: str = "passage") -> List[float]:
+        ...
+
+    @abstractmethod
+    def get_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
+        ...
+
+    @abstractmethod
+    def get_info(self) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def change_model(self, model_name: str) -> bool:
+        ...
+
+
+# ---------------------------------------------------------------------------
 # Dream Provider Contract
 # ---------------------------------------------------------------------------
 
@@ -436,28 +464,98 @@ class GrowthProvider(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Skill Provider Contract (skeleton for conformance expansion)
+# Skill Provider Contract
 # ---------------------------------------------------------------------------
 
+@dataclass
+class TemplateVarSpec:
+    description: str
+    type: str = "str"          # str | int | bool | path
+    default: Optional[Any] = None
+    required: bool = True
+
+
+@dataclass
+class SkillBlueprint:
+    """Parameterized template for a dynamic tool entry.
+
+    template_vars defines the substitution keys expected in executor_template.
+    install() renders the template with caller-supplied env values and writes
+    a CapabilityDefinition to dynamic_tools.json.
+    """
+    id: str
+    name: str
+    description: str
+    category: str
+    danger_level: str                          # low | medium | high | critical
+    version: str
+    parameters: Dict[str, Any]                 # JSON Schema for tool arguments
+    executor_template: Dict[str, Any]          # executor dict with ${VAR} placeholders
+    template_vars: Dict[str, Any] = field(default_factory=dict)   # var_name → TemplateVarSpec dict
+    test_args: Dict[str, Any] = field(default_factory=dict)       # sample args to verify install
+    tags: List[str] = field(default_factory=list)
+    source: str = "local"                      # "local" | URL | "community"
+    requires_auth: bool = False
+
+
+@dataclass
+class InstallResult:
+    skill_id: str
+    tool_entry: Dict[str, Any]    # final CapabilityDefinition written to dynamic_tools.json
+    env_used: Dict[str, Any]
+    installed_at: str
+    blueprint_saved_at: Optional[str] = None  # path to saved blueprint file
+
+
+@dataclass
+class SkillTestResult:
+    skill_id: str
+    passed: bool
+    output: str
+    error: Optional[str] = None
+
+
 class SkillProvider(ABC):
+    """Contract for managing skill blueprints and installing them as dynamic tools."""
+
     @abstractmethod
-    def get_version(self) -> ProviderVersion:
+    def get_version(self) -> ProviderVersion: ...
+
+    @abstractmethod
+    def catalog(self, filter: Optional[Dict[str, Any]] = None) -> List[SkillBlueprint]:
+        """List available blueprints. filter keys: category, tags, query."""
         ...
 
     @abstractmethod
-    def catalog(self) -> List[Dict[str, Any]]:
+    def blueprint(self, skill_id: str) -> Optional[SkillBlueprint]:
+        """Return a single blueprint by id, or None if not found."""
         ...
 
     @abstractmethod
-    def blueprint(self, skill_id: str) -> Dict[str, Any]:
+    def install(self, skill_id: str, env: Optional[Dict[str, Any]] = None) -> InstallResult:
+        """Render blueprint template with env vars and write to dynamic_tools.json."""
         ...
 
     @abstractmethod
-    def install(self, skill_id: str, env: Dict[str, Any]) -> Dict[str, Any]:
+    def install_blueprint(
+        self, blueprint: Dict[str, Any], env: Optional[Dict[str, Any]] = None
+    ) -> InstallResult:
+        """Install from an agent-provided blueprint dict (validated then installed)."""
         ...
 
     @abstractmethod
-    def test(self, skill_id: str) -> Dict[str, Any]:
+    def uninstall(self, skill_id: str) -> bool:
+        """Remove a skill from the personal dynamic_tools layer."""
+        ...
+
+    @abstractmethod
+    def test(self, skill_id: str) -> SkillTestResult:
+        """Run the blueprint's test_args against the installed tool and verify output."""
+        ...
+
+    @abstractmethod
+    def search(self, query: str) -> List[SkillBlueprint]:
+        """Search catalog by name, description, or tag substring."""
         ...
 
 
@@ -481,6 +579,7 @@ class ProviderRegistry:
         self._dream_providers: Dict[str, type] = {}
         self._persona_providers: Dict[str, type] = {}
         self._growth_providers: Dict[str, type] = {}
+        self._skill_providers: Dict[str, type] = {}
         self._instances: Dict[str, Any] = {}
         self._modules: Dict[str, Dict[str, Any]] = {}  # name -> module.json data
         self._health_status: Dict[str, Dict[str, Any]] = {}  # name -> health result
@@ -515,6 +614,13 @@ class ProviderRegistry:
             raise TypeError(f"{provider_class} must be a subclass of GrowthProvider")
         self._growth_providers[name] = provider_class
         logger.info("provider_registry: registered growth provider '%s'", name)
+
+    def register_skill_provider(self, name: str, provider_class: type) -> None:
+        """Register a skill provider class by name."""
+        if not issubclass(provider_class, SkillProvider):
+            raise TypeError(f"{provider_class} must be a subclass of SkillProvider")
+        self._skill_providers[name] = provider_class
+        logger.info("provider_registry: registered skill provider '%s'", name)
 
     # -- Module discovery ---------------------------------------------------
 
@@ -971,6 +1077,41 @@ class ProviderRegistry:
             self.register_growth_provider("bonsai_growth", BonsaiGrowthModule)
         except ImportError:
             logger.warning("provider_registry: could not import bonsai growth provider")
+
+    def resolve_skill_provider(
+        self,
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> "SkillProvider":
+        """Resolve and instantiate a skill provider.
+        Resolution order: explicit name → MOJO_SKILL_PROVIDER env → default ("default_skill").
+        """
+        if name is None:
+            name = os.getenv("MOJO_SKILL_PROVIDER", "default_skill")
+
+        if name not in self._skill_providers:
+            self._register_default_skill_provider(name)
+
+        if name not in self._skill_providers:
+            raise ValueError(
+                f"Skill provider '{name}' not registered. "
+                f"Available: {list(self._skill_providers.keys())}"
+            )
+
+        cache_key = f"skill:{name}"
+        if cache_key not in self._instances:
+            self._instances[cache_key] = self._skill_providers[name](**kwargs)
+        return self._instances[cache_key]
+
+    def _register_default_skill_provider(self, name: str) -> None:
+        """Auto-register default skill provider."""
+        if name != "default_skill":
+            return
+        try:
+            from app.scheduler.skill_provider import DefaultSkillProvider
+            self.register_skill_provider("default_skill", DefaultSkillProvider)
+        except ImportError:
+            logger.warning("provider_registry: could not import default skill provider")
 
 
 # ---------------------------------------------------------------------------
