@@ -242,11 +242,11 @@ Acceptance:
 ## What's Still Missing
 
 ### Active
-- **#10 Benchmark Eval Decoupling** — in progress.
+- **#11 Plugin SDK** — in progress.
 - Remaining:
-  - decouple `run_locomo.py` from direct app-internal imports where possible
-  - decouple `run_locomo_abcd_e2e.py` from direct app-internal imports where possible
-  - extend benchmark decoupling smoke guard to cover LOCOMO runners
+  - expand scaffolding templates for additional provider types
+  - add stronger validator checks (entry_point importability, optional schema checks)
+  - add conformance-oriented sample plugin that implements one full provider contract
 
 ### Structural gaps within completed modules
 - **Growth DIRECTION pillar** — owner one-on-one calibration; deferred pending chat→dream bridge.
@@ -254,8 +254,7 @@ Acceptance:
   `BonsaiGrowthModule`, wiring deferred until DIRECTION exists.
 
 ### Planned (no code started)
-- **#11 Plugin SDK** — scaffolding templates, validation CLI, sample plugin package.
-  Natural deliverable once #9 and #10 are stable.
+- No planned modules left in this list; all remaining work is active implementation or post-DONE enhancements.
 
 ### Runtime adoption validation target — CubeSandbox
 **https://github.com/tencentcloud/CubeSandbox** is the canonical integration test for #9.
@@ -358,7 +357,7 @@ Progress:
 ---
 
 ### 11. Plugin SDK
-Status: `RESEARCH`
+Status: `IN PROGRESS` (2026-05-12)
 
 Scope:
 - Developer scaffolding for third-party module authors.
@@ -370,6 +369,14 @@ Deliverables:
 
 Acceptance:
 - Third-party provider can be created from template and pass conformance.
+
+Progress:
+1. Added Plugin SDK CLI: `scripts/plugin_sdk.py`
+   - `scaffold` command (template generation)
+   - `validate` command (manifest/layout checks)
+2. Added sample plugin package: `examples/plugins/sample-memory-plugin/`.
+3. Added SDK guide: `docs/guides/PLUGIN_SDK.md`.
+4. Added smoke coverage: `tests/smoke/test_plugin_sdk.py`.
 
 ## Agent Fan-Out Plan
 Assign one agent per module:
