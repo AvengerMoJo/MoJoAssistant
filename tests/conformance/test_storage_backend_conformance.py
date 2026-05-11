@@ -8,11 +8,14 @@ import pytest
 from mojo_memory.memory.multi_model_storage import MultiModelEmbeddingStorage
 from mojo_memory.memory.knowledge_manager import KnowledgeManager
 from mojo_memory.storage import (
+    ConversationRecord,
     DuckDBStorageBackend,
     LocalFileStorageBackend,
+    MirrorStorageBackend,
     StorageBackend,
     create_storage_backend,
     register_storage_backend,
+    validate_conversation_record,
 )
 
 
@@ -107,3 +110,36 @@ def test_knowledge_manager_supports_injected_backend():
         storage_backend=backend,
     )
     assert len(km2.documents) == 1
+
+
+def test_conversation_record_validation():
+    rec = ConversationRecord(
+        conversation_id="c1",
+        message_id="m1",
+        turn_index=0,
+        role="user",
+        content="hello",
+        created_at="2026-05-11T00:00:00",
+        status="incomplete",
+    ).to_dict()
+    ok, reason = validate_conversation_record(rec)
+    assert ok, reason
+
+
+def test_mirror_backend_writes_primary_and_mirror():
+    p = InMemoryStorageBackend()
+    m = InMemoryStorageBackend()
+    mirror = MirrorStorageBackend(primary=p, mirrors=[m], compare_on_read=True)
+    mirror.write_json("k1.json", {"v": 1})
+    assert p.read_json("k1.json") == {"v": 1}
+    assert m.read_json("k1.json") == {"v": 1}
+
+
+def test_registry_builds_mirror_backend():
+    backend = create_storage_backend(
+        "mirror",
+        primary={"name": "local_fs", "config": {"base_path": "/tmp/mojo-test-primary"}},
+        mirrors=[{"name": "local_fs", "config": {"base_path": "/tmp/mojo-test-mirror"}}],
+        compare_on_read=False,
+    )
+    assert isinstance(backend, MirrorStorageBackend)
