@@ -8,187 +8,279 @@ Related: [MOJO_MODULE_SYSTEM.md](MOJO_MODULE_SYSTEM.md) · [MODULE_IMPLEMENTATIO
 
 ## The Problem This Solves
 
-Every time a promising third-party framework appears — a new embedding server, a vector store, a reranking API — someone has to:
+Every time a promising third-party framework appears — a new embedding server,
+a vector store, a reranking service, a graph database — someone has to:
 
 1. Read the framework's documentation
 2. Write a glue adapter
 3. Test it manually
 4. Maintain it as the framework evolves
 
-This is integration tax. It scales linearly with the number of integrations. It keeps the team in maintenance mode instead of building.
-
-The Agentic Bridge Pattern eliminates this tax.
+This is integration tax. It scales linearly with the number of integrations and
+keeps the system frozen in the choices made at build time. The Agentic Bridge
+Pattern eliminates this tax and makes the system self-extending.
 
 ---
 
 ## Core Idea
 
-**MoJo owns the interface. An agent generates the adapter. The conformance suite is the judge.**
+**MoJo owns the interface. An agent generates the adapter. The conformance suite
+is the judge. No developer writes glue code.**
 
 ```
-Third-party framework
+Any external system
+(GitHub repo, PyPI package, REST API, local model server, ...)
         │
         ▼
-  [MoJo Agent]  ← reads our interface ABC + conformance tests
-        │         ← reads framework docs / API reference
+  [MoJo Bridge Agent]
+        │  ← probes the target: reads docs, README, API spec, source
+        │  ← reads our interface ABC and conformance tests
         │
         ▼
-  Bridge implementation (Python file)
+  Generates bridge implementation
         │
         ▼
   Conformance suite runs automatically
         │
-    pass ──→ bridge committed to backends/
-    fail ──→ agent reports gap, iterates or escalates to HITL
+    pass ──→ bridge registered, user notified, system starts using it
+    fail ──→ agent reports gap → iterates, or escalates to HITL
+              (gap also feeds back into interface improvement)
 ```
 
-No developer needs to touch the third-party framework's API. The agent does it. The conformance tests verify correctness. The bridge is installed only if it passes.
+The agent is not given a specific target in advance. It is given a task
+("find and install a better embedding backend") and a toolset (web search,
+code execution, file write, test runner). It discovers candidates, probes
+them, attempts bridges, and reports back. The user decides what to keep.
+
+---
+
+## Runtime Probing
+
+The bridge agent does not require a pre-curated list of frameworks. It can
+discover candidates at runtime:
+
+1. **By URL or package name** — user says "try this GitHub repo"
+2. **By capability search** — agent searches for frameworks matching a need
+   (e.g. "sparse embedding server with batch support")
+3. **By community feed** — agent checks a shared bridge registry for bridges
+   others have already validated (future)
+
+For each candidate the agent evaluates:
+- Does it have a public API? (REST, Python, gRPC)
+- Does the API surface map onto our interface? (can every method be satisfied?)
+- What are the constraints? (requires GPU, requires API key, license, etc.)
+- What is the install cost? (pip install, Docker image, model download size)
+
+The agent produces a feasibility report before writing a single line of code.
+If the answer is "this framework cannot satisfy the interface," it says so and
+explains why. That is also a useful output.
 
 ---
 
 ## What MoJo Must Provide (The Invariants)
 
-For each pluggable concern, MoJo Core maintains:
+For every pluggable concern, MoJo Core maintains three artifacts:
 
 ### 1. The Interface ABC
 
-A Python abstract base class with full docstrings explaining:
+A Python abstract base class with full docstrings:
 - What each method must do (semantics, not implementation)
-- What the inputs mean
-- What the output shape must be
-- Any invariants (e.g. "results must be sorted descending by score")
+- What the inputs mean and what valid values look like
+- What the output shape must be, field by field
+- Explicit invariants (e.g. "results sorted descending by score", "never returns None")
 
-Example: `EmbeddingBackend` in `app/services/provider_contracts.py`.
+The ABC is the contract. It must be stable and complete enough that an agent
+with no other context can understand exactly what a correct implementation
+looks like.
 
 ### 2. The Conformance Test Suite
 
-A `tests/conformance/test_<name>_conformance.py` file that:
-- Is parametrized over all registered backends
-- Tests every method in the interface
-- Checks invariants explicitly (ordering, type shapes, empty input handling)
-- Includes a `MockBackend` that any new implementation can compare against
+A `tests/conformance/test_<interface>_conformance.py` that:
+- Is parametrized over all registered implementations
+- Covers every method in the ABC
+- Tests every stated invariant explicitly
+- Includes a `MockBackend` that any new bridge can be compared against
+- Can be run standalone with no external dependencies (mocks/stubs for I/O)
 
-**The conformance suite is the specification.** If a bridge passes it, it is correct.
+**The conformance suite is the specification made executable.** A bridge that
+passes is correct by definition. No manual integration testing required.
 
-### 3. The Bridge Installer Prompt Template
+### 3. The Bridge Installer Prompt
 
-A `docs/bridges/<interface_name>_bridge_prompt.md` file containing:
-- The full interface ABC (pasted verbatim, not summarized)
-- The conformance test suite (pasted verbatim)
-- Placeholder: `{FRAMEWORK_NAME}` and `{FRAMEWORK_DOCS}`
-- Instructions to the agent:
-  1. Read the interface carefully
-  2. Read the framework documentation
-  3. Write a Python class implementing the interface
-  4. Register it in the backend registry
-  5. Run the conformance suite and report results
-  6. If tests pass, output the final file. If not, report what is missing.
+A `docs/bridges/<interface>_bridge_prompt.md` that is:
+- **Self-contained** — includes the full ABC and full conformance test suite
+  verbatim, not summarized
+- **Target-agnostic** — uses `{TARGET}` as a placeholder filled at dispatch time
+- **Instruction-complete** — tells the agent exactly where to write the file,
+  how to register it, how to run tests, and what to report
+
+Any capable LLM agent dispatched with this prompt and a target can complete
+the installation without additional context.
 
 ---
 
 ## Bridge Lifecycle
 
-### Installation (agent-driven)
+### Discovery and Installation (agent-driven)
 
 ```
-user: "install SIE as an embedding backend"
-  └─→ MoJo scheduler dispatches agent with:
-        - bridge_installer_prompt.md (filled with SIE docs URL)
-        - write permission to mojo_memory/embeddings/backends/
-        - permission to run: pytest tests/conformance/test_embedding_backend_conformance.py
+user (or scheduled agent): "explore embedding backends, install the best fit"
 
-  agent:
-    1. reads EmbeddingBackend ABC
-    2. fetches SIE API docs
-    3. writes SIEBackend class
-    4. runs conformance tests
-    5a. pass → commits sie_backend.py, registers under name "sie"
-    5b. fail → reports which tests failed, what the gap is
+MoJo scheduler dispatches Bridge Agent with:
+  - bridge_installer_prompt.md for EmbeddingBackend
+  - tools: web_search, fetch_url, bash_exec, file_write, pytest
+
+Bridge Agent:
+  1. searches for candidate frameworks (or receives a URL/package name)
+  2. probes each candidate: reads README, API docs, source if available
+  3. produces feasibility report per candidate
+  4. selects best candidate (or all feasible ones)
+  5. writes bridge implementation(s)
+  6. runs conformance suite for each
+  7. for passing bridges: registers, writes bridge_manifest entry
+  8. reports to user: what was installed, what was attempted, what failed and why
+
+User reviews report → approves or rejects → HITL
 ```
 
 ### Upgrade (agent-driven)
 
-When a framework updates its API:
 ```
-user: "SIE released v2, update the bridge"
-  └─→ same pattern: agent reads new docs, rewrites bridge, runs conformance
+framework releases new version
+  └─→ Bridge Agent re-probes, rewrites bridge if API changed
+      runs conformance → if pass, replaces previous bridge file
+      if fail, reports regression and what changed
 ```
 
-### Verification (automated)
+### Verification (automated CI)
 
-CI runs the full conformance suite against all registered backends on every PR. A bridge that was passing and now fails is caught automatically.
+Every PR runs the full conformance suite against all registered bridges.
+A bridge that regresses is caught before merge, not after.
 
 ---
 
-## What the Agent Prompt Must Include
+## Bridge Manifest
 
-The bridge installer prompt (`docs/bridges/<name>_bridge_prompt.md`) must contain:
+Every installed bridge is recorded in `mojo_memory/embeddings/bridges/manifest.json`
+(or equivalent per interface):
+
+```json
+{
+  "bridges": [
+    {
+      "name": "sie",
+      "interface": "EmbeddingBackend@1.0",
+      "target": "superlinked/sie",
+      "target_version": "v1.2.0",
+      "installed_at": "2026-05-11T10:00:00Z",
+      "installed_by": "bridge_agent",
+      "conformance_passed": true,
+      "conformance_score": "22/22",
+      "limitations": [],
+      "notes": "Requires SIE server running at EMBEDDING_SERVER_URL"
+    }
+  ]
+}
+```
+
+The manifest is:
+- The audit trail of what was installed and why
+- The input for the community feedback system (future)
+- The source of truth for `config(action="doctor")` bridge health reporting
+
+---
+
+## Agent Prompt Template Structure
 
 ```markdown
-# Bridge Installation: {INTERFACE_NAME}
+# Bridge Installation Task: {INTERFACE_NAME}
 
-## Your task
-Implement `{ClassName}` in Python — a concrete implementation of the
-`{InterfaceABC}` abstract base class — that delegates to `{FRAMEWORK_NAME}`.
+## Context
+You are a MoJo Bridge Agent. Your job is to create a bridge between the MoJo
+{INTERFACE_NAME} interface and an external framework or service.
 
-## The interface you must implement (copy verbatim into your file)
-[paste full ABC here]
+## Target
+{TARGET}  ← filled at dispatch time (URL, package name, or "discover best option")
 
-## The conformance tests you must pass (run these to verify)
-[paste full test file here]
+## The interface contract (implement this exactly)
+[full ABC pasted verbatim]
 
-## Framework documentation
-{FRAMEWORK_DOCS}
+## The conformance suite (your bridge must pass all of these)
+[full test file pasted verbatim]
+
+## Steps
+1. Probe the target. Read its documentation, API, and any available source.
+2. Assess feasibility: can every interface method be satisfied?
+   If no: report which methods cannot be satisfied and why. Stop here.
+3. If feasible: write the bridge class. File location: {OUTPUT_PATH}
+4. Register it: call register_{interface}("{name}", {ClassName}())
+5. Run: pytest {CONFORMANCE_TEST_PATH} -v
+6. If all tests pass: write a manifest entry and report success.
+7. If tests fail: report which tests failed, what the gap is, and whether
+   another iteration would likely fix it.
 
 ## Constraints
 - Do not modify the ABC or the test file.
-- Your implementation goes in: `mojo_memory/embeddings/backends/{name}_backend.py`
-- Register it by calling: `register_backend("{name}", {ClassName}())`
-- Use only the framework's public API. Do not access internal implementation details.
-- If the framework's API does not support a required method, implement a best-effort
-  approximation and note the limitation in a docstring.
+- Use only the target's public API. No internal implementation details.
+- Best-effort approximations are allowed; document limitations in docstrings.
+- If the target requires credentials or a running server, document that in the
+  manifest "notes" field.
 
 ## Output
-1. The complete Python file
-2. The result of running the conformance suite
-3. Any limitations or gaps you discovered
+1. Bridge file (if feasible)
+2. Manifest entry
+3. Conformance test results
+4. Feasibility assessment and any discovered limitations
 ```
 
 ---
 
-## Current Bridge Targets
+## Community Feedback Layer (Future)
 
-| Interface | Status | Candidate Frameworks |
-|-----------|--------|----------------------|
-| `EmbeddingBackend` | Interface defined (2026-05-11) | SIE, OpenAI, Cohere, Ollama, vLLM |
-| `RetrievalStrategy` | Done — built-ins only | FAISS, Qdrant, Weaviate, Pinecone |
-| `StorageBackend` | Planned | SQLite, PostgreSQL, S3 |
+Once multiple MoJo users are running independently installed bridges, a shared
+validation layer becomes possible:
 
-The bridge prompt for `EmbeddingBackend` lives at:
-`docs/bridges/embedding_backend_bridge_prompt.md`
+- **Bridge sharing** — a user publishes their passing bridge manifest entry to
+  a community registry (opt-in)
+- **Community validation** — other users can pull and install a bridge that was
+  already validated by the community, skipping the generation step
+- **Version tracking** — community registry tracks which bridge version works
+  with which target version, surfacing regressions when frameworks update
+- **Failure reporting** — if a previously passing bridge fails after a framework
+  update, the failure is reported back to the community registry so others
+  can update before hitting the same issue
+
+This is the long-term sustainability mechanism. The system improves collectively.
+No single user or developer is responsible for maintaining any adapter.
 
 ---
 
-## Why This Is Sustainable
+## Applicable Interfaces
 
-**We never maintain adapters.**  
-Adapters are generated artifacts. When a framework changes, we regenerate. The conformance suite tells us if it's still correct.
+The pattern applies to every pluggable interface in the module system:
 
-**We never block on third-party timelines.**  
-Any framework with a public API or documentation can be bridged. We don't need the framework author to provide a MoJo plugin.
+| Interface | Pluggable concern | Example third-party targets |
+|-----------|------------------|-----------------------------|
+| `EmbeddingBackend` | How text becomes vectors | SIE, Ollama, OpenAI, Cohere, vLLM, TEI |
+| `RetrievalStrategy` | How candidates are ranked | FAISS, Qdrant, Weaviate, BM25s |
+| `StorageBackend` | How data is persisted | SQLite, PostgreSQL, S3, Lancedb |
+| `MemoryModule` | Full memory pipeline | Any ABCD-compatible system |
+| `PersonaModule` | Role generation and scoring | Any persona/character framework |
+| `GrowthModule` | Role evolution logic | Any RL or feedback-based system |
+| `SkillModule` | Tool blueprint catalog | Any agent skill registry |
 
-**The interface accumulates value over time.**  
-Every bridge that passes conformance is proof the interface is well-designed. Every failure is a spec gap that improves the ABC and the conformance suite. The system gets better with each attempt.
-
-**Any sufficiently capable agent can do it.**  
-The prompt is self-contained. No project-specific context is required beyond what's in the prompt. This means any MoJo scheduling agent — or an external Claude Code session — can install a bridge.
+The pattern is not specific to embeddings. Any future interface defined in
+`provider_contracts.py` automatically gets this capability for free — as long
+as a conformance suite and bridge installer prompt are written for it.
 
 ---
 
 ## Design Rules
 
-1. **Never write a bridge by hand if the framework has public docs.** Dispatch an agent.
-2. **Never merge a bridge that doesn't pass conformance.** The suite is the gate.
-3. **Never add framework-specific logic to the ABC.** The interface must remain framework-agnostic.
-4. **Always version the interface before changing it.** `EmbeddingBackend@2.0` is a new ABC, not a modification.
-5. **The bridge installer prompt is a first-class artifact.** Keep it up to date as the interface evolves.
+1. **Never write a bridge by hand if a capable agent can do it.** Dispatch an agent.
+2. **Never install a bridge without a passing conformance run.** The suite is the only gate.
+3. **Never put framework-specific logic in the ABC.** The interface must stay target-agnostic.
+4. **Always version the interface before changing it.** `EmbeddingBackend@2.0` is a new contract.
+5. **The bridge installer prompt is a first-class maintained artifact.** Update it when the ABC changes.
+6. **Failures are data.** A failed bridge attempt improves the conformance suite and the ABC.
+7. **The manifest is the truth.** What is installed, when, by whom, and whether it works — all in the manifest.
