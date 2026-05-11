@@ -45,16 +45,16 @@ Everything else below should be extracted or is already extracted.
 
 ---
 
-### 2. `dream-provider` 🔄 In progress (Phase 1)
-**Lives in:** `submodules/dreaming-memory-pipeline/src/mojo_memory/` + `app/dreaming/`  
-**Issue:** `app/dreaming/` (pipeline.py, chunker.py, synthesizer.py, etc.) is still in Core — not yet shimmed  
+### 2. `dream-provider` ✅ Done (Phase 1)
+**Lives in:** `submodules/dreaming-memory-pipeline/src/dreaming/`  
+**Core shims:** `app/dreaming/*.py` — all files are now 4-line re-export shims  
 **Boundary:** ABCD stages, dream artifact generation, consolidation flow  
 **Exposes:** `DreamProvider` contract — see [DATA_CONTRACTS.md](DATA_CONTRACTS.md) `DreamArchive@1.0`  
-**Remaining work:**
-- [ ] Move `app/dreaming/*.py` implementations into submodule
-- [ ] Replace `app/dreaming/*.py` with compatibility shims (same pattern as memory)
-- [ ] Expose `DreamProvider` interface through submodule `interface.py`
-- [ ] Add ownership guardrail for `app/dreaming/`
+**Completed 2026-05-11:**
+- `session_compactor.py` and `inbox_distillation.py` moved to submodule
+- `app.config.paths` dependency removed — uses `MEMORY_PATH` env var fallback
+- `module.json` updated to multi-module format declaring both `mojo_memory` and `mojo_dream`
+- All gates passed: ownership checker OK, 31 tests (18 smoke + 13 conformance)
 
 ---
 
