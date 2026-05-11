@@ -115,6 +115,16 @@ jobs:
           pip install pytest
           python -m pytest tests/integration/test_mcp_surface_smoke.py -v --tb=short
 
+      - name: Conformance Suite Gate
+        env:
+          ENVIRONMENT: ci
+          EMBEDDING_MODEL: all-MiniLM-L6-v2
+          MEMORY_PATH: /tmp/mojo-conformance-ci
+          PYTHONPATH: ${{ github.workspace }}
+          LOG_LEVEL: WARNING
+        run: |
+          python -m pytest tests/conformance -q --tb=short
+
       - name: Stop server
         if: always()
         run: kill "$SERVER_PID" 2>/dev/null || true

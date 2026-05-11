@@ -4512,6 +4512,10 @@ Agent resumes within seconds.
             return await self._execute_role_create(args)
         if action == "edit":
             return await self._execute_role_edit(args)
+        if action == "persona_list":
+            return await self._execute_role_persona_list(args)
+        if action == "persona_score":
+            return await self._execute_role_persona_score(args)
         if action == "design_start":
             return await self._execute_role_design_start({
                 "description": args.get("description", "")
@@ -4534,6 +4538,8 @@ Agent resumes within seconds.
                 "get":           "Full role spec — params: role_id",
                 "create":        "Save role — params: session_id? | role?, capabilities?, model_preference?, policy?, notify_on_completion?",
                 "edit":          "Patch an existing role — params: role_id, capabilities? (replaces), capabilities_add? (appends), capabilities_remove? (removes), model_preference?, description?, notify_on_completion?, policy?",
+                "persona_list":  "List personas from persona module — params: filter?",
+                "persona_score": "Score a role with persona module — params: role? or role_id",
                 "design_start":  "Begin Nine Chapter interview — params: description?",
                 "design_answer": "Submit answer / advance interview — params: session_id, answer",
             },
@@ -4704,6 +4710,44 @@ Agent resumes within seconds.
             "capabilities": role_data.get("capabilities"),
             "path": path,
         }
+
+    async def _execute_role_persona_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List persona catalog via PersonaModule provider interface."""
+        from app.services.provider_contracts import get_registry
+        try:
+            provider = get_registry().resolve_persona_provider()
+            filter_obj = args.get("filter") or {}
+            personas = provider.list_personas(filter_obj)
+            return {
+                "status": "success",
+                "provider": provider.get_version().provider_name,
+                "count": len(personas),
+                "personas": [p.__dict__ if hasattr(p, "__dict__") else p for p in personas],
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"Persona module list failed: {e}"}
+
+    async def _execute_role_persona_score(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Score role definition via PersonaModule provider interface."""
+        from app.services.provider_contracts import get_registry
+        try:
+            role_data = args.get("role")
+            role_id = args.get("role_id")
+            if role_data is None and role_id:
+                role_data = self._role_manager.get(role_id)
+            if role_data is None:
+                return {"status": "error", "message": "role or role_id is required"}
+
+            provider = get_registry().resolve_persona_provider()
+            score = provider.score(role_data)
+            return {
+                "status": "success",
+                "provider": provider.get_version().provider_name,
+                "role_id": role_data.get("id"),
+                "score": score.__dict__ if hasattr(score, "__dict__") else score,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"Persona module score failed: {e}"}
 
     async def _execute_role_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List all saved roles."""

@@ -433,7 +433,7 @@ def _get_default_config() -> Dict[str, Any]:
         "embedding_models": {
             "default": {
                 "backend": "huggingface",
-                "model_name": "nomic-ai/nomic-embed-text-v2-moe",
+                "model_name": "BAAI/bge-m3",
                 "embedding_dim": 768,
                 "device": "cpu"
             },

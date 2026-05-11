@@ -131,7 +131,7 @@ async def lifespan(app: FastAPI):
         embed_config = embedding_config["embedding_models"]["default"]
         memory_service = create_memory_service(
             data_dir=embedding_config.get("memory_settings", {}).get("data_directory") or get_memory_path(),
-            embedding_model=embed_config.get("model_name", "nomic-ai/nomic-embed-text-v2-moe"),
+            embedding_model=embed_config.get("model_name", "BAAI/bge-m3"),
             embedding_backend=embed_config.get("backend", "huggingface"),
             embedding_device=embed_config.get("device"),
             config=embedding_config.get("memory_settings", {})
