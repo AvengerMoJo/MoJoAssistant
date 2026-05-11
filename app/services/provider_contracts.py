@@ -290,6 +290,64 @@ class DreamProvider(ABC):
 
 
 # ---------------------------------------------------------------------------
+# Persona Provider Contract
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PersonaSpec:
+    """Input spec for generating a role/persona definition."""
+    name: str
+    purpose: str
+    capabilities: List[str] = field(default_factory=lambda: ["memory"])
+    persona_file: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PersonaSummary:
+    """Compact listing item for persona catalogs."""
+    id: str
+    name: str
+    category: str = "general"
+    description: str = ""
+    source: str = ""
+
+
+@dataclass
+class PersonaScore:
+    """NineChapter-like personality scoring output."""
+    total_score: int
+    dimensions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    confidence: float = 0.75
+
+
+class PersonaProvider(ABC):
+    """Provider contract for persona generation/scoring/catalog."""
+
+    @abstractmethod
+    def get_version(self) -> ProviderVersion:
+        ...
+
+    @abstractmethod
+    def generate(self, spec: PersonaSpec) -> Dict[str, Any]:
+        """Generate a role definition from persona spec."""
+        ...
+
+    @abstractmethod
+    def score(self, role_def: Dict[str, Any]) -> PersonaScore:
+        """Score role definition against persona dimensions."""
+        ...
+
+    @abstractmethod
+    def list_personas(self, filter: Optional[Dict[str, Any]] = None) -> List[PersonaSummary]:
+        """List available personas from provider catalog."""
+        ...
+
+    def health_check(self) -> Dict[str, Any]:
+        return {"status": "ok", "details": {"provider": self.get_version().provider_name}}
+
+
+# ---------------------------------------------------------------------------
 # Provider Registry
 # ---------------------------------------------------------------------------
 
@@ -307,6 +365,7 @@ class ProviderRegistry:
     def __init__(self) -> None:
         self._memory_providers: Dict[str, type] = {}
         self._dream_providers: Dict[str, type] = {}
+        self._persona_providers: Dict[str, type] = {}
         self._instances: Dict[str, Any] = {}
         self._modules: Dict[str, Dict[str, Any]] = {}  # name -> module.json data
         self._health_status: Dict[str, Dict[str, Any]] = {}  # name -> health result
@@ -327,6 +386,13 @@ class ProviderRegistry:
             raise TypeError(f"{provider_class} must be a subclass of DreamProvider")
         self._dream_providers[name] = provider_class
         logger.info("provider_registry: registered dream provider '%s'", name)
+
+    def register_persona_provider(self, name: str, provider_class: type) -> None:
+        """Register a persona provider class by name."""
+        if not issubclass(provider_class, PersonaProvider):
+            raise TypeError(f"{provider_class} must be a subclass of PersonaProvider")
+        self._persona_providers[name] = provider_class
+        logger.info("provider_registry: registered persona provider '%s'", name)
 
     # -- Module discovery ---------------------------------------------------
 
@@ -353,44 +419,51 @@ class ProviderRegistry:
         for module_json in submodule_path.glob("*/module*.json"):
             try:
                 with open(module_json) as f:
-                    module_data = json.load(f)
-                
-                name = module_data.get("name")
-                if not name:
-                    logger.warning("provider_registry: module.json missing 'name': %s", module_json)
-                    continue
-                
-                self._modules[name] = module_data
-                discovered.append(module_data)
-                self._module_load_errors.pop(name, None)
+                    raw = json.load(f)
 
-                # Ensure "<submodule>/src" is importable before loading entry points.
+                # Support both single-module {"name": ...} and
+                # multi-module {"modules": [...]} formats.
+                entries = raw.get("modules") if isinstance(raw.get("modules"), list) else [raw]
+
+                # Ensure "<submodule>/src" is importable before loading any entry points.
                 src_dir = module_json.parent / "src"
                 if src_dir.exists():
                     src_str = str(src_dir)
                     if src_str not in sys.path:
                         sys.path.insert(0, src_str)
-                
-                # Auto-register if entry_point is valid
-                entry_point = module_data.get("entry_point")
-                provider_type = module_data.get("provider_type")
-                
-                if entry_point and provider_type:
-                    try:
-                        module_path, class_name = entry_point.rsplit(".", 1)
-                        mod = importlib.import_module(module_path)
-                        cls = getattr(mod, class_name)
-                        
-                        if provider_type == "memory":
-                            self.register_memory_provider(name, cls)
-                        elif provider_type == "dream":
-                            self.register_dream_provider(name, cls)
-                    except Exception as e:
-                        self._module_load_errors[name] = str(e)
-                        logger.warning(
-                            "provider_registry: failed to load provider '%s' from %s: %s",
-                            name, entry_point, e
-                        )
+
+                for module_data in entries:
+                    name = module_data.get("name")
+                    if not name:
+                        logger.warning("provider_registry: module entry missing 'name': %s", module_json)
+                        continue
+
+                    self._modules[name] = module_data
+                    discovered.append(module_data)
+                    self._module_load_errors.pop(name, None)
+
+                    # Auto-register if entry_point is valid
+                    entry_point = module_data.get("entry_point")
+                    provider_type = module_data.get("provider_type")
+
+                    if entry_point and provider_type:
+                        try:
+                            module_path, class_name = entry_point.rsplit(".", 1)
+                            mod = importlib.import_module(module_path)
+                            cls = getattr(mod, class_name)
+
+                            if provider_type == "memory":
+                                self.register_memory_provider(name, cls)
+                            elif provider_type == "dream":
+                                self.register_dream_provider(name, cls)
+                            elif provider_type == "persona":
+                                self.register_persona_provider(name, cls)
+                        except Exception as e:
+                            self._module_load_errors[name] = str(e)
+                            logger.warning(
+                                "provider_registry: failed to load provider '%s' from %s: %s",
+                                name, entry_point, e
+                            )
                 
                 logger.info("provider_registry: discovered module '%s' v%s", name, module_data.get("version"))
                 
@@ -459,6 +532,24 @@ class ProviderRegistry:
                     continue
                 
                 if hasattr(instance, 'health_check'):
+                    health = instance.health_check()
+                    results[name] = health
+                else:
+                    results[name] = {"status": "ok", "reason": "no health_check method"}
+            except Exception as e:
+                results[name] = {"status": "error", "error": str(e)}
+
+        # Check persona providers
+        for name, cls in self._persona_providers.items():
+            try:
+                cache_key = f"persona:{name}"
+                if cache_key in self._instances:
+                    instance = self._instances[cache_key]
+                else:
+                    results[name] = {"status": "skipped", "reason": "not instantiated"}
+                    continue
+
+                if hasattr(instance, "health_check"):
                     health = instance.health_check()
                     results[name] = health
                 else:
@@ -570,6 +661,36 @@ class ProviderRegistry:
             self._instances[cache_key] = self._dream_providers[name](**kwargs)
         return self._instances[cache_key]
 
+    def resolve_persona_provider(
+        self,
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> PersonaProvider:
+        """
+        Resolve and instantiate a persona provider.
+        Resolution order:
+        1. Explicit name parameter
+        2. MOJO_PERSONA_PROVIDER env var
+        3. Default ("agency_persona")
+        """
+        if name is None:
+            name = os.getenv("MOJO_PERSONA_PROVIDER", "agency_persona")
+
+        if name not in self._persona_providers:
+            self._register_default_persona_provider(name)
+
+        if name not in self._persona_providers:
+            available = list(self._persona_providers.keys())
+            raise ValueError(
+                f"Persona provider '{name}' not registered. "
+                f"Available: {available}"
+            )
+
+        cache_key = f"persona:{name}"
+        if cache_key not in self._instances:
+            self._instances[cache_key] = self._persona_providers[name](**kwargs)
+        return self._instances[cache_key]
+
     # -- Startup validation -------------------------------------------------
 
     def validate_compatibility(self) -> List[str]:
@@ -612,6 +733,16 @@ class ProviderRegistry:
             self.register_dream_provider("mojo_dream", DreamProviderAdapter)
         except ImportError:
             logger.warning("provider_registry: could not import dreaming")
+
+    def _register_default_persona_provider(self, name: str) -> None:
+        """Auto-register default persona provider."""
+        if name != "agency_persona":
+            return
+        try:
+            from app.roles.persona_provider import AgencyPersonaModule
+            self.register_persona_provider("agency_persona", AgencyPersonaModule)
+        except ImportError:
+            logger.warning("provider_registry: could not import agency persona provider")
 
 
 # ---------------------------------------------------------------------------
