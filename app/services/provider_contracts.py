@@ -157,6 +157,59 @@ class MemoryProvider(ABC):
 
 
 # ---------------------------------------------------------------------------
+# Retrieval Strategy Contract
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ScoredResult:
+    """A single retrieval result with a relevance score."""
+    content: str
+    score: float                        # 0.0–1.0
+    source: str                         # "conversation", "knowledge_base", etc.
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class RetrievalStrategy(ABC):
+    """
+    Abstract base class for retrieval strategies.
+
+    A retrieval strategy takes a query embedding and a set of candidate
+    documents (each carrying their own embeddings) and returns ranked results.
+    Swapping strategies requires no changes to the memory provider.
+
+    Strategies are selected via the config key ``retrieval.strategy``.
+    """
+
+    @abstractmethod
+    def search(
+        self,
+        query_embedding: List[float],
+        candidates: List[Dict[str, Any]],
+        *,
+        max_results: int = 10,
+        threshold: float = 0.3,
+    ) -> List[ScoredResult]:
+        """
+        Rank candidates against the query embedding.
+
+        ``candidates`` is a list of dicts, each with at least:
+          - ``"text_content"`` (str): the raw text
+          - ``"embeddings"`` (Dict[str, List[float]]): model_key -> vector
+          - ``"source"`` (str): provenance tag
+          - ``"metadata"`` (dict, optional)
+
+        Returns results sorted by score descending, limited to max_results.
+        """
+        ...
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Short identifier, e.g. "semantic" or "hybrid"."""
+        ...
+
+
+# ---------------------------------------------------------------------------
 # Dream Provider Contract
 # ---------------------------------------------------------------------------
 
@@ -346,6 +399,66 @@ class PersonaProvider(ABC):
 
     def health_check(self) -> Dict[str, Any]:
         return {"status": "ok", "details": {"provider": self.get_version().provider_name}}
+
+
+# ---------------------------------------------------------------------------
+# Growth Provider Contract (skeleton for conformance expansion)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GrowthSnapshot:
+    role_id: str
+    timestamp: str
+    dimensions: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class GrowthProvider(ABC):
+    @abstractmethod
+    def get_version(self) -> ProviderVersion:
+        ...
+
+    @abstractmethod
+    def snapshot(self, role_id: str, context: Optional[Dict[str, Any]] = None) -> GrowthSnapshot:
+        ...
+
+    @abstractmethod
+    def evaluate(self, role_id: str, signals: Dict[str, Any]) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def propose(self, role_id: str, evaluation: Dict[str, Any]) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def validate(self, role_id: str, proposal: Dict[str, Any], decision: str) -> Dict[str, Any]:
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Skill Provider Contract (skeleton for conformance expansion)
+# ---------------------------------------------------------------------------
+
+class SkillProvider(ABC):
+    @abstractmethod
+    def get_version(self) -> ProviderVersion:
+        ...
+
+    @abstractmethod
+    def catalog(self) -> List[Dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    def blueprint(self, skill_id: str) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def install(self, skill_id: str, env: Dict[str, Any]) -> Dict[str, Any]:
+        ...
+
+    @abstractmethod
+    def test(self, skill_id: str) -> Dict[str, Any]:
+        ...
 
 
 # ---------------------------------------------------------------------------

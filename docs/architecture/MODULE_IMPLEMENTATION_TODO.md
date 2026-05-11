@@ -88,7 +88,7 @@ Dependency update:
 ---
 
 ### 4. Retrieval Engine Module
-Status: `PLANNED`
+Status: `DONE` (2026-05-11)
 
 Scope:
 - Separate retrieval policy from memory provider internals.
@@ -97,6 +97,14 @@ Deliverables:
 1. Define retrieval strategy interface.
 2. Implement baseline strategies (semantic/hybrid).
 3. Wire strategy selection via config (no code edits required to switch).
+
+Completed:
+1. `RetrievalStrategy` ABC + `ScoredResult` dataclass added to `app/services/provider_contracts.py`.
+2. `SemanticStrategy` (cosine over single model) and `HybridStrategy` (weighted multi-model fusion) implemented in `submodules/dreaming-memory-pipeline/src/mojo_memory/retrieval/`.
+3. Strategy registry (`mojo_memory.retrieval.registry`) — `get_strategy(name)` / `register_strategy(name, instance)`.
+4. `HybridMemoryService` reads `config.retrieval.strategy` at init and delegates `_get_multi_model_context` to the selected strategy; falls back to legacy path if strategy not available.
+5. `module.json` declares `retrieval_strategies` and `default_retrieval_strategy` capabilities.
+6. 22 conformance tests in `tests/conformance/test_retrieval_strategy_conformance.py` — contract + registry + custom strategy registration.
 
 Acceptance:
 - Memory provider delegates retrieval policy through strategy interface.
@@ -169,7 +177,7 @@ Acceptance:
 1. ~~Dream extraction not complete~~ — DONE (2026-05-11).
 2. ~~Registry hardening not complete~~ — DONE (2026-05-11).
 3. Conformance expansion not complete: Growth and Skill conformance skeletons not written; CI workflow gate not wired up; plugin matrix test (default + mock provider) not added.
-4. Retrieval/Embedding/Storage modular splits not started beyond planning.
+4. ~~Retrieval modular split~~ — DONE (2026-05-11). Embedding/Storage splits still planned.
 5. Growth, Skill, Benchmark decoupling, Plugin SDK are still planned/research stages.
 6. Persona (#7): two trailing items — non-create persona flows not yet routed through provider interface; no submodule-local README for `PersonaModule@1.0`.
 
