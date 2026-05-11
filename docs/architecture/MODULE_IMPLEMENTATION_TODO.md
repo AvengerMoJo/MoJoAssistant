@@ -22,7 +22,7 @@ This guide is the normative implementation pattern for:
 5. Pass gates before handoff:
 - `python3 scripts/check_memory_dream_ownership.py`
 - `python3 -m pytest tests/smoke/test_imports.py -q`
-- `python3 -m pytest tests/conformance/test_provider_conformance.py -q` (or module-specific conformance when added)
+- `python3 -m pytest tests/conformance/ -q` (full conformance suite)
 
 ## TODO Modules
 
@@ -167,10 +167,12 @@ Completed:
 1. Generic `StorageBackend` ABC in `mojo_memory/storage/base.py`.
 2. `LocalFileStorageBackend` in `mojo_memory/storage/local_fs_backend.py` — default reference backend.
 3. `DuckDBStorageBackend` in `mojo_memory/storage/duckdb_backend.py`.
-4. Backend registry/factory (`register_storage_backend`, `create_storage_backend`) for dynamic plugin loading.
-5. `MultiModelEmbeddingStorage` refactored to consume injected/selected backend instead of hardcoded file I/O.
-6. `KnowledgeManager` migrated to the pluggable storage backend interface.
-7. Conformance coverage in `tests/conformance/test_storage_backend_conformance.py` (local fs, duckdb when installed, custom backend registration, injected backend behavior).
+4. `MirrorBackend` in `mojo_memory/storage/mirror_backend.py` — dual-write fan-out for zero-downtime migration.
+5. `ConversationSchema` in `mojo_memory/storage/conversation_schema.py` — canonical schema for conversation records.
+6. Backend registry/factory (`register_storage_backend`, `create_storage_backend`) for dynamic plugin loading.
+7. `MultiModelEmbeddingStorage` refactored to consume injected/selected backend instead of hardcoded file I/O.
+8. `KnowledgeManager` migrated to the pluggable storage backend interface.
+9. Conformance coverage in `tests/conformance/test_storage_backend_conformance.py` (local fs, duckdb when installed, custom backend registration, injected backend behavior).
 
 Acceptance:
 - Memory provider uses storage interface, not concrete JSON assumptions.
@@ -206,17 +208,44 @@ Acceptance:
 
 ---
 
-## Missing Now (Cross-Module Snapshot)
+## Status Summary (2026-05-11)
 
-1. ~~Dream extraction not complete~~ — DONE (2026-05-11).
-2. ~~Registry hardening not complete~~ — DONE (2026-05-11).
-3. ~~Conformance expansion~~ — DONE (2026-05-11). Growth/Skill/Persona conformance + provider matrix + CI gate. Keep extending as new provider families are added.
-4. ~~Retrieval modular split~~ — DONE (2026-05-11).
-5. ~~Storage backend modularization~~ — DONE (2026-05-11). LocalFile + DuckDB + registry + conformance tests.
-6. Persona (#7) core extraction and interface docs are complete; future work is optimization, not structural completion.
-7. ~~Growth (#8)~~ — DONE (2026-05-11). BonsaiEngine wired; HITL callback injection point reserved.
-8. **Embedding Backends (#5)** — agent working on this. Needs: `EmbeddingBackend` ABC, built-in backends, conformance suite, bridge installer prompt.
-9. Skill Blueprints (#9), Benchmark Decoupling (#10), Plugin SDK (#11) — still PLANNED/RESEARCH stages.
+| # | Module | Status | Tests |
+|---|--------|--------|-------|
+| 1 | Dream Provider Extraction | DONE | via provider conformance |
+| 2 | Provider Registry Hardening | DONE | via smoke + doctor |
+| 3 | Conformance Suite Expansion | DONE | 85 passing, CI gated |
+| 4 | Retrieval Engine | DONE | 22 conformance tests |
+| 5 | Embedding Backends | IN PROGRESS (agent) | — |
+| 6 | Storage Backends | DONE | 3 conformance tests |
+| 7 | Persona Provider | DONE | 2 conformance tests |
+| 8 | Growth Provider | DONE | 21 conformance tests |
+| 9 | Skill Blueprints | PLANNED | — |
+| 10 | Benchmark Eval Decoupling | PLANNED | — |
+| 11 | Plugin SDK | RESEARCH | — |
+
+## What's Still Missing
+
+### Active
+- **#5 Embedding Backends** — agent working on it. Deliverables: `EmbeddingBackend` ABC,
+  built-in backends (HF/LocalServer/Random), `SimpleEmbedding` refactor, conformance suite,
+  bridge installer prompt at `docs/bridges/embedding_backend_bridge_prompt.md`.
+
+### Structural gaps within completed modules
+- **Growth DIRECTION pillar** — owner one-on-one calibration; deferred pending chat→dream bridge.
+- **Growth PRESENT pillar** — HITL blocking validation; `hitl_callback` slot reserved in
+  `BonsaiGrowthModule`, wiring deferred until DIRECTION exists.
+- **Skill conformance** — skeleton only; no real `SkillProvider` implementation behind it yet.
+- **Embedding bridge installer prompt** — part of #5; enables the Agentic Bridge Pattern for
+  any third-party embedding framework at runtime.
+
+### Planned (no code started)
+- **#9 Skill Blueprints** — define blueprint schema, install/test APIs, migrate current
+  skill definitions. Prerequisite: stable `SkillProvider` implementation.
+- **#10 Benchmark Eval Decoupling** — make LOCOMO/LongMemEval runnable without importing
+  app internals. Prerequisite: #5 embedding backends (benchmarks use embeddings directly).
+- **#11 Plugin SDK** — scaffolding templates, validation CLI, sample plugin package.
+  Natural deliverable once #5 and #9 are stable (two concrete examples to template from).
 
 ---
 
