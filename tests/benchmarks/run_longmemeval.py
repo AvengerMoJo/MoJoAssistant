@@ -45,7 +45,7 @@ SUBMODULE_SRC = PROJECT_ROOT / "submodules" / "dreaming-memory-pipeline" / "src"
 if SUBMODULE_SRC.exists():
     sys.path.insert(0, str(SUBMODULE_SRC))
 
-from mojo_memory.services.memory_service import MemoryService
+from tests.benchmarks.provider_runtime import ProviderMemoryRuntime
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +83,12 @@ def load_longmemeval(path: str) -> list[dict]:
 # Memory service
 # ---------------------------------------------------------------------------
 
-def build_memory_service(backend: str, model: str, data_dir: str) -> MemoryService:
-    return MemoryService(
+def build_memory_runtime(backend: str, model: str, data_dir: str) -> ProviderMemoryRuntime:
+    return ProviderMemoryRuntime.build(
+        role_id="longmemeval",
         data_dir=data_dir,
         embedding_model=model,
         embedding_backend=backend,
-        embedding_device="cpu",
         config={
             "working_memory_max_tokens": 8000,
             "active_memory_max_pages": 100,
@@ -100,7 +100,7 @@ def build_memory_service(backend: str, model: str, data_dir: str) -> MemoryServi
 # Ingestion
 # ---------------------------------------------------------------------------
 
-def ingest_question_history(svc: MemoryService, question_data: dict) -> None:
+def ingest_question_history(runtime: ProviderMemoryRuntime, question_data: dict) -> None:
     """
     Feed all sessions from a LongMemEval question into memory.
 
@@ -131,18 +131,18 @@ def ingest_question_history(svc: MemoryService, question_data: dict) -> None:
                 continue
             dated = f"[{date}] {content}" if date else content
             if role in ("user", "human"):
-                svc.add_user_message(dated)
+                runtime.add_message("user", dated, {"question_id": question_data.get("question_id", "")})
             else:
-                svc.add_assistant_message(dated)
+                runtime.add_message("assistant", dated, {"question_id": question_data.get("question_id", "")})
 
 
 # ---------------------------------------------------------------------------
 # Answer generation
 # ---------------------------------------------------------------------------
 
-def generate_answer(svc: MemoryService, question: str, model: str | None) -> tuple[str, dict]:
+def generate_answer(runtime: ProviderMemoryRuntime, question: str, model: str | None) -> tuple[str, dict]:
     t0 = time.perf_counter()
-    context_items = svc.get_context_for_query(question, max_items=15)
+    context_items = runtime.get_context(question, max_items=15)
     retrieval_ms = (time.perf_counter() - t0) * 1000
 
     context_parts = []
@@ -255,9 +255,9 @@ def run_benchmark(args) -> None:
 
         # Each question gets its own isolated memory (LongMemEval requires fresh context per Q)
         with tempfile.TemporaryDirectory(prefix="mojo_lme_") as tmpdir:
-            svc = build_memory_service(args.embedding_backend, args.embedding_model, tmpdir)
-            ingest_question_history(svc, question_data)
-            answer, meta = generate_answer(svc, question, args.model)
+            runtime = build_memory_runtime(args.embedding_backend, args.embedding_model, tmpdir)
+            ingest_question_history(runtime, question_data)
+            answer, meta = generate_answer(runtime, question, args.model)
 
         latencies.append(meta["retrieval_ms"])
         if q_type not in per_type:

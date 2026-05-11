@@ -334,7 +334,7 @@ Acceptance:
 ---
 
 ### 10. Benchmark Eval Decoupling
-Status: `PLANNED`
+Status: `IN PROGRESS` (2026-05-11)
 
 Scope:
 - Make benchmark runners provider-interface driven and core-independent.
@@ -346,6 +346,11 @@ Deliverables:
 
 Acceptance:
 - LOCOMO/LongMemEval runnable without direct app internals imports.
+
+Progress:
+1. Added provider-interface benchmark adapter: `tests/benchmarks/provider_runtime.py`.
+2. Refactored `tests/benchmarks/run_longmemeval.py` to use provider runtime (`get_memory_provider`) instead of concrete `MemoryService` import.
+3. Added smoke guard: `tests/smoke/test_benchmark_decoupling.py` to prevent regressions to direct `MemoryService` coupling.
 
 ---
 
