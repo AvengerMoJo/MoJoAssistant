@@ -236,27 +236,26 @@ Acceptance:
 | 7 | Persona Provider | DONE | 2 conformance tests |
 | 8 | Growth Provider | DONE | 21 conformance tests |
 | 9 | Skill Blueprints | DONE | 30 conformance tests |
-| 10 | Benchmark Eval Decoupling | IN PROGRESS (agent) | smoke guard added |
+| 10 | Benchmark Eval Decoupling | DONE | 3 smoke tests |
 | 11 | Plugin SDK | RESEARCH | — |
 
 ## What's Still Missing
 
 ### Active
-- No active core extraction modules at this moment.
+- **#10 Benchmark Eval Decoupling** — in progress.
+- Remaining:
+  - decouple `run_locomo.py` from direct app-internal imports where possible
+  - decouple `run_locomo_abcd_e2e.py` from direct app-internal imports where possible
+  - extend benchmark decoupling smoke guard to cover LOCOMO runners
 
 ### Structural gaps within completed modules
 - **Growth DIRECTION pillar** — owner one-on-one calibration; deferred pending chat→dream bridge.
 - **Growth PRESENT pillar** — HITL blocking validation; `hitl_callback` slot reserved in
   `BonsaiGrowthModule`, wiring deferred until DIRECTION exists.
 
-### Active
-- **#5 Embedding Backends** — agent working on it.
-
 ### Planned (no code started)
-- **#10 Benchmark Eval Decoupling** — make LOCOMO/LongMemEval runnable without importing
-  app internals. Nearly clean already (one import).
 - **#11 Plugin SDK** — scaffolding templates, validation CLI, sample plugin package.
-  Natural deliverable once #5 is stable.
+  Natural deliverable once #9 and #10 are stable.
 
 ### Runtime adoption validation target — CubeSandbox
 **https://github.com/tencentcloud/CubeSandbox** is the canonical integration test for #9.
@@ -334,7 +333,7 @@ Acceptance:
 ---
 
 ### 10. Benchmark Eval Decoupling
-Status: `IN PROGRESS` — delegated to separate agent (2026-05-12)
+Status: `DONE` (2026-05-12)
 
 Scope:
 - Make benchmark runners provider-interface driven and core-independent.
