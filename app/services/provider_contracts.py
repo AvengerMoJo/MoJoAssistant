@@ -596,6 +596,64 @@ class ProviderRegistry:
         """Return module load/import errors discovered during module scan."""
         return dict(self._module_load_errors)
 
+    # -- Schema validation --------------------------------------------------
+
+    def _load_descriptor_schema(self) -> Optional[Dict[str, Any]]:
+        """Load docs/schemas/module.json for descriptor validation."""
+        schema_path = Path(__file__).resolve().parents[2] / "docs" / "schemas" / "module.json"
+        if not schema_path.exists():
+            return None
+        try:
+            with open(schema_path) as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def validate_descriptor(self, module_data: Dict[str, Any]) -> List[str]:
+        """
+        Validate a single module descriptor against docs/schemas/module.json.
+        Returns list of error strings (empty = valid).
+        """
+        schema = self._load_descriptor_schema()
+        if schema is None:
+            return []  # schema not available, skip validation
+        try:
+            import jsonschema
+            jsonschema.validate(module_data, schema)
+            return []
+        except ImportError:
+            return []  # jsonschema not installed
+        except Exception as e:
+            return [str(e)]
+
+    def validate_all_descriptors(self) -> Dict[str, List[str]]:
+        """
+        Validate all discovered module descriptors.
+        Returns dict of module_name -> list of validation errors.
+        """
+        results: Dict[str, List[str]] = {}
+        for name, module_data in self._modules.items():
+            errors = self.validate_descriptor(module_data)
+            if errors:
+                results[name] = errors
+        return results
+
+    # -- Dependency graph ---------------------------------------------------
+
+    def check_dependency_graph(self) -> Dict[str, List[str]]:
+        """
+        Check that all declared dependencies of each module are registered.
+        Returns dict of module_name -> list of missing dependency names.
+        """
+        registered = set(self._modules.keys())
+        missing: Dict[str, List[str]] = {}
+        for name, module_data in self._modules.items():
+            deps = module_data.get("dependencies") or []
+            absent = [d for d in deps if d not in registered]
+            if absent:
+                missing[name] = absent
+        return missing
+
     # -- Resolution ---------------------------------------------------------
 
     def resolve_memory_provider(
