@@ -1081,6 +1081,36 @@ class ToolRegistry:
                     "required": [],
                 },
             },
+            # Skill Blueprint Hub
+            {
+                "name": "skill",
+                "description": (
+                    "Skill blueprint hub. Manages parameterized tool templates and installs them into dynamic_tools.json.\n\n"
+                    "action='catalog',           filter?                   → list available blueprints\n"
+                    "action='get',               skill_id                  → full blueprint detail\n"
+                    "action='search',            query                     → search by name/description/tag\n"
+                    "action='install',           skill_id, env?            → render template + install\n"
+                    "action='install_blueprint', blueprint, env?           → install from agent-provided dict\n"
+                    "action='uninstall',         skill_id                  → remove from personal layer\n"
+                    "action='test',              skill_id                  → run test_args and verify\n"
+                    "action='list_installed'                                → list tools in dynamic_tools.json\n\n"
+                    "External skill adoption: dispatch an agent with the skill installer prompt "
+                    "(docs/skills/skill_installer_prompt.md) + the target URL/repo. "
+                    "The agent generates a blueprint dict and calls action='install_blueprint'."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action":    {"type": "string", "description": "Operation to perform. Omit for help menu."},
+                        "skill_id":  {"type": "string", "description": "Blueprint id (get, install, uninstall, test actions)."},
+                        "filter":    {"type": "object", "description": "Filter dict for catalog: category?, tags?[], query?"},
+                        "query":     {"type": "string", "description": "Search query (search action)."},
+                        "env":       {"type": "object", "description": "Template variable values to substitute during install."},
+                        "blueprint": {"type": "object", "description": "Blueprint dict for install_blueprint action."},
+                    },
+                    "required": [],
+                },
+            },
             # LLM Server Discovery (not a config operation — queries external service)
             # Task Session Tools
             {
@@ -1725,6 +1755,8 @@ Agent resumes within seconds.
             return await self._execute_dream(args)
         elif name == "agent":
             return await self._execute_agent_hub(args)
+        elif name == "skill":
+            return await self._execute_skill_hub(args)
         elif name == "external_agent":
             return await self._execute_external_agent(args)
         # Role tool direct aliases (also reachable via role hub action=...)
@@ -4813,6 +4845,115 @@ Agent resumes within seconds.
             return {"status": "success", "provider": provider.get_version().provider_name, **result}
         except Exception as e:
             return {"status": "error", "message": f"Growth validate failed: {e}"}
+
+    # ── Skill Blueprint Hub ──────────────────────────────────────────
+
+    async def _execute_skill_hub(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from app.services.provider_contracts import get_registry
+        action = args.get("action", "")
+        try:
+            provider = get_registry().resolve_skill_provider()
+        except Exception as e:
+            return {"status": "error", "message": f"Skill provider unavailable: {e}"}
+
+        def _bp_dict(bp):
+            return {
+                "id": bp.id, "name": bp.name, "description": bp.description,
+                "category": bp.category, "danger_level": bp.danger_level,
+                "version": bp.version, "tags": bp.tags, "source": bp.source,
+                "template_vars": bp.template_vars, "test_args": bp.test_args,
+            }
+
+        if action == "catalog":
+            bps = provider.catalog(args.get("filter"))
+            return {"status": "success", "count": len(bps), "blueprints": [_bp_dict(b) for b in bps]}
+
+        if action == "get":
+            skill_id = args.get("skill_id")
+            if not skill_id:
+                return {"status": "error", "message": "skill_id is required"}
+            bp = provider.blueprint(skill_id)
+            if bp is None:
+                return {"status": "error", "message": f"Blueprint '{skill_id}' not found"}
+            full = _bp_dict(bp)
+            full["parameters"] = bp.parameters
+            full["executor_template"] = bp.executor_template
+            return {"status": "success", "blueprint": full}
+
+        if action == "search":
+            query = args.get("query", "")
+            bps = provider.search(query)
+            return {"status": "success", "count": len(bps), "blueprints": [_bp_dict(b) for b in bps]}
+
+        if action == "install":
+            skill_id = args.get("skill_id")
+            if not skill_id:
+                return {"status": "error", "message": "skill_id is required"}
+            try:
+                result = provider.install(skill_id, args.get("env") or {})
+                return {"status": "success", "skill_id": result.skill_id,
+                        "installed_at": result.installed_at, "tool_entry": result.tool_entry}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        if action == "install_blueprint":
+            blueprint = args.get("blueprint")
+            if not blueprint:
+                return {"status": "error", "message": "blueprint dict is required"}
+            try:
+                result = provider.install_blueprint(blueprint, args.get("env") or {})
+                return {"status": "success", "skill_id": result.skill_id,
+                        "installed_at": result.installed_at,
+                        "blueprint_saved_at": result.blueprint_saved_at}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        if action == "uninstall":
+            skill_id = args.get("skill_id")
+            if not skill_id:
+                return {"status": "error", "message": "skill_id is required"}
+            removed = provider.uninstall(skill_id)
+            return {"status": "success" if removed else "not_found", "skill_id": skill_id}
+
+        if action == "test":
+            skill_id = args.get("skill_id")
+            if not skill_id:
+                return {"status": "error", "message": "skill_id is required"}
+            result = provider.test(skill_id)
+            return {"status": "success", "skill_id": result.skill_id,
+                    "passed": result.passed, "output": result.output, "error": result.error}
+
+        if action == "list_installed":
+            from app.config.paths import get_memory_path
+            import pathlib, json as _json
+            tools_file = pathlib.Path(get_memory_path()) / "config" / "dynamic_tools.json"
+            if not tools_file.exists():
+                return {"status": "success", "tools": [], "count": 0}
+            data = _json.loads(tools_file.read_text())
+            tools = [{"name": t.get("name"), "category": t.get("category"),
+                      "danger_level": t.get("danger_level"), "created_by": t.get("created_by"),
+                      "version": t.get("version")} for t in data.get("tools", [])]
+            return {"status": "success", "tools": tools, "count": len(tools)}
+
+        # Help menu
+        return {
+            "status": "help",
+            "actions": {
+                "catalog":           "List available blueprints — params: filter?{category,tags,query}",
+                "get":               "Full blueprint detail — params: skill_id",
+                "search":            "Search by name/description/tag — params: query",
+                "install":           "Render template + install — params: skill_id, env?",
+                "install_blueprint": "Install agent-provided blueprint — params: blueprint, env?",
+                "uninstall":         "Remove from personal layer — params: skill_id",
+                "test":              "Run test_args and verify — params: skill_id",
+                "list_installed":    "List tools in dynamic_tools.json",
+            },
+            "external_adoption": (
+                "To install an external tool as a skill: dispatch an agent with "
+                "docs/skills/skill_installer_prompt.md + the target URL/repo. "
+                "The agent generates a blueprint and calls action='install_blueprint'."
+            ),
+        }
 
     async def _execute_role_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List all saved roles."""

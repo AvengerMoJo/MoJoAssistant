@@ -1,0 +1,33 @@
+{
+  "id": "sandbox_create",
+  "name": "Git Worktree Sandbox — Create",
+  "description": "Create a git worktree sandbox for an agent. Args: name, repo_path, branch.",
+  "category": "orchestration",
+  "danger_level": "low",
+  "version": "1.0.0",
+  "requires_auth": false,
+  "tags": ["git", "sandbox", "worktree", "agent", "coding"],
+  "source": "local",
+  "template_vars": {
+    "SANDBOX_DIR": {
+      "description": "Root directory where sandboxes are created",
+      "type": "path",
+      "default": "${HOME}/.memory/sandboxes",
+      "required": false
+    }
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name":      {"type": "string", "description": "Unique sandbox identifier"},
+      "repo_path": {"type": "string", "description": "Absolute path to the git repo"},
+      "branch":    {"type": "string", "description": "Branch name to create or use in the worktree"}
+    },
+    "required": ["name", "repo_path", "branch"]
+  },
+  "executor_template": {
+    "type": "bash",
+    "command": "python3 -c \"\nimport json, sys, subprocess, os\nargs = json.load(sys.stdin)\nname = args['name']\nrepo_path = args['repo_path']\nbranch = args['branch']\nsandbox_base = '${SANDBOX_DIR}'\nos.makedirs(sandbox_base, exist_ok=True)\nsandbox_path = os.path.join(sandbox_base, name)\nif os.path.exists(sandbox_path):\n    print(json.dumps({'success': True, 'path': sandbox_path, 'message': 'already exists'}))\n    sys.exit(0)\nresult = subprocess.run(['git', '-C', repo_path, 'worktree', 'add', '-B', branch, sandbox_path, 'HEAD'], capture_output=True, text=True)\nif result.returncode == 0:\n    print(json.dumps({'success': True, 'path': sandbox_path, 'branch': branch}))\nelse:\n    print(json.dumps({'success': False, 'error': result.stderr.strip()}))\n\""
+  },
+  "test_args": {}
+}

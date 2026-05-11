@@ -1,0 +1,29 @@
+{
+  "id": "read_file",
+  "name": "Read File",
+  "description": "Read a file from disk and return its contents. Optionally limit lines.",
+  "category": "file",
+  "danger_level": "low",
+  "version": "1.0.0",
+  "requires_auth": false,
+  "tags": ["file", "read", "text", "io"],
+  "source": "local",
+  "template_vars": {},
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path":       {"type": "string", "description": "Absolute path to the file"},
+      "max_lines":  {"type": "integer", "description": "Maximum lines to return (default: all)"},
+      "encoding":   {"type": "string", "description": "File encoding (default: utf-8)"}
+    },
+    "required": ["path"]
+  },
+  "executor_template": {
+    "type": "shell",
+    "command": "python3 -c \"\nimport json, sys\nargs = json.load(sys.stdin)\npath = args.get('path', '')\nmax_lines = args.get('max_lines')\nencoding = args.get('encoding', 'utf-8')\ntry:\n    with open(path, encoding=encoding) as f:\n        lines = f.readlines()\n    if max_lines:\n        lines = lines[:int(max_lines)]\n    content = ''.join(lines)\n    print(json.dumps({'success': True, 'path': path, 'content': content, 'line_count': len(lines)}))\nexcept Exception as e:\n    print(json.dumps({'success': False, 'error': str(e)}))\n\""
+  },
+  "test_args": {
+    "path": "/etc/hostname",
+    "max_lines": 1
+  }
+}
