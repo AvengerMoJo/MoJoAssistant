@@ -173,6 +173,7 @@ Completed:
 7. `MultiModelEmbeddingStorage` refactored to consume injected/selected backend instead of hardcoded file I/O.
 8. `KnowledgeManager` migrated to the pluggable storage backend interface.
 9. Conformance coverage in `tests/conformance/test_storage_backend_conformance.py` (local fs, duckdb when installed, custom backend registration, injected backend behavior).
+10. Runtime operations guide added: `docs/guides/STORAGE_BACKEND_RUNTIME.md` (single backend, mirror mode, parity checks, cutover policy).
 
 Acceptance:
 - Memory provider uses storage interface, not concrete JSON assumptions.
