@@ -1,0 +1,43 @@
+{
+  "id": "cubesandbox_exec",
+  "name": "CubeSandbox — Execute Code",
+  "description": "Run code in an isolated CubeSandbox VM. Provides kernel-level isolation via KVM/RustVMM. Drop-in replacement for E2B sandboxes. Requires CubeSandbox server running and e2b_code_interpreter installed.",
+  "category": "exec",
+  "danger_level": "medium",
+  "version": "1.0.0",
+  "requires_auth": true,
+  "tags": ["sandbox", "exec", "vm", "isolation", "code", "e2b", "cubesandbox", "agent"],
+  "source": "https://github.com/tencentcloud/CubeSandbox",
+  "template_vars": {
+    "E2B_API_URL": {
+      "description": "URL of the CubeSandbox API gateway (e.g. http://localhost:3000 or your server address)",
+      "type": "str",
+      "required": true
+    },
+    "E2B_API_KEY": {
+      "description": "API key for CubeSandbox authentication",
+      "type": "str",
+      "required": true
+    },
+    "CUBE_TEMPLATE_ID": {
+      "description": "CubeSandbox template ID to use for the VM image",
+      "type": "str",
+      "default": "base",
+      "required": false
+    }
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "code":     {"type": "string", "description": "Code to execute inside the sandbox"},
+      "language": {"type": "string", "description": "Language hint (python, bash, etc.)", "default": "python"},
+      "timeout":  {"type": "integer", "description": "Execution timeout in seconds (default 30)"}
+    },
+    "required": ["code"]
+  },
+  "executor_template": {
+    "type": "shell",
+    "command": "python3 -c \"\nimport json, sys, os\nargs = json.load(sys.stdin)\ncode = args.get('code', '')\ntimeout = args.get('timeout', 30)\nif not code:\n    print(json.dumps({'success': False, 'error': 'code is required'})); sys.exit(0)\nos.environ['E2B_API_URL'] = '${E2B_API_URL}'\nos.environ['E2B_API_KEY'] = '${E2B_API_KEY}'\ntry:\n    from e2b_code_interpreter import Sandbox\n    sbx = Sandbox(template='${CUBE_TEMPLATE_ID}', timeout=timeout)\n    execution = sbx.run_code(code)\n    sbx.kill()\n    output = ''.join(str(r) for r in execution.results) if execution.results else ''\n    logs = execution.logs.stdout + execution.logs.stderr if hasattr(execution, 'logs') else []\n    print(json.dumps({'success': True, 'output': output, 'logs': logs, 'error': execution.error if hasattr(execution, 'error') else None}))\nexcept ImportError:\n    print(json.dumps({'success': False, 'error': 'e2b_code_interpreter not installed. Run: pip install e2b-code-interpreter'}))\nexcept Exception as e:\n    print(json.dumps({'success': False, 'error': str(e)}))\n\""
+  },
+  "test_args": {}
+}

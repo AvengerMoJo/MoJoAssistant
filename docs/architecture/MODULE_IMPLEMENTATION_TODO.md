@@ -248,16 +248,34 @@ Acceptance:
 - **Growth DIRECTION pillar** — owner one-on-one calibration; deferred pending chat→dream bridge.
 - **Growth PRESENT pillar** — HITL blocking validation; `hitl_callback` slot reserved in
   `BonsaiGrowthModule`, wiring deferred until DIRECTION exists.
-- **Skill conformance** — skeleton only; no real `SkillProvider` implementation behind it yet.
-- **Embedding bridge installer prompt** — complete (`docs/bridges/embedding_backend_bridge_prompt.md`).
+
+### Active
+- **#5 Embedding Backends** — agent working on it.
 
 ### Planned (no code started)
-- **#9 Skill Blueprints** — define blueprint schema, install/test APIs, migrate current
-  skill definitions. Prerequisite: stable `SkillProvider` implementation.
 - **#10 Benchmark Eval Decoupling** — make LOCOMO/LongMemEval runnable without importing
-  app internals. Prerequisite: #5 embedding backends (benchmarks use embeddings directly).
+  app internals. Nearly clean already (one import).
 - **#11 Plugin SDK** — scaffolding templates, validation CLI, sample plugin package.
-  Natural deliverable once #5 and #9 are stable (two concrete examples to template from).
+  Natural deliverable once #5 is stable.
+
+### Runtime adoption validation target — CubeSandbox
+**https://github.com/tencentcloud/CubeSandbox** is the canonical integration test for #9.
+
+CubeSandbox is a KVM/RustVMM-based sandbox service with E2B-compatible Python SDK.
+Reference blueprints are in `config/skill_blueprints/cubesandbox_exec.json` and
+`cubesandbox_create.json`. To install at runtime:
+
+```
+skill(action="install", skill_id="cubesandbox_exec", env={
+    "E2B_API_URL": "http://your-server:3000",
+    "E2B_API_KEY":  "your-key",
+    "CUBE_TEMPLATE_ID": "base"
+})
+```
+
+The validation test for the skill installer pattern:
+dispatch an agent with `docs/skills/skill_installer_prompt.md` +
+the CubeSandbox README URL — it should independently produce these same blueprints.
 
 ---
 
@@ -286,18 +304,32 @@ four-pillar contract is proven stable.
 ---
 
 ### 9. Skill Blueprints Module
-Status: `PLANNED`
+Status: `DONE` (2026-05-11)
 
 Scope:
-- Externalize skill blueprint catalog and installer.
+- Define blueprint schema, install interface, and agent-mediated external adoption.
 
-Deliverables:
-1. Blueprint schema.
-2. Install/test APIs.
-3. Migration of current skill definitions to blueprints.
+Completed:
+1. `SkillBlueprint`, `InstallResult`, `SkillTestResult`, `TemplateVarSpec` dataclasses in `provider_contracts.py`.
+2. `SkillProvider` ABC — `catalog/blueprint/install/install_blueprint/uninstall/test/search`.
+3. `DefaultSkillProvider` in `app/scheduler/skill_provider.py` — two-layer blueprint loading,
+   `${VAR}` template substitution, writes to `dynamic_tools.json`, subprocess test runner.
+4. `skill()` MCP hub — 8 actions: catalog/get/search/install/install_blueprint/uninstall/test/list_installed.
+5. `register_skill_provider` / `resolve_skill_provider` / `MOJO_SKILL_PROVIDER` env override.
+6. System blueprints in `config/skill_blueprints/`: `curl_request`, `sandbox_create`, `read_file`,
+   `cubesandbox_exec`, `cubesandbox_create`.
+7. Skill installer prompt: `docs/skills/skill_installer_prompt.md` — self-contained agent prompt
+   for external skill adoption (agent reads target, generates blueprint dict, calls install_blueprint).
+8. 30 conformance tests (mock + DefaultSkillProvider + registry + system blueprint validation).
+
+Runtime adoption validation target: **CubeSandbox** (`https://github.com/tencentcloud/CubeSandbox`).
+An agent dispatched with the installer prompt + CubeSandbox README should independently
+produce the cubesandbox_exec/create blueprints. This is the proof-of-concept test.
 
 Acceptance:
-- Skills can be installed from blueprint without editing core files.
+- External skill installable at runtime without editing core files. ✓
+- Agent-provided blueprint dict accepted via `install_blueprint`. ✓
+- System blueprints cover orchestration, web, file, and external VM sandbox categories. ✓
 
 ---
 

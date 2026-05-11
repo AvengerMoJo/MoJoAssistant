@@ -1,0 +1,41 @@
+{
+  "id": "cubesandbox_create",
+  "name": "CubeSandbox — Create Session",
+  "description": "Create a persistent CubeSandbox VM session and return its ID. Use cubesandbox_exec for one-shot execution instead. Useful when you need a long-lived sandbox across multiple tool calls.",
+  "category": "orchestration",
+  "danger_level": "medium",
+  "version": "1.0.0",
+  "requires_auth": true,
+  "tags": ["sandbox", "vm", "session", "e2b", "cubesandbox", "agent"],
+  "source": "https://github.com/tencentcloud/CubeSandbox",
+  "template_vars": {
+    "E2B_API_URL": {
+      "description": "URL of the CubeSandbox API gateway",
+      "type": "str",
+      "required": true
+    },
+    "E2B_API_KEY": {
+      "description": "API key for CubeSandbox authentication",
+      "type": "str",
+      "required": true
+    },
+    "CUBE_TEMPLATE_ID": {
+      "description": "CubeSandbox template ID",
+      "type": "str",
+      "default": "base",
+      "required": false
+    }
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "timeout": {"type": "integer", "description": "Session timeout in seconds (default 300)"}
+    },
+    "required": []
+  },
+  "executor_template": {
+    "type": "shell",
+    "command": "python3 -c \"\nimport json, sys, os\nargs = json.load(sys.stdin)\ntimeout = args.get('timeout', 300)\nos.environ['E2B_API_URL'] = '${E2B_API_URL}'\nos.environ['E2B_API_KEY'] = '${E2B_API_KEY}'\ntry:\n    from e2b_code_interpreter import Sandbox\n    sbx = Sandbox(template='${CUBE_TEMPLATE_ID}', timeout=timeout)\n    print(json.dumps({'success': True, 'sandbox_id': sbx.sandbox_id, 'template': '${CUBE_TEMPLATE_ID}'}))\nexcept ImportError:\n    print(json.dumps({'success': False, 'error': 'e2b_code_interpreter not installed'}))\nexcept Exception as e:\n    print(json.dumps({'success': False, 'error': str(e)}))\n\""
+  },
+  "test_args": {}
+}
