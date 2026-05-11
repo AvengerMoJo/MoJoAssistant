@@ -235,8 +235,8 @@ Acceptance:
 | 6 | Storage Backends | DONE | 3 conformance tests |
 | 7 | Persona Provider | DONE | 2 conformance tests |
 | 8 | Growth Provider | DONE | 21 conformance tests |
-| 9 | Skill Blueprints | PLANNED | — |
-| 10 | Benchmark Eval Decoupling | PLANNED | — |
+| 9 | Skill Blueprints | DONE | 30 conformance tests |
+| 10 | Benchmark Eval Decoupling | IN PROGRESS (agent) | smoke guard added |
 | 11 | Plugin SDK | RESEARCH | — |
 
 ## What's Still Missing
@@ -334,7 +334,7 @@ Acceptance:
 ---
 
 ### 10. Benchmark Eval Decoupling
-Status: `IN PROGRESS` (2026-05-11)
+Status: `IN PROGRESS` — delegated to separate agent (2026-05-12)
 
 Scope:
 - Make benchmark runners provider-interface driven and core-independent.
@@ -351,6 +351,11 @@ Progress:
 1. Added provider-interface benchmark adapter: `tests/benchmarks/provider_runtime.py`.
 2. Refactored `tests/benchmarks/run_longmemeval.py` to use provider runtime (`get_memory_provider`) instead of concrete `MemoryService` import.
 3. Added smoke guard: `tests/smoke/test_benchmark_decoupling.py` to prevent regressions to direct `MemoryService` coupling.
+
+Remaining (for delegated agent):
+- `run_locomo.py:277` — one `from app.llm.llm_interface import LLMInterface` import; route through an `LLMProvider` contract or provider_runtime.
+- `run_locomo_abcd_e2e.py:28-29` — `from app.dreaming.pipeline import DreamingPipeline` and `from app.llm.llm_interface import LLMInterface`; replace with provider-runtime or skip/stub if abcd_e2e is intentionally app-coupled.
+- Extend `test_benchmark_decoupling.py` smoke guard to cover these two files once fixed.
 
 ---
 
