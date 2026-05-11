@@ -69,7 +69,7 @@ Acceptance:
 ---
 
 ### 3. Conformance Suite Expansion
-Status: `IN PROGRESS`
+Status: `DONE` (2026-05-11)
 
 Scope:
 - Expand beyond memory/dream into planned module families.
@@ -82,8 +82,12 @@ Deliverables:
 Acceptance:
 - New module cannot merge without passing its conformance contract tests.
 
-Dependency update:
-- Persona interface is now defined (`PersonaProvider` / `PersonaModule@1.0`), so Persona conformance work no longer needs to wait on #7.
+Completed:
+1. Persona conformance: `tests/conformance/test_persona_provider_conformance.py`.
+2. Growth conformance: `tests/conformance/test_growth_provider_conformance.py`.
+3. Skill conformance: `tests/conformance/test_skill_provider_conformance.py`.
+4. Provider matrix coverage (default + mock alternative provider): `tests/conformance/test_provider_matrix.py`.
+5. CI conformance gate wired in `.github/workflows/smoke-test.yml` (`Conformance Suite Gate` step).
 
 ---
 
@@ -144,7 +148,7 @@ Acceptance:
 ---
 
 ### 7. Persona Provider Completion
-Status: `DONE (Phase 1b core goals)`
+Status: `DONE` (2026-05-11)
 
 Scope:
 - Finish extraction of persona generation/scoring logic.
@@ -162,10 +166,10 @@ Completed:
 5. Persona conformance baseline test added: `tests/conformance/test_persona_provider_conformance.py`.
 6. NineChapter canonical implementation moved into submodule: `submodules/agency-agents/src/agency_agents/ninechapter.py`.
 7. Core `app/scheduler/ninechapter.py` converted to compatibility shim.
-
-Still missing for #7:
-1. Route additional persona-related flows (beyond role create) through provider interface where applicable.
-2. Add submodule-local interface docs/README for `PersonaModule@1.0`.
+8. Provider-based persona flows added in MCP role tooling:
+- `role(action="persona_list")`
+- `role(action="persona_score")`
+9. Submodule-local interface documentation added: `submodules/agency-agents/docs/PERSONA_MODULE_INTERFACE.md`.
 
 Acceptance:
 - Role creation/scoring path goes through persona module interface.
@@ -176,10 +180,10 @@ Acceptance:
 
 1. ~~Dream extraction not complete~~ — DONE (2026-05-11).
 2. ~~Registry hardening not complete~~ — DONE (2026-05-11).
-3. Conformance expansion not complete: Growth and Skill conformance skeletons not written; CI workflow gate not wired up; plugin matrix test (default + mock provider) not added.
+3. Conformance expansion completed for Persona/Growth/Skill and provider matrix; keep extending as new provider families are added.
 4. ~~Retrieval modular split~~ — DONE (2026-05-11). Embedding/Storage splits still planned.
 5. Growth, Skill, Benchmark decoupling, Plugin SDK are still planned/research stages.
-6. Persona (#7): two trailing items — non-create persona flows not yet routed through provider interface; no submodule-local README for `PersonaModule@1.0`.
+6. Persona (#7) core extraction and interface docs are complete; future work is optimization, not structural completion.
 
 ---
 
