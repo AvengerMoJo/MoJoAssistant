@@ -214,24 +214,33 @@ Acceptance:
 4. ~~Retrieval modular split~~ — DONE (2026-05-11).
 5. ~~Storage backend modularization~~ — DONE (2026-05-11). LocalFile + DuckDB + registry + conformance tests.
 6. Persona (#7) core extraction and interface docs are complete; future work is optimization, not structural completion.
-7. **Embedding Backends (#5)** — interface design done, implementation pending. Needs: `EmbeddingBackend` ABC, built-in backends (HF/LocalServer/Random), `SimpleEmbedding` refactor, conformance suite, bridge installer prompt. This is the next active item.
-8. Growth (#8), Skill Blueprints (#9), Benchmark Decoupling (#10), Plugin SDK (#11) — still PLANNED/RESEARCH stages.
+7. ~~Growth (#8)~~ — DONE (2026-05-11). BonsaiEngine wired; HITL callback injection point reserved.
+8. **Embedding Backends (#5)** — agent working on this. Needs: `EmbeddingBackend` ABC, built-in backends, conformance suite, bridge installer prompt.
+9. Skill Blueprints (#9), Benchmark Decoupling (#10), Plugin SDK (#11) — still PLANNED/RESEARCH stages.
 
 ---
 
 ### 8. Growth Provider Extraction
-Status: `PLANNED`
+Status: `DONE` (2026-05-11)
 
 Scope:
-- Extract BRIDLE/Bonsai growth logic into dedicated module.
+- Wire existing BonsaiEngine behind the GrowthProvider interface.
 
-Deliverables:
-1. Define growth module contract.
-2. Move growth internals out of scheduler/role manager.
-3. Inject HITL callback from core (no hard dependency).
+Completed:
+1. `BonsaiGrowthModule` adapter in `app/scheduler/growth_provider.py` wrapping
+   `BonsaiEngine` + `SnapshotManager` (snapshot/evaluate/propose/validate).
+2. `register_growth_provider` / `resolve_growth_provider` / `_register_default_growth_provider`
+   added to `ProviderRegistry`; `MOJO_GROWTH_PROVIDER` env override supported.
+3. Three MCP actions on `role()`: `growth_snapshot`, `growth_propose`, `growth_validate`.
+4. Optional `hitl_callback` constructor param — the PRESENT pillar injection point for when
+   blocking HITL validation is built.
+5. 21 conformance tests in `tests/conformance/test_growth_provider_conformance.py`
+   (parametrized over MockGrowthProvider + BonsaiGrowthModule).
 
-Acceptance:
-- Growth module proposes; core validates/persists.
+Note: DIRECTION (one-on-one calibration) and PRESENT (HITL validation) pillars are
+planned but not built. The `hitl_callback=None` default keeps the interface stable
+until those pillars exist. Submodule extraction remains deferred until the full
+four-pillar contract is proven stable.
 
 ---
 
