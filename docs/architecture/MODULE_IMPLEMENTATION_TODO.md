@@ -116,18 +116,39 @@ Acceptance:
 ---
 
 ### 5. Embedding Backends Module
-Status: `PLANNED`
+Status: `IN PROGRESS` (interface phase)
 
 Scope:
 - Decouple embedding implementations from memory provider.
+- Establish the Agentic Bridge Pattern so third-party backends (SIE, OpenAI,
+  Cohere, Ollama, vLLM, etc.) can be installed by a MoJo agent without any
+  developer writing glue code manually.
 
 Deliverables:
-1. `EmbeddingBackend` interface.
-2. Backends: local/HF/API adapters.
-3. Selection by configuration/environment.
+1. `EmbeddingBackend` ABC in `app/services/provider_contracts.py`.
+2. Built-in backends in `mojo_memory/embeddings/backends/`:
+   - `HuggingFaceBackend` — wraps current `SimpleEmbedding` HF logic
+   - `LocalServerBackend` — generic HTTP embedding server (existing local path)
+   - `RandomBackend` — deterministic fallback for testing
+3. Backend registry: `get_backend(name)` / `register_backend(name, instance)`.
+4. `SimpleEmbedding` refactored to delegate to a registered backend.
+5. Config key `embedding.backend` selects the active backend at startup.
+6. Conformance test suite: `tests/conformance/test_embedding_backend_conformance.py`.
+7. Bridge installer prompt: `docs/bridges/embedding_backend_bridge_prompt.md` —
+   the self-contained agent prompt for generating any third-party bridge (SIE,
+   OpenAI, etc.) that passes the conformance suite.
+
+Agentic Bridge Pattern (replaces manual adapter writing):
+- MoJo owns the interface and conformance tests — never the third-party adapters.
+- To install SIE (or any other framework): dispatch a MoJo agent with the bridge
+  installer prompt + the framework's docs URL. Agent writes the bridge, runs
+  conformance, commits if it passes. No developer glue code required.
+- See [AGENTIC_BRIDGE_PATTERN.md](AGENTIC_BRIDGE_PATTERN.md) for the full pattern spec.
 
 Acceptance:
-- Switching backend requires no provider code changes.
+- Switching backend requires only a config change (`embedding.backend = "sie"`).
+- Any conformance-passing bridge can be dropped into `backends/` and registered.
+- Bridge installer prompt is self-contained enough for any capable agent to execute.
 
 ---
 

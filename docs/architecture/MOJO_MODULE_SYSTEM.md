@@ -172,6 +172,32 @@ A module doesn't need to exist as a submodule to have a seam. Clean internal bou
 **5. Never force modularity ahead of stability.**  
 Extraction should follow proof of boundary, not drive it. See [RELEASE_COMPONENT_BOUNDARY.md](RELEASE_COMPONENT_BOUNDARY.md).
 
+**6. Interfaces are ours. Adapters are generated.**  
+MoJo defines every interface. Third-party integrations (embedding servers, vector stores, LLM APIs) do not need manually written adapters. A MoJo scheduling agent can generate a bridge at runtime: it reads our interface spec, studies the target framework's documentation, writes a conforming implementation, runs the conformance suite, and installs it if tests pass. We maintain the contract and the test harness — not the adapters. See [AGENTIC_BRIDGE_PATTERN.md](AGENTIC_BRIDGE_PATTERN.md).
+
+---
+
+## Self-Growing Module Architecture
+
+The module system is designed to grow without manual integration work. The mechanism has three parts:
+
+**Part 1 — Stable interfaces owned by Core.**  
+Every pluggable concern (embeddings, retrieval, storage, personas, skills) has an ABC and a conformance test suite in this repo. These never change without a version bump. This is the invariant everything else depends on.
+
+**Part 2 — Agentic bridge generation.**  
+When a new third-party technology is worth integrating (e.g. a new embedding server, a vector database, a reranking service), a MoJo agent is dispatched with:
+- The target interface spec (the ABC + docstrings)
+- The conformance test suite (what the bridge must pass)
+- The target framework's documentation or API reference
+- Instructions to write, test, and report back
+
+The agent produces a bridge implementation. If conformance passes, the bridge is committed as a backend and registered. If it fails, the agent reports what is missing and why — this becomes the spec gap for the next iteration.
+
+**Part 3 — Conformance as the install gate.**  
+No bridge ships without passing its conformance suite. The suite is the living definition of what "works" means. A bridge that passes is correct by definition. This removes the need for integration testing of individual adapters — the contract tests cover it.
+
+Together these three parts mean: MoJo can adopt a new embedding framework, vector store, or LLM provider without any developer writing glue code. The developer defines the interface once. The agent does the integration work on demand.
+
 ---
 
 ## Relationship to Existing Docs
