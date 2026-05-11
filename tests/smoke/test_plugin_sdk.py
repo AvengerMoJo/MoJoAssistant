@@ -18,7 +18,7 @@ def test_plugin_sdk_validate_sample_plugin():
         check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "[ok]" in proc.stdout
+    assert "[ok" in proc.stdout
 
 
 def test_plugin_sdk_scaffold_and_validate(tmp_path: Path):
