@@ -21,6 +21,23 @@ def test_plugin_sdk_validate_sample_plugin():
     assert "[ok" in proc.stdout
 
 
+def test_plugin_sdk_validate_sample_persona_plugin():
+    proc = subprocess.run(
+        [
+            "python3",
+            "scripts/plugin_sdk.py",
+            "validate",
+            "--path",
+            "examples/plugins/sample-persona-plugin",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "[ok" in proc.stdout
+
+
 def test_plugin_sdk_scaffold_and_validate(tmp_path: Path):
     out_dir = tmp_path / "plugins"
     proc_scaffold = subprocess.run(

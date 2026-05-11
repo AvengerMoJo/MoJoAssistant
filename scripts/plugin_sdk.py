@@ -207,12 +207,42 @@ def _validate(args: argparse.Namespace) -> int:
         # Validate entry_point importability with src/ on path.
         if module_data and "entry_point" in module_data:
             entry_point = str(module_data["entry_point"])
+            provider_type = str(module_data.get("provider_type", ""))
             try:
                 mod_name, class_name = entry_point.rsplit(".", 1)
                 sys.path.insert(0, str(src_dir))
                 module = importlib.import_module(mod_name)
                 if not hasattr(module, class_name):
                     errors.append(f"entry_point class not found: {entry_point}")
+                else:
+                    provider_cls = getattr(module, class_name)
+                    # Best-effort contract subclass check.
+                    try:
+                        from app.services import provider_contracts as pc
+
+                        contract_map = {
+                            "memory": pc.MemoryProvider,
+                            "dream": pc.DreamProvider,
+                            "persona": pc.PersonaProvider,
+                            "growth": pc.GrowthProvider,
+                            "skill": pc.SkillProvider,
+                        }
+                        expected = contract_map.get(provider_type)
+                        if expected is not None and not issubclass(provider_cls, expected):
+                            errors.append(
+                                f"entry_point class does not implement expected contract "
+                                f"for provider_type='{provider_type}'"
+                            )
+                    except Exception as exc:
+                        msg = str(exc)
+                        if "No module named 'app'" in msg:
+                            warnings.append(
+                                f"contract subclass check deferred (host deps missing): {entry_point} ({exc})"
+                            )
+                        else:
+                            warnings.append(
+                                f"contract subclass check skipped: {entry_point} ({exc})"
+                            )
             except Exception as exc:
                 msg = str(exc)
                 if "No module named 'app'" in msg:

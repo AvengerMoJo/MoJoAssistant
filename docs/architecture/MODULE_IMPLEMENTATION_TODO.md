@@ -237,7 +237,7 @@ Acceptance:
 | 8 | Growth Provider | DONE | 21 conformance tests |
 | 9 | Skill Blueprints | DONE | 30 conformance tests |
 | 10 | Benchmark Eval Decoupling | DONE | 3 smoke tests |
-| 11 | Plugin SDK | RESEARCH | — |
+| 11 | Plugin SDK | DONE | 2 smoke + sample conformance |
 
 ## What's Still Missing
 
@@ -247,8 +247,7 @@ Acceptance:
   `BonsaiGrowthModule`, wiring deferred until DIRECTION exists.
 
 ### Planned (no code started)
-- **#11 Plugin SDK** — scaffolding templates, validation CLI, sample plugin package.
-  Natural deliverable once #9 and #10 are proven stable in production.
+- No planned modules left in this TODO list.
 
 ### Runtime validation pending
 - **CubeSandbox end-to-end** — dispatch an agent with `docs/skills/skill_installer_prompt.md`
@@ -356,7 +355,7 @@ Progress:
 ---
 
 ### 11. Plugin SDK
-Status: `IN PROGRESS` (2026-05-12)
+Status: `DONE` (2026-05-12)
 
 Scope:
 - Developer scaffolding for third-party module authors.
@@ -374,8 +373,14 @@ Progress:
    - `scaffold` command (template generation)
    - `validate` command (manifest/layout checks)
 2. Added sample plugin package: `examples/plugins/sample-memory-plugin/`.
-3. Added SDK guide: `docs/guides/PLUGIN_SDK.md`.
-4. Added smoke coverage: `tests/smoke/test_plugin_sdk.py`.
+3. Added second sample plugin package: `examples/plugins/sample-persona-plugin/`.
+4. Added stronger validator checks:
+   - entry-point importability
+   - provider-contract subclass compatibility (best effort with host-dependency warnings)
+   - optional `module.json` schema validation against `docs/schemas/module.json`
+5. Added SDK guide with packaging/publish workflow: `docs/guides/PLUGIN_SDK.md`.
+6. Added smoke coverage: `tests/smoke/test_plugin_sdk.py`.
+7. Added sample-plugin conformance coverage: `tests/conformance/test_sample_plugin_conformance.py`.
 
 ## Agent Fan-Out Plan
 Assign one agent per module:

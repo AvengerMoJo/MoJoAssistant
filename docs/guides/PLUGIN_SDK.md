@@ -39,3 +39,34 @@ At minimum:
 Reference package:
 
 - `examples/plugins/sample-memory-plugin/`
+- `examples/plugins/sample-persona-plugin/`
+
+## Packaging / Publish Workflow
+
+1. Scaffold plugin:
+
+```bash
+python3 scripts/plugin_sdk.py scaffold \
+  --name my-persona-plugin \
+  --provider-type persona \
+  --output-dir plugins
+```
+
+2. Implement provider class in `src/<pkg>/provider.py`.
+3. Validate plugin package:
+
+```bash
+python3 scripts/plugin_sdk.py validate --path plugins/my-persona-plugin
+```
+
+4. Package for distribution (example):
+
+```bash
+cd plugins/my-persona-plugin
+tar -czf my-persona-plugin-0.1.0.tar.gz module.json src README.md
+```
+
+5. Install in MoJo repo:
+- copy/unpack into `submodules/` or a plugin directory
+- ensure `module.json` is discoverable by registry scanning
+- run conformance + smoke tests before enabling in production.
