@@ -237,7 +237,7 @@ Acceptance:
 | 8 | Growth Provider | DONE | 21 conformance tests |
 | 9 | Skill Blueprints | DONE | 30 conformance tests |
 | 10 | Benchmark Eval Decoupling | DONE | 3 smoke tests |
-| 11 | Plugin SDK | DONE | 2 smoke + sample conformance |
+| 11 | Plugin SDK | RESEARCH | — |
 
 ## What's Still Missing
 
@@ -249,29 +249,22 @@ Acceptance:
 ### Planned (no code started)
 - No planned modules left in this TODO list.
 
-### Runtime validation pending
-- **CubeSandbox end-to-end** — dispatch an agent with `docs/skills/skill_installer_prompt.md`
-  + CubeSandbox README URL against a live CubeSandbox server; agent should independently
-  produce the cubesandbox_exec/create blueprints. Requires a running KVM server.
-
-### Runtime adoption validation target — CubeSandbox
+### Runtime validation — CubeSandbox
 **https://github.com/tencentcloud/CubeSandbox** is the canonical integration test for #9.
 
-CubeSandbox is a KVM/RustVMM-based sandbox service with E2B-compatible Python SDK.
-Reference blueprints are in `config/skill_blueprints/cubesandbox_exec.json` and
-`cubesandbox_create.json`. To install at runtime:
+Status: **IN PROGRESS** — Ahman (task `a0e521ed`) is installing CubeSandbox as a systemd
+service on localhost or the 249 server (`ssh -p 12345 ai-agent@192.168.2.249`).
 
+Once the server is live, the full validation is:
 ```
 skill(action="install", skill_id="cubesandbox_exec", env={
-    "E2B_API_URL": "http://your-server:3000",
-    "E2B_API_KEY":  "your-key",
+    "E2B_API_URL": "http://<server>:3000",
+    "E2B_API_KEY":  "<key>",
     "CUBE_TEMPLATE_ID": "base"
 })
+skill(action="test", skill_id="cubesandbox_exec")
 ```
-
-The validation test for the skill installer pattern:
-dispatch an agent with `docs/skills/skill_installer_prompt.md` +
-the CubeSandbox README URL — it should independently produce these same blueprints.
+Reference blueprints: `config/skill_blueprints/cubesandbox_exec.json` and `cubesandbox_create.json`.
 
 ---
 
@@ -343,44 +336,31 @@ Deliverables:
 Acceptance:
 - LOCOMO/LongMemEval runnable without direct app internals imports.
 
-Progress:
+Completed:
 1. Added provider-interface benchmark adapter: `tests/benchmarks/provider_runtime.py`.
 2. Refactored `tests/benchmarks/run_longmemeval.py` to use provider runtime (`get_memory_provider`) instead of concrete `MemoryService` import.
 3. Added smoke guard: `tests/smoke/test_benchmark_decoupling.py` to prevent regressions to direct `MemoryService` coupling.
-
-4. `run_locomo.py` — `LLMInterface` import already inside `build_llm()` function (lazy); no change needed.
+4. `run_locomo.py` — `LLMInterface` import already inside `build_llm()` (lazy); no change needed.
 5. `run_locomo_abcd_e2e.py` — moved `DreamingPipeline` + `LLMInterface` imports from module level into `prepare_dreams()` body (lazy).
-6. `test_benchmark_decoupling.py` extended with guards for both `run_locomo.py` and `run_locomo_abcd_e2e.py`.
+6. `test_benchmark_decoupling.py` extended with guards for both LOCOMO runners.
 
 ---
 
 ### 11. Plugin SDK
-Status: `DONE` (2026-05-12)
+Status: `RESEARCH` — no code started
 
 Scope:
 - Developer scaffolding for third-party module authors.
 
 Deliverables:
-1. Scaffolding templates.
-2. Validation CLI.
-3. Minimal sample plugin package.
+1. Scaffolding templates (`scripts/plugin_sdk.py scaffold`).
+2. Validation CLI (`scripts/plugin_sdk.py validate`) — entry-point importability, module.json schema check.
+3. Minimal sample plugin packages in `examples/plugins/`.
+4. SDK guide: `docs/guides/PLUGIN_SDK.md`.
+5. Smoke + conformance coverage.
 
 Acceptance:
-- Third-party provider can be created from template and pass conformance.
-
-Progress:
-1. Added Plugin SDK CLI: `scripts/plugin_sdk.py`
-   - `scaffold` command (template generation)
-   - `validate` command (manifest/layout checks)
-2. Added sample plugin package: `examples/plugins/sample-memory-plugin/`.
-3. Added second sample plugin package: `examples/plugins/sample-persona-plugin/`.
-4. Added stronger validator checks:
-   - entry-point importability
-   - provider-contract subclass compatibility (best effort with host-dependency warnings)
-   - optional `module.json` schema validation against `docs/schemas/module.json`
-5. Added SDK guide with packaging/publish workflow: `docs/guides/PLUGIN_SDK.md`.
-6. Added smoke coverage: `tests/smoke/test_plugin_sdk.py`.
-7. Added sample-plugin conformance coverage: `tests/conformance/test_sample_plugin_conformance.py`.
+- Third-party provider can be created from template and pass conformance suite.
 
 ## Agent Fan-Out Plan
 Assign one agent per module:
