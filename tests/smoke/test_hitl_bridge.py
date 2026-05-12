@@ -44,7 +44,7 @@ class TestAskUser:
     def test_stub_task_type_is_agent(self, queue: TaskQueue):
         ask_user(queue, "cc-3", "Question?")
         task = queue.get("cc-3")
-        assert task.type == TaskType.AGENT
+        assert task.type == TaskType.EXTERNAL_AGENT
 
     def test_options_stored_in_config(self, queue: TaskQueue):
         ask_user(queue, "cc-4", "Which?", options=["A", "B", "C"])
