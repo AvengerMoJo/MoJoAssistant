@@ -237,7 +237,7 @@ Acceptance:
 | 8 | Growth Provider | DONE | 21 conformance tests |
 | 9 | Skill Blueprints | DONE | 30 conformance tests |
 | 10 | Benchmark Eval Decoupling | DONE | 3 smoke tests |
-| 11 | Plugin SDK | RESEARCH | — |
+| 11 | Plugin SDK | DONE | 11 tests (3 smoke + 8 conformance) |
 
 ## What's Still Missing
 
@@ -347,20 +347,25 @@ Completed:
 ---
 
 ### 11. Plugin SDK
-Status: `RESEARCH` — no code started
+Status: `DONE` (2026-05-12)
 
 Scope:
 - Developer scaffolding for third-party module authors.
 
-Deliverables:
-1. Scaffolding templates (`scripts/plugin_sdk.py scaffold`).
-2. Validation CLI (`scripts/plugin_sdk.py validate`) — entry-point importability, module.json schema check.
-3. Minimal sample plugin packages in `examples/plugins/`.
-4. SDK guide: `docs/guides/PLUGIN_SDK.md`.
-5. Smoke + conformance coverage.
+Completed:
+1. `scripts/plugin_sdk.py` — `scaffold` + `validate` commands.
+   - `scaffold` generates `module.json`, `src/<pkg>/provider.py`, `tests/test_provider.py`, `pyproject.toml`.
+   - `validate` checks schema, entry_point format, importability, and ABC subclass (when MoJo in path).
+   - `provider_type` is now a free string — no hardcoded enum; custom types (orchestration, voice, network) accepted.
+2. Sample plugins: `examples/plugins/sample-memory-plugin/` and `examples/plugins/sample-persona-plugin/` — fully working reference implementations.
+3. SDK guide: `docs/guides/PLUGIN_SDK.md`.
+4. Smoke tests: `tests/smoke/test_plugin_sdk.py` (validate + scaffold + validate roundtrip).
+5. Conformance tests: `tests/conformance/test_sample_plugin_conformance.py` (8 tests against sample-memory-plugin).
+6. `docs/schemas/module.json` — `provider_type` changed from closed enum to open `^[a-z][a-z0-9_]*$` pattern.
 
 Acceptance:
-- Third-party provider can be created from template and pass conformance suite.
+- Third-party provider can be created from template and pass conformance suite. ✓
+- Custom provider types (beyond the original 5) are valid in module.json. ✓
 
 ## Agent Fan-Out Plan
 Assign one agent per module:

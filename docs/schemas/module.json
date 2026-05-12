@@ -22,8 +22,8 @@
     },
     "provider_type": {
       "type": "string",
-      "enum": ["memory", "dream", "persona", "growth", "skill"],
-      "description": "Type of provider this module implements"
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Type of provider this module implements — open-ended string (e.g. memory, dream, skill, orchestration, voice, network). No fixed enum; the conformance suite is the gate."
     },
     "entry_point": {
       "type": "string",

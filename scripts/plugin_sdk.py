@@ -195,9 +195,9 @@ def _validate(args: argparse.Namespace) -> int:
             if "." not in ep:
                 errors.append("entry_point must look like 'pkg.module.ClassName'")
             provider_type = str(data.get("provider_type", ""))
-            if provider_type not in {"memory", "dream", "persona", "growth", "skill"}:
+            if not re.match(r"^[a-z][a-z0-9_]*$", provider_type):
                 errors.append(
-                    "provider_type must be one of: memory,dream,persona,growth,skill"
+                    "provider_type must be a lowercase snake_case string (e.g. memory, skill, orchestration, voice)"
                 )
 
     src_dir = root / "src"
@@ -288,7 +288,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sc = sub.add_parser("scaffold", help="Generate a plugin scaffold.")
     sc.add_argument("--name", required=True, help="Plugin name (e.g. my-memory-plugin)")
-    sc.add_argument("--provider-type", required=True, choices=["memory", "dream", "persona", "growth", "skill"])
+    sc.add_argument("--provider-type", required=True,
+                    help="Provider type — known: memory/dream/persona/growth/skill/retrieval/embedding/storage, or any custom lowercase string")
     sc.add_argument("--contract-version", default="1.0")
     sc.add_argument("--version", default="0.1.0")
     sc.add_argument("--output-dir", default="plugins")
