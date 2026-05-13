@@ -324,6 +324,77 @@ def probe_cubesandbox() -> ProbeResult:
 
 
 # ---------------------------------------------------------------------------
+# Probes — external tools tier
+# (third-party installs users need to be aware of)
+# ---------------------------------------------------------------------------
+
+def probe_opencode() -> ProbeResult:
+    path = shutil.which("opencode")
+    if path:
+        try:
+            r = subprocess.run(["opencode", "--version"], capture_output=True, text=True, timeout=5)
+            ver = (r.stdout or r.stderr).strip().splitlines()[0]
+            return ProbeResult("OpenCode", "tools", "ok", f"found at {path} ({ver})")
+        except Exception:
+            return ProbeResult("OpenCode", "tools", "ok", f"found at {path}")
+    return ProbeResult(
+        "OpenCode", "tools", "warn",
+        "not installed — coding agent tasks need it  "
+        "(npm install -g opencode-ai  or  https://opencode.ai)",
+    )
+
+
+def probe_chatmcp() -> ProbeResult:
+    # ChatMCP is typically an Electron/desktop app; check common install locations
+    candidates = [
+        shutil.which("chatmcp"),
+        shutil.which("chat-mcp"),
+        # Homebrew / standard Linux locations
+        Path.home() / ".local" / "bin" / "chatmcp",
+        Path("/usr/local/bin/chatmcp"),
+        # AppImage drop location users commonly use
+        Path.home() / "Applications" / "ChatMCP.AppImage",
+        Path.home() / "Desktop" / "ChatMCP.AppImage",
+    ]
+    for c in candidates:
+        if c and Path(str(c)).exists():
+            return ProbeResult("ChatMCP", "tools", "ok",
+                               f"found at {c}  (MCP inspector/tester)")
+    return ProbeResult(
+        "ChatMCP", "tools", "warn",
+        "not found — useful for testing MCP tool calls interactively  "
+        "(https://github.com/AI-QL/chat-mcp/releases)",
+    )
+
+
+def probe_huggingface_token() -> ProbeResult:
+    # Check env vars first, then ~/.huggingface/token, then ~/.cache/huggingface/token
+    token = (
+        os.environ.get("HUGGINGFACE_TOKEN")
+        or os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    )
+    if not token:
+        for p in [
+            Path.home() / ".huggingface" / "token",
+            Path.home() / ".cache" / "huggingface" / "token",
+        ]:
+            if p.exists():
+                token = p.read_text(encoding="utf-8").strip()
+                break
+
+    if token and len(token) > 8:
+        masked = token[:4] + "…" + token[-4:]
+        return ProbeResult("HuggingFace token", "tools", "ok",
+                           f"token found ({masked}) — private models accessible")
+    return ProbeResult(
+        "HuggingFace token", "tools", "warn",
+        "HF_TOKEN not set — public embedding models work, private/gated ones need a token  "
+        "(huggingface.co/settings/tokens → write to ~/.huggingface/token)",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -353,21 +424,22 @@ EXPERIMENTAL_PROBES = [
     probe_cubesandbox,
 ]
 
+TOOLS_PROBES = [
+    probe_opencode,
+    probe_chatmcp,
+    probe_huggingface_token,
+]
+
 
 def run_all_probes() -> list[ProbeResult]:
     results = []
-    for probe in STABLE_PROBES:
-        try:
-            results.append(probe())
-        except Exception as exc:
-            fname = probe.__name__.replace("probe_", "").replace("_", " ").title()
-            results.append(ProbeResult(fname, "stable", "fail", f"probe crashed: {_short(exc)}"))
-    for probe in EXPERIMENTAL_PROBES:
-        try:
-            results.append(probe())
-        except Exception as exc:
-            fname = probe.__name__.replace("probe_", "").replace("_", " ").title()
-            results.append(ProbeResult(fname, "experimental", "fail", f"probe crashed: {_short(exc)}"))
+    for tier, probes in [("stable", STABLE_PROBES), ("experimental", EXPERIMENTAL_PROBES), ("tools", TOOLS_PROBES)]:
+        for probe in probes:
+            try:
+                results.append(probe())
+            except Exception as exc:
+                fname = probe.__name__.replace("probe_", "").replace("_", " ").title()
+                results.append(ProbeResult(fname, tier, "fail", f"probe crashed: {_short(exc)}"))
     return results
 
 
@@ -380,8 +452,9 @@ def _pad(s: str, width: int) -> str:
 
 
 def print_report(results: list[ProbeResult]) -> None:
-    stable = [r for r in results if r.tier == "stable"]
+    stable       = [r for r in results if r.tier == "stable"]
     experimental = [r for r in results if r.tier == "experimental"]
+    tools        = [r for r in results if r.tier == "tools"]
 
     name_width = max((len(r.name) for r in results), default=20) + 2
 
@@ -392,19 +465,21 @@ def print_report(results: list[ProbeResult]) -> None:
 
     print(f"{BOLD}Core (Stable){RESET}")
     for r in stable:
-        icon = r.icon()
-        name = _pad(r.name, name_width)
-        print(f"  {icon}  {name}— {DIM}{r.detail}{RESET}")
+        print(f"  {r.icon()}  {_pad(r.name, name_width)}— {DIM}{r.detail}{RESET}")
 
     print()
     print(f"{BOLD}Optional (Experimental){RESET}")
     for r in experimental:
-        icon = r.icon()
-        name = _pad(r.name, name_width)
-        print(f"  {icon}  {name}— {DIM}{r.detail}{RESET}")
+        print(f"  {r.icon()}  {_pad(r.name, name_width)}— {DIM}{r.detail}{RESET}")
+
+    print()
+    print(f"{BOLD}External Tools{RESET}")
+    for r in tools:
+        print(f"  {r.icon()}  {_pad(r.name, name_width)}— {DIM}{r.detail}{RESET}")
 
     stable_fails = [r for r in stable if r.status == "fail"]
     exp_issues   = [r for r in experimental if r.status in ("warn", "fail")]
+    tool_missing = [r for r in tools if r.status != "ok"]
 
     print()
     if stable_fails:
@@ -414,6 +489,8 @@ def print_report(results: list[ProbeResult]) -> None:
         print(f"{GREEN}{BOLD}✓  All stable checks passed.{RESET}")
     if exp_issues:
         print(f"   {len(exp_issues)} experimental feature(s) need extra setup.")
+    if tool_missing:
+        print(f"   {len(tool_missing)} external tool(s) not installed — run {BOLD}--fix{RESET} for install hints.")
     print()
     print(f"   Run {BOLD}pytest tests/smoke/ -m stable{RESET} to verify the test suite.")
     print()
@@ -626,9 +703,67 @@ def _set_env_var(key: str, value: str) -> None:
         env_file.write_text(f"{key}={value}\n", encoding="utf-8")
 
 
+def _wizard_external_tools() -> None:
+    """Step 4: inform user about external tools they should install."""
+    _hr("Step 4: External Tools")
+    print(f"  {DIM}These tools aren't part of MoJo itself but make it much more useful.{RESET}\n")
+
+    sections = [
+        {
+            "name": "OpenCode",
+            "probe": probe_opencode,
+            "why": "Lets MoJo spawn a coding agent to write, edit, and run code as a scheduler task.",
+            "install": [
+                "npm install -g opencode-ai",
+                "# or download from https://opencode.ai",
+            ],
+        },
+        {
+            "name": "ChatMCP",
+            "probe": probe_chatmcp,
+            "why": "Desktop client for testing MCP tool calls interactively — great for verifying your MoJo tools work before using Claude.",
+            "install": [
+                "# Download AppImage / installer from:",
+                "# https://github.com/AI-QL/chat-mcp/releases",
+                "# Then add MoJo server: http://localhost:8000/ with your API key",
+            ],
+        },
+        {
+            "name": "HuggingFace token",
+            "probe": probe_huggingface_token,
+            "why": "Required for gated/private embedding models. Public models (all-MiniLM-L6-v2, BAAI/bge-m3) work without a token.",
+            "install": [
+                "# 1. Create account at https://huggingface.co",
+                "# 2. Go to https://huggingface.co/settings/tokens",
+                "# 3. Create a Read token, then:",
+                "huggingface-cli login",
+                "# or: echo 'hf_yourtoken' > ~/.huggingface/token",
+            ],
+        },
+    ]
+
+    for s in sections:
+        result = s["probe"]()
+        icon = result.icon()
+        status_line = f"{BOLD}{s['name']}{RESET}  {icon}  {DIM}{result.detail}{RESET}"
+        print(f"  {status_line}")
+        print(f"  {DIM}Why: {s['why']}{RESET}")
+
+        if result.status != "ok":
+            show = _ask(f"\n  Show install instructions for {s['name']}?", "Y")
+            if show.upper() in ("Y", "YES", ""):
+                print()
+                for line in s["install"]:
+                    if line.startswith("#"):
+                        print(f"    {DIM}{line}{RESET}")
+                    else:
+                        print(f"    {BOLD}$ {line}{RESET}")
+        print()
+
+
 def _wizard_validate() -> bool:
-    """Step 4: run stable smoke suite and print summary."""
-    _hr("Step 4: Validation")
+    """Step 5: run stable smoke suite and print summary."""
+    _hr("Step 5: Validation")
     print("  Running stable smoke suite...")
     print()
 
@@ -666,6 +801,7 @@ def run_wizard() -> int:
     server_ok = _wizard_mcp_server()
     _wizard_connect_claude()
     _wizard_llm_backend()
+    _wizard_external_tools()
     stable_ok = _wizard_validate()
 
     _hr("Your MoJo is ready" if stable_ok else "Setup incomplete")
