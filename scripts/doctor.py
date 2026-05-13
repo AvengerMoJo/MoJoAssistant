@@ -363,7 +363,7 @@ def probe_chatmcp() -> ProbeResult:
     return ProbeResult(
         "ChatMCP", "tools", "warn",
         "not found — useful for testing MCP tool calls interactively  "
-        "(https://github.com/AI-QL/chat-mcp/releases)",
+        "(https://github.com/AvengerMoJo/chatmcp/releases)",
     )
 
 
@@ -724,8 +724,12 @@ def _wizard_external_tools() -> None:
             "why": "Desktop client for testing MCP tool calls interactively — great for verifying your MoJo tools work before using Claude.",
             "install": [
                 "# Download AppImage / installer from:",
-                "# https://github.com/AI-QL/chat-mcp/releases",
-                "# Then add MoJo server: http://localhost:8000/ with your API key",
+                "# https://github.com/AvengerMoJo/chatmcp/releases",
+                "#",
+                "# After installing, add MoJo as an MCP server:",
+                "#   URL:  http://localhost:8000/",
+                "#   Name: MoJoAssistant",
+                "#   Auth: Bearer <your MCP_API_KEY from .env>",
             ],
         },
         {
