@@ -12,6 +12,9 @@ No network or LLM calls required.
 """
 
 import pytest
+
+pytestmark = pytest.mark.stable
+
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 from app.scheduler.role_chat import (
     RoleChatSession,

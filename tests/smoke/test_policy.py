@@ -11,6 +11,7 @@ No external services required.
 
 import pytest
 
+pytestmark = pytest.mark.stable
 
 # ---------------------------------------------------------------------------
 # StaticPolicyChecker

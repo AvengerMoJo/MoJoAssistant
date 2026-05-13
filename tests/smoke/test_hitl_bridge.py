@@ -11,6 +11,8 @@ No network, LLM, or process spawning required.
 import pytest
 from pathlib import Path
 
+pytestmark = pytest.mark.stable
+
 from app.scheduler.hitl_bridge import ask_user, check_reply
 from app.scheduler.models import Task, TaskStatus, TaskType
 from app.scheduler.queue import TaskQueue

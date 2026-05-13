@@ -15,6 +15,8 @@ import os
 import pytest
 from pathlib import Path
 
+pytestmark = pytest.mark.stable
+
 from app.scheduler.role_chat import RoleChatSession
 
 

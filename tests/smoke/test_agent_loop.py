@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, patch
 
+pytestmark = pytest.mark.stable
+
 from app.scheduler.models import Task, TaskType, TaskPriority
 
 

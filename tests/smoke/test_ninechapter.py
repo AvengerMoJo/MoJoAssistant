@@ -11,6 +11,9 @@ No network or LLM calls required.
 """
 
 import pytest
+
+pytestmark = pytest.mark.stable
+
 from app.scheduler.ninechapter import build_behavioral_overlay, build_task_context
 
 

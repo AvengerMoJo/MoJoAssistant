@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.stable
+
 from app.config.first_run import (
     BACKEND_CATALOG,
     OWNER_PROFILE_TEMPLATE,

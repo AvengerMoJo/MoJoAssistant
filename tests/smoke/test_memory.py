@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.stable
+
 
 def test_memory_write_and_read(isolated_memory_path):
     """Write a memory entry and read it back by key."""

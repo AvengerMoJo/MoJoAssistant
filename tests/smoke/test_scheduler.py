@@ -9,6 +9,8 @@ Uses isolated_memory_path from conftest so nothing touches ~/.memory.
 
 import pytest
 
+pytestmark = pytest.mark.stable
+
 from app.scheduler.models import Task, TaskStatus, TaskPriority, TaskType, TaskResult
 
 

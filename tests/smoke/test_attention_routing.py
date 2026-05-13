@@ -13,6 +13,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+pytestmark = pytest.mark.stable
+
 from app.mcp.adapters.attention_classifier import (
     AttentionClassifier,
     _rule_matches,

@@ -150,14 +150,46 @@ claude --mcp-config /path/to/mojo-mcp.json
 
 Where `mojo-mcp.json` contains the same server definition. A pre-built example is at `config/claude_desktop_config.json`.
 
+## Feature Surface: Stable vs Experimental
+
+Every feature is labelled so you know what works on a clean install and what needs extra setup.
+
+### Stable (no LLM or network required)
+
+| Feature | What it does |
+|---|---|
+| Scheduler daemon | Task queue, HITL inbox, resource pool |
+| Memory search | Local semantic search via sentence-transformers |
+| MCP tool surface | 12+ tools available to Claude |
+| Policy checker | Behavioral + content policy enforcement |
+| Role system | Persona management, knowledge isolation |
+| HITL inbox | Human-in-the-loop task review |
+| Audit trail | Append-only action log |
+| Plugin SDK | Scaffold and validate third-party provider modules |
+
+### Experimental (extra setup needed)
+
+| Feature | Requirement |
+|---|---|
+| Agent execution | LLM reachable at configured endpoint (LM Studio, Ollama, OpenRouter) |
+| Coding agent bridge | `claude` or `opencode` binary in PATH |
+| Voice pipeline | `mojo-voice` submodule configured |
+| CubeSandbox | `E2B_API_URL` + `E2B_API_KEY` in env or `infra_context.json` |
+| Cloudflared tunnel | `cloudflared` installed, for remote Claude.ai access |
+
 ## Running Tests
 
 ```bash
 pip install pytest pytest-asyncio
+
+# CI gate — stable only (no LLM or network):
+python3 -m pytest tests/smoke/ -m stable -q
+
+# Full picture (shows what needs extra setup):
 python3 -m pytest tests/smoke/ -q
 ```
 
-All smoke tests run offline — no network or LLM calls required.
+All stable smoke tests run fully offline — no network or LLM calls required.
 
 ## Upgrading
 

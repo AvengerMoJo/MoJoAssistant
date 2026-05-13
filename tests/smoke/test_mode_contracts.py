@@ -7,6 +7,9 @@ No network or LLM calls required.
 """
 
 import pytest
+
+pytestmark = pytest.mark.stable
+
 from app.scheduler.interaction_mode import InteractionMode, ModeContract, get_mode_contract
 
 

@@ -8,6 +8,7 @@ or an import-time side-effect is broken.
 
 import pytest
 
+pytestmark = pytest.mark.stable
 
 CORE_MODULES = [
     "app.config.paths",

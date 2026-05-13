@@ -3,6 +3,10 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.stable
+
 
 def test_plugin_sdk_validate_sample_plugin():
     proc = subprocess.run(

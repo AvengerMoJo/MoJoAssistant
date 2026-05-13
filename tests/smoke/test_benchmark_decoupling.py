@@ -1,4 +1,7 @@
+import pytest
 from pathlib import Path
+
+pytestmark = pytest.mark.stable
 
 
 def test_longmemeval_uses_provider_runtime():

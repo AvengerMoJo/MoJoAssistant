@@ -1,6 +1,9 @@
 """Smoke tests for owner context filtered injection."""
 
 import pytest
+
+pytestmark = pytest.mark.stable
+
 from app.roles.owner_context import (
     build_owner_context_slice,
     infer_context_tier,
