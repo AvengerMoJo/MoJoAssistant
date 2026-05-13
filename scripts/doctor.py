@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-MoJoAssistant Doctor — live feature validator.
+MoJoAssistant Doctor — live feature validator and setup wizard.
 
 Usage:
     python3 scripts/doctor.py            # run all probes, show feature status
     python3 scripts/doctor.py --setup    # same as above (alias)
+    python3 scripts/doctor.py --fix      # interactive wizard — guides setup for each broken item
     python3 scripts/doctor.py --json     # machine-readable output
     python3 scripts/doctor.py --stable   # exit non-zero if any stable probe fails
 
@@ -419,6 +420,286 @@ def print_report(results: list[ProbeResult]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Interactive wizard (--fix)
+# ---------------------------------------------------------------------------
+
+def _ask(prompt: str, default: str = "") -> str:
+    hint = f" [{default}]" if default else ""
+    try:
+        answer = input(f"{prompt}{hint}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
+    return answer or default
+
+
+def _hr(title: str) -> None:
+    print()
+    print(f"{BOLD}─── {title} {'─' * max(0, 48 - len(title) - 5)}{RESET}")
+    print()
+
+
+def _wizard_mcp_server() -> bool:
+    """Step 1: ensure MoJo MCP server is running."""
+    _hr("Step 1: Memory & MCP Server")
+    mem_path = _memory_path()
+    mem_ok = mem_path.exists()
+    print(f"  Memory path:  {mem_path}  {'[exists ✅]' if mem_ok else '[❌ missing]'}")
+
+    # Check server
+    try:
+        _health_request("/api/health")
+        print(f"  MCP server:   running at {_server_url()}  [✅]")
+        return True
+    except Exception:
+        print(f"  MCP server:   not running  [❌]")
+
+    answer = _ask("\nStart MoJo as a systemd user service?", "Y")
+    if answer.upper() not in ("Y", "YES", ""):
+        print("  Skipped — MoJo must be running for other steps.")
+        return False
+
+    print()
+    print(f"  {DIM}$ systemctl --user enable mojoassistant{RESET}")
+    subprocess.run(["systemctl", "--user", "enable", "mojoassistant"], check=False)
+    print(f"  {DIM}$ systemctl --user start mojoassistant{RESET}")
+    subprocess.run(["systemctl", "--user", "start", "mojoassistant"], check=False)
+
+    print("  Waiting for server to start", end="", flush=True)
+    for _ in range(15):
+        import time as _time
+        _time.sleep(1)
+        print(".", end="", flush=True)
+        try:
+            _health_request("/api/health")
+            print(f"\n  {GREEN}✅ MCP server running on port {_server_url().split(':')[-1]}{RESET}")
+            return True
+        except Exception:
+            pass
+    print(f"\n  {RED}❌ Server did not start — check: journalctl --user -u mojoassistant{RESET}")
+    return False
+
+
+def _wizard_connect_claude() -> None:
+    """Step 2: help user connect Claude to MoJo."""
+    _hr("Step 2: Connect Claude to MoJo")
+    port = _server_url().split(":")[-1]
+    print("  How will you use Claude?\n")
+    print("    1. Claude Code on this machine     (same computer, no tunnel needed)")
+    print("    2. Claude.ai in browser            (needs cloudflared tunnel)")
+    print("    3. Claude Code on another machine  (needs cloudflared or Tailscale)")
+    print()
+    choice = _ask("  Choice", "1")
+
+    if choice == "1":
+        config_path = Path.home() / ".claude" / "mcp_servers.json"
+        api_key = _mcp_api_key()
+        entry: dict = {
+            "mojoassistant": {
+                "url": f"http://localhost:{port}/",
+                "headers": {"Authorization": f"Bearer {api_key}"} if api_key else {},
+            }
+        }
+        print()
+        print(f"  Add to {config_path}:")
+        print(f"  {DIM}{json.dumps(entry, indent=4)}{RESET}")
+        write = _ask("\n  Write this to ~/.claude/mcp_servers.json?", "Y")
+        if write.upper() in ("Y", "YES", ""):
+            existing: dict = {}
+            if config_path.exists():
+                try:
+                    existing = json.loads(config_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            existing.update(entry)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+            print(f"  {GREEN}✅ Written to {config_path}{RESET}")
+        else:
+            print("  Skipped.")
+
+    elif choice in ("2", "3"):
+        if not shutil.which("cloudflared"):
+            print(f"\n  {YELLOW}⚠  cloudflared not found in PATH.{RESET}")
+            print("  Install it: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+            _ask("  Press Enter once installed (or Enter to skip)")
+            if not shutil.which("cloudflared"):
+                print("  Skipped — cloudflared still not found.")
+                return
+
+        print(f"\n  Starting cloudflared tunnel to http://localhost:{port} ...")
+        print(f"  {DIM}$ cloudflared tunnel --url http://localhost:{port}{RESET}")
+        print()
+        print(f"  {YELLOW}This will print a URL like https://xxxx.trycloudflare.com{RESET}")
+        print("  Copy that URL and add it to:")
+        if choice == "2":
+            print("    Claude.ai → Settings → Integrations")
+            print("    URL:  https://xxxx.trycloudflare.com/")
+            print("    Name: MoJo")
+        else:
+            print("    ~/.claude/mcp_servers.json on the remote machine")
+            print('    { "mojoassistant": { "url": "https://xxxx.trycloudflare.com/" } }')
+        print()
+        _ask("  Press Enter to launch cloudflared (Ctrl+C to cancel)")
+        try:
+            subprocess.run(
+                ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+                check=False,
+            )
+        except KeyboardInterrupt:
+            print("\n  Tunnel stopped.")
+    else:
+        print("  Skipped.")
+
+
+def _wizard_llm_backend() -> None:
+    """Step 3: detect and configure LLM backend for agent execution."""
+    _hr("Step 3: LLM Backend (for agent tasks)")
+    print(f"  {DIM}Agent execution is EXPERIMENTAL — lets roles run autonomous tasks.{RESET}")
+    print(f"  {DIM}Requires a local or remote LLM endpoint.{RESET}\n")
+
+    # Detect
+    lmstudio_url = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
+    ollama_url   = "http://localhost:11434/v1"
+
+    def _check(url: str) -> str:
+        try:
+            import urllib.request
+            with urllib.request.urlopen(url.rstrip("/v1") + "/v1/models", timeout=2) as r:
+                d = json.loads(r.read())
+            count = len(d.get("data", []))
+            return f"running ({count} model(s))"
+        except Exception:
+            return "not running"
+
+    lm_status = _check(lmstudio_url)
+    ol_status  = _check(ollama_url)
+
+    print(f"  Detected LMStudio ({lmstudio_url}):  {lm_status}")
+    print(f"  Detected Ollama   ({ollama_url}):  {ol_status}")
+    print()
+    print("  Options:")
+    print("    1. LMStudio (recommended) — download at lmstudio.ai, load Qwen2.5")
+    print("    2. Ollama                 — run: curl -fsSL https://ollama.ai/install.sh | sh")
+    print("    3. OpenRouter             — set OPEN_ROUTER_KEY in .env")
+    print("    4. Skip for now           — roles can still chat, no autonomous tasks")
+    print()
+    choice = _ask("  Choice", "4")
+
+    if choice == "1":
+        url = _ask("  LMStudio base URL", lmstudio_url)
+        _set_env_var("LMSTUDIO_BASE_URL", url)
+        print(f"  {GREEN}✅ LMSTUDIO_BASE_URL set in .env{RESET}")
+    elif choice == "2":
+        if not shutil.which("ollama"):
+            print(f"\n  {YELLOW}⚠  ollama not in PATH. Install: curl -fsSL https://ollama.ai/install.sh | sh{RESET}")
+        else:
+            print(f"  {GREEN}✅ ollama found — start with: ollama serve{RESET}")
+    elif choice == "3":
+        key = _ask("  OpenRouter API key")
+        if key:
+            _set_env_var("OPEN_ROUTER_KEY", key)
+            print(f"  {GREEN}✅ OPEN_ROUTER_KEY set in .env{RESET}")
+    else:
+        print(f"  {YELLOW}⚠️  Agent execution skipped — skipped{RESET}")
+
+
+def _set_env_var(key: str, value: str) -> None:
+    """Write or update a key=value line in .env."""
+    env_file = PROJECT_ROOT / ".env"
+    if not env_file.exists() and (PROJECT_ROOT / ".env.example").exists():
+        import shutil as _shutil
+        _shutil.copy(PROJECT_ROOT / ".env.example", env_file)
+
+    if env_file.exists():
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+        updated = False
+        for i, line in enumerate(lines):
+            if line.startswith(f"{key}=") or line.startswith(f"# {key}="):
+                lines[i] = f"{key}={value}"
+                updated = True
+                break
+        if not updated:
+            lines.append(f"{key}={value}")
+        env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    else:
+        env_file.write_text(f"{key}={value}\n", encoding="utf-8")
+
+
+def _wizard_validate() -> bool:
+    """Step 4: run stable smoke suite and print summary."""
+    _hr("Step 4: Validation")
+    print("  Running stable smoke suite...")
+    print()
+
+    venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
+    python_bin = str(venv_python) if venv_python.exists() else sys.executable
+
+    result = subprocess.run(
+        [python_bin, "-m", "pytest", "tests/smoke/", "-m", "stable", "-q", "--tb=line",
+         "--no-header"],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    # Print last few lines (summary)
+    lines = (result.stdout + result.stderr).strip().splitlines()
+    for line in lines[-10:]:
+        print(f"  {line}")
+
+    passed = result.returncode == 0
+    print()
+    if passed:
+        print(f"  {GREEN}{BOLD}All stable checks passed.{RESET}")
+    else:
+        print(f"  {RED}{BOLD}Some stable checks failed — see above.{RESET}")
+    return passed
+
+
+def run_wizard() -> int:
+    """Interactive setup wizard — guides user through each broken item."""
+    print()
+    print(f"{BOLD}MoJoAssistant Setup Wizard{RESET}")
+    print("═" * 48)
+    print(f"{DIM}We'll walk through each component and fix what's broken.{RESET}")
+
+    server_ok = _wizard_mcp_server()
+    _wizard_connect_claude()
+    _wizard_llm_backend()
+    stable_ok = _wizard_validate()
+
+    _hr("Your MoJo is ready" if stable_ok else "Setup incomplete")
+
+    # Re-run probes for final summary
+    results = run_all_probes()
+    stable_ok_list  = [r for r in results if r.tier == "stable"       and r.status == "ok"]
+    exp_ok_list     = [r for r in results if r.tier == "experimental" and r.status == "ok"]
+    exp_issue_list  = [r for r in results if r.tier == "experimental" and r.status != "ok"]
+
+    if stable_ok_list:
+        print(f"  {BOLD}Stable features (working now):{RESET}")
+        for r in stable_ok_list:
+            print(f"    • {r.name}")
+    if exp_ok_list:
+        print(f"\n  {BOLD}Experimental features (active):{RESET}")
+        for r in exp_ok_list:
+            print(f"    • {r.name}")
+    if exp_issue_list:
+        print(f"\n  {BOLD}Experimental features (need extra setup):{RESET}")
+        for r in exp_issue_list:
+            print(f"    • {r.name:25s} → {DIM}{r.detail}{RESET}")
+
+    print(f"\n  {BOLD}Quick start:{RESET}")
+    print("    Check status:   python3 scripts/doctor.py")
+    print("    Run tests:      pytest tests/smoke/ -m stable")
+    print("    Restart MoJo:   systemctl --user restart mojoassistant")
+    print()
+
+    stable_failures = [r for r in results if r.tier == "stable" and r.status == "fail"]
+    return 1 if stable_failures else 0
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -428,11 +709,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--setup", action="store_true",
                         help="Run feature validator (same as default)")
+    parser.add_argument("--fix", action="store_true",
+                        help="Interactive wizard — guided setup for each broken item")
     parser.add_argument("--json", action="store_true",
                         help="Output machine-readable JSON")
     parser.add_argument("--stable", action="store_true",
                         help="Exit non-zero if any stable probe fails")
     args = parser.parse_args(argv)
+
+    if args.fix:
+        return run_wizard()
 
     results = run_all_probes()
 
