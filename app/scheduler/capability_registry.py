@@ -330,6 +330,23 @@ class CapabilityRegistry:
                 }, "required": ["task_id", "role_id", "goal"]},
             ),
             CapabilityDefinition(
+                name="list_roles",
+                description=(
+                    "List all available agent roles that can be used with dispatch_subtask or "
+                    "scheduler_add_task. Returns role IDs, names, capabilities, and whether each "
+                    "role is valid (has a loadable definition). Always call this before dispatching "
+                    "to verify the target role exists."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "capability": {
+                        "type": "string",
+                        "description": "Filter by capability (e.g. 'web', 'file', 'exec'). Omit to list all.",
+                    },
+                }, "required": []},
+            ),
+            CapabilityDefinition(
                 name="dispatch_subtask",
                 description=(
                     "Dispatch a task to another agent role and WAIT for its result before continuing. "
@@ -337,12 +354,13 @@ class CapabilityRegistry:
                     "a researcher dispatches to a provisioner to clone a repo, then reads the report. "
                     "The sub-task runs as a full agentic session; its final answer is returned here. "
                     "Max dispatch depth: 2 (sub-tasks cannot themselves dispatch further sub-tasks). "
-                    "Prefer this over scheduler_add_task when you need the result in the current task."
+                    "Prefer this over scheduler_add_task when you need the result in the current task. "
+                    "Call list_roles first to verify the target role_id exists."
                 ),
                 danger_level="medium",
                 category="orchestration",
                 parameters={"type": "object", "properties": {
-                    "role_id":         {"type": "string", "description": "Role ID to run the sub-task as (must exist in ~/.memory/roles/)"},
+                    "role_id":         {"type": "string", "description": "Role ID to run the sub-task as (must exist in ~/.memory/roles/ — call list_roles to check)"},
                     "goal":            {"type": "string", "description": "Full goal/instructions for the sub-task"},
                     "available_tools": {
                         "type": "array", "items": {"type": "string"},
@@ -570,6 +588,8 @@ class CapabilityRegistry:
                     return await self._task_report_read(args)
                 elif name == "scheduler_add_task":
                     return await self._scheduler_add_task(args)
+                elif name == "list_roles":
+                    return await self._list_roles(args)
                 elif name == "dispatch_subtask":
                     return await self._dispatch_subtask(args)
                 elif name == "add_conversation":
@@ -849,6 +869,69 @@ class CapabilityRegistry:
     DISPATCH_POLL_INTERVAL_S = 3
     DISPATCH_DEFAULT_TIMEOUT_S = 300
 
+    async def _list_roles(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List all valid agent roles available for dispatch."""
+        import json as _json
+        from app.config.paths import get_memory_subpath
+        from pathlib import Path as _Path
+
+        roles_dir = _Path(get_memory_subpath("roles"))
+        capability_filter = args.get("capability")
+        roles = []
+
+        if roles_dir.exists():
+            for entry in sorted(roles_dir.iterdir()):
+                # Roles are defined by a JSON file: <role_id>.json
+                json_file = roles_dir / f"{entry.name}.json"
+                if entry.is_dir() and json_file.exists():
+                    try:
+                        data = _json.loads(json_file.read_text(encoding="utf-8"))
+                        caps = data.get("capabilities", [])
+                        if capability_filter and capability_filter not in caps:
+                            continue
+                        roles.append({
+                            "role_id":      entry.name,
+                            "name":         data.get("name", entry.name),
+                            "capabilities": caps,
+                            "purpose":      data.get("purpose", "")[:120],
+                            "valid":        True,
+                        })
+                    except Exception as e:
+                        roles.append({
+                            "role_id": entry.name,
+                            "name":    entry.name,
+                            "valid":   False,
+                            "error":   str(e),
+                        })
+                elif entry.suffix == ".json":
+                    # Standalone JSON without a dir — also valid
+                    role_id = entry.stem
+                    try:
+                        data = _json.loads(entry.read_text(encoding="utf-8"))
+                        caps = data.get("capabilities", [])
+                        if capability_filter and capability_filter not in caps:
+                            continue
+                        if not any(r["role_id"] == role_id for r in roles):
+                            roles.append({
+                                "role_id":      role_id,
+                                "name":         data.get("name", role_id),
+                                "capabilities": caps,
+                                "purpose":      data.get("purpose", "")[:120],
+                                "valid":        True,
+                            })
+                    except Exception:
+                        pass
+
+        return {
+            "success": True,
+            "count": len(roles),
+            "roles": roles,
+            "tip": (
+                "Use dispatch_subtask(role_id=...) with any role where valid=True. "
+                "If none match your need, use ask_user to request a new role."
+            ),
+        }
+
     async def _dispatch_subtask(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Dispatch a sub-task to another agent role and block until it completes.
@@ -913,7 +996,23 @@ class CapabilityRegistry:
                         err = t.result.error_message
                     if not err:
                         err = f"Sub-task failed without error detail (status={t.status.value}, retries={t.retry_count})"
-                    return {"success": False, "task_id": task_id, "error": err}
+                    # Role resolution failure — signal the parent orchestrator that
+                    # ask_user is now permitted so it can ask which role to use.
+                    if err and "Role resolution failed" in err:
+                        try:
+                            from app.scheduler.exec_context import cv_dispatch_blocked
+                            cv_dispatch_blocked.set(True)
+                        except Exception:
+                            pass
+                    return {
+                        "success": False,
+                        "task_id": task_id,
+                        "error": err,
+                        "hint": (
+                            "Role not found. Call list_roles to see available roles, "
+                            "then retry with a valid role_id or use ask_user to check with the user."
+                        ) if err and "Role resolution failed" in err else None,
+                    }
                 result = t.result
                 final_answer = ""
                 if result:

@@ -42,17 +42,17 @@ from app.scheduler.intent_class_preflight import (
 # Per-execution isolated state.  Each scheduler task runs as a separate
 # asyncio.Task (via asyncio.create_task), so ContextVars give automatic
 # per-task isolation with no locks and no dict lookups.
-_cv_waiting_q:    ContextVar = ContextVar("exec_waiting_q",    default=None)
-_cv_waiting_c:    ContextVar = ContextVar("exec_waiting_c",    default=None)
-_cv_gate_pending: ContextVar = ContextVar("exec_gate_pending", default=False)
-_cv_tool_calls:   ContextVar = ContextVar("exec_tool_calls",   default=0)
-_cv_consec_notool:ContextVar = ContextVar("exec_consec_notool",default=0)
-_cv_budget_ext:   ContextVar = ContextVar("exec_budget_ext",   default=0)
-_cv_exhausts_ask: ContextVar = ContextVar("exec_exhausts_ask", default=False)
-_cv_requires_tool:ContextVar = ContextVar("exec_requires_tool",default=False)
-_cv_task_id:      ContextVar = ContextVar("exec_task_id",      default=None)
-_cv_role_id:      ContextVar = ContextVar("exec_role_id",      default=None)
-_cv_enabled_tools: ContextVar = ContextVar("exec_enabled_tools", default=None)
+_cv_waiting_q:       ContextVar = ContextVar("exec_waiting_q",       default=None)
+_cv_waiting_c:       ContextVar = ContextVar("exec_waiting_c",       default=None)
+from app.scheduler.exec_context import cv_gate_pending as _cv_gate_pending, cv_dispatch_blocked as _cv_dispatch_blocked
+_cv_tool_calls:      ContextVar = ContextVar("exec_tool_calls",      default=0)
+_cv_consec_notool:   ContextVar = ContextVar("exec_consec_notool",   default=0)
+_cv_budget_ext:      ContextVar = ContextVar("exec_budget_ext",      default=0)
+_cv_exhausts_ask:    ContextVar = ContextVar("exec_exhausts_ask",    default=False)
+_cv_requires_tool:   ContextVar = ContextVar("exec_requires_tool",   default=False)
+_cv_task_id:         ContextVar = ContextVar("exec_task_id",         default=None)
+_cv_role_id:         ContextVar = ContextVar("exec_role_id",         default=None)
+_cv_enabled_tools:   ContextVar = ContextVar("exec_enabled_tools",   default=None)
 
 # Tools whose output commonly bloats context (bash stdout, file reads).
 # Results longer than this cap are truncated before being added to messages.
@@ -547,6 +547,7 @@ class AgenticExecutor:
         _cv_waiting_q.set(None)
         _cv_waiting_c.set(None)
         _cv_gate_pending.set(False)
+        _cv_dispatch_blocked.set(False)
         _cv_tool_calls.set(0)
         _cv_consec_notool.set(0)
         _cv_budget_ext.set(0)
@@ -2447,13 +2448,17 @@ class AgenticExecutor:
 
         # Handle ask_user: pause execution and wait for user reply
         if name == "ask_user":
-            # HITL is reserved for explicit security-gate escalations.
-            # Execution blockers should fail explicitly instead of stalling.
-            if not _cv_gate_pending.get():
+            # Allowed in two cases:
+            #   1. Security-gate escalation (_cv_gate_pending)
+            #   2. Orchestrator dispatch blocker — no valid role to dispatch to
+            #      (_cv_dispatch_blocked), so the orchestrator must ask the user
+            #      which role to use or whether to proceed differently.
+            if not _cv_gate_pending.get() and not _cv_dispatch_blocked.get():
                 return {
                     "error": (
                         "ask_user is blocked for normal execution flow. "
-                        "Only security-gate escalations may pause for user input."
+                        "Only security-gate escalations and orchestrator dispatch "
+                        "failures may pause for user input."
                     )
                 }
             # Enforce behavior_rules.exhausts_tools_before_asking — agent must

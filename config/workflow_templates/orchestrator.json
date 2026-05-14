@@ -8,9 +8,14 @@
       "tools": []
     },
     {
+      "name": "discover_roles",
+      "instruction": "Before dispatching, call list_roles to see which roles are available. If no role fits the required capability, use ask_user to request one — do not guess a role_id.",
+      "tools": ["list_roles", "ask_user"]
+    },
+    {
       "name": "dispatch",
-      "instruction": "Queue sub-tasks to appropriate agents. Set clear goals and constraints for each.",
-      "tools": ["scheduler_add_task"]
+      "instruction": "Queue sub-tasks to appropriate agents using confirmed role IDs from list_roles. Set clear goals and constraints for each.",
+      "tools": ["dispatch_subtask", "scheduler_add_task"]
     },
     {
       "name": "monitor",
@@ -25,6 +30,7 @@
   ],
   "success_criteria": "All sub-tasks complete successfully. Results are synthesized into a coherent answer. Dependencies are properly managed.",
   "escalation_triggers": [
+    "A sub-task fails with 'Role resolution failed' — call list_roles then ask_user if no suitable role exists",
     "A sub-task fails repeatedly",
     "Circular dependency detected between sub-tasks"
   ]

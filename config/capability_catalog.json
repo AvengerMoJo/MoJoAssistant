@@ -74,6 +74,11 @@
       "danger_level": "medium",
       "description": "Shorthand that grants the 'terminal' capability category — covers all tmux__ MCP tools (create-session, execute-command, capture-pane, etc.). Use this short name in available_tools instead of listing every tmux__ tool individually."
     },
+    "list_roles": {
+      "category": "orchestration",
+      "danger_level": "low",
+      "description": "List all valid agent roles available for dispatch_subtask or scheduler_add_task. Returns role IDs, names, capabilities, and validity. Always call this before dispatching to verify the target role exists — if none match, use ask_user."
+    },
     "scheduler_add_task": {
       "category": "orchestration",
       "danger_level": "medium",

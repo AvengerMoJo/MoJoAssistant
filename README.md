@@ -95,6 +95,8 @@ docker compose up
 Both service scripts auto-update the Claude MCP config to HTTP mode.
 
 See [Installation Guide](docs/INSTALL.md) and [Quick Start](docs/QUICKSTART.md) for full setup.
+For contributor workflow standards, see [Development Rules (AI-First, Community-Ready)](docs/DEVELOPMENT_RULES_AI_FIRST_COMMUNITY.md).
+For community Discord assistant design, see [Discord Community Assistant Spec](docs/integrations/DISCORD_COMMUNITY_ASSISTANT_SPEC.md).
 
 ---
 
