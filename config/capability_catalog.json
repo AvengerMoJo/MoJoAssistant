@@ -67,7 +67,12 @@
       "category": "exec",
       "danger_level": "high",
       "requires_auth": true,
-      "description": "Run one shell command or a short list of shell commands sequentially. Restricted by a destructive-command blocklist and explicit authorization. Use for builds, scripts, or system queries that cannot be done with other tools."
+      "description": "Run one shell command or a short list of shell commands sequentially. Restricted by a destructive-command blocklist and explicit authorization. Use for builds, scripts, or system queries that cannot be done with other tools. Implies 'terminal' capability — no need to also list 'terminal' in available_tools."
+    },
+    "tmux":            {
+      "category": "terminal",
+      "danger_level": "medium",
+      "description": "Shorthand that grants the 'terminal' capability category — covers all tmux__ MCP tools (create-session, execute-command, capture-pane, etc.). Use this short name in available_tools instead of listing every tmux__ tool individually."
     },
     "scheduler_add_task": {
       "category": "orchestration",

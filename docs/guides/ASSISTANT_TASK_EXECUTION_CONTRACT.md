@@ -116,7 +116,7 @@ Roles define their default surface with:
 
 ### Per-task override
 
-A task may override the role default with:
+A task may override the role default with real tool names:
 
 ```text
 available_tools=["read_file","search_in_files","memory_search"]
@@ -129,6 +129,20 @@ Use this when:
 - you want a narrower surface for a risky task
 - you want to isolate a reproduction
 - you want to force a known-safe subset
+
+### Capability auto-elevation
+
+You never need to add bare category names like `"terminal"` or `"exec"` to
+`available_tools`. The scheduler infers them automatically from the real tools:
+
+| Tool in `available_tools` | Implied capability |
+|---|---|
+| `bash_exec` | `exec` + `terminal` |
+| `tmux` or any `tmux__*` tool | `terminal` |
+| any `playwright__*` tool | `browser` |
+
+So `["tmux", "bash_exec", "file_read"]` is all you need for a task that SSHes
+into a server and runs shell commands — no separate `"terminal"` flag required.
 
 ## What the Model Should Understand
 

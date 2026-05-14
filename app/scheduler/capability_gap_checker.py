@@ -25,6 +25,15 @@ Gap types
              Example: goal mentions URLs but role has no web capability.
              Result: logged only, loop proceeds.
 
+Auto-elevation
+--------------
+Real tools automatically imply their capability category — users never need
+to pass bare category names like "terminal" or "exec" in available_tools:
+
+  bash_exec          → exec + terminal  (shell-level access)
+  tmux or tmux__*    → terminal         (persistent session access)
+  playwright__*      → browser
+
 Extending the signal map
 ------------------------
 Add entries to _CAPABILITY_SIGNALS to teach the checker about new patterns.
@@ -113,8 +122,9 @@ class GapCheckResult:
         for b in self.blockers:
             lines.append(f"  - {b}")
         lines.append(
-            "\nWould you like to add the missing capabilities to this task "
-            "via available_tools, or proceed anyway and let the agent adapt?"
+            "\nTip: add the real tool to available_tools and the capability is inferred automatically — "
+            "e.g. 'bash_exec' implies terminal, 'tmux' implies terminal, 'playwright__*' implies browser."
+            "\n\nWould you like to add the missing tools to this task, or proceed anyway and let the agent adapt?"
         )
         return "\n".join(lines)
 
@@ -197,6 +207,11 @@ class CapabilityGapChecker:
         """
         Infer capability categories from resolved tool names.
         Uses catalog lookup + name-prefix heuristics.
+
+        Auto-elevation rules (so users never need to pass permission-flag
+        names like 'terminal' alongside their real tools):
+          - bash_exec or any tmux tool  → terminal  (shell-level access implied)
+          - exec (from catalog)         → terminal  (exec is a subset of terminal)
         """
         categories: Set[str] = set()
         try:
@@ -213,7 +228,7 @@ class CapabilityGapChecker:
                 categories.add(meta["category"])
                 continue
             # Name-prefix heuristics for MCP server tools
-            if t.startswith("tmux__"):
+            if t.startswith("tmux__") or t == "tmux":
                 categories.add("terminal")
             elif t.startswith("playwright__"):
                 categories.add("browser")
@@ -223,5 +238,10 @@ class CapabilityGapChecker:
                 categories.add("web")
             elif t in ("memory_search", "add_conversation"):
                 categories.add("memory")
+
+        # Auto-elevate: exec implies terminal (both mean shell-level access).
+        # This means bash_exec alone is enough — no need to also pass 'terminal'.
+        if "exec" in categories:
+            categories.add("terminal")
 
         return categories
