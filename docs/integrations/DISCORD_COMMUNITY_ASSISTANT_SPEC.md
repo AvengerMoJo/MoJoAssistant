@@ -29,6 +29,15 @@ Role location:
 - Runtime role definitions should live in `~/.memory/config/roles/`.
 - Use `config/examples/roles/community_host.example.json` as a starting template.
 
+## Quick Start Role Setup
+```bash
+mkdir -p ~/.memory/config/roles
+cp config/examples/roles/community_host.example.json ~/.memory/config/roles/community_host.json
+```
+
+Then set:
+- `DISCORD_COMMUNITY_ROLE_ID=community_host`
+
 ## Start Bot
 ```python
 from app.community.discord_gateway import run_bot
