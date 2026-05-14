@@ -5,7 +5,7 @@ Provide a public-facing community assistant on Discord that answers support ques
 
 ## Architecture
 1. Discord Gateway (`app/community/discord_gateway.py`)
-2. Community role (`config/roles/community_host.json`)
+2. Community role template (`config/examples/roles/community_host.example.json`)
 3. MoJo role-chat backend (`RoleChatSession`) for response generation
 
 ## Security Baseline
@@ -24,6 +24,10 @@ Optional:
 - `DISCORD_COMMUNITY_ROLE_ID` (default: `community_host`)
 - `DISCORD_MENTION_ONLY` (default: `true`)
 - `DISCORD_MAX_PROMPT_CHARS` (default: `2000`)
+
+Role location:
+- Runtime role definitions should live in `~/.memory/config/roles/`.
+- Use `config/examples/roles/community_host.example.json` as a starting template.
 
 ## Start Bot
 ```python

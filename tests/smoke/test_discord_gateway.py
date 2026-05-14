@@ -17,8 +17,8 @@ def test_sanitize_message_truncates_and_keeps_normal_text():
 
 
 def test_community_host_role_exists_and_is_limited():
-    role_path = Path("config/roles/community_host.json")
-    assert role_path.exists(), "community_host role must exist"
+    role_path = Path("config/examples/roles/community_host.example.json")
+    assert role_path.exists(), "community_host example role must exist"
     data = json.loads(role_path.read_text(encoding="utf-8"))
     assert data["id"] == "community_host"
     caps = set(data.get("capabilities", []))
