@@ -58,20 +58,15 @@ class TestDreamingParsing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks[0].content, "repaired")
         self.assertEqual(chunks[0].speaker, "assistant")
 
-    async def test_chunker_falls_back_when_parse_and_repair_fail(self):
+    async def test_chunker_raises_when_parse_and_repair_fail(self):
         llm = _FakeLLM([
             "not json",
             "still not json",
         ])
         chunker = ConversationChunker(llm_interface=llm)
 
-        chunks = await chunker.chunk_conversation("conv_3", "broken")
-
-        self.assertEqual(len(chunks), 1)
-        self.assertEqual(chunks[0].content, "broken")
-        self.assertEqual(chunks[0].speaker, "unknown")
-        self.assertEqual(chunks[0].llm_used, "fallback")
-        self.assertTrue(chunks[0].needs_upgrade)
+        with self.assertRaises(ValueError):
+            await chunker.chunk_conversation("conv_3", "broken")
 
     def test_synthesizer_normalizes_list_payload(self):
         llm = _FakeLLM([])
@@ -84,7 +79,7 @@ class TestDreamingParsing(unittest.IsolatedAsyncioTestCase):
         self.assertIn("clusters", parsed)
         self.assertEqual(len(parsed["clusters"]), 1)
 
-    async def test_synthesizer_falls_back_when_parse_and_repair_fail(self):
+    async def test_synthesizer_raises_when_parse_and_repair_fail(self):
         llm = _FakeLLM([
             "invalid",
             "invalid-repair",
@@ -102,12 +97,8 @@ class TestDreamingParsing(unittest.IsolatedAsyncioTestCase):
             )
         ]
 
-        clusters = await synthesizer.synthesize_chunks(chunks=chunks, session_id="conv")
-
-        self.assertEqual(len(clusters), 1)
-        self.assertEqual(clusters[0].theme, "Topic: general")
-        self.assertEqual(clusters[0].llm_used, "fallback")
-        self.assertTrue(clusters[0].needs_upgrade)
+        with self.assertRaises(ValueError):
+            await synthesizer.synthesize_chunks(chunks=chunks, session_id="conv")
 
 
 if __name__ == "__main__":

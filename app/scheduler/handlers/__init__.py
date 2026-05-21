@@ -20,4 +20,5 @@ def build_registry() -> HandlerRegistry:
     registry.register(TaskType.EXTERNAL_AGENT, AgentHandler())
     registry.register(TaskType.CUSTOM, CustomHandler())
     registry.register(TaskType.INTERNAL_ASSIGNMENT, AgenticHandler())
+    registry.register(TaskType.ASSISTANT, AgenticHandler())
     return registry

@@ -44,6 +44,7 @@ class TaskType(Enum):
     EXTERNAL_AGENT = "external_agent"  # 3rd-party agent subprocess (opencode, claude_code, etc.)
     CUSTOM = "custom"  # User-defined tasks
     INTERNAL_ASSIGNMENT = "internal_assignment"  # Internal role-based LLM think-act loop
+    ASSISTANT = "assistant"  # Role-based agentic session (alias for INTERNAL_ASSIGNMENT routing)
 
 
 @dataclass

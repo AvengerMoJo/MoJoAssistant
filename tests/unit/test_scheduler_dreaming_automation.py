@@ -9,7 +9,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.scheduler.core import Scheduler
-from app.scheduler.executor import TaskExecutor
 from app.scheduler.models import Task, TaskType, TaskResources
 
 
@@ -41,9 +40,15 @@ class TestSchedulerDreamingAutomation(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(task.config.get("enforce_off_peak"))
             self.assertEqual(task.resources.requires_gpu, True)
 
-    async def test_executor_skips_dreaming_outside_off_peak(self):
-        executor = TaskExecutor()
-        executor._is_within_off_peak = lambda *_args, **_kwargs: False
+    async def test_handler_skips_dreaming_outside_off_peak(self):
+        from app.scheduler.handlers.dreaming import DreamingHandler
+        from app.scheduler.executor_registry import ExecutorContext
+
+        handler = DreamingHandler()
+        handler._is_within_off_peak = lambda *_args, **_kwargs: False
+
+        ctx = ExecutorContext.__new__(ExecutorContext)
+        ctx.log = lambda *a, **k: None
 
         task = Task(
             id="dream_skip",
@@ -56,13 +61,15 @@ class TestSchedulerDreamingAutomation(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        result = await executor._execute_dreaming(task)
+        result = await handler.execute(task, ctx)
 
         self.assertTrue(result.success)
         self.assertTrue(result.metrics.get("skipped"))
         self.assertEqual(result.metrics.get("reason"), "outside_off_peak_window")
 
-    def test_executor_builds_automatic_input_from_memory_store(self):
+    def test_handler_builds_automatic_input_from_memory_store(self):
+        from app.scheduler.handlers.dreaming import DreamingHandler
+
         with tempfile.TemporaryDirectory() as tmp:
             store = Path(tmp) / "conversations_multi_model.json"
             data = [
@@ -72,8 +79,7 @@ class TestSchedulerDreamingAutomation(unittest.IsolatedAsyncioTestCase):
             with open(store, "w", encoding="utf-8") as f:
                 json.dump(data, f)
 
-            executor = TaskExecutor()
-            built = executor._build_automatic_dreaming_input(
+            built = DreamingHandler._build_automatic_dreaming_input(
                 {
                     "conversation_store_path": str(store),
                     "lookback_messages": 10,
@@ -85,9 +91,15 @@ class TestSchedulerDreamingAutomation(unittest.IsolatedAsyncioTestCase):
             self.assertIn("[user] hello", built["conversation_text"])
             self.assertIn("[assistant] world", built["conversation_text"])
 
-    async def test_executor_skips_automatic_when_no_recent_data(self):
-        executor = TaskExecutor()
-        executor._is_within_off_peak = lambda *_args, **_kwargs: True
+    async def test_handler_skips_automatic_when_no_recent_data(self):
+        from app.scheduler.handlers.dreaming import DreamingHandler
+        from app.scheduler.executor_registry import ExecutorContext
+
+        handler = DreamingHandler()
+        handler._is_within_off_peak = lambda *_args, **_kwargs: True
+
+        ctx = ExecutorContext.__new__(ExecutorContext)
+        ctx.log = lambda *a, **k: None
 
         task = Task(
             id="dream_no_data",
@@ -99,7 +111,7 @@ class TestSchedulerDreamingAutomation(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        result = await executor._execute_dreaming(task)
+        result = await handler.execute(task, ctx)
 
         self.assertTrue(result.success)
         self.assertTrue(result.metrics.get("skipped"))

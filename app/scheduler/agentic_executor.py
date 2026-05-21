@@ -1586,6 +1586,7 @@ class AgenticExecutor:
         final_answer: str,
         iteration_log: Optional[List[Dict]] = None,
         duration_seconds: float = 0.0,
+        auto_extracted: bool = False,
         resource_id: Optional[str] = None,
         model: Optional[str] = None,
     ) -> None:
@@ -1629,7 +1630,7 @@ class AgenticExecutor:
             now = _dt.now().isoformat()
 
             # Execution outcome status
-            exec_status = "completed"
+            exec_status = "completed_auto_extracted" if auto_extracted else "completed"
 
             report = {
                 # ── Legacy fields (kept for backwards-compatible readers) ──
