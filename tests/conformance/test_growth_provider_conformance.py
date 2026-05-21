@@ -133,6 +133,26 @@ class TestGrowthProviderContract:
         assert "status" in h
         assert h["status"] in ("ok", "error", "degraded")
 
+    def test_optional_snapshot_lifecycle_helpers(self, provider):
+        # Optional extension: providers may expose snapshot history + recall.
+        if provider.get_version().provider_name != "bonsai_growth":
+            return
+
+        evaluation = provider.evaluate(
+            "test_role",
+            {"dimension": "core_values", "direction": "up", "strength": 0.4},
+        )
+        proposal = provider.propose("test_role", evaluation)
+        v = int(proposal["snapshot_version"])
+
+        snapshots = provider.list_snapshots("test_role")
+        assert isinstance(snapshots, list)
+        assert any(int(s.get("version", -1)) == v for s in snapshots)
+
+        recalled = provider.recall_snapshot("test_role", v, pin=True)
+        assert recalled.get("status") == "success"
+        assert int(recalled.get("snapshot_version", -1)) == v
+
 
 # ---------------------------------------------------------------------------
 # Registry tests

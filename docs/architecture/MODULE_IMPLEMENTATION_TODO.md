@@ -245,6 +245,13 @@ Acceptance:
 - **Growth DIRECTION pillar** — owner one-on-one calibration; deferred pending chat→dream bridge.
 - **Growth PRESENT pillar** — HITL blocking validation; `hitl_callback` slot reserved in
   `BonsaiGrowthModule`, wiring deferred until DIRECTION exists.
+- **Growth rollback/recall operations** — baseline implemented in core:
+  - `SnapshotManager.activate_snapshot(version, pin=...)`
+  - `BonsaiGrowthModule.list_snapshots(role_id)`
+  - `BonsaiGrowthModule.recall_snapshot(role_id, version, pin=...)`
+  - MCP role actions: `growth_history`, `growth_recall`
+  This closes the reversible-version operational requirement while DIRECTION/PRESENT
+  behavioral workflow remains in progress.
 
 ### Planned (no code started)
 - No planned modules left in this TODO list.

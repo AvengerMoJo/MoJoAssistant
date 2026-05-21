@@ -129,6 +129,47 @@ class TestSnapshotManager(unittest.TestCase):
         self.assertIsNone(self.manager.get_current())
         self.assertIsNone(self.manager.get_pinned())
 
+    def test_get_snapshot_by_version(self):
+        snap = GrowthSnapshot(
+            role_id="test_role", version=2,
+            dimensions={"core_values": {"score": 82}},
+            system_prompt="test",
+        )
+        self.manager.save_snapshot(snap)
+
+        loaded = self.manager.get_snapshot(2)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.version, 2)
+        self.assertIsNone(self.manager.get_snapshot(99))
+
+    def test_activate_snapshot_switches_current(self):
+        for i in (1, 2):
+            snap = GrowthSnapshot(
+                role_id="test_role", version=i,
+                dimensions={"core_values": {"score": 70 + i}},
+                system_prompt=f"v{i}",
+            )
+            self.manager.save_snapshot(snap)
+
+        self.assertTrue(self.manager.activate_snapshot(1))
+        current = self.manager.get_current()
+        self.assertIsNotNone(current)
+        self.assertEqual(current.version, 1)
+
+    def test_activate_snapshot_can_pin(self):
+        for i in (1, 2):
+            snap = GrowthSnapshot(
+                role_id="test_role", version=i,
+                dimensions={"core_values": {"score": 80 + i}},
+                system_prompt=f"v{i}",
+            )
+            self.manager.save_snapshot(snap)
+
+        self.assertTrue(self.manager.activate_snapshot(1, pin=True))
+        pinned = self.manager.get_pinned()
+        self.assertIsNotNone(pinned)
+        self.assertEqual(pinned.version, 1)
+
 
 class TestBonsaiEngine(unittest.TestCase):
 

@@ -4550,10 +4550,14 @@ Agent resumes within seconds.
             return await self._execute_role_persona_score(args)
         if action == "growth_snapshot":
             return await self._execute_role_growth_snapshot(args)
+        if action == "growth_history":
+            return await self._execute_role_growth_history(args)
         if action == "growth_propose":
             return await self._execute_role_growth_propose(args)
         if action == "growth_validate":
             return await self._execute_role_growth_validate(args)
+        if action == "growth_recall":
+            return await self._execute_role_growth_recall(args)
         if action == "design_start":
             return await self._execute_role_design_start({
                 "description": args.get("description", "")
@@ -4579,8 +4583,10 @@ Agent resumes within seconds.
                 "persona_list":      "List personas from persona module — params: filter?",
                 "persona_score":     "Score a role with persona module — params: role? or role_id",
                 "growth_snapshot":   "Current growth state for a role — params: role_id",
+                "growth_history":    "List saved growth snapshot versions — params: role_id",
                 "growth_propose":    "Evaluate signals and generate a growth proposal — params: role_id, signals",
                 "growth_validate":   "Accept or reject a growth proposal — params: role_id, proposal, decision (accept|reject)",
+                "growth_recall":     "Recall/rollback to a snapshot version — params: role_id, version, pin?(bool)",
                 "design_start":  "Begin Nine Chapter interview — params: description?",
                 "design_answer": "Submit answer / advance interview — params: session_id, answer",
             },
@@ -4810,6 +4816,29 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Growth snapshot failed: {e}"}
 
+    async def _execute_role_growth_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List available growth snapshots for a role."""
+        from app.services.provider_contracts import get_registry
+        role_id = args.get("role_id")
+        if not role_id:
+            return {"status": "error", "message": "role_id is required"}
+        try:
+            provider = get_registry().resolve_growth_provider()
+            if not hasattr(provider, "list_snapshots"):
+                return {"status": "error", "message": "growth provider does not support snapshot history"}
+            items = provider.list_snapshots(role_id)
+            return {
+                "status": "success",
+                "provider": provider.get_version().provider_name,
+                "role_id": role_id,
+                "count": len(items),
+                "snapshots": items,
+            }
+        except NotImplementedError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception as e:
+            return {"status": "error", "message": f"Growth history failed: {e}"}
+
     async def _execute_role_growth_propose(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Evaluate growth signals and generate a proposal via GrowthModule provider."""
         from app.services.provider_contracts import get_registry
@@ -4845,6 +4874,31 @@ Agent resumes within seconds.
             return {"status": "success", "provider": provider.get_version().provider_name, **result}
         except Exception as e:
             return {"status": "error", "message": f"Growth validate failed: {e}"}
+
+    async def _execute_role_growth_recall(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Recall/rollback a role growth state to a previous snapshot version."""
+        from app.services.provider_contracts import get_registry
+        role_id = args.get("role_id")
+        version = args.get("version")
+        pin = bool(args.get("pin", False))
+        if not role_id:
+            return {"status": "error", "message": "role_id is required"}
+        if version is None:
+            return {"status": "error", "message": "version is required"}
+        try:
+            version = int(version)
+        except Exception:
+            return {"status": "error", "message": "version must be an integer"}
+        try:
+            provider = get_registry().resolve_growth_provider()
+            if not hasattr(provider, "recall_snapshot"):
+                return {"status": "error", "message": "growth provider does not support snapshot recall"}
+            result = provider.recall_snapshot(role_id, version, pin=pin)
+            return {"status": "success", "provider": provider.get_version().provider_name, **result}
+        except NotImplementedError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception as e:
+            return {"status": "error", "message": f"Growth recall failed: {e}"}
 
     # ── Skill Blueprint Hub ──────────────────────────────────────────
 

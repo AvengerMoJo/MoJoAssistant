@@ -119,6 +119,18 @@ class SnapshotManager:
             logger.warning(f"Failed to load pinned snapshot: {e}")
             return None
 
+    def get_snapshot(self, version: int) -> Optional[GrowthSnapshot]:
+        """Get a specific snapshot version."""
+        path = self._snapshot_path(version)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return GrowthSnapshot.from_dict(data)
+        except Exception as e:
+            logger.warning(f"Failed to load snapshot v{version}: {e}")
+            return None
+
     def save_snapshot(self, snapshot: GrowthSnapshot) -> Path:
         """Save a growth snapshot and update current."""
         path = self._snapshot_path(snapshot.version)
@@ -148,6 +160,32 @@ class SnapshotManager:
         pinned.symlink_to(path.name)
 
         logger.info(f"Pinned snapshot v{version} for {self.role_id}")
+        return True
+
+    def activate_snapshot(self, version: int, *, pin: bool = False) -> bool:
+        """Switch current snapshot pointer to a specific version.
+
+        This is the operational rollback/recall primitive used by GrowthProvider.
+        If pin=True, also updates pinned.json to the same version.
+        """
+        path = self._snapshot_path(version)
+        if not path.exists():
+            return False
+
+        current = self._current_path()
+        if current.exists() or current.is_symlink():
+            current.unlink()
+        current.symlink_to(path.name)
+
+        if pin:
+            self.pin_snapshot(version)
+
+        logger.info(
+            "Activated snapshot v%s for %s (pin=%s)",
+            version,
+            self.role_id,
+            pin,
+        )
         return True
 
     def get_latest_version(self) -> int:
