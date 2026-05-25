@@ -716,15 +716,22 @@ class TestCapabilityDispatchSmoke:
             f"Normal file-read goal should not be blocked, got: {result.blockers}"
         )
 
-    def test_shell_command_syntax_in_goal_blocked(self):
+    def test_shell_command_syntax_in_goal_is_warning_not_blocker(self):
+        """Backtick-wrapped commands produce a WARNING only — structural signals are
+        handled by the LLM classifier in AgenticExecutor, not the keyword checker.
+        This avoids false positives on Python signatures and markdown content."""
         from app.scheduler.capability_gap_checker import CapabilityGapChecker
         checker = CapabilityGapChecker()
-        # Backtick command with args — the shell-command pattern
-        goal = "Execute `hostname -I` to get the machine IP and report it"
+        # Backtick command with pipe — structural shell syntax, warning-level only
+        goal = "Run `hostname -I | awk '{print $1}'` and return the first IPv4 address."
         resolved_tools = ["memory_search", "ask_user"]
         result = checker.check(goal, resolved_tools, role=None)
-        assert result.has_blockers, (
-            "Goal with shell-command syntax and no exec tools should produce a blocker"
+        assert not result.has_blockers, (
+            "Structural shell syntax (backtick+pipe) should not be a BLOCKER — "
+            "LLM classifier in executor handles escalation"
+        )
+        assert result.has_warnings, (
+            "Pipe pattern in goal should produce a WARNING so dispatcher is informed"
         )
 
     def test_path_only_backtick_not_blocked(self):

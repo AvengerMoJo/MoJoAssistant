@@ -4572,8 +4572,9 @@ Agent resumes within seconds.
                 "answer": answer,
             })
 
-        # Help menu
-        return {
+        # Help menu — include error when action was omitted so the model gets
+        # a clear signal that it must pass action= rather than looping on help.
+        _help = {
             "status": "help",
             "actions": {
                 "list":          "List all saved roles",
@@ -4594,6 +4595,14 @@ Agent resumes within seconds.
             "capability_categories": ["memory", "file", "exec", "web", "browser", "terminal", "orchestration"],
             "example": 'role(action="edit", role_id="researcher", capabilities_add=["pubmed_mcp"])',
         }
+        if not action:
+            return {
+                **_help,
+                "error": "Missing required parameter: 'action'",
+                "you_called": "role()",
+                "fix": 'role(action="list")  # to list all roles',
+            }
+        return _help
 
     # ── Role System Tools ────────────────────────────────────────────
 
@@ -5727,6 +5736,13 @@ Agent resumes within seconds.
         }
 
         if not action or action == "help":
+            if not action:
+                return {
+                    **HELP,
+                    "error": "Missing required parameter: 'action'",
+                    "you_called": "scheduler()",
+                    "fix": 'scheduler(action="list")  # to list tasks',
+                }
             return HELP
 
         if action == "add":

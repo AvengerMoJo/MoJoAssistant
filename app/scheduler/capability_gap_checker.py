@@ -9,19 +9,20 @@ Design principles
 -----------------
 - Fast and cheap: keyword heuristics only, no LLM call.
 - Non-blocking by default: warnings are logged, not fatal.
-- Blockers are surfaced via ask_user (STOP_ASK_USER) so the user can extend
-  the capability set before the agent wastes iterations discovering the gap.
-- Heuristics are intentionally conservative: false positives (unnecessary
-  warnings) are better than false negatives (silent missing capability).
+- Blockers surface via ask_user (WAITING_FOR_INPUT) so the user can extend
+  the capability set or approve proceeding before iterations are wasted.
+- Heuristics cover only HIGH-CONFIDENCE explicit phrases. Ambiguous structural
+  signals (e.g. backtick-wrapped code, pipe characters) are NOT blockers here
+  — the caller (AgenticExecutor) runs an LLM classifier for those cases.
 
 Gap types
 ---------
-  BLOCKER  — the goal explicitly requires a capability the role cannot use.
-             Example: "git clone" in a role without terminal/exec.
-             Result: ask_user before the loop starts.
+  BLOCKER  — goal contains an explicit phrase that requires a capability the
+             role cannot use. Example: "git clone" without terminal/exec.
+             Result: returned to caller; caller surfaces via ask_user.
 
-  WARNING  — the goal may benefit from a capability that isn't present,
-             but a reasonable agent might work around it.
+  WARNING  — goal may benefit from a capability that isn't present, but a
+             reasonable agent might work around it.
              Example: goal mentions URLs but role has no web capability.
              Result: logged only, loop proceeds.
 
@@ -36,8 +37,8 @@ to pass bare category names like "terminal" or "exec" in available_tools:
 
 Extending the signal map
 ------------------------
-Add entries to _CAPABILITY_SIGNALS to teach the checker about new patterns.
-Each entry maps a capability category name to a list of goal keyword phrases.
+Add entries to _BLOCKER_SIGNALS / _WARNING_SIGNALS for keyword phrases.
+Structural / syntactic signals belong in the LLM classifier, not here.
 """
 # [hitl-orchestrator: generic]
 from __future__ import annotations
@@ -60,7 +61,10 @@ _BLOCKER_SIGNALS: Dict[str, List[str]] = {
         "shell script", "run command", "execute command",
     ],
     "exec": [
-        "bash_exec", "run bash", "execute bash", "shell command",
+        # "bash_exec" intentionally omitted — it's a tool name that appears in
+        # orchestrator goal text (e.g. available_tools lists) and causes false positives.
+        # Exec capability is already inferred from resolved_tool_names by _infer_categories().
+        "run bash", "execute bash", "shell command",
         "run script", "execute script",
     ],
     "browser": [
@@ -69,14 +73,14 @@ _BLOCKER_SIGNALS: Dict[str, List[str]] = {
     ],
 }
 
-# Shell-command-like patterns that strongly imply execution capability.
-# NOTE: backtick pattern requires at least one space inside (command + argument),
-# so bare paths/identifiers like `~/foo/bar` or `tool_name` are not flagged.
-_SHELL_COMMAND_PATTERNS: List[re.Pattern[str]] = [
-    # Backtick command with args: `cmd arg` — but NOT `key: value` or `key = value`
-    # patterns which are property references, not shell commands.
-    re.compile(r"`[^`\s]+[ \t]+(?![=:>])[^`\n]+`"),  # e.g. `hostname -I` but not `core_values: 95`; [ \t] (not \s) prevents spanning paragraph breaks via closing-backtick + period + newline
-    re.compile(r"\b[a-z0-9_.-]+\s+\|\s+[a-z0-9_.-]+"),  # pipeline, e.g. a | b
+# Structural / syntactic shell signals are intentionally NOT here.
+# Backtick-wrapped commands, pipe patterns, etc. produce too many false positives
+# against technical writing (Python signatures in backticks, markdown table pipes).
+# The AgenticExecutor runs an LLM classifier for these ambiguous cases instead.
+#
+# WARNING: pipe between two short word tokens — could be pipeline or markdown table.
+_SHELL_WARNING_PATTERNS: List[re.Pattern[str]] = [
+    re.compile(r"\b[a-z][a-z0-9_-]{0,9}\s+\|\s+[a-z][a-z0-9_-]{0,9}\b"),
 ]
 
 # Phrases that suggest a capability may be needed (warning level)
@@ -178,13 +182,16 @@ class CapabilityGapChecker:
                     )
                     break  # one blocker per capability is enough
 
-        # Detect shell-command style goals and require terminal/exec coverage.
-        has_shell_style_goal = any(p.search(goal_lower) for p in _SHELL_COMMAND_PATTERNS)
+        # Structural shell signals (backtick commands, pipelines) are handled by
+        # the LLM classifier in AgenticExecutor — not here — to avoid regex false
+        # positives on technical writing (Python signatures, markdown tables).
         has_exec_coverage = ("terminal" in resolved_categories) or ("exec" in resolved_categories)
-        if has_shell_style_goal and not has_exec_coverage:
-            result.blockers.append(
-                "Goal includes shell-command syntax but role has no 'terminal' or 'exec' capability"
-            )
+        if not has_exec_coverage:
+            if any(p.search(goal_lower) for p in _SHELL_WARNING_PATTERNS):
+                result.warnings.append(
+                    "Goal may include shell pipeline syntax ('word | word') — "
+                    "could be a markdown table; add bash_exec if shell execution is needed"
+                )
 
         # Check warning signals
         for cap, phrases in _WARNING_SIGNALS.items():
