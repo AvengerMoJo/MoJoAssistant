@@ -178,21 +178,85 @@ class PushAdapter(ABC):
     # Helpers for subclasses
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _strip_markdown(text: str) -> str:
+        """Strip markdown formatting from text."""
+        if not text:
+            return ''
+        # Remove code blocks
+        text = re.sub(r'```[\s\S]*?```', '', text)
+        # Remove inline code
+        text = re.sub(r'`([^`]*)`', r'\1', text)
+        # Remove headers
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+        # Remove bold/italic
+        text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+        text = re.sub(r'(?<!\*)\*([^*]+)(?!\*)', r'\1', text)
+        text = re.sub(r'_([^_]+)_', r'\1', text)
+        # Remove links
+        text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+        # Remove blockquotes and list markers
+        text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^[-*+]\s+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
+        return text.strip()
+
+    @staticmethod
+    def _extract_first_sentence(text: str) -> str:
+        """Extract first meaningful sentence from text."""
+        if not text:
+            return ''
+        clean = PushAdapter._strip_markdown(text)
+        match = re.match(r'^([^\.\!\?]+[\.\!\?])', clean.strip())
+        if match:
+            return match.group(1).strip()
+        first_line = clean.split('\n')[0].strip()
+        if len(first_line) > 20:
+            return first_line
+        return clean[:50]
+
+    @staticmethod
+    def _get_status_emoji(event: dict) -> str:
+        """Return status emoji based on event outcome."""
+        status = event.get('status', '')
+        if status in ('failed', 'error'):
+            return '\u2717'  # ✗
+        elif status == 'waiting_for_input':
+            return '?'
+        return '\u2713'  # ✓
+
+    @staticmethod
+    def _truncate_to_160(text: str) -> str:
+        """Truncate text to exactly 160 characters."""
+        if len(text) <= 160:
+            return text
+        return text[:157] + '[...]'
+
     def _format_title(self, event: Dict[str, Any]) -> str:
         return event.get("title") or event.get("event_type", "MoJoAssistant event")
 
     def _format_body(self, event: Dict[str, Any]) -> str:
+        """Format notification body with status emoji, markdown stripped, first sentence only, capped at 160 chars."""
         data = event.get("data") or {}
-        parts = []
-        if data.get("task_id"):
-            parts.append(f"Task: {data['task_id']}")
-        # final_answer lives at top-level on task_completed events
+        
+        # Get status for emoji prefix
+        emoji = PushAdapter._get_status_emoji(event)
+        
+        parts = [f"{emoji} Task: {data['task_id']}"] if data.get("task_id") else []
+        
+        # Process final_answer - strip markdown, extract first sentence, truncate to 160
         final_answer = event.get("final_answer") or data.get("final_answer")
         if final_answer:
-            snippet = str(final_answer)[:300]
-            parts.append(snippet)
+            clean_text = PushAdapter._strip_markdown(str(final_answer))
+            first_sentence = PushAdapter._extract_first_sentence(clean_text)
+            truncated = PushAdapter._truncate_to_160(first_sentence)
+            parts.append(truncated)
+        
+        # Add error/message at end if present (but keep total under control)
         if data.get("error"):
-            parts.append(f"Error: {data['error']}")
-        if data.get("message"):
-            parts.append(data["message"])
-        return "\n".join(parts) if parts else event.get("event_type", "")
+            err_part = f"Error: {data['error']}"
+            if len('\n'.join(parts + [err_part])) > 160:
+                parts.append(PushAdapter._truncate_to_160(err_part))
+        
+        return '\n'.join(parts) if parts else event.get("event_type", "")
+

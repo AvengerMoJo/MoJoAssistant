@@ -59,9 +59,9 @@ class NtfyAdapter(PushAdapter):
         """
         Build ntfy action buttons for task_waiting_for_input events.
 
-        - One HTTP action per choice (up to 3 — ntfy limit).
-        - Always one "Reply" view action opening the minimal reply form.
-          Requires MOJO_BASE_URL env var; omitted when not set.
+        - Max 3 actions total (ntfy limit).
+        - Includes "View Report" button when MOJO_BASE_URL is set.
+        - Choice buttons and Reply button share the 3-action budget.
         """
         if event.get("event_type") != "task_waiting_for_input":
             return []
@@ -78,20 +78,30 @@ class NtfyAdapter(PushAdapter):
 
         # Choice buttons — each fires a POST directly from the ntfy app
         choices = event.get("choices") or []
-        for choice in choices[:3]:  # ntfy allows max 3 actions total
-            if base_url:
-                actions.append({
-                    "action": "http",
-                    "label": str(choice),
-                    "url": f"{base_url}/api/hitl/reply/{task_id}?token={token}",
-                    "method": "POST",
-                    "body": str(choice),
-                    "headers": {"Content-Type": "text/plain"},
-                    "clear": True,
-                })
+        
+        # Add View Report action first (takes priority for context)
+        if base_url:
+            actions.append({
+                "action": "view",
+                "label": "View Report",
+                "url": f"{base_url}/dashboard/tasks/{task_id}",
+                "clear": False,
+            })
+
+        # Choice buttons — share remaining budget with Reply button (max 3 total)
+        for choice in choices[:2]:  # Leave room for View Report + Reply (or just View Report if no choices)
+            actions.append({
+                "action": "http",
+                "label": str(choice),
+                "url": f"{base_url}/api/hitl/reply/{task_id}?token={token}",
+                "method": "POST",
+                "body": str(choice),
+                "headers": {"Content-Type": "text/plain"},
+                "clear": True,
+            })
 
         # Reply form button — opens a browser form for free-form text
-        # Only add if we have room (3 actions max) and base_url is configured
+        # Only add if we have room (3 actions max total) and base_url is configured
         if base_url and len(actions) < 3:
             actions.append({
                 "action": "view",
