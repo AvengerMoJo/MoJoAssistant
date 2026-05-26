@@ -129,17 +129,6 @@ a:hover { text-decoration: underline; }
 .s-scheduled  { background: #001a1a; color: #7ee3c0; }
 .s-waiting_for_input { background: #2a1a00; color: #e3c07e; }
 .s-dreaming   { background: #1a002a; color: #c07ee3; }
-.s-error      { background: #2a0000; color: #e37e7e; }  /* same as failed */
-
-/* Mobile responsiveness */
-@media (max-width: 768px) {
-    table { font-size: 12px; }
-    th, td { padding: 4px 6px; }
-    .badge { font-size: 10px; padding: 2px 6px; }
-    pre { font-size: 11px; }
-    nav a { display: none; }
-    nav a:first-child, nav a:nth-child(2) { display: inline-block; margin-right: 8px; }
-}
 .lvl0 { color: #555; }
 .lvl1 { color: #888; }
 .lvl2 { color: #aaa; }
@@ -566,27 +555,15 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
         if turns:
             session_html = f"<h2>Session Transcript</h2>{''.join(turns)}"
 
-    def _collapsible_section(title: str, content: str) -> str:
-        if not content or content.strip() == "":
-            return ""
-        return (
-            f'<details open style="margin-bottom:16px;border:1px solid #2a2a2a;'
-            f'border-radius:4px;overflow:hidden">'
-            f'<summary style="padding:8px 12px;background:#1a1a1a;cursor:pointer;'
-            f'font-weight:bold">{title}</summary>'
-            f'<div style="padding:12px;background:#0f0f0f;">{content}</div>'
-            f'</details>'
-        )
-
     return _page(f"Task: {task_id}", f"""
 <h1><a href="/dashboard/tasks" style="color:#888;font-weight:normal">Tasks</a> / {task_id}</h1>
 {meta}
-{_collapsible_section("Goal", goal_html.replace('<h2>', '').replace('</h2>', '') if goal_html else "")}
-{_collapsible_section("Waiting for Input" if pq_html else "", pq_html.replace('<h2>', '').replace('</h2>', '') if pq_html else "")}
-{_collapsible_section("Error", err_html.replace('<h2>', '').replace('</h2>', '') if err_html else "")}
-{_collapsible_section("Iterations & Tool Calls", iter_html)}
-{_collapsible_section("Final Answer", final_html.replace('<h2>', '').replace('</h2>', '') if final_html else "")}
-{_collapsible_section("Session Transcript", session_html.replace('<h2>', '').replace('</h2>', '') if session_html else "")}
+{goal_html}
+{pq_html}
+{err_html}
+{iter_html}
+{final_html}
+{session_html}
 """)
 
 
