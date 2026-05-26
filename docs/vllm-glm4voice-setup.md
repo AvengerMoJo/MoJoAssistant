@@ -23,6 +23,36 @@ curl -s http://localhost:8888/v1/models
 ```
 Expected: model list includes `zai-org/glm-4-voice-9b`.
 
+## 2a) Validate local GLM voice assets (required)
+Run this before starting the service:
+
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+root = Path('submodules/glm-4-voice-9b-int4')
+req = [
+  root/'glm-4-voice-tokenizer/config.json',
+  root/'glm-4-voice-decoder/config.yaml',
+  root/'glm-4-voice-decoder/flow.pt',
+  root/'glm-4-voice-decoder/hift.pt',
+]
+missing = [str(p) for p in req if not p.exists()]
+if missing:
+    raise SystemExit('Missing assets:\n- ' + '\n- '.join(missing))
+meta = json.loads((root/'glm-4-voice-tokenizer/config.json').read_text())
+name = str(meta.get('_name_or_path',''))
+print('tokenizer _name_or_path =', name)
+if 'glm-4-voice-tokenizer' not in name.lower():
+    raise SystemExit('Unexpected tokenizer identity; expected GLM-4-Voice tokenizer')
+print('OK')
+PY
+```
+
+Expected:
+- tokenizer `_name_or_path` contains `glm-4-voice-tokenizer`
+- script ends with `OK`
+
 ## 2) Run local S2S service
 ```bash
 ./venv/bin/python scripts/s2s_service.py \
