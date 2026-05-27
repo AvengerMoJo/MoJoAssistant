@@ -166,6 +166,41 @@ class BonsaiGrowthModule(GrowthProvider):
             "decision": decision,
         }
 
+    def list_snapshots(self, role_id: str) -> List[Dict[str, Any]]:
+        sm = SnapshotManager(role_id)
+        return sm.list_snapshots()
+
+    def recall_snapshot(self, role_id: str, version: int, *, pin: bool = False) -> Dict[str, Any]:
+        """Recall/rollback current growth state to a specific snapshot version."""
+        sm = SnapshotManager(role_id)
+        target = sm.get_snapshot(version)
+        if target is None:
+            return {
+                "status": "error",
+                "role_id": role_id,
+                "message": f"snapshot version {version} not found",
+            }
+
+        ok = sm.activate_snapshot(version, pin=pin)
+        if not ok:
+            return {
+                "status": "error",
+                "role_id": role_id,
+                "message": f"failed to activate snapshot version {version}",
+            }
+
+        return {
+            "status": "success",
+            "role_id": role_id,
+            "snapshot_version": version,
+            "pinned": pin,
+            "dimensions": target.dimensions,
+            "metadata": {
+                "trigger": target.trigger,
+                "approved_by": target.approved_by,
+            },
+        }
+
     def health_check(self) -> Dict[str, Any]:
         try:
             # Attempt a lightweight registry lookup with no file I/O

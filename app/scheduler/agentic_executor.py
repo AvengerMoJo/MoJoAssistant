@@ -515,6 +515,47 @@ class AgenticExecutor:
         if self._logger:
             getattr(self._logger, level)(f"[AgenticExecutor] {message}")
 
+    async def _classify_needs_exec(self, goal: str) -> tuple[bool, str]:
+        """LLM classifier: does this goal require shell/terminal execution?
+
+        Used by the capability gap check to catch structural signals (backtick
+        commands, pipeline syntax) that regex can't reliably distinguish from
+        technical writing (Python signatures, markdown tables).
+
+        Returns (needs_exec, one_sentence_reason).
+        On any error, returns (False, "classifier unavailable") — we never
+        block a task because the classifier failed.
+        """
+        try:
+            result = await self._mcp_client_manager.call_tool(
+                "llm_direct_chat",
+                {
+                    "system_prompt": (
+                        "You are a task intent classifier. "
+                        "Determine whether a task goal requires executing shell commands, "
+                        "running scripts, or using a terminal to accomplish its objective. "
+                        "Describing shell commands in an analysis does NOT count — only flag "
+                        "goals that NEED actual execution. "
+                        "Reply: YES or NO, then one sentence explaining why."
+                    ),
+                    "message": f"Goal: {goal[:800]}",
+                    "max_tokens": 60,
+                },
+            )
+            payload = result.tool_payload() if hasattr(result, "tool_payload") else result
+            if isinstance(payload, dict) and payload.get("status") == "error":
+                return False, "classifier unavailable"
+            reply = (
+                (payload.get("reply") or payload.get("response") or "NO")
+                if isinstance(payload, dict)
+                else str(payload)
+            ).strip()
+            needs = reply.upper().startswith("YES")
+            return needs, reply
+        except Exception as exc:
+            self._log(f"LLM exec classifier error (skipping): {exc}", "warning")
+            return False, "classifier unavailable"
+
     def _record(self, task_id: str, role: str, content: str, iteration: int, **kwargs: Any) -> None:
         """Append a message to the session log."""
         self._session_storage.append_message(
@@ -816,21 +857,56 @@ class AgenticExecutor:
                 tool_defs.append(BUILTIN_TOOLS[tool_name])
 
         # --- Capability gap check (fresh starts only) ---
-        # Run before resume logic so we can bail early on missing-capability blockers.
+        # Phase 1: fast phrase-based check (no LLM, free).
+        # Phase 2: LLM classifier for structural ambiguity (backtick commands,
+        #          pipeline syntax) — only runs when no phrase blocker fires and
+        #          exec coverage is missing.  Avoids regex false-positives on
+        #          technical writing (Python signatures in backticks, markdown tables).
+        # Both phases surface via ask_user (WAITING_FOR_INPUT) instead of hard-failing,
+        # so the user can approve or add tools without losing the task.
         _gap_resume_skip = config.get("resume_from_task_id")
         if not _gap_resume_skip:
             gap_result = self._gap_checker.check(goal, enabled_tool_names, role)
             for w in gap_result.warnings:
                 self._log(f"CapabilityGapChecker warning: {w}", "warning")
+
+            _needs_ask = False
+            _ask_question = ""
+
             if gap_result.has_blockers:
-                blocker_msg = (
-                    f"CapabilityGapChecker BLOCKER for task {task.id}: {gap_result.blockers}. "
-                    "Execution halted. Add required capabilities/tools and retry."
+                _needs_ask = True
+                _ask_question = gap_result.ask_user_question()
+                self._log(
+                    f"CapabilityGapChecker phrase blocker for task {task.id}: "
+                    f"{gap_result.blockers} — surfacing via ask_user",
+                    "warning",
                 )
-                self._log(blocker_msg, "error")
+            else:
+                # Phase 2: LLM classifier for structural signals not caught by phrases.
+                _exec_covered = self._gap_checker._infer_categories(enabled_tool_names)
+                if "terminal" not in _exec_covered and "exec" not in _exec_covered:
+                    _llm_needs_exec, _llm_reason = await self._classify_needs_exec(goal)
+                    if _llm_needs_exec:
+                        _needs_ask = True
+                        _ask_question = (
+                            f"The task goal appears to require shell or terminal execution "
+                            f"({_llm_reason.strip()}), but the role has no exec/terminal capability.\n\n"
+                            "Tip: add 'bash_exec' to available_tools to grant this, or proceed "
+                            "anyway if the agent can accomplish the goal without shell access.\n\n"
+                            "Proceed without shell capability?"
+                        )
+                        self._log(
+                            f"CapabilityGapChecker LLM classifier flagged exec need for task "
+                            f"{task.id}: {_llm_reason.strip()} — surfacing via ask_user",
+                            "warning",
+                        )
+
+            if _needs_ask:
+                task.pending_question = _ask_question
                 return TaskResult(
                     success=False,
-                    error_message=blocker_msg,
+                    waiting_for_input=_ask_question,
+                    waiting_for_input_choices=["Proceed anyway", "Cancel task"],
                 )
 
         # --- Resume support ---
@@ -972,6 +1048,8 @@ class AgenticExecutor:
         )
 
         iteration = 0
+        _loop_last_sig: Optional[str] = None  # (tool_name, args_hash, result_prefix)
+        _loop_consec: int = 0                 # consecutive identical tool call+result count
         while True:
             iteration += 1
             # Apply any budget extension granted by BUDGET_EXTENSION_REQUEST ask_user calls
@@ -1259,6 +1337,42 @@ class AgenticExecutor:
                 if _was_trimmed:
                     _tool_iter_entry["context_trimmed"] = True
                 iteration_log.append(_tool_iter_entry)
+
+                # Loop detection: if the same single-tool call returns the
+                # same result 3 times in a row, the model is stuck.  Inject a
+                # hard correction so it changes approach instead of burning budget.
+                if len(tool_calls) == 1 and not waiting:
+                    _tc = tool_calls[0]
+                    _args_str = json.dumps(_tc["function"].get("arguments", {}), sort_keys=True)
+                    _result_prefix = tool_results[0][:120] if tool_results else ""
+                    _sig = f"{_tc['function']['name']}|{_args_str}|{_result_prefix}"
+                    if _sig == _loop_last_sig:
+                        _loop_consec += 1
+                    else:
+                        _loop_last_sig = _sig
+                        _loop_consec = 1
+                    if _loop_consec >= 3:
+                        _correction = (
+                            f"[LOOP DETECTED] You have called {_tc['function']['name']}() "
+                            f"with the same arguments {_loop_consec} times and received the same "
+                            f"response each time. This is not working.\n"
+                            f"You must change your approach: use a different tool, different "
+                            f"parameters, or conclude based on what you already know.\n"
+                            f"Do NOT call the same tool with the same arguments again."
+                        )
+                        messages.append({"role": "user", "content": _correction})
+                        self._record(task.id, "user", _correction, iteration=abs_iteration)
+                        self._log(
+                            f"Task {task.id}: loop detected — {_tc['function']['name']}() "
+                            f"called identically {_loop_consec} times; injecting correction",
+                            "warning",
+                        )
+                        _loop_last_sig = None
+                        _loop_consec = 0
+                else:
+                    _loop_last_sig = None
+                    _loop_consec = 0
+
                 # If agent called ask_user, pause the loop here
                 if waiting:
                     self._log(
@@ -1586,6 +1700,7 @@ class AgenticExecutor:
         final_answer: str,
         iteration_log: Optional[List[Dict]] = None,
         duration_seconds: float = 0.0,
+        auto_extracted: bool = False,
         resource_id: Optional[str] = None,
         model: Optional[str] = None,
     ) -> None:
@@ -1629,7 +1744,7 @@ class AgenticExecutor:
             now = _dt.now().isoformat()
 
             # Execution outcome status
-            exec_status = "completed"
+            exec_status = "completed_auto_extracted" if auto_extracted else "completed"
 
             report = {
                 # ── Legacy fields (kept for backwards-compatible readers) ──

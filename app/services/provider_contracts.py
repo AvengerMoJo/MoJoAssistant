@@ -462,6 +462,15 @@ class GrowthProvider(ABC):
     def validate(self, role_id: str, proposal: Dict[str, Any], decision: str) -> Dict[str, Any]:
         ...
 
+    # -- Optional snapshot lifecycle helpers -------------------------------
+    # Not abstract to preserve compatibility with external providers that
+    # implement only the minimal GrowthProvider contract.
+    def list_snapshots(self, role_id: str) -> List[Dict[str, Any]]:
+        raise NotImplementedError("list_snapshots is not implemented by this provider")
+
+    def recall_snapshot(self, role_id: str, version: int, *, pin: bool = False) -> Dict[str, Any]:
+        raise NotImplementedError("recall_snapshot is not implemented by this provider")
+
 
 # ---------------------------------------------------------------------------
 # Skill Provider Contract

@@ -5,12 +5,12 @@
     "knowledge":    { "description": "Role-private historical knowledge — the agent's own accumulated task reports, session logs, and research findings. Isolated per role; never crosses into user memory." },
     "file":         { "description": "File read, write, and search operations" },
     "web":          { "description": "Web search and HTTP requests" },
-    "exec":         { "description": "Shell commands and code execution" },
+    "exec":         { "description": "Shell commands and code execution via bash_exec. Also auto-implies terminal for gap-checking purposes." },
     "comms":        { "description": "Communication with the user (HITL)" },
-    "browser":      { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP)" },
-    "terminal":     { "description": "Persistent terminal sessions via tmux — run commands, read output" },
+    "browser":      { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP server — config/mcp_servers.json)" },
+    "terminal":     { "description": "Persistent tmux sessions — create windows, send keys, capture output (via tmux-mcp-rs — config/mcp_servers.json). Distinct from exec: use when the task needs persistent session state across commands." },
     "orchestration":{ "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" },
-    "google":       { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (via Google Workspace MCP or gws CLI)" }
+    "google":       { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (requires Google Workspace MCP server configured in ~/.memory/config/mcp_servers.json)" }
   },
   "tools": {
     "memory_search":   {
@@ -72,7 +72,8 @@
     "tmux":            {
       "category": "terminal",
       "danger_level": "medium",
-      "description": "Shorthand that grants the 'terminal' capability category — covers all tmux__ MCP tools (create-session, execute-command, capture-pane, etc.). Use this short name in available_tools instead of listing every tmux__ tool individually."
+      "requires_mcp_server": true,
+      "description": "Shorthand that grants the 'terminal' capability category — covers all tmux__ MCP tools (create-session, execute-command, capture-pane, etc.). Use this short name in available_tools instead of listing every tmux__ tool individually. Requires tmux MCP server in ~/.memory/config/mcp_servers.json."
     },
     "list_roles": {
       "category": "orchestration",

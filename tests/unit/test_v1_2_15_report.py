@@ -177,9 +177,9 @@ class TestStoreCompletionArtifact(unittest.TestCase):
         report = self._write_and_load(auto_extracted=False)
         self.assertEqual(report["status"], "completed")
 
-    def test_status_completed_fallback_when_auto_extracted(self):
+    def test_status_auto_extracted_when_auto_extracted(self):
         report = self._write_and_load(auto_extracted=True)
-        self.assertEqual(report["status"], "completed_fallback")
+        self.assertEqual(report["status"], "completed_auto_extracted")
 
     def test_review_status_always_pending(self):
         for flag in (True, False):

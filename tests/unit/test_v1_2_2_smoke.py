@@ -230,47 +230,52 @@ class TestSchedulerHubAddNormalisation(unittest.IsolatedAsyncioTestCase):
 
 class TestCodingAgentExecutorRouting(unittest.IsolatedAsyncioTestCase):
     """
-    Verify that _execute_agentic routes to CodingAgentExecutor when the
+    Verify that AgenticHandler routes to CodingAgentExecutor when the
     role has executor="coding_agent", and NOT when it doesn't.
     """
 
-    async def test_routes_to_coding_agent_executor(self):
-        from app.scheduler.executor import TaskExecutor as Executor
-        from app.scheduler.models import Task, TaskType
+    def _make_ctx(self, agentic_exec=None, coding_exec=None):
+        from app.scheduler.executor_registry import ExecutorContext
+        ctx = ExecutorContext.__new__(ExecutorContext)
+        ctx.logger = None
+        ctx._mcp_client_manager = None
+        ctx._resource_manager = None
+        ctx._agentic_executor = agentic_exec
+        ctx._coding_agent_executor = coding_exec
+        ctx.get_agentic_executor = MagicMock(return_value=agentic_exec)
+        ctx.get_coding_agent_executor = MagicMock(return_value=coding_exec)
+        ctx.log = lambda *a, **k: None
+        return ctx
 
-        executor = Executor.__new__(Executor)
-        executor._log = lambda *a, **k: None
-        executor._get_agentic_executor = MagicMock()
+    async def test_routes_to_coding_agent_executor(self):
+        from app.scheduler.handlers.agentic import AgenticHandler
+        from app.scheduler.models import Task, TaskType
 
         coding_exec = AsyncMock()
         coding_exec.execute = AsyncMock(
             return_value=MagicMock(success=True, waiting_for_input=None)
         )
-        executor._get_coding_agent_executor = MagicMock(return_value=coding_exec)
+        ctx = self._make_ctx(agentic_exec=MagicMock(), coding_exec=coding_exec)
 
         task = Task(id="t1", type=TaskType.ASSISTANT, config={"goal": "test", "role_id": "executor"})
 
         role_with_coding = {"executor": "coding_agent", "id": "executor"}
         with patch("app.roles.role_manager.RoleManager") as MockRM:
             MockRM.return_value.get.return_value = role_with_coding
-            await executor._execute_agentic(task)
+            await AgenticHandler().execute(task, ctx)
 
         coding_exec.execute.assert_called_once_with(task)
-        executor._get_agentic_executor.assert_not_called()
+        ctx.get_agentic_executor.assert_not_called()
 
     async def test_regular_role_uses_agentic_executor(self):
-        from app.scheduler.executor import TaskExecutor as Executor
+        from app.scheduler.handlers.agentic import AgenticHandler
         from app.scheduler.models import Task, TaskType
-
-        executor = Executor.__new__(Executor)
-        executor._log = lambda *a, **k: None
 
         agentic_exec = AsyncMock()
         agentic_exec.execute = AsyncMock(
             return_value=MagicMock(success=True, waiting_for_input=None)
         )
-        executor._get_agentic_executor = MagicMock(return_value=agentic_exec)
-        executor._get_coding_agent_executor = MagicMock()
+        ctx = self._make_ctx(agentic_exec=agentic_exec, coding_exec=MagicMock())
 
         task = Task(
             id="t2", type=TaskType.ASSISTANT, config={"goal": "test", "role_id": "researcher"}
@@ -279,31 +284,27 @@ class TestCodingAgentExecutorRouting(unittest.IsolatedAsyncioTestCase):
         role_no_executor = {"id": "researcher"}
         with patch("app.roles.role_manager.RoleManager") as MockRM:
             MockRM.return_value.get.return_value = role_no_executor
-            await executor._execute_agentic(task)
+            await AgenticHandler().execute(task, ctx)
 
         agentic_exec.execute.assert_called_once_with(task)
-        executor._get_coding_agent_executor.assert_not_called()
+        ctx.get_coding_agent_executor.assert_not_called()
 
     async def test_no_role_uses_agentic_executor(self):
-        from app.scheduler.executor import TaskExecutor as Executor
+        from app.scheduler.handlers.agentic import AgenticHandler
         from app.scheduler.models import Task, TaskType
-
-        executor = Executor.__new__(Executor)
-        executor._log = lambda *a, **k: None
 
         agentic_exec = AsyncMock()
         agentic_exec.execute = AsyncMock(
             return_value=MagicMock(success=True, waiting_for_input=None)
         )
-        executor._get_agentic_executor = MagicMock(return_value=agentic_exec)
-        executor._get_coding_agent_executor = MagicMock()
+        ctx = self._make_ctx(agentic_exec=agentic_exec, coding_exec=MagicMock())
 
         task = Task(id="t3", type=TaskType.ASSISTANT, config={"goal": "test"})
 
-        await executor._execute_agentic(task)
+        await AgenticHandler().execute(task, ctx)
 
         agentic_exec.execute.assert_called_once_with(task)
-        executor._get_coding_agent_executor.assert_not_called()
+        ctx.get_coding_agent_executor.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
