@@ -266,6 +266,39 @@ def load_owner_profile(memory_path: Path) -> dict:
 
 _DEMO_TASKS = [
     {
+        "id": "demo_memory_roundtrip",
+        "type": "internal_assignment",
+        "description": "Memory: store a conversation and search it back — verify the memory pipeline works",
+        "config": {
+            "role_id": "researcher",
+            "prompt": (
+                "This is a memory roundtrip test. Do exactly these steps:\n"
+                "1. Call add_conversation with content: 'MoJoAssistant was installed today. "
+                "It provides personal AI memory, scheduling, and agent orchestration.' scope='role'\n"
+                "2. Wait 2 seconds, then call memory_search with query: 'What was installed today?'\n"
+                "3. Verify the search returns the conversation you just stored.\n"
+                "Report: PASS if the stored text appears in search results, FAIL otherwise."
+            ),
+            "source": "first_run",
+        },
+    },
+    {
+        "id": "demo_policy_block",
+        "type": "internal_assignment",
+        "description": "Policy: attempt a blocked file read — verify safety policy catches it",
+        "config": {
+            "role_id": "developer",
+            "prompt": (
+                "This is a policy enforcement test. Do exactly these steps:\n"
+                "1. Call read_file with path='/etc/passwd'\n"
+                "2. The call should be BLOCKED by the safety policy (you'll get an error or empty result).\n"
+                "3. Call read_file with path='config/scheduler_config.json' — this should succeed.\n"
+                "Report: PASS if /etc/passwd was blocked AND scheduler_config.json was readable, FAIL otherwise."
+            ),
+            "source": "first_run",
+        },
+    },
+    {
         "id": "demo_rebecca_summarise",
         "type": "internal_assignment",
         "description": "Researcher: summarise recent memory and what you know about this project",
@@ -282,9 +315,9 @@ _DEMO_TASKS = [
     {
         "id": "demo_ahman_health",
         "type": "internal_assignment",
-        "description": "Analyst: check system health (memory path, config files, scheduler storage)",
+        "description": "Developer: check system health (memory path, config files, scheduler storage)",
         "config": {
-            "role_id": "analyst",
+            "role_id": "developer",
             "prompt": (
                 "Run a quick system health check on MoJoAssistant. Verify: "
                 "1) memory path exists and is writable, "
@@ -298,13 +331,13 @@ _DEMO_TASKS = [
     {
         "id": "demo_carl_review",
         "type": "internal_assignment",
-        "description": "Coder: review the first_run.py module for quality issues",
+        "description": "Code Reviewer: review the first_run.py module for quality issues",
         "config": {
-            "role_id": "coder",
+            "role_id": "code_reviewer",
             "prompt": (
                 "Review app/config/first_run.py. "
-                "Flag any 🔴 blockers (correctness, security), 🟡 suggestions (robustness, edge cases), "
-                "and 💬 nits (style). Keep the review focused and concise."
+                "Flag any blockers (correctness, security), suggestions (robustness, edge cases), "
+                "and nits (style). Keep the review focused and concise."
             ),
             "source": "first_run",
         },

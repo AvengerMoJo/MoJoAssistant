@@ -1,6 +1,10 @@
 from pathlib import Path
 import json
 
+import pytest
+
+pytestmark = pytest.mark.stable
+
 from app.community.discord_gateway import _sanitize_message, DiscordCommunityConfig
 
 

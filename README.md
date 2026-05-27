@@ -56,14 +56,24 @@ scripts\install.bat
 The installer creates a venv, installs dependencies, runs a preflight check for
 required system tools (tmux, node, cargo), and creates startup scripts.
 
-### 3. Configure environment
+### 3. Check what works
+
+```bash
+python3 scripts/doctor.py --setup
+```
+
+This runs live probes against your system and shows exactly what's working
+and what needs setup — stable features, experimental features, and external tools.
+Run with `--fix` for an interactive guided setup wizard.
+
+### 4. Configure environment
 
 ```bash
 cp .env.example .env
 # Edit .env — set API keys, LLM endpoint, MEMORY_PATH if needed
 ```
 
-### 4. Start the server
+### 5. Start the server
 
 ```bash
 # MCP over stdio (Claude Desktop)

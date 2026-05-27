@@ -83,6 +83,7 @@ asyncio_mode = "auto"
 markers = [
     "stable: tests that must pass on a clean install with no LLM or network (CI gate)",
     "experimental: tests that require an LLM, external API, or optional hardware",
+    "asyncio: marks a test as an asyncio test",
 ]
 
 [tool.setuptools.packages.find]
