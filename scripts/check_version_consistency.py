@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
 # ---------------------------------------------------------------------------
 # Canonical source
 # ---------------------------------------------------------------------------
@@ -40,8 +41,7 @@ def read_canonical_version() -> str:
 # File checkers — each returns list of (file, line, current, expected) tuples
 # ---------------------------------------------------------------------------
 
-def _check_regex(path: Path, pattern: str, expected: str,
-                 group: int = 1) -> list[tuple]:
+def _check_regex(path: Path, pattern: str, expected: str, group: int = 1) -> list[tuple]:
     """Generic regex checker. Returns mismatches."""
     if not path.exists():
         return []
@@ -50,15 +50,14 @@ def _check_regex(path: Path, pattern: str, expected: str,
     for m in re.finditer(pattern, text, re.MULTILINE):
         current = m.group(group)
         if current != expected:
-            results.append((str(path.relative_to(ROOT)),
-                            text[:m.start()].count("\n") + 1,
-                            current, expected))
+            results.append(
+                (str(path.relative_to(ROOT)), text[: m.start()].count("\n") + 1, current, expected)
+            )
     return results
 
 
 def check_pyproject(version: str) -> list[tuple]:
-    return _check_regex(ROOT / "pyproject.toml",
-                        r'^version\s*=\s*"([^"]+)"', version)
+    return _check_regex(ROOT / "pyproject.toml", r'^version\s*=\s*"([^"]+)"', version)
 
 
 def check_readme(version: str) -> list[tuple]:
@@ -66,19 +65,17 @@ def check_readme(version: str) -> list[tuple]:
     # README uses "v" prefix (e.g. v1.4.2-beta); canonical has none.
     expected = "v" + version
     results = []
-    results += _check_regex(
-        ROOT / "README.md",
-        r'Current release:\s*`([^`]+)`', expected)
-    results += _check_regex(
-        ROOT / "README.md",
-        r'Active beta\s*\(`([^`]+)`\)', expected)
+    results += _check_regex(ROOT / "README.md", r'Current release:\s*`([^`]+)`', expected)
+    results += _check_regex(ROOT / "README.md", r'Active beta\s*\(`([^`]+)`\)', expected)
     return results
 
 
 def check_overview(version: str) -> list[tuple]:
     return _check_regex(
         ROOT / "docs/MOJOASSISTANT_FULL_OVERVIEW.md",
-        r'\*\*Version:\*\*\s*(v[\d.]+(-beta)?)', "v" + version)
+        r'\*\*Version:\*\*\s*(v[0-9A-Za-z.\-]+)',
+        "v" + version,
+    )
 
 
 def check_python_init(version: str) -> list[tuple]:
@@ -91,9 +88,23 @@ def check_python_init(version: str) -> list[tuple]:
     results = []
     for path in targets:
         if path.exists():
-            results += _check_regex(
-                path, r'__version__\s*=\s*"([^"]+)"', version)
+            results += _check_regex(path, r'__version__\s*=\s*"([^"]+)"', version)
     return results
+
+
+def check_scheduler_core(version: str) -> list[tuple]:
+    """Check scheduler startup event version string."""
+    path = ROOT / "app/scheduler/core.py"
+    if not path.exists():
+        return []
+    text = path.read_text()
+
+    # Preferred dynamic form auto-tracks package version.
+    if '"version": f"v{__version__}"' in text:
+        return []
+
+    # Fallback static literal must match canonical version.
+    return _check_regex(path, r'"version"\s*:\s*"v([^"]+)"', version)
 
 
 # ---------------------------------------------------------------------------
@@ -105,17 +116,14 @@ def _fix_regex(path: Path, pattern: str, replacement_template: str) -> int:
     if not path.exists():
         return 0
     text = path.read_text()
-    new_text, count = re.subn(pattern, replacement_template, text,
-                              flags=re.MULTILINE)
+    new_text, count = re.subn(pattern, replacement_template, text, flags=re.MULTILINE)
     if count > 0:
         path.write_text(new_text)
     return count
 
 
 def fix_pyproject(version: str) -> int:
-    return _fix_regex(ROOT / "pyproject.toml",
-                      r'(^version\s*=\s*)"[^"]+"',
-                      rf'\g<1>"{version}"')
+    return _fix_regex(ROOT / "pyproject.toml", r'(^version\s*=\s*)"[^"]+"', rf'\g<1>"{version}"')
 
 
 def fix_readme(version: str) -> int:
@@ -124,16 +132,13 @@ def fix_readme(version: str) -> int:
     if not readme.exists():
         return 0
     text = readme.read_text()
-    # Current release line
-    text, n = re.subn(
-        r'(Current release:\s*`)v?[\d.]+(-beta)?`',
-        rf'\g<1>v{version}`', text)
+
+    text, n = re.subn(r'(Current release:\s*`)v?[\d.]+(-beta)?`', rf'\g<1>v{version}`', text)
     total += n
-    # Active beta line
-    text, n = re.subn(
-        r'(Active beta\s*\(`)v?[\d.]+(-beta)?(`\))',
-        rf'\g<1>v{version}\g<3>', text)
+
+    text, n = re.subn(r'(Active beta\s*\(`)v?[\d.]+(-beta)?(`\))', rf'\g<1>v{version}\g<3>', text)
     total += n
+
     if total > 0:
         readme.write_text(text)
     return total
@@ -142,8 +147,9 @@ def fix_readme(version: str) -> int:
 def fix_overview(version: str) -> int:
     return _fix_regex(
         ROOT / "docs/MOJOASSISTANT_FULL_OVERVIEW.md",
-        r'(\*\*Version:\*\*\s*)v?[\d.]+(-beta)?',
-        rf'\g<1>v{version}')
+        r'(\*\*Version:\*\*\s*)v?[0-9A-Za-z.\-]+',
+        rf'\g<1>v{version}',
+    )
 
 
 def fix_python_init(version: str) -> int:
@@ -155,11 +161,27 @@ def fix_python_init(version: str) -> int:
     total = 0
     for path in targets:
         if path.exists():
-            total += _fix_regex(
-                path,
-                r'(__version__\s*=\s*)"[^"]+"',
-                rf'\g<1>"{version}"')
+            total += _fix_regex(path, r'(__version__\s*=\s*)"[^"]+"', rf'\g<1>"{version}"')
     return total
+
+
+def fix_scheduler_core(version: str) -> int:
+    """Normalize scheduler version broadcast to dynamic package-linked form."""
+    path = ROOT / "app/scheduler/core.py"
+    if not path.exists():
+        return 0
+    text = path.read_text()
+    if '"version": f"v{__version__}"' in text:
+        return 0
+    new_text, count = re.subn(
+        r'("version"\s*:\s*)"v[^"]+"',
+        r'\1f"v{__version__}"',
+        text,
+        flags=re.MULTILINE,
+    )
+    if count > 0:
+        path.write_text(new_text)
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +193,7 @@ ALL_CHECKERS = [
     ("README.md", check_readme),
     ("docs/MOJOASSISTANT_FULL_OVERVIEW.md", check_overview),
     ("app/*/__init__.py", check_python_init),
+    ("app/scheduler/core.py", check_scheduler_core),
 ]
 
 ALL_FIXERS = [
@@ -178,6 +201,7 @@ ALL_FIXERS = [
     fix_readme,
     fix_overview,
     fix_python_init,
+    fix_scheduler_core,
 ]
 
 
@@ -187,12 +211,11 @@ def main() -> int:
     print(f"Canonical version (pyproject.toml): {version}\n")
 
     all_mismatches: list[tuple] = []
-    for label, checker in ALL_CHECKERS:
+    for _label, checker in ALL_CHECKERS:
         mismatches = checker(version)
         if mismatches:
             for f, line, current, expected in mismatches:
-                print(f"  MISMATCH  {f}:{line}  "
-                      f"found={current!r}  expected={expected!r}")
+                print(f"  MISMATCH  {f}:{line}  found={current!r}  expected={expected!r}")
             all_mismatches.extend(mismatches)
 
     if not all_mismatches:
@@ -200,20 +223,17 @@ def main() -> int:
         return 0
 
     if not fix_mode:
-        print(f"\n{len(all_mismatches)} mismatch(es) found. "
-              f"Run with --fix to auto-correct.")
+        print(f"\n{len(all_mismatches)} mismatch(es) found. Run with --fix to auto-correct.")
         return 1
 
-    # Fix mode
     print(f"\nFixing {len(all_mismatches)} mismatch(es)...")
     fixed = 0
     for fixer in ALL_FIXERS:
         fixed += fixer(version)
     print(f"  Updated {fixed} reference(s).")
 
-    # Re-check
     remaining = []
-    for label, checker in ALL_CHECKERS:
+    for _label, checker in ALL_CHECKERS:
         remaining.extend(checker(version))
     if remaining:
         print("\nERROR: some mismatches remain after fix:")

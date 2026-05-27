@@ -18,6 +18,8 @@ from app.scheduler.models import Task, TaskStatus, TaskType, Schedule, TaskPrior
 from app.scheduler.executor import TaskExecutor
 
 
+from . import __version__
+
 class Scheduler:
     """
     Core scheduler with persistent ticker loop
@@ -188,7 +190,7 @@ class Scheduler:
             "event_type": "system_notification",
             "severity": "info",
             "title": "Scheduler started",
-            "data": {"max_concurrent": self.max_concurrent, "version": "v1.1.9-beta"},
+            "data": {"max_concurrent": self.max_concurrent, "version": f"v{__version__}"},
         })
 
         # Set up signal handlers for graceful shutdown (only in main thread)
