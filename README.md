@@ -6,7 +6,7 @@ MoJoAssistant sits between you and your AI systems. It keeps your memory, contex
 workflow state on your own machine, then exposes everything through a clean 14-tool MCP
 surface that any MCP-capable client (Claude Desktop, Claude Code, etc.) can use directly.
 
-Current release: `v1.3.7-beta`
+Current release: `v1.4.2-beta`
 
 ---
 
@@ -327,6 +327,7 @@ The preflight checker validates required binaries (`tmux`, `node`, `cargo`) befo
 - [Chat→Dream Bridge](docs/architecture/CHAT_DREAM_BRIDGE_PROPOSAL.md)
 
 ### Releases
+- [v1.4.0-beta](https://github.com/AvengerMoJo/MoJoAssistant/releases/tag/v1.4.0-beta) — Pluggable module architecture + Plugin SDK
 - [v1.3.7-beta](https://github.com/AvengerMoJo/MoJoAssistant/releases/tag/v1.3.7-beta) — Install infrastructure + use case catalog
 - [v1.3.6-beta](https://github.com/AvengerMoJo/MoJoAssistant/releases/tag/v1.3.6-beta) — CI hardening
 - [v1.3.5-beta](https://github.com/AvengerMoJo/MoJoAssistant/releases/tag/v1.3.5-beta) — Beta checklist closed
@@ -374,14 +375,14 @@ Agent and coding policy:
 - [`Coding Agents Rules.md`](Coding%20Agents%20Rules.md)
 
 Before merging:
-- run `pytest tests/` — 568 tests collected
+- run `pytest tests/` — 821 tests collected
 - run [MCP Smoke Checklist](docs/guides/MCP_SMOKE_CHECKLIST.md) for live MCP validation
 
 ---
 
 ## Status
 
-Active beta (`v1.3.7-beta`). Core memory, MCP, scheduler, policy, role chat, dreaming
+Active beta (`v1.4.2-beta`). Core memory, MCP, scheduler, policy, role chat, dreaming
 pipeline, behavioral security, agent learning loop, BRIDLE growth framework,
 and PII scanning are production-ready for personal use.
 
@@ -397,6 +398,8 @@ and PII scanning are production-ready for personal use.
 - Dreaming pipeline (A→B→C→D, inbox distillation)
 - Notifications (ntfy push, SSE stream)
 - BRIDLE growth framework (snapshots, dimension drift, HITL validation)
+- Pluggable module architecture (8 provider families, conformance suites)
+- Plugin SDK (scaffold, validate, sample plugins)
 - Docker install path (Dockerfile + docker-compose.yml in repo root)
 
 **Experimental (may change):**
