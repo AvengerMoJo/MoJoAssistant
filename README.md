@@ -1,34 +1,46 @@
 # MoJoAssistant
 
-**Personal AI memory, scheduling, and agent orchestration — local-first, privacy-preserving.**
+**Your AI remembers you. Your data stays on your machine.**
 
-MoJoAssistant sits between you and your AI systems. It keeps your memory, context, and
-workflow state on your own machine, then exposes everything through a clean 14-tool MCP
-surface that any MCP-capable client (Claude Desktop, Claude Code, etc.) can use directly.
+Every AI assistant today forgets you the moment the conversation ends. MoJoAssistant sits between you and your AI systems — keeping your memory, context, and workflow state on your own hardware, then exposing everything through a clean tool surface that any AI client can use.
 
 Current release: `v1.4.2-beta`
 
 ---
 
-## What It Does
+## Why MoJo?
 
-| Layer | What you get |
+| Problem | Without MoJo | With MoJo |
+|---------|-------------|-----------|
+| AI forgets everything | Start from zero every session | Persistent memory across sessions, searchable by any role |
+| Same personality for everyone | Generic assistant tone | Named roles with distinct personas that grow over time |
+| No idea what AI did with your data | Trust the cloud provider | Append-only audit log — see exactly what left your device |
+| Manual task scheduling | Remember to ask AI every morning | Cron tasks run automatically; HITL pauses when it needs you |
+| One AI, one conversation | Parallel sessions, no coordination | Roles dispatch sub-tasks to each other; shared institutional memory |
+| Privacy is a promise, not a guarantee | Data leaves your machine by design | Policy pipeline blocks dangerous calls before they execute |
+
+**MoJo is not a chatbot.** It's the infrastructure layer that makes AI assistants genuinely personal — they remember who you are, how you work, what matters to you, and they grow more calibrated over time.
+
+---
+
+## What You Get
+
+| Layer | What it does |
 |-------|-------------|
 | **Memory** | Persistent conversation + document memory with semantic search; role-scoped knowledge isolation |
 | **MCP Server** | 14 hub tools for any MCP client — Claude Desktop, Claude Code, custom agents |
 | **Scheduler** | Cron + one-shot task runner with role-based agentic execution; HITL pause/resume |
 | **Roles** | Named AI personas with dynamic system prompts, tool access, data boundaries, and two-tier knowledge growth |
 | **Policy** | Inline safety checker — blocks credential access, reverse shells, exfiltration; per-task `danger_budget` override |
-| **Behavioral Security** | Parallel observer (BehavioralMonitor) with per-role baselines; three-tier containment (LOW/MED/HIGH); honeypot sandbox |
+| **Behavioral Security** | Parallel observer with per-role baselines; three-tier containment (LOW/MED/HIGH); honeypot sandbox |
 | **PII Scanner** | Pattern-based detection for credentials, financial data, health info, infrastructure details |
-| **Dashboard** | Browser UI at `/dashboard` — event log, tasks (incl. cron history), role chat, policy violations, news briefing |
-| **Dreaming** | Nightly memory consolidation: raw sessions → ABCD semantic archives → searchable knowledge base; chat→dream bridge |
-| **Agent Learning** | Failure→lesson pipeline; memory context injection at task start; per-role silo memory |
-| **BRIDLE** | Bonsai Refinement through Iterative Directed Learning and Evolution — four pillars: GROWTH (memory), DIRECTION (one-on-one), DNA (dreaming), PRESENT (HITL validation) |
-| **External MCP** | Plug in external MCP servers (tmux terminal, Playwright browser) via `config/mcp_servers.json` |
+| **Dashboard** | Browser UI — event log, tasks, role chat, policy violations, privacy report |
+| **Dreaming** | Nightly memory consolidation: raw sessions → ABCD semantic archives → searchable knowledge base |
+| **Agent Learning** | Failure-to-lesson pipeline; memory context injection at task start; per-role silo memory |
+| **BRIDLE** | Growth framework — roles learn your preferences through memory, dreaming, and HITL validation |
+| **External MCP** | Plug in external MCP servers (tmux terminal, Playwright browser) via config |
 | **Google Workspace** | Calendar, Drive, Gmail via `external_agent` hub |
-| **Notifications** | ntfy / FCM push, SSE stream, persistent event log |
-| **Benchmarks** | LOCOMO, LongMemEval, ABCD e2e, role memory evaluation harness |
+| **Notifications** | ntfy push, SSE stream, persistent event log |
 
 ---
 

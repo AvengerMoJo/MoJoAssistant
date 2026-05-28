@@ -774,11 +774,95 @@ async def privacy_report(mojo_dash: Optional[str] = Cookie(default=None)):
     except Exception:
         ext_rows = '<tr><td colspan="5" style="color:#555">Resource pool unavailable</td></tr>'
 
+    # ── Audit trail (per-task boundary crossings) ────────────────────────
+    from app.mcp.adapters.audit_log import get as audit_get
+    audit_records = audit_get(limit=50)
+
+    # Aggregate by task
+    by_task: dict = {}
+    for r in audit_records:
+        tid = r.get("task_id", "unknown")
+        by_task.setdefault(tid, []).append(r)
+
+    audit_rows = ""
+    if by_task:
+        for tid, records in sorted(by_task.items(), key=lambda x: x[1][0].get("ts", ""), reverse=True):
+            total_in = sum(r.get("tokens_in", 0) for r in records)
+            total_out = sum(r.get("tokens_out", 0) for r in records)
+            tiers = sorted({r.get("tier", "?") for r in records})
+            models = sorted({r.get("model", "?") for r in records})
+            role_id = records[0].get("role_id", "—") or "—"
+            ext_calls = [r for r in records if r.get("resource_type") == "api"]
+            local_calls = [r for r in records if r.get("resource_type") == "local"]
+
+            tier_badges = []
+            for t in tiers:
+                color = "#7ec87e" if t == "free" else "#e3a87e" if t == "free_api" else "#e37e7e"
+                tier_badges.append(f'<span style="background:{color}22;color:{color};padding:1px 5px;border-radius:3px;font-size:10px">{t}</span>')
+
+            boundary_icon = ""
+            if ext_calls:
+                boundary_icon = f'<span style="color:#e3a87e" title="{len(ext_calls)} call(s) left device">&#x2197; {len(ext_calls)}</span>'
+            elif local_calls and len(local_calls) == len(records):
+                boundary_icon = '<span style="color:#7ec87e" title="all calls stayed local">&#x2713; local</span>'
+            else:
+                boundary_icon = '<span style="color:#888" title="mixed or unclassified resource types">? unclassified</span>'
+
+            audit_rows += f"""<tr>
+              <td><code style="font-size:11px">{_html.escape(tid)}</code></td>
+              <td>{_html.escape(role_id)}</td>
+              <td>{len(records)}</td>
+              <td>{boundary_icon}</td>
+              <td>{" ".join(tier_badges)}</td>
+              <td style="color:#888;font-size:11px">{_html.escape(", ".join(models))}</td>
+              <td style="color:#888;font-size:11px">{total_in:,} / {total_out:,}</td>
+            </tr>"""
+    else:
+        audit_rows = '<tr><td colspan="7" style="color:#555">No audit records yet — run some tasks to see boundary crossings here.</td></tr>'
+
+    # ── Policy violations ────────────────────────────────────────────────
+    events_data = _load_json(_mem("events.json"), [])
+    policy_events = [e for e in events_data if e.get("event_type") == "policy_violation"][-20:]
+    violation_rows = ""
+    if policy_events:
+        for ev in reversed(policy_events):
+            ts = _ts(ev.get("timestamp"))
+            tool = ev.get("tool_name", ev.get("data", {}).get("tool_name", "—"))
+            reason = ev.get("data", {}).get("block_reason", ev.get("detail", "—"))
+            role = ev.get("role_id", ev.get("data", {}).get("role_id", "—"))
+            violation_rows += f"""<tr>
+              <td style="color:#888;font-size:11px">{ts}</td>
+              <td>{_html.escape(str(tool))}</td>
+              <td>{_html.escape(str(role))}</td>
+              <td style="color:#e37e7e">{_html.escape(str(reason))}</td>
+            </tr>"""
+    else:
+        violation_rows = '<tr><td colspan="4" style="color:#555">No policy violations recorded.</td></tr>'
+
     return _page("Privacy Report", f"""
 <h1>Privacy Report</h1>
 
 <h2>Owner Profile</h2>
 {owner_html}
+
+<h2>Audit Trail — What Left Your Device</h2>
+<p style="color:#888;font-size:11px;margin-bottom:8px">
+  Every call to a non-local LLM resource is logged below. Content is never stored — only metadata.
+  The audit log is append-only and never purged.
+</p>
+<table>
+  <tr><th>Task</th><th>Role</th><th>Calls</th><th>Boundary</th><th>Tier</th><th>Model</th><th>Tokens (in/out)</th></tr>
+  {audit_rows}
+</table>
+
+<h2>Policy Violations</h2>
+<p style="color:#888;font-size:11px;margin-bottom:8px">
+  Tool calls blocked by the safety policy pipeline. These calls were never executed.
+</p>
+<table>
+  <tr><th>Time</th><th>Tool</th><th>Role</th><th>Reason</th></tr>
+  {violation_rows}
+</table>
 
 <h2>Role Tool Access</h2>
 <table>
