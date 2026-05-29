@@ -69,13 +69,13 @@ class DreamingHandler(TaskHandler):
             metadata = {**task.config.get("metadata", {}), **auto_metadata}
 
             if mode == "document":
-                from dreaming.storage.json_backend import JsonFileBackend
+                from app.services.storage_factory import resolve_storage_backend
                 role_id = task.config.get("role_id", "unknown")
                 storage_path = (
                     Path(get_memory_subpath("roles")) / role_id / "knowledge_units"
                 )
                 pipeline = ctx.get_dreaming_pipeline(quality_level)
-                pipeline.storage = JsonFileBackend(storage_path=storage_path)
+                pipeline.storage = resolve_storage_backend(storage_path=storage_path)
 
                 doc_id = task.config.get("doc_id") or conversation_id
                 results = await pipeline.process_document(
@@ -115,11 +115,11 @@ class DreamingHandler(TaskHandler):
             conv_role_id = task.config.get("role_id")
             if conv_role_id:
                 try:
-                    from dreaming.storage.json_backend import JsonFileBackend
+                    from app.services.storage_factory import resolve_storage_backend
                     role_storage_path = (
                         Path(get_memory_subpath("roles")) / conv_role_id / "knowledge_units"
                     )
-                    pipeline.storage = JsonFileBackend(storage_path=role_storage_path)
+                    pipeline.storage = resolve_storage_backend(storage_path=role_storage_path)
                 except Exception as _e:
                     ctx.log(
                         f"Could not set role-scoped storage for dreaming: {_e}", "warning"
@@ -309,10 +309,10 @@ class DreamingHandler(TaskHandler):
             # Create a fresh pipeline per role to avoid shared storage mutation
             pipeline = ctx.get_dreaming_pipeline(quality_level)
             try:
-                from dreaming.storage.json_backend import JsonFileBackend
+                from app.services.storage_factory import resolve_storage_backend
                 role_storage_path = role_dir / "knowledge_units"
                 pipeline = ctx.get_dreaming_pipeline(quality_level)
-                pipeline.storage = JsonFileBackend(storage_path=role_storage_path)
+                pipeline.storage = resolve_storage_backend(storage_path=role_storage_path)
             except Exception as e:
                 ctx.log(f"Chat bridge: could not set role storage for {role_id}: {e}", "warning")
 

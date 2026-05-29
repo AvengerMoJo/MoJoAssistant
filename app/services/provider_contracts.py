@@ -633,9 +633,10 @@ class ProviderRegistry:
 
     # -- Module discovery ---------------------------------------------------
 
-    def discover_modules(self, submodule_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+    def discover_modules(self, submodule_dir: Optional[str] = None, config_modules_dir: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Scan submodules/*/module.json and register discovered providers.
+        Scan submodules/*/module.json and config/modules/module.*.json
+        and register discovered providers.
         
         Also scans for module.*.json to support multiple modules per submodule.
         Returns list of discovered module descriptors.
@@ -644,17 +645,23 @@ class ProviderRegistry:
 
         if submodule_dir is None:
             submodule_dir = str(Path(__file__).resolve().parents[2] / "submodules")
-        
-        submodule_path = Path(submodule_dir)
-        if not submodule_path.exists():
-            logger.warning("provider_registry: submodule dir not found: %s", submodule_dir)
-            return []
+        if config_modules_dir is None:
+            config_modules_dir = str(Path(__file__).resolve().parents[2] / "config" / "modules")
 
         strict = os.environ.get("MOJO_STRICT_MODULE_LOADING", "").lower() in ("1", "true", "yes")
 
         discovered = []
-        # Scan for module.json and module.*.json patterns
-        for module_json in submodule_path.glob("*/module*.json"):
+
+        # Collect all module.json files from both locations
+        module_json_paths = []
+        submodule_path = Path(submodule_dir)
+        if submodule_path.exists():
+            module_json_paths.extend(submodule_path.glob("*/module*.json"))
+        config_modules_path = Path(config_modules_dir)
+        if config_modules_path.exists():
+            module_json_paths.extend(config_modules_path.glob("module*.json"))
+
+        for module_json in module_json_paths:
             try:
                 with open(module_json) as f:
                     raw = json.load(f)
@@ -696,6 +703,10 @@ class ProviderRegistry:
                                 self.register_dream_provider(name, cls)
                             elif provider_type == "persona":
                                 self.register_persona_provider(name, cls)
+                            elif provider_type == "growth":
+                                self.register_growth_provider(name, cls)
+                            elif provider_type == "skill":
+                                self.register_skill_provider(name, cls)
                         except Exception as e:
                             self._module_load_errors[name] = str(e)
                             logger.warning(

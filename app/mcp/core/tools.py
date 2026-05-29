@@ -3480,10 +3480,10 @@ Agent resumes within seconds.
         """Execute dreaming_list_archives tool"""
         try:
             from pathlib import Path
-            from dreaming.storage.json_backend import JsonFileBackend
+            from app.services.storage_factory import resolve_storage_backend
             from app.config.paths import get_memory_subpath
 
-            storage = JsonFileBackend(storage_path=Path(get_memory_subpath("dreams")))
+            storage = resolve_storage_backend(storage_path=Path(get_memory_subpath("dreams")))
             archives = storage.list_archives()
 
             return {
@@ -3505,10 +3505,10 @@ Agent resumes within seconds.
             version = args.get("version")
 
             from pathlib import Path
-            from dreaming.storage.json_backend import JsonFileBackend
+            from app.services.storage_factory import resolve_storage_backend
             from app.config.paths import get_memory_subpath
 
-            storage = JsonFileBackend(storage_path=Path(get_memory_subpath("dreams")))
+            storage = resolve_storage_backend(storage_path=Path(get_memory_subpath("dreams")))
 
             archive = storage.load_archive(
                 conversation_id=conversation_id, version=version

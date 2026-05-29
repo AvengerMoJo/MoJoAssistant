@@ -1,138 +1,99 @@
-# MoJoAssistant MCP Tools - LLM Client Setup Guide
+# MoJoAssistant MCP Tools — LLM Client Setup Guide
 
 ## Overview
-MoJoAssistant provides a comprehensive memory system with specialized tools for managing conversations and documents. This guide helps you configure your LLM client to use these tools effectively.
 
-## Core Memory Tools
+MoJoAssistant exposes 14 hub tools over MCP. Each hub dispatches to sub-actions.
+This guide helps you configure your LLM client to use these tools effectively.
 
-### `get_memory_context`
-**Purpose:** Search across all memory tiers for relevant context
-**When to use:** Always call this when you need information from previous conversations or stored knowledge
+## Core Tools
+
+### `get_context`
+**Purpose:** Read current context — orientation, attention inbox, recent events
+**When to use:** At the start of any session to understand what's happening
+**How:** Pass `type="orientation"` for overview, `type="attention"` for pending items
+
+### `search_memory`
+**Purpose:** Semantic search across conversations and documents
+**When to use:** When you need information from previous conversations or stored knowledge
 **How:** Provide a natural language query, get back relevant context items
-**Why:** Ensures responses are informed by conversation history and stored knowledge
 
 ### `add_conversation`
-**Purpose:** Preserve conversation context for future reference
-**When to use:** IMMEDIATELY after every user question and your response
-**How:** Pass the exact user message and your complete response
-**Why:** Maintains conversation continuity and allows referencing previous exchanges
+**Purpose:** Store a conversation turn in memory
+**When to use:** After significant exchanges worth remembering
+**How:** Pass `content` (the exchange text) and `scope` ("role" or "framework")
 
-## Memory Management Tools
+## Task Management
 
-### Conversation Management
+### `scheduler`
+**Purpose:** Task lifecycle — add, list, get, remove tasks
+**When to use:** To schedule work, check task status, or manage the queue
+**Actions:** `add`, `list`, `get`, `remove`, `resume`
 
-#### `list_recent_conversations`
-**Purpose:** Review recent conversation history for cleanup
-**When to use:** When you want to see what conversations are stored, or identify ones to remove
-**How:** Optionally specify limit (default 10), get back list with IDs
-**Why:** Helps you understand stored conversation history and manage memory
+### `reply_to_task`
+**Purpose:** Send a HITL reply to a waiting task
+**When to use:** When a task has paused to ask you a question
+**How:** Pass `task_id` and `reply` (your answer)
 
-#### `remove_conversation_message`
-**Purpose:** Clean up individual bad conversation messages
-**When to use:** When other AI models generated inappropriate or incorrect responses
-**How:** Get message ID from `list_recent_conversations`, then remove specific message
-**Why:** Keeps conversation history clean and relevant
+## Memory & Knowledge
 
-#### `remove_recent_conversations`
-**Purpose:** Bulk cleanup of recent problematic conversations
-**When to use:** When multiple recent interactions were bad quality
-**How:** Specify count of most recent conversations to remove (1-100)
-**Why:** Faster than removing conversations individually
+### `memory`
+**Purpose:** Conversation management, document ingestion, stats
+**When to use:** To manage stored conversations or ingest documents
+**Actions:** `add`, `search`, `list`, `remove`, `stats`
 
-### Document Management
+### `knowledge`
+**Purpose:** Code/doc repo indexing and file retrieval
+**When to use:** To search indexed repositories or retrieve files
+**Actions:** `search`, `get_file`, `add`
 
-#### `list_recent_documents`
-**Purpose:** Review recently added knowledge base documents
-**When to use:** When you want to see what reference materials are available, or identify documents to remove
-**How:** Optionally specify limit (default 10), get back list with IDs and metadata
-**Why:** Helps you understand what reference materials are stored
+### `dream`
+**Purpose:** Memory consolidation pipeline
+**When to use:** To trigger dreaming, list archives, or check status
+**Actions:** `process`, `list`, `upgrade`, `distill_inbox`
 
-#### `remove_document`
-**Purpose:** Clean up outdated or incorrect knowledge base documents
-**When to use:** When documents are no longer relevant or contain incorrect information
-**How:** Get document ID from `list_recent_documents`, then remove specific document
-**Why:** Keeps knowledge base focused on useful, accurate reference material
+## Configuration
 
-### `add_documents`
-**Purpose:** Add permanent reference materials to knowledge base
-**When to use:** When you want to store documentation, code examples, or any information for future reference
-**How:** Provide array of documents with optional metadata (title, tags, source)
-**Why:** Builds a personal knowledge repository that can be searched via `get_memory_context`
+### `config`
+**Purpose:** Runtime configuration, LLM resources, system health
+**When to use:** To check or modify system configuration
+**Actions:** `get`, `set`, `doctor`, `doctor_improve`
 
-### `end_conversation`
-**Purpose:** Archive current conversation topic to long-term memory
-**When to use:** When switching to a completely different topic or ending current discussion thread
-**How:** Call with no parameters, moves conversation from working to archival memory
-**Why:** Keeps working memory focused on current topics while preserving conversation history
+### `role`
+**Purpose:** Role CRUD — create, update, list roles
+**When to use:** To manage AI personas
+**Actions:** `create`, `edit`, `list`, `get`
 
-### `toggle_multi_model`
-**Purpose:** Switch between single and multi-model embedding for search accuracy
-**When to use:** Enable for diverse content types, disable to reduce resource usage
-**How:** Set enabled=true/false
-**Why:** Balances search accuracy with computational efficiency
+## Agents
 
-### `get_current_day`
-**Purpose:** Get current date and time information
-**When to use:** For temporal awareness, scheduling, date-sensitive queries
-**How:** Returns comprehensive date/time data including timezone
-**Why:** Provides accurate temporal context for all interactions
+### `dialog`
+**Purpose:** Direct conversation with any role
+**When to use:** To chat with a specific role outside of task execution
+**How:** Pass `role_id` and `message`
 
-## Configuration for LLM Clients
+### `agent`
+**Purpose:** Coding agent lifecycle (Claude Code, OpenCode)
+**When to use:** To manage coding agent instances
+**Actions:** `start`, `stop`, `status`, `list`, `action`
 
-### Claude Desktop Setup
-```json
-{
-  "mcpServers": {
-    "mojo-assistant": {
-      "command": "python",
-      "args": ["/path/to/unified_mcp_server.py", "--mode", "stdio"],
-      "env": {
-        "MCP_REQUIRE_AUTH": "false"
-      }
-    }
-  }
-}
-```
+### `external_agent`
+**Purpose:** Google Workspace gateway (Calendar, Drive, Gmail)
+**When to use:** To interact with Google services
+**Actions:** `list`, `get`, `create`, `update`, `delete`
 
-### Client Usage Patterns
+## Session History
 
-#### Standard Conversation Flow:
-1. User asks question
-2. Call `get_memory_context` to get relevant history
-3. Generate response using context
-4. Call `add_conversation` to preserve the exchange
+### `task_session_read`
+**Purpose:** Read the full message transcript for a completed task
+**When to use:** To review what an agent did in a task
 
-#### Memory Management:
-1. Regularly call `list_recent_conversations` to review stored content
-2. Remove problematic messages with `remove_conversation_message`
-3. Clean up knowledge base with `list_recent_documents` + `remove_document`
-
-#### Knowledge Building:
-1. Add important information with `add_documents`
-2. Information becomes searchable via `get_memory_context`
+### `task_report_read`
+**Purpose:** Read the structured result report for a completed task
+**When to use:** To get the final answer from a completed task
 
 ## Best Practices
 
-1. **Always call `add_conversation`** after each Q&A exchange
-2. **Use `get_memory_context`** before responding to maintain context
-3. **Regularly review** conversations with `list_recent_conversations`
-4. **Clean up** bad content to maintain memory quality
-5. **Add documents** for permanent reference materials
-6. **Use `end_conversation`** when switching topics
-
-## Global Coding Agent Rules (Cross-Agent Policy)
-
-These rules are intended to apply across all coding agents integrated with MoJoAssistant MCP.
-
-1. **Memory-first operation**: Call `get_memory_context` before major code decisions, and use retrieved context to self-correct.
-2. **Conversation persistence**: Preserve key exchanges and decisions via `add_conversation`.
-3. **Shared policy document**: Use `Coding Agents Rules.md` in the repository root as the canonical coding policy.
-4. **Branch discipline**: Create `wip_<feature>` branches for active work; keep work there until fully tested.
-5. **Controlled merges**: Merge `wip_<feature>` into `main` only on explicit user request.
-6. **Commit authorship**: All commits must be authored as the user, not the agent; user retains responsibility for submitted code.
-
-## Tool Availability
-- **Active Tools:** 11 fully functional tools
-- **Placeholders:** 3 tools (web_search, get_memory_stats, get_current_time) - disabled for simplicity
-
-This setup provides a complete memory management system that enhances LLM capabilities with persistent, searchable conversation history and knowledge base.
+1. **Memory-first:** Call `get_context` at session start to understand current state
+2. **Store important exchanges:** Use `add_conversation` after significant interactions
+3. **Use roles:** Dispatch tasks to appropriate roles rather than doing everything yourself
+4. **HITL when stuck:** Tasks that exhaust their budget will ask for more — reply via `reply_to_task`
+5. **Check policy:** If a tool call is blocked, check the event log for policy violation details

@@ -1,7 +1,7 @@
 # Capability Abstraction Contract
 
 Date: 2026-04-30  
-Status: Draft (framework-level)
+Status: Implemented — v1.2.10+
 
 ## Goal
 

@@ -1,0 +1,13 @@
+{
+  "name": "bonsai_growth",
+  "version": "1.0.0",
+  "contract_version": "1.0",
+  "provider_type": "growth",
+  "entry_point": "app.scheduler.growth_provider.BonsaiGrowthModule",
+  "description": "Growth provider — BRIDLE framework: snapshot, evaluate, propose, validate with HITL callback slot",
+  "dependencies": [],
+  "data_contracts": {
+    "GrowthSnapshot": "1.0",
+    "GrowthProposal": "1.0"
+  }
+}

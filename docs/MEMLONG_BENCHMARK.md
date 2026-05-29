@@ -1,8 +1,8 @@
 # MoJoAssistant Memory Benchmark — LongMemEval & LOCOMO
 
-**Status**: Design phase — no runs yet  
+**Status**: Infrastructure complete — benchmark runners decoupled from app imports  
 **Created**: 2026-04-13  
-**Priority**: CRITICAL — benchmark before v1.3 feature freeze
+**Updated**: 2026-05-27
 
 ---
 

@@ -56,7 +56,4 @@ python unified_mcp_server.py --mode http
 
 ## Available Tools
 
-- `get_memory_context` - Search all memory tiers (working, active, archival, knowledge base)
-- `add_documents` - Add documents to knowledge base
-- `get_memory_stats` - Get memory system statistics
-- `end_conversation` - Archive conversation to memory
+MoJoAssistant exposes 14 hub tools. See [MCP Client Setup](MCP_CLIENT_SETUP.md) for the full list.
