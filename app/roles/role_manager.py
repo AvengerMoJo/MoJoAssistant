@@ -80,7 +80,8 @@ class RoleManager:
         return _migrate_role(role)
 
     def list_roles(self) -> List[Dict[str, Any]]:
-        """Return summary dicts for all saved roles (no system_prompt to keep it brief)."""
+        """Return compact index rows — id, name, purpose, capabilities only.
+        Use role_manager.get(role_id) for full spec."""
         roles = []
         for fname in sorted(os.listdir(self._dir)):
             if not fname.endswith(".json"):
@@ -91,13 +92,8 @@ class RoleManager:
                 roles.append({
                     "id": role.get("id"),
                     "name": role.get("name"),
-                    "archetype": role.get("archetype"),
-                    "nine_chapter_score": role.get("nine_chapter_score"),
                     "purpose": role.get("purpose"),
-                    "model_preference": role.get("model_preference"),
-                    "notify_on_completion": role.get("notify_on_completion", False),
-                    "policy": role.get("policy"),
-                    "updated_at": role.get("updated_at"),
+                    "capabilities": role.get("capabilities", []),
                 })
             except Exception:
                 continue

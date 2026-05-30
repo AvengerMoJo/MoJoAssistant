@@ -2878,40 +2878,36 @@ Agent resumes within seconds.
             if "priority" in args:
                 priority_filter = TaskPriority(args["priority"])
 
-            limit = args.get("limit", 100)
+            limit = args.get("limit", 20)
 
             # Get tasks
             tasks = self.scheduler.list_tasks(
                 status=status_filter, priority=priority_filter, limit=limit
             )
 
-            # Compact summary rows — full detail available via action='get', task_id=...
+            # Compact index rows — no debug/session reads; use action='get' for detail
             def _summarise(task) -> Dict[str, Any]:
                 config = task.config or {}
                 goal = config.get("goal", "")
                 result = task.result
-                debug = self._build_task_debug_summary(task.id)
-                intent_preflight = ((result.metrics or {}).get("intent_preflight") if result else None)
                 return {
                     "id": task.id,
                     "status": task.status.value,
-                    "type": task.type.value,
-                    "priority": task.priority.value,
                     "role_id": config.get("role_id"),
-                    "goal": goal[:120] + ("…" if len(goal) > 120 else ""),
+                    "goal": goal[:80] + ("…" if len(goal) > 80 else ""),
                     "created_at": task.created_at.isoformat(),
-                    "started_at": task.started_at.isoformat() if task.started_at else None,
                     "completed_at": task.completed_at.isoformat() if task.completed_at else None,
                     "pending_question": task.pending_question,
                     "success": result.success if result else None,
-                    "completion_mode": (result.metrics or {}).get("completion_mode") if result else None,
-                    "intent_preflight_ok": (intent_preflight or {}).get("ok") if intent_preflight else None,
-                    "debug": debug,
                 }
 
             tasks_data = [_summarise(t) for t in tasks]
-            return {"status": "success", "tasks": tasks_data, "total": len(tasks_data),
-                    "hint": "Use action='get', task_id=... for full detail including result and metrics."}
+            return {
+                "status": "success",
+                "tasks": tasks_data,
+                "total": len(tasks_data),
+                "hint": "Use action='get', task_id='...' for full detail including result, metrics, and iteration log.",
+            }
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to list tasks: {str(e)}"}
@@ -5019,9 +5015,13 @@ Agent resumes within seconds.
         }
 
     async def _execute_role_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """List all saved roles."""
+        """List roles as a compact index — id, name, purpose, capabilities only."""
         roles = self._role_manager.list_roles()
-        return {"roles": roles, "count": len(roles)}
+        return {
+            "roles": roles,
+            "count": len(roles),
+            "hint": "Use role(action='get', role_id='...') for full spec including system_prompt and policy.",
+        }
 
     async def _execute_role_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get a role config by ID."""
