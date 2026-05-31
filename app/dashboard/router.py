@@ -143,6 +143,19 @@ a:hover { text-decoration: underline; }
 .iter.tool_use { border-color: #7ec8e3; }
 .iter.final    { border-color: #7ec87e; }
 .iter.error    { border-color: #e37e7e; }
+details { margin: 10px 0; }
+details summary { cursor: pointer; color: #aaa; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; padding: 8px 0; user-select: none; }
+details summary:hover { color: #fff; }
+details[open] summary { color: #7ec8e3; }
+details .pre { margin-top: 8px; }
+@media (max-width: 768px) {
+  .page { padding: 10px; }
+  table { font-size: 12px; }
+  td, th { padding: 5px 6px; }
+  .cards { gap: 8px; }
+  .card { min-width: 100px; padding: 10px 14px; }
+  details { border-top: 1px solid #222; }
+}
 /* Chat UI */
 .chat-layout { display: flex; gap: 16px; height: calc(100vh - 140px); min-height: 500px; }
 .chat-sidebar { width: 220px; flex-shrink: 0; overflow-y: auto; }
@@ -503,11 +516,11 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
         </div>"""
 
     if iter_html:
-        iter_html = f"<h2>Iterations</h2>{iter_html}"
+        iter_html = f"<details open><summary>Iterations</summary>{iter_html}</details>"
 
     # Final answer
     final = result.get("final_answer") or metrics.get("final_answer", "")
-    final_html = f'<h2>Final Answer</h2><div class="pre">{final}</div>' if final else ""
+    final_html = f'<details open><summary>Final Answer</summary><div class="pre">{html.escape(str(final))}</div></details>' if final else ""
 
     # Error — for cron tasks, only show if the last failure is more recent than
     # the last success (stale last_error from a previous run should not surface).
@@ -553,7 +566,7 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
             elif isinstance(content, str) and content.strip():
                 turns.append(f'<div class="iter"><b style="color:#aaa">{html.escape(role)}</b><div class="pre" style="margin-top:6px">{html.escape(content[:2000])}</div></div>')
         if turns:
-            session_html = f"<h2>Session Transcript</h2>{''.join(turns)}"
+            session_html = f"<details><summary>Session Transcript</summary>{''.join(turns)}</details>"
 
     return _page(f"Task: {task_id}", f"""
 <h1><a href="/dashboard/tasks" style="color:#888;font-weight:normal">Tasks</a> / {task_id}</h1>

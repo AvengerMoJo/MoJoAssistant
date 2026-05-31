@@ -182,17 +182,38 @@ class PushAdapter(ABC):
         return event.get("title") or event.get("event_type", "MoJoAssistant event")
 
     def _format_body(self, event: Dict[str, Any]) -> str:
+        import re
+        event_type = event.get("event_type", "")
+        severity = event.get("severity", "info")
+
+        if event_type == "task_waiting_for_input":
+            prefix = "?"
+        elif severity in ("error", "critical"):
+            prefix = "✗"
+        else:
+            prefix = "✓"
+
         data = event.get("data") or {}
-        parts = []
-        if data.get("task_id"):
-            parts.append(f"Task: {data['task_id']}")
-        # final_answer lives at top-level on task_completed events
-        final_answer = event.get("final_answer") or data.get("final_answer")
-        if final_answer:
-            snippet = str(final_answer)[:300]
-            parts.append(snippet)
-        if data.get("error"):
-            parts.append(f"Error: {data['error']}")
-        if data.get("message"):
-            parts.append(data["message"])
-        return "\n".join(parts) if parts else event.get("event_type", "")
+        raw = event.get("final_answer") or data.get("final_answer") or data.get("message") or ""
+
+        if raw:
+            # Strip markdown: code blocks, headers, bold/italic, links, list markers
+            text = re.sub(r"```.*?```", "", raw, flags=re.DOTALL)
+            text = re.sub(r"`[^`]+`", "", text)
+            text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+            text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text)
+            text = re.sub(r"_{1,2}([^_]+)_{1,2}", r"\1", text)
+            text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+            text = re.sub(r"^[\s\-*>]+", "", text, flags=re.MULTILINE)
+            # First meaningful line (non-empty, not just punctuation)
+            lines = [l.strip() for l in text.splitlines() if l.strip() and len(l.strip()) > 3]
+            first = lines[0] if lines else raw.strip()
+            # First sentence
+            sentence = re.split(r"(?<=[.!?])\s", first, maxsplit=1)[0].strip()
+            if not sentence.endswith((".", "!", "?")):
+                sentence += "."
+            body = f"{prefix} {sentence}"
+        else:
+            body = f"{prefix} {event_type.replace('_', ' ')}"
+
+        return body[:160]
