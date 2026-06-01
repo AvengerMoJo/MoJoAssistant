@@ -278,10 +278,39 @@ Open `config/roles/researcher.json` in a text editor.
 ## 7. Roadmap: What's Next
 
 ### Near Term (next 2 months)
-- **Bonsai self-regulation**: agents auto-calibrate their iteration budgets from historical performance. The system gets more efficient over time without human tuning.
-- **Report viewer**: rich dashboard with collapsible sections, mobile-optimized layout
-- **Sandbox orchestration**: route tasks to Docker, Firecracker, or gVisor based on declared isolation needs
-- **One-on-one growth sessions**: weekly check-in between owner and each role — what did you learn, where are you stuck, what do you need
+
+**Bridle — Multi-Agent Communication**
+
+Today, agents coordinate through an orchestrator who explicitly writes the wiring into each goal. Bridle is the layer that makes coordination emergent.
+
+```
+TODAY:
+  Orchestrator tells Rebecca: "if you hit a technical claim, dispatch to Anna"
+  Rebecca dispatches. Wire works. But orchestrator has to say this every time.
+
+NEAR TERM (Bridle wire):
+  dispatch_subtask(consult=True) — lightweight peer consult, no task overhead
+  collaboration map in role JSON — Rebecca knows to ask Anna for feasibility questions
+  Orchestrators write negotiation recipes, not custom code
+
+LONG TERM (Bonsai trigger):
+  After Rebecca's report fails cross-verification on a technical claim,
+  Bonsai adds Anna to Rebecca's collaboration map.
+  Next time: Rebecca self-triggers without being told.
+```
+
+The wire enables communication. Bonsai teaches the agent WHEN to use it.
+
+Three communication patterns that emerge without new plugins:
+- **Peer-to-Peer**: `dispatch_subtask(consult=True)` — ask a peer mid-task, one LLM call, no scheduler overhead
+- **Negotiation**: orchestrator loop over consult calls — structured ACCEPT/COUNTER/REJECT convergence
+- **Broadcast**: `add_conversation(scope='framework')` already works for knowledge sharing; `broadcast_capability` for tool catalog changes
+
+**Bonsai self-regulation**: agents auto-calibrate iteration budgets AND collaboration patterns from historical performance. The system gets more efficient and more cooperative over time — without human tuning.
+
+**One-on-one growth sessions**: weekly check-in between owner and each role — what did you learn, where are you stuck, what collaborations would help you?
+
+**Sandbox orchestration**: route tasks to Docker, Firecracker, or gVisor based on declared isolation needs.
 
 ### Medium Term (3–6 months)
 - **Self-hosted mesh VPN**: agents register nodes, get stable `*.mojo.internal` hostnames — no port forwarding, no cloud relay
@@ -294,6 +323,7 @@ MoJoAssistant becomes the **operating system layer** between humans and AI:
 - You own the memory, the agents, the rules
 - Models improve underneath you — you upgrade without losing context
 - Community builds the capabilities — you choose what to install
+- Agents learn to cooperate — Bonsai grows the collaboration graph from real task outcomes
 - Human agency is the invariant — AI capability is the variable
 
 ---
@@ -316,11 +346,17 @@ The framework is the contribution. The roles, tools, and integrations are yours 
 1. **Write a role** — a JSON file defining a new agent personality for your domain
 2. **Add a capability** — wire a new tool into the capability catalog
 3. **Build a push adapter** — Slack, Discord, Telegram, email
-4. **Improve a module** — better chunker for the dreaming pipeline, new sandbox provider, faster embedding model
-5. **Document a workflow** — write the guide you wish existed when you started
+4. **Write a workflow template** — teach a role WHEN to communicate with peers, not just HOW
+5. **Improve a module** — better chunker for the dreaming pipeline, new sandbox provider, faster embedding model
+
+**Bridle communication patterns** — well-scoped, documented, community-owned:
+- `dispatch_subtask(consult=True)` — one parameter, depth-limit bypass, ephemeral execution
+- `broadcast_capability` — single new tool, pure data write, no LLM
+- Collaboration map injection — role JSON field + one executor change
+- Negotiation recipe — workflow template, no code required
 
 **Harder but high-impact:**
-- Bonsai integration — wire the self-regulation engine into the executor
+- Bonsai integration — wire the self-regulation engine into the executor; teach it to generate collaboration map entries from task failure signals
 - Voice pipeline improvements — better STT/TTS models, lower latency
 - Sandbox routing — Docker/Firecracker/gVisor selection logic
 - Network provider — Headscale/WireGuard integration for mesh VPN
@@ -368,10 +404,11 @@ The framework is the contribution. The roles, tools, and integrations are yours 
 10. **Module 6: Memory & Dreaming** — persistent, transparent, yours
 11. **Live demo recap** — task → HITL → dashboard → result
 12. **What's working today** — v1.4.1-beta feature checklist
-13. **Roadmap** — Bonsai, sandbox routing, voice, mesh VPN
-14. **Community model** — how to contribute, entry points
-15. **Call to action** — GitHub link, Discord, "Pick a module"
+13. **Bridle: how agents communicate** — wire (dispatch patterns) vs. trigger (Bonsai learns)
+14. **Roadmap** — Bridle wire, Bonsai trigger, sandbox routing, voice, mesh VPN
+15. **Community model** — how to contribute, entry points (wire patterns are bounded, well-documented)
+16. **Call to action** — GitHub link, Discord, "Pick a module or teach a role to cooperate"
 
 ---
 
-*Document prepared for event presentation — MoJoAssistant v1.4.1-beta — 2026-05-30*
+*Document prepared for event presentation — MoJoAssistant v1.4.1-beta — 2026-06-01*
