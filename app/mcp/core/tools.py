@@ -2543,9 +2543,16 @@ Agent resumes within seconds.
         repo_name = args.get("repo_name")
         file_path = args.get("file_path")
         git_hash = args.get("git_hash")
+        max_chars = int(args.get("max_chars") or 8000)
 
         try:
             result = self.git_service.get_file_content(repo_name, file_path, git_hash)
+            content = result.get("content", "")
+            if isinstance(content, str) and len(content) > max_chars:
+                result["content"] = content[:max_chars]
+                result["truncated"] = True
+                result["total_chars"] = len(content)
+                result["hint"] = f"File truncated to {max_chars} chars. Pass max_chars=N for more."
             return result
         except Exception as e:
             return {
@@ -3327,24 +3334,33 @@ Agent resumes within seconds.
     async def _execute_scheduler_list_assistant_tools(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Return all tools available for assignment to agentic tasks."""
+        """Return tools available for assignment to agentic tasks."""
         try:
             from app.scheduler.capability_registry import CapabilityRegistry
 
+            category_filter = (args.get("category") or "").strip() or None
             registry = CapabilityRegistry()
             tools = registry.list_tools()
+            rows = []
+            for name, meta in tools.items():
+                if category_filter and meta.get("category", "") != category_filter:
+                    continue
+                desc = meta.get("description", "")
+                rows.append({
+                    "name": name,
+                    "description": desc[:100] + ("…" if len(desc) > 100 else ""),
+                    "category": meta.get("category", ""),
+                    "danger_level": meta.get("danger_level", "low"),
+                    "requires_auth": meta.get("requires_auth", False),
+                })
             return {
                 "status": "success",
-                "tools": [
-                    {
-                        "name": name,
-                        "description": meta.get("description", ""),
-                        "danger_level": meta.get("danger_level", "low"),
-                        "requires_auth": meta.get("requires_auth", False),
-                    }
-                    for name, meta in tools.items()
-                ],
-                "usage": "Pass desired tool names in available_tools when calling scheduler_add_task with task_type='agentic'.",
+                "tools": rows,
+                "count": len(rows),
+                "hint": (
+                    "Filter by category (e.g. category='exec') to narrow results. "
+                    "Use config(action='capability_get', tool_name=...) for full tool spec."
+                ),
             }
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -3479,15 +3495,24 @@ Agent resumes within seconds.
             from app.services.storage_factory import resolve_storage_backend
             from app.config.paths import get_memory_subpath
 
+            limit = int(args.get("limit") or 20)
+            offset = int(args.get("offset") or 0)
+
             storage = resolve_storage_backend(storage_path=Path(get_memory_subpath("dreams")))
             archives = storage.list_archives()
+            total = len(archives)
+            page = archives[offset: offset + limit]
 
-            return {
+            result = {
                 "status": "success",
-                "archives": archives,
-                "count": len(archives),
-                "message": f"Found {len(archives)} archived conversations",
+                "archives": page,
+                "count": len(page),
+                "total": total,
+                "offset": offset,
             }
+            if offset + limit < total:
+                result["hint"] = f"More archives available. Pass offset={offset + limit} for next page."
+            return result
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to list archives: {str(e)}"}
@@ -3499,6 +3524,8 @@ Agent resumes within seconds.
         try:
             conversation_id = args.get("conversation_id")
             version = args.get("version")
+            max_units = int(args.get("max_units") or 20)
+            offset = int(args.get("offset") or 0)
 
             from pathlib import Path
             from app.services.storage_factory import resolve_storage_backend
@@ -3512,22 +3539,41 @@ Agent resumes within seconds.
 
             if archive:
                 manifest = storage.get_manifest(conversation_id=conversation_id)
-                # Build lifecycle from manifest
                 lifecycle = None
                 if manifest:
                     av = version if version is not None else int(manifest.get("latest_version", 0))
                     lifecycle = manifest.get("versions", {}).get(str(av))
                     if lifecycle:
                         lifecycle = {"conversation_id": conversation_id, "version": av, **lifecycle}
-                return {
+
+                # Paginate knowledge units if archive contains them
+                units = None
+                total_units = None
+                if isinstance(archive, dict):
+                    raw_units = archive.get("knowledge_units") or archive.get("units") or []
+                    if isinstance(raw_units, list) and raw_units:
+                        total_units = len(raw_units)
+                        units = raw_units[offset: offset + max_units]
+                        archive = {k: v for k, v in archive.items()
+                                   if k not in ("knowledge_units", "units")}
+                        archive["knowledge_units"] = units
+
+                result = {
                     "status": "success",
                     "archive": archive,
                     "lifecycle": lifecycle,
-                    "latest_version": manifest.get("latest_version")
-                    if manifest
-                    else None,
-                    "message": f"Retrieved archive for {conversation_id}",
+                    "latest_version": manifest.get("latest_version") if manifest else None,
                 }
+                if total_units is not None:
+                    result["units_total"] = total_units
+                    result["units_returned"] = len(units)
+                    result["offset"] = offset
+                    if offset + max_units < total_units:
+                        result["hint"] = (
+                            f"Archive has {total_units} units. "
+                            f"Pass offset={offset + max_units} for next page."
+                        )
+                return result
             else:
                 return {
                     "status": "error",
@@ -3598,6 +3644,8 @@ Agent resumes within seconds.
 
             task_id = args.get("task_id")
             include_metadata = args.get("include_metadata", False)
+            last_n = int(args.get("last_n") or 20)
+            max_content_chars = int(args.get("max_content_chars") or 1000)
 
             storage = SessionStorage()
             session = storage.load_session(task_id)
@@ -3608,15 +3656,25 @@ Agent resumes within seconds.
                     "message": f"No session found for task '{task_id}'",
                 }
 
-            # Format messages
+            all_messages = session.messages
+            total_messages = len(all_messages)
+            windowed = all_messages[-last_n:] if last_n and len(all_messages) > last_n else all_messages
+
             messages = []
-            for msg in session.messages:
+            for msg in windowed:
+                content = msg.content or ""
+                truncated = False
+                if isinstance(content, str) and len(content) > max_content_chars:
+                    content = content[:max_content_chars] + "…"
+                    truncated = True
                 entry = {
                     "role": msg.role,
-                    "content": msg.content,
+                    "content": content,
                     "timestamp": msg.timestamp,
                     "iteration": msg.iteration,
                 }
+                if truncated:
+                    entry["content_truncated"] = True
                 if msg.tool_call_id:
                     entry["tool_call_id"] = msg.tool_call_id
                 if msg.tool_name:
@@ -3625,7 +3683,7 @@ Agent resumes within seconds.
                     entry["metadata"] = msg.metadata
                 messages.append(entry)
 
-            return {
+            result = {
                 "status": "success",
                 "task_id": session.task_id,
                 "session_status": session.status,
@@ -3633,10 +3691,17 @@ Agent resumes within seconds.
                 "completed_at": session.completed_at,
                 "final_answer": session.final_answer,
                 "error_message": session.error_message,
-                "message_count": len(messages),
+                "message_count": total_messages,
+                "messages_returned": len(messages),
                 "messages": messages,
                 "metadata": session.metadata,
             }
+            if total_messages > last_n:
+                result["hint"] = (
+                    f"Showing last {last_n} of {total_messages} messages. "
+                    f"Pass last_n=N or last_n=0 for all."
+                )
+            return result
 
         except Exception as e:
             return {
@@ -4827,18 +4892,27 @@ Agent resumes within seconds.
         role_id = args.get("role_id")
         if not role_id:
             return {"status": "error", "message": "role_id is required"}
+        limit = int(args.get("limit") or 20)
+        offset = int(args.get("offset") or 0)
         try:
             provider = get_registry().resolve_growth_provider()
             if not hasattr(provider, "list_snapshots"):
                 return {"status": "error", "message": "growth provider does not support snapshot history"}
             items = provider.list_snapshots(role_id)
-            return {
+            total = len(items)
+            page = items[offset: offset + limit]
+            result = {
                 "status": "success",
                 "provider": provider.get_version().provider_name,
                 "role_id": role_id,
-                "count": len(items),
-                "snapshots": items,
+                "total": total,
+                "count": len(page),
+                "offset": offset,
+                "snapshots": page,
             }
+            if offset + limit < total:
+                result["hint"] = f"Pass offset={offset + limit} for older snapshots."
+            return result
         except NotImplementedError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
@@ -5031,7 +5105,15 @@ Agent resumes within seconds.
         role = self._role_manager.get(role_id)
         if role is None:
             return {"status": "error", "message": f"Role '{role_id}' not found"}
-        return role
+        # Truncate system_prompt by default — it can be several KB
+        include_full_prompt = args.get("include_full_prompt", False)
+        result = dict(role)
+        sp = result.get("system_prompt") or ""
+        if sp and not include_full_prompt and len(sp) > 500:
+            result["system_prompt"] = sp[:500] + "…"
+            result["system_prompt_truncated"] = True
+            result["hint"] = "system_prompt truncated. Pass include_full_prompt=true to get the full text."
+        return result
 
     # ── LLM Configuration Tools ──────────────────────────────────────
 
@@ -5331,10 +5413,7 @@ Agent resumes within seconds.
                 if path:
                     try:
                         value = self._resolve_path(data, path)
-                        # Redact if the path itself is sensitive
-                        if self._matches_sensitive(
-                            path, meta.get("sensitive_keys", [])
-                        ):
+                        if self._matches_sensitive(path, meta.get("sensitive_keys", [])):
                             value = "***REDACTED***"
                         return {
                             "status": "success",
@@ -5348,13 +5427,24 @@ Agent resumes within seconds.
                             "message": f"Path '{path}' not found in {module_name} config.",
                         }
                 else:
-                    redacted = self._redact_sensitive(
-                        data, meta.get("sensitive_keys", [])
-                    )
+                    # No path — return top-level keys with type hints only.
+                    # Full values can be large (llm_config has many model defs).
+                    redacted = self._redact_sensitive(data, meta.get("sensitive_keys", []))
+                    preview = {}
+                    for k, v in redacted.items():
+                        if isinstance(v, dict):
+                            preview[k] = f"{{object, {len(v)} keys}}"
+                        elif isinstance(v, list):
+                            preview[k] = f"[list, {len(v)} items]"
+                        elif isinstance(v, str) and len(v) > 120:
+                            preview[k] = v[:120] + "…"
+                        else:
+                            preview[k] = v
                     return {
                         "status": "success",
                         "module": module_name,
-                        "config": redacted,
+                        "keys": preview,
+                        "hint": f"Use path='<key>' to get the full value. E.g. config(action='get', module='{module_name}', path='<key>')",
                     }
             except Exception as e:
                 return {"status": "error", "message": f"Failed to load config: {e}"}
