@@ -206,7 +206,7 @@ class TaskQueue:
         self,
         status: Optional[TaskStatus] = None,
         priority: Optional[TaskPriority] = None,
-        limit: int = 100
+        limit: int = 20
     ) -> List[Task]:
         """
         List tasks with optional filtering
