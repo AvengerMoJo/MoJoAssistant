@@ -111,6 +111,12 @@ class DreamingHandler(TaskHandler):
             if mode == "relationship_update":
                 return await self._execute_relationship_update(task, ctx)
 
+            if mode == "bonsai_growth":
+                return await self._execute_bonsai_growth(task, ctx)
+
+            if mode == "bonsai_approve":
+                return await self._execute_bonsai_approve(task, ctx)
+
             pipeline = ctx.get_dreaming_pipeline(quality_level)
             conv_role_id = task.config.get("role_id")
             if conv_role_id:
@@ -295,6 +301,7 @@ class DreamingHandler(TaskHandler):
             watermark_path = role_dir / "chat_dream_watermark.json"
             watermark = self._load_watermark(watermark_path)
             processed_ids = set(watermark.get("processed_session_ids", []))
+            owner_sessions_dreamed = set(watermark.get("owner_sessions_dreamed", []))
 
             session_files = sorted(chat_dir.glob("*.json"))
             new_sessions = [
@@ -326,6 +333,8 @@ class DreamingHandler(TaskHandler):
                 exchanges = session_data.get("exchanges", [])
                 if len(exchanges) < 2:
                     continue
+
+                is_owner_session = session_data.get("session_type") == "owner_one_on_one"
 
                 lines = []
                 for ex in exchanges:
@@ -373,16 +382,20 @@ class DreamingHandler(TaskHandler):
                     errors.append(f"{session_file.name}: {err}")
 
                 processed_ids.add(session_file.stem)
+                if is_owner_session:
+                    owner_sessions_dreamed.add(session_file.stem)
                 # Write watermark after each session for exactly-once processing
                 self._save_watermark(watermark_path, {
                     "last_processed_at": datetime.now().isoformat(),
                     "processed_session_ids": sorted(processed_ids),
+                    "owner_sessions_dreamed": sorted(owner_sessions_dreamed),
                 })
 
             # Final watermark update (redundant but ensures consistency)
             self._save_watermark(watermark_path, {
                 "last_processed_at": datetime.now().isoformat(),
                 "processed_session_ids": sorted(processed_ids),
+                "owner_sessions_dreamed": sorted(owner_sessions_dreamed),
             })
 
         metrics = {
@@ -615,3 +628,190 @@ class DreamingHandler(TaskHandler):
                 "original_text": "\n".join(lines),
             },
         }
+
+    # ------------------------------------------------------------------ #
+    # Bonsai growth proposal                                               #
+    # ------------------------------------------------------------------ #
+
+    async def _execute_bonsai_growth(
+        self,
+        task: Task,
+        ctx: ExecutorContext,
+    ) -> TaskResult:
+        """Generate growth snapshots for configured roles and queue HITL approvals.
+
+        For each role:
+        1. Load current snapshot (if any) from SnapshotManager
+        2. Derive dimension signals from sessions dreamed since last pinned snapshot
+           (uses a simple heuristic: owner_one_on_one sessions count more than chat)
+        3. Compute dimension drift via BonsaiEngine
+        4. Create a candidate snapshot (unpinned)
+        5. Generate a human-readable growth report
+        6. Dispatch a bonsai_approve task → HITL with Accept / Reject choices
+        """
+        from app.scheduler.bonsai import BonsaiEngine, SnapshotManager
+        from app.roles.role_manager import RoleManager
+        from app.scheduler.models import Task as SchTask, TaskType, TaskPriority
+
+        roles = task.config.get("roles", [])
+        notify_owner = bool(task.config.get("notify_owner", True))
+        roles_dir = Path(get_memory_subpath("roles"))
+
+        approved_count = 0
+        skipped_count = 0
+        errors: list[str] = []
+        approval_tasks: list[str] = []
+
+        rm = RoleManager()
+
+        for role_id in roles:
+            try:
+                role = rm.get(role_id)
+                if not role:
+                    ctx.log(f"Bonsai growth: role '{role_id}' not found, skipping", "warning")
+                    skipped_count += 1
+                    continue
+
+                engine = BonsaiEngine(role_id)
+                sm = engine.snapshot_manager
+                current = sm.get_current()
+
+                # Derive lightweight signals from recent session metadata
+                watermark_path = roles_dir / role_id / "chat_dream_watermark.json"
+                watermark = self._load_watermark(watermark_path)
+                owner_sessions = set(watermark.get("owner_sessions_dreamed", []))
+                processed_ids = set(watermark.get("processed_session_ids", []))
+
+                signals: list[dict] = []
+                for sid in processed_ids:
+                    weight = 1.0 if sid in owner_sessions else 0.4
+                    # Positive signals on communication and knowledge dimensions
+                    # for any dreamed session — reflects accumulated engagement
+                    signals.append({
+                        "dimension": "communication_style",
+                        "direction": "up",
+                        "strength": weight * 0.3,
+                        "reason": f"session {sid} processed through ABCD",
+                    })
+                    signals.append({
+                        "dimension": "knowledge_depth",
+                        "direction": "up",
+                        "strength": weight * 0.2,
+                        "reason": f"session {sid} indexed to knowledge store",
+                    })
+
+                if not signals:
+                    ctx.log(f"Bonsai growth: no dreamed sessions for '{role_id}', skipping")
+                    skipped_count += 1
+                    continue
+
+                base_dimensions = (
+                    current.dimensions if current else {
+                        "communication_style": {"score": 70, "summary": "baseline"},
+                        "knowledge_depth": {"score": 70, "summary": "baseline"},
+                        "core_values": {"score": 75, "summary": "baseline"},
+                        "cognitive_style": {"score": 72, "summary": "baseline"},
+                        "social_orientation": {"score": 70, "summary": "baseline"},
+                    }
+                )
+
+                new_dimensions = engine.compute_dimension_drift(base_dimensions, signals)
+                system_prompt = role.get("system_prompt", "")
+                candidate = engine.create_snapshot(
+                    dimensions=new_dimensions,
+                    system_prompt=system_prompt,
+                    trigger="bonsai_growth_weekly",
+                )
+                report = engine.generate_growth_report(current, new_dimensions, signals=None)
+
+                if notify_owner and ctx._scheduler:
+                    # Create a bonsai_approve task that immediately waits for input
+                    approval_cfg = {
+                        "mode": "bonsai_approve",
+                        "role_id": role_id,
+                        "snapshot_version": candidate.version,
+                        "report": report,
+                    }
+                    approval_task = SchTask(
+                        type=TaskType.DREAMING,
+                        config=approval_cfg,
+                        priority=TaskPriority.LOW,
+                    )
+                    approval_task.created_by = "system"
+                    approval_task.description = f"Bonsai growth approval — {role_id}"
+                    ctx._scheduler.queue.add(approval_task)
+                    approval_tasks.append(f"{role_id}:v{candidate.version}")
+                    ctx.log(f"Bonsai growth: queued approval task for '{role_id}' v{candidate.version}")
+                else:
+                    ctx.log(f"Bonsai growth: snapshot v{candidate.version} created for '{role_id}' (no HITL)")
+
+                approved_count += 1
+
+            except Exception as e:
+                errors.append(f"{role_id}: {e}")
+                ctx.log(f"Bonsai growth: error for '{role_id}': {e}", "error")
+
+        return TaskResult(
+            success=True,
+            metrics={
+                "roles_processed": approved_count,
+                "roles_skipped": skipped_count,
+                "approval_tasks_queued": approval_tasks,
+                "errors": errors,
+            },
+        )
+
+    async def _execute_bonsai_approve(
+        self,
+        task: Task,
+        ctx: ExecutorContext,
+    ) -> TaskResult:
+        """HITL approval step for a proposed bonsai growth snapshot.
+
+        First run (no reply): return waiting_for_input with Accept/Reject choices.
+        Second run (after reply): pin or discard the candidate snapshot.
+        """
+        from app.scheduler.bonsai import SnapshotManager
+
+        role_id = task.config.get("role_id", "")
+        version = task.config.get("snapshot_version")
+        report = task.config.get("report", "No report available.")
+        reply = task.config.get("reply_to_question", "").strip().lower()
+
+        if not reply:
+            # First run — show report and wait for owner decision
+            question = (
+                f"**Bonsai growth report — {role_id}**\n\n"
+                f"{report}\n\n"
+                f"Accept this growth snapshot (v{version})?"
+            )
+            # Truncate to 1 800 chars — ntfy has a body limit
+            if len(question) > 1800:
+                question = question[:1797] + "…"
+            return TaskResult(
+                success=True,
+                waiting_for_input=question,
+                waiting_for_input_choices=["Accept", "Reject"],
+            )
+
+        # Second run — process the reply
+        sm = SnapshotManager(role_id)
+        if reply in ("accept", "yes", "y", "approve"):
+            pinned = sm.pin_snapshot(int(version))
+            if pinned:
+                ctx.log(f"Bonsai: pinned growth snapshot v{version} for '{role_id}'")
+                return TaskResult(
+                    success=True,
+                    metrics={"action": "pinned", "role_id": role_id, "version": version},
+                )
+            else:
+                return TaskResult(
+                    success=False,
+                    error_message=f"Could not pin snapshot v{version} for '{role_id}'",
+                )
+        else:
+            ctx.log(f"Bonsai: owner rejected growth snapshot v{version} for '{role_id}'")
+            return TaskResult(
+                success=True,
+                metrics={"action": "rejected", "role_id": role_id, "version": version},
+            )

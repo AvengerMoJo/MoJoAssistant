@@ -13,12 +13,20 @@ Lifecycle integration:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _discord_sessions_dir() -> Path:
+    from app.config.paths import get_memory_subpath
+    return Path(get_memory_subpath("discord_sessions"))
 
 
 def _sanitize_message(content: str, max_len: int = 2000) -> str:
@@ -61,6 +69,38 @@ class CommunityAssistantService:
         self.role_id = role_id
         self._sessions: Dict[str, str] = {}  # channel_id -> session_id
         self._resource_manager = None
+        self._load_sessions_from_disk()
+
+    def _load_sessions_from_disk(self) -> None:
+        try:
+            sessions_dir = _discord_sessions_dir()
+            if not sessions_dir.exists():
+                return
+            for f in sessions_dir.glob("channel_*.json"):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    self._sessions[data["channel_id"]] = data["session_id"]
+                except Exception:
+                    pass
+            if self._sessions:
+                logger.info(f"[discord_gateway] restored {len(self._sessions)} channel session(s)")
+        except Exception as e:
+            logger.warning(f"[discord_gateway] could not load sessions from disk: {e}")
+
+    def _save_session_to_disk(self, channel_id: str, session_id: str) -> None:
+        try:
+            sessions_dir = _discord_sessions_dir()
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            (sessions_dir / f"channel_{channel_id}.json").write_text(
+                json.dumps({
+                    "channel_id": channel_id,
+                    "session_id": session_id,
+                    "saved_at": datetime.now().isoformat(),
+                }),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning(f"[discord_gateway] could not save session to disk: {e}")
 
     def _get_resource_manager(self):
         if self._resource_manager is None:
@@ -82,6 +122,7 @@ class CommunityAssistantService:
         role_chat = RoleChatSession(role_id=self.role_id, session_id=session_id)
         result = await role_chat.exchange(message, resource_manager=self._get_resource_manager())
         self._sessions[channel_id] = role_chat.session_id
+        self._save_session_to_disk(channel_id, role_chat.session_id)
         return result.get("response") or result.get("error") or "No response."
 
 

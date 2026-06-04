@@ -10,6 +10,7 @@ Modes
 -----
 DASHBOARD_CHAT          Private, read-only debrief (memory + task history only).
 ROLE_CHAT               Same defaults as dashboard_chat unless mode_overlays expands it.
+OWNER_ONE_ON_ONE        Growth check-in between owner and a role — session tagged for bonsai.
 SCHEDULER_AGENTIC_TASK  Full execution surface — planning, tools, orchestration.
 DIRECT_MCP_COMMAND      Operator/admin control path via authorized MCP channels.
 
@@ -31,6 +32,7 @@ from typing import List
 class InteractionMode(str, Enum):
     DASHBOARD_CHAT = "dashboard_chat"
     ROLE_CHAT = "role_chat"
+    OWNER_ONE_ON_ONE = "owner_one_on_one"
     SCHEDULER_AGENTIC_TASK = "scheduler_agentic_task"
     DIRECT_MCP_COMMAND = "direct_mcp_command"
 
@@ -87,6 +89,30 @@ this exact structure — never return empty output or hollow phrases like \
 ---
 """
 
+_OWNER_ONE_ON_ONE_OVERLAY = """\
+## OWNER CHECK-IN — GROWTH SESSION
+
+This is a structured growth check-in with your owner. Unlike a regular chat, \
+this session's exchanges will be processed by the dreaming pipeline and used \
+to update your bonsai growth snapshot.
+
+**Your job in this session:**
+- Reflect honestly on your recent work — what went well, what was hard, what \
+  you're still uncertain about
+- Surface any patterns you've noticed in the tasks you've handled
+- Raise anything you'd like the owner to know about your current capabilities or limits
+- Answer the owner's questions directly and specifically — no hedging
+
+**Available tools (same as chat):**
+- `memory_search` — search your memory and past conversations
+- `task_search` — search your task history
+- `knowledge_search` — search prior research and task artifacts
+
+This is a trusted, private session. Be candid.
+
+---
+"""
+
 _SCHEDULER_AGENTIC_OVERLAY = """\
 ## EXECUTION MODE — SCHEDULER AGENTIC TASK
 
@@ -115,6 +141,12 @@ _MODE_CONTRACTS: dict[InteractionMode, ModeContract] = {
         mode=InteractionMode.ROLE_CHAT,
         allowed_tool_categories=["memory", "knowledge"],
         prompt_overlay=_DASHBOARD_CHAT_OVERLAY,  # same default as dashboard_chat
+        stores_completion_artifact=False,
+    ),
+    InteractionMode.OWNER_ONE_ON_ONE: ModeContract(
+        mode=InteractionMode.OWNER_ONE_ON_ONE,
+        allowed_tool_categories=["memory", "knowledge"],
+        prompt_overlay=_OWNER_ONE_ON_ONE_OVERLAY,
         stores_completion_artifact=False,
     ),
     InteractionMode.SCHEDULER_AGENTIC_TASK: ModeContract(
