@@ -23,6 +23,20 @@ Current release: `v1.4.2-beta`
 
 ---
 
+## Community
+
+Questions, ideas, or just want to see what others are building?
+
+[![Join our Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/fTgpagh93)
+
+<a href="https://discord.com/invite/fTgpagh93">
+  <img src="docs/assets/discord_qr.png" alt="Discord QR code" width="120" />
+</a>
+
+Scan the QR code or click the badge to join. The community bot (@MoJoAssistant) is available to answer setup and contribution questions directly in Discord.
+
+---
+
 ## What You Get
 
 | Layer | What it does |
@@ -438,3 +452,15 @@ and PII scanning are production-ready for personal use.
 - Playwright browser tools (requires `npx @playwright/mcp@latest`)
 - Google Workspace (requires OAuth setup)
 - ntfy push notifications (requires ntfy.sh or self-hosted instance)
+
+---
+
+## Join the Community
+
+[![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/fTgpagh93)
+
+Have questions or want to contribute? Join us on Discord — scan the QR code or use the invite link https://discord.com/invite/fTgpagh93.
+
+<a href="https://discord.com/invite/fTgpagh93">
+  <img src="docs/assets/discord_qr.png" alt="Discord invite QR code" width="160" />
+</a>

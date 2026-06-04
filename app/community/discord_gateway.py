@@ -7,9 +7,12 @@ This module intentionally keeps runtime dependencies optional:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _sanitize_message(content: str, max_len: int = 2000) -> str:
@@ -52,7 +55,7 @@ class CommunityAssistantService:
         self.role_id = role_id
         self._sessions: Dict[str, str] = {}  # channel_id -> session_id
 
-    def ask(self, channel_id: str, user_message: str) -> str:
+    async def ask(self, channel_id: str, user_message: str) -> str:
         message = _sanitize_message(user_message)
         if not message:
             return "I can only help with project-support questions in normal chat format."
@@ -61,15 +64,16 @@ class CommunityAssistantService:
 
         session_id: Optional[str] = self._sessions.get(channel_id)
         role_chat = RoleChatSession(role_id=self.role_id, session_id=session_id)
-        reply = role_chat.chat(message)
+        result = await role_chat.exchange(message)
         self._sessions[channel_id] = role_chat.session_id
-        return reply
+        return result.get("response") or result.get("error") or "No response."
 
 
 def run_bot(config: Optional[DiscordCommunityConfig] = None) -> None:
     """Run Discord bot loop.
 
-    Requires `discord.py`.
+    Requires `discord.py` (pip install discord.py>=2.3).
+    Set DISCORD_BOT_TOKEN in environment before calling.
     """
     if config is None:
         config = DiscordCommunityConfig.from_env()
@@ -78,7 +82,7 @@ def run_bot(config: Optional[DiscordCommunityConfig] = None) -> None:
         import discord  # type: ignore
     except Exception as exc:
         raise RuntimeError(
-            "discord.py is required. Install with: pip install discord.py"
+            "discord.py is required. Install with: pip install 'discord.py>=2.3'"
         ) from exc
 
     intents = discord.Intents.default()
@@ -88,6 +92,7 @@ def run_bot(config: Optional[DiscordCommunityConfig] = None) -> None:
 
     @client.event
     async def on_ready() -> None:
+        logger.info(f"[discord_gateway] ready as {client.user}")
         print(f"[discord_gateway] ready as {client.user}")
 
     @client.event
@@ -104,14 +109,16 @@ def run_bot(config: Optional[DiscordCommunityConfig] = None) -> None:
         content = _sanitize_message(content, max_len=config.max_prompt_chars)
         if not content:
             return
-        try:
-            answer = service.ask(str(message.channel.id), content)
-        except Exception:
-            answer = (
-                "I hit an internal issue while answering. "
-                "Please try again, or ask a maintainer to review."
-            )
-        await message.reply(answer)
+
+        async with message.channel.typing():
+            try:
+                answer = await service.ask(str(message.channel.id), content)
+            except Exception as e:
+                logger.error(f"[discord_gateway] error answering message: {e}")
+                answer = (
+                    "I hit an internal issue while answering. "
+                    "Please try again, or ask a maintainer to review."
+                )
+        await message.reply(answer[:2000])
 
     client.run(config.token)
-

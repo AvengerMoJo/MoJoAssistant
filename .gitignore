@@ -214,6 +214,7 @@ package-lock.json
 
 # Generated screenshots/artifacts
 *.png
+!docs/assets/*.png
 scripts/install_amd.sh
 
 # Local GLM voice model checkout (WIP)

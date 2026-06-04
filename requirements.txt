@@ -44,3 +44,4 @@ python-dotenv>=1.0.0
 # Optional dependencies
 psutil
 slowapi
+discord.py>=2.3     # Discord community bot (needed for app/community/discord_gateway.py)
