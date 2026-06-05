@@ -3090,7 +3090,7 @@ Agent resumes within seconds.
             target_status = args.get("status")
             exclude_ids = set(args.get("exclude_ids") or [])
 
-            all_tasks = self.scheduler.list_tasks()
+            all_tasks = self.scheduler.list_tasks(limit=None)
             removed = []
             for task in all_tasks:
                 if task.status.value == target_status and task.id not in exclude_ids:
@@ -3130,7 +3130,7 @@ Agent resumes within seconds.
             zombie_cutoff = now - timedelta(minutes=zombie_minutes)
             failed_cutoff = now - timedelta(days=failed_days)
 
-            all_tasks = self.scheduler.list_tasks()
+            all_tasks = self.scheduler.list_tasks(limit=None)
 
             zombies_killed = []
             failed_removed = []
@@ -5443,7 +5443,8 @@ Agent resumes within seconds.
                     return {
                         "status": "success",
                         "module": module_name,
-                        "keys": preview,
+                        "config": preview,
+                        "keys": preview,  # backward-compat alias
                         "hint": f"Use path='<key>' to get the full value. E.g. config(action='get', module='{module_name}', path='<key>')",
                     }
             except Exception as e:

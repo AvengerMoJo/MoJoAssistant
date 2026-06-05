@@ -102,10 +102,6 @@ class _StubStorageBackend:
         self.calls.append(("health_check",))
         return {"ok": True, "backend": "stub"}
 
-    def get_manifest(self, **kwargs) -> Any:
-        self.calls.append(("get_manifest", kwargs))
-        return None
-
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -225,3 +221,10 @@ class TestStorageSwapEndToEnd:
             assert ("read_json", "k1") in backend.calls
             assert ("exists", "k1") in backend.calls
             assert ("list_keys", "") in backend.calls
+
+            # Verify manifest round-trip through the swapped backend
+            backend.update_manifest("conv1", {"stage": "B", "count": 3})
+            result = backend.get_manifest("conv1")
+            assert result == {"stage": "B", "count": 3}
+            assert ("update_manifest", "conv1") in backend.calls
+            assert ("get_manifest", "conv1") in backend.calls
