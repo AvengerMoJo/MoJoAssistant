@@ -677,7 +677,7 @@ class DreamingHandler(TaskHandler):
 
                 engine = BonsaiEngine(role_id)
                 sm = engine.snapshot_manager
-                current = sm.get_current()
+                pinned = sm.get_pinned()
 
                 # Derive lightweight signals from recent session metadata
                 watermark_path = roles_dir / role_id / "chat_dream_watermark.json"
@@ -709,7 +709,7 @@ class DreamingHandler(TaskHandler):
                     continue
 
                 base_dimensions = (
-                    current.dimensions if current else {
+                    pinned.dimensions if pinned else {
                         "communication_style": {"score": 70, "summary": "baseline"},
                         "knowledge_depth": {"score": 70, "summary": "baseline"},
                         "core_values": {"score": 75, "summary": "baseline"},
@@ -725,7 +725,7 @@ class DreamingHandler(TaskHandler):
                     system_prompt=system_prompt,
                     trigger="bonsai_growth_weekly",
                 )
-                report = engine.generate_growth_report(current, new_dimensions, signals=None)
+                report = engine.generate_growth_report(pinned, new_dimensions, signals=None)
 
                 if notify_owner and ctx._scheduler:
                     # Create a bonsai_approve task that immediately waits for input

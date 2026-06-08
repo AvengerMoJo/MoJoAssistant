@@ -132,34 +132,31 @@ class SnapshotManager:
             return None
 
     def save_snapshot(self, snapshot: GrowthSnapshot) -> Path:
-        """Save a growth snapshot and update current."""
+        """Save a growth snapshot as a versioned candidate. Does NOT update current or pinned."""
         path = self._snapshot_path(snapshot.version)
         path.write_text(
             json.dumps(snapshot.to_dict(), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-
-        # Update current symlink
-        current = self._current_path()
-        if current.exists() or current.is_symlink():
-            current.unlink()
-        current.symlink_to(path.name)
-
-        logger.info(f"Saved snapshot v{snapshot.version} for {self.role_id}")
+        logger.info(f"Saved candidate snapshot v{snapshot.version} for {self.role_id}")
         return path
 
     def pin_snapshot(self, version: int) -> bool:
-        """Pin a specific version as the owner-approved state."""
+        """Pin a specific version as the owner-approved live state.
+
+        Updates both pinned.json (approval record) and current.json (live pointer)
+        so the approved version is what roles and providers see immediately.
+        """
         path = self._snapshot_path(version)
         if not path.exists():
             return False
 
-        pinned = self._pinned_path()
-        if pinned.exists() or pinned.is_symlink():
-            pinned.unlink()
-        pinned.symlink_to(path.name)
+        for ptr in (self._pinned_path(), self._current_path()):
+            if ptr.exists() or ptr.is_symlink():
+                ptr.unlink()
+            ptr.symlink_to(path.name)
 
-        logger.info(f"Pinned snapshot v{version} for {self.role_id}")
+        logger.info(f"Pinned and activated snapshot v{version} for {self.role_id}")
         return True
 
     def activate_snapshot(self, version: int, *, pin: bool = False) -> bool:
