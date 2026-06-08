@@ -117,6 +117,9 @@ class DreamingHandler(TaskHandler):
             if mode == "bonsai_approve":
                 return await self._execute_bonsai_approve(task, ctx)
 
+            if mode == "proposal_gate":
+                return await self._execute_proposal_gate(task, ctx)
+
             pipeline = ctx.get_dreaming_pipeline(quality_level)
             conv_role_id = task.config.get("role_id")
             if conv_role_id:
@@ -815,3 +818,63 @@ class DreamingHandler(TaskHandler):
                 success=True,
                 metrics={"action": "rejected", "role_id": role_id, "version": version},
             )
+
+    async def _execute_proposal_gate(
+        self,
+        task: Task,
+        ctx: ExecutorContext,
+    ) -> TaskResult:
+        """HITL gate for tasks that touch protected infrastructure paths.
+
+        First run (no reply): present proposal and wait for owner decision.
+        Second run (after reply): on Approve dispatch the real task; on Reject log and stop.
+        """
+        import uuid
+        from app.scheduler.models import Task as SchTask, TaskType, TaskPriority, TaskResources
+
+        proposal_text = task.config.get("proposal_text", "No proposal provided.")
+        on_approve_cfg = task.config.get("on_approve_task")
+        reply = task.config.get("reply_to_question", "").strip().lower()
+
+        if not reply:
+            question = f"**Infrastructure change proposal**\n\n{proposal_text}\n\nApprove this change?"
+            if len(question) > 1800:
+                question = question[:1797] + "…"
+            return TaskResult(
+                success=True,
+                waiting_for_input=question,
+                waiting_for_input_choices=["Approve", "Reject"],
+            )
+
+        if reply in ("approve", "yes", "y", "accept"):
+            if not on_approve_cfg:
+                return TaskResult(
+                    success=True,
+                    metrics={"action": "approved", "note": "no on_approve_task configured"},
+                )
+            real_task = SchTask(
+                id=f"approved_{task.id[:20]}_{uuid.uuid4().hex[:6]}",
+                type=TaskType(on_approve_cfg.get("type", "internal_assignment")),
+                priority=TaskPriority(on_approve_cfg.get("priority", "medium")),
+                config=on_approve_cfg.get("config", {}),
+                resources=TaskResources(),
+                created_by="proposal_gate",
+                parent_task_id=task.id,
+            )
+            if ctx._scheduler:
+                ctx._scheduler.queue.add(real_task)
+                ctx.log(f"Proposal gate approved: dispatched {real_task.id}")
+                return TaskResult(
+                    success=True,
+                    metrics={"action": "approved", "dispatched_task_id": real_task.id},
+                )
+            return TaskResult(
+                success=False,
+                error_message="Proposal approved but scheduler unavailable to dispatch task",
+            )
+
+        ctx.log(f"Proposal gate rejected by owner for task {task.id}")
+        return TaskResult(
+            success=True,
+            metrics={"action": "rejected"},
+        )
