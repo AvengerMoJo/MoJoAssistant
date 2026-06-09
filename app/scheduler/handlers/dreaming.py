@@ -60,6 +60,23 @@ class DreamingHandler(TaskHandler):
             else:
                 auto_metadata = {}
 
+            # Non-conversation modes don't require conversation_id / conversation_text —
+            # route them before the guard below.
+            if mode == "chat_bridge":
+                return await self._execute_chat_bridge(task, ctx, quality_level)
+
+            if mode == "relationship_update":
+                return await self._execute_relationship_update(task, ctx)
+
+            if mode == "bonsai_growth":
+                return await self._execute_bonsai_growth(task, ctx)
+
+            if mode == "bonsai_approve":
+                return await self._execute_bonsai_approve(task, ctx)
+
+            if mode == "proposal_gate":
+                return await self._execute_proposal_gate(task, ctx)
+
             if not conversation_id or not conversation_text:
                 return TaskResult(
                     success=False,
@@ -104,21 +121,6 @@ class DreamingHandler(TaskHandler):
                             "error", "Unknown error during document dreaming"
                         ),
                     )
-
-            if mode == "chat_bridge":
-                return await self._execute_chat_bridge(task, ctx, quality_level)
-
-            if mode == "relationship_update":
-                return await self._execute_relationship_update(task, ctx)
-
-            if mode == "bonsai_growth":
-                return await self._execute_bonsai_growth(task, ctx)
-
-            if mode == "bonsai_approve":
-                return await self._execute_bonsai_approve(task, ctx)
-
-            if mode == "proposal_gate":
-                return await self._execute_proposal_gate(task, ctx)
 
             pipeline = ctx.get_dreaming_pipeline(quality_level)
             conv_role_id = task.config.get("role_id")
