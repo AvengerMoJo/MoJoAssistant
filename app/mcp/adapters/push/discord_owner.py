@@ -22,17 +22,33 @@ from typing import Any, Dict
 
 from app.mcp.adapters.push.base import PushAdapter
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(f"mojo_assistant.{__name__}")
 
 
 class DiscordOwnerAdapter(PushAdapter):
     adapter_type = "discord_owner"
 
+    async def _run(self) -> None:
+        """Wait for the Discord client to connect before starting the poll loop.
+
+        Catch-up for WAITING_FOR_INPUT tasks is handled by
+        DiscordOwnerNotifier._catchup_waiting_tasks() called from on_ready.
+        """
+        import asyncio
+        from app.community.discord_gateway import owner_notifier
+        while owner_notifier._client is None:
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                return
+        logger.info("[push/discord_owner] client ready — starting poll loop")
+        await super()._run()
+
     async def dispatch(self, event: Dict[str, Any]) -> None:
         from app.community.discord_gateway import owner_notifier
 
         if not owner_notifier._client:
-            logger.debug("[push/discord_owner] client not ready — skipping event %s", event.get("event_type"))
+            logger.debug("[push/discord_owner] client not ready — skipping %s", event.get("event_type"))
             return
 
         event_type = event.get("event_type", "")

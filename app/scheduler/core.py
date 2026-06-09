@@ -447,6 +447,8 @@ class Scheduler:
                 task.status = TaskStatus.WAITING_FOR_INPUT
                 task.pending_question = result.waiting_for_input
                 task.config["resume_from_task_id"] = task.id
+                if result.waiting_for_input_choices:
+                    task.config["pending_choices"] = result.waiting_for_input_choices
                 self.queue.update(task)
                 notify = self._should_notify_completion(task)
                 await self._broadcast({

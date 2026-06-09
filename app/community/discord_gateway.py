@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(f"mojo_assistant.{__name__}")
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,33 @@ class DiscordOwnerNotifier:
     def set_client(self, client: Any) -> None:
         self._client = client
         logger.info("[discord_owner] client set, owner_channel_id=%s", self._channel_id)
+
+    async def on_ready_hook(self) -> None:
+        """Called directly from on_ready so we're inside the event loop."""
+        await self._catchup_waiting_tasks()
+
+    async def _catchup_waiting_tasks(self) -> None:
+        """Re-notify any tasks already in WAITING_FOR_INPUT when the bot connects."""
+        logger.info("[discord_owner] catch-up: running, scheduler=%s", self._scheduler is not None)
+        if not self._scheduler:
+            logger.warning("[discord_owner] catch-up: no scheduler set — skipping")
+            return
+        try:
+            from app.scheduler.models import TaskStatus
+            waiting = self._scheduler.queue.list_tasks(status=TaskStatus.WAITING_FOR_INPUT)
+            logger.info("[discord_owner] catch-up: found %d waiting task(s)", len(waiting))
+            for task in waiting:
+                if not task.pending_question:
+                    logger.info("[discord_owner] catch-up: task %s has no pending_question", task.id)
+                    continue
+                choices = task.config.get("pending_choices") or []
+                if task.id not in {tid for tid, _ in self._pending.values()}:
+                    logger.info("[discord_owner] catch-up: notifying task %s", task.id)
+                    await self.send_hitl(task.id, task.pending_question, choices)
+                else:
+                    logger.info("[discord_owner] catch-up: task %s already pending", task.id)
+        except Exception as exc:
+            logger.warning("[discord_owner] catch-up failed: %s", exc, exc_info=True)
 
     def set_scheduler(self, scheduler: Any) -> None:
         self._scheduler = scheduler
@@ -328,6 +355,7 @@ def _build_client(config: DiscordCommunityConfig):
     async def on_ready() -> None:
         logger.info(f"[discord_gateway] ready as {client.user}")
         owner_notifier.set_client(client)
+        await owner_notifier.on_ready_hook()
 
     @client.event
     async def on_message(message: "discord.Message") -> None:
@@ -389,6 +417,8 @@ async def start_bot_async(config: Optional[DiscordCommunityConfig] = None) -> No
     except asyncio.CancelledError:
         await client.close()
         logger.info("[discord_gateway] bot stopped")
+    except Exception as exc:
+        logger.error("[discord_gateway] bot task failed: %s", exc, exc_info=True)
 
 
 def run_bot(config: Optional[DiscordCommunityConfig] = None) -> None:
