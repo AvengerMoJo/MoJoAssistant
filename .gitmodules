@@ -12,4 +12,4 @@
 	url = https://github.com/AvengerMoJo/HITLOrchestrator.git
 [submodule "submodules/mojo-voice"]
 	path = submodules/mojo-voice
-	url = git@github.com:AvengerMoJo/mojo-voice.git
+	url = https://github.com/AvengerMoJo/mojo-voice.git
