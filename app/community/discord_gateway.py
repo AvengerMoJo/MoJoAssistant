@@ -8,6 +8,11 @@ Lifecycle integration:
 - Standalone: `run_bot()` blocks the calling thread (for scripts/run_discord_bot.py)
 - Managed:    `start_bot_async()` returns a coroutine for asyncio.create_task()
               Used by http.py startup_event when ENABLE_DISCORD_BOT=true
+
+Owner HITL channel:
+- Set DISCORD_OWNER_CHANNEL_ID to a private Discord channel ID.
+- MoJo posts HITL proposals there with Approve/Reject buttons.
+- Owner can click buttons OR type a free-text reply in the channel.
 """
 
 from __future__ import annotations
@@ -19,9 +24,193 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Owner HITL notifier — singleton populated when the Discord client connects
+# ---------------------------------------------------------------------------
+
+class DiscordOwnerNotifier:
+    """Sends HITL proposals to the owner's private Discord channel.
+
+    Lifecycle:
+      1. http.py calls owner_notifier.set_scheduler(scheduler) at startup.
+      2. _build_client() calls owner_notifier.set_client(client) in on_ready.
+      3. DiscordOwnerAdapter.dispatch() calls send_hitl() / send_notification().
+      4. Button clicks / channel messages call handle_interaction() / handle_message().
+    """
+
+    def __init__(self) -> None:
+        self._client: Any = None
+        self._channel_id: Optional[int] = _owner_channel_id_from_env()
+        self._scheduler: Any = None
+        # message_id -> (task_id, choices)
+        self._pending: Dict[int, Tuple[str, List[str]]] = {}
+
+    def set_client(self, client: Any) -> None:
+        self._client = client
+        logger.info("[discord_owner] client set, owner_channel_id=%s", self._channel_id)
+
+    def set_scheduler(self, scheduler: Any) -> None:
+        self._scheduler = scheduler
+
+    async def _get_channel(self) -> Any:
+        if not self._client or not self._channel_id:
+            return None
+        ch = self._client.get_channel(self._channel_id)
+        if ch is None:
+            try:
+                ch = await self._client.fetch_channel(self._channel_id)
+            except Exception as exc:
+                logger.warning("[discord_owner] cannot fetch channel %s: %s", self._channel_id, exc)
+        return ch
+
+    async def send_hitl(
+        self,
+        task_id: str,
+        question: str,
+        choices: List[str],
+    ) -> None:
+        """Post a HITL proposal to the owner channel with button choices."""
+        ch = await self._get_channel()
+        if ch is None:
+            logger.warning("[discord_owner] owner channel not available — cannot send HITL")
+            return
+        try:
+            import discord  # type: ignore
+            embed = discord.Embed(
+                title="Owner Action Required",
+                description=question[:4096],
+                color=discord.Color.orange(),
+            )
+            embed.set_footer(text=f"task: {task_id}")
+            view = _HITLView(task_id=task_id, choices=choices, notifier=self)
+            msg = await ch.send(embed=embed, view=view)
+            self._pending[msg.id] = (task_id, choices)
+            logger.info("[discord_owner] HITL posted (task=%s, msg=%s)", task_id, msg.id)
+        except Exception as exc:
+            logger.error("[discord_owner] failed to send HITL: %s", exc)
+
+    async def send_notification(self, title: str, body: str, severity: str = "info") -> None:
+        """Post a plain informational notification to the owner channel."""
+        ch = await self._get_channel()
+        if ch is None:
+            return
+        try:
+            import discord  # type: ignore
+            color_map = {
+                "info": discord.Color.blue(),
+                "warning": discord.Color.yellow(),
+                "error": discord.Color.red(),
+                "critical": discord.Color.dark_red(),
+            }
+            embed = discord.Embed(
+                title=title,
+                description=body[:4096],
+                color=color_map.get(severity, discord.Color.blue()),
+            )
+            await ch.send(embed=embed)
+        except Exception as exc:
+            logger.error("[discord_owner] failed to send notification: %s", exc)
+
+    async def handle_button_click(self, task_id: str, choice: str) -> None:
+        """Route a button click to the scheduler as a HITL reply."""
+        self._resolve_pending_by_task(task_id)
+        self._resume(task_id, choice)
+
+    async def handle_owner_message(self, message: Any) -> None:
+        """Route a free-text message in the owner channel to the pending HITL task."""
+        if not self._pending:
+            await message.reply("No pending HITL task right now.", mention_author=False)
+            return
+        # Pick the most recent pending task
+        latest_msg_id = max(self._pending)
+        task_id, _ = self._pending[latest_msg_id]
+        self._resolve_pending_by_task(task_id)
+        self._resume(task_id, message.content.strip())
+        await message.add_reaction("✅")
+
+    def _resolve_pending_by_task(self, task_id: str) -> None:
+        self._pending = {
+            k: v for k, v in self._pending.items() if v[0] != task_id
+        }
+
+    def _resume(self, task_id: str, reply: str) -> None:
+        if not self._scheduler:
+            logger.warning("[discord_owner] scheduler not set — cannot resume task %s", task_id)
+            return
+        try:
+            self._scheduler.resume_task_with_reply(task_id, reply)
+            logger.info("[discord_owner] resumed task %s with reply '%s'", task_id, reply)
+        except Exception as exc:
+            logger.error("[discord_owner] failed to resume task %s: %s", task_id, exc)
+
+
+def _owner_channel_id_from_env() -> Optional[int]:
+    raw = os.getenv("DISCORD_OWNER_CHANNEL_ID", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return None
+
+
+class _HITLView:
+    """discord.ui.View with Approve/Reject-style buttons for HITL tasks.
+
+    Constructed lazily so discord.py import is not required at module load.
+    """
+
+    def __new__(cls, task_id: str, choices: List[str], notifier: DiscordOwnerNotifier):
+        try:
+            import discord  # type: ignore
+
+            class _View(discord.ui.View):
+                def __init__(self):
+                    super().__init__(timeout=None)
+                    for choice in choices[:5]:
+                        self.add_item(_HITLButton(task_id=task_id, choice=choice, notifier=notifier))
+
+            return _View()
+        except Exception:
+            return None  # discord.py not available — send without view
+
+
+class _HITLButton:
+    """Lazy discord.ui.Button factory for HITL choice buttons."""
+
+    def __new__(cls, task_id: str, choice: str, notifier: DiscordOwnerNotifier):
+        import discord  # type: ignore
+
+        # custom_id max 100 chars
+        cid = f"hitl:{task_id[:60]}:{choice[:30]}"
+
+        class _Button(discord.ui.Button):
+            def __init__(self):
+                style = (
+                    discord.ButtonStyle.success if choice.lower() in ("approve", "accept", "yes")
+                    else discord.ButtonStyle.danger if choice.lower() in ("reject", "no", "deny")
+                    else discord.ButtonStyle.primary
+                )
+                super().__init__(label=choice, style=style, custom_id=cid)
+                self._notifier = notifier
+                self._task_id = task_id
+                self._choice = choice
+
+            async def callback(self, interaction: discord.Interaction):
+                await interaction.response.defer(ephemeral=True)
+                await self._notifier.handle_button_click(self._task_id, self._choice)
+                await interaction.followup.send(
+                    f"Replied **{self._choice}** to task `{self._task_id}`.",
+                    ephemeral=True,
+                )
+
+        return _Button()
+
+
+# Module-level singleton — populated by _build_client() and http.py
+owner_notifier = DiscordOwnerNotifier()
 
 
 def _discord_sessions_dir() -> Path:
@@ -127,7 +316,7 @@ class CommunityAssistantService:
 
 
 def _build_client(config: DiscordCommunityConfig):
-    """Build and wire a discord.Client for the given config. Returns (client,)."""
+    """Build and wire a discord.Client for the given config. Returns the client."""
     import discord  # type: ignore
 
     intents = discord.Intents.default()
@@ -138,11 +327,21 @@ def _build_client(config: DiscordCommunityConfig):
     @client.event
     async def on_ready() -> None:
         logger.info(f"[discord_gateway] ready as {client.user}")
+        owner_notifier.set_client(client)
 
     @client.event
     async def on_message(message: "discord.Message") -> None:
         if message.author.bot:
             return
+
+        # Owner channel — route to HITL handler, not community assistant
+        if (
+            owner_notifier._channel_id is not None
+            and message.channel.id == owner_notifier._channel_id
+        ):
+            await owner_notifier.handle_owner_message(message)
+            return
+
         if config.mention_only and client.user and client.user not in message.mentions:
             return
 

@@ -43,6 +43,23 @@
     },
 
     {
+      "_comment": "=== discord_owner — bidirectional owner notifications via private Discord channel ===",
+      "_comment_setup": "Step 1: Create a private Discord channel, copy its ID (right-click → Copy Channel ID)",
+      "_comment2": "Step 2: Set DISCORD_OWNER_CHANNEL_ID=<channel_id> in .env",
+      "_comment3": "Step 3: Ensure ENABLE_DISCORD_BOT=true and DISCORD_BOT_TOKEN are set",
+      "_comment4": "Step 4: Set enabled=true below — HITL proposals arrive as Discord embeds with buttons",
+
+      "id": "discord_owner",
+      "type": "discord_owner",
+      "enabled": false,
+      "poll_interval": 15,
+      "filter": {
+        "notify_user_only": true,
+        "event_types": ["task_waiting_for_input", "task_failed", "task_completed", "system_notification"]
+      }
+    },
+
+    {
       "_comment": "=== FCM — Firebase Cloud Messaging (Android) — not yet implemented ===",
       "id": "fcm_android",
       "type": "fcm",

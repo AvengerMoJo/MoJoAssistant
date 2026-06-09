@@ -175,9 +175,13 @@ class HTTPAdapter(ProtocolAdapter):
                 if token:
                     try:
                         from app.community.discord_gateway import (
-                            DiscordCommunityConfig, start_bot_async,
+                            DiscordCommunityConfig, start_bot_async, owner_notifier,
                         )
                         cfg = DiscordCommunityConfig.from_env()
+                        # Give the owner notifier a direct scheduler ref so button
+                        # clicks and channel replies can resume HITL tasks immediately.
+                        if hasattr(self.engine, "scheduler"):
+                            owner_notifier.set_scheduler(self.engine.scheduler)
                         _discord_task = asyncio.create_task(
                             start_bot_async(cfg), name="discord_community_bot"
                         )
