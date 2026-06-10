@@ -59,6 +59,31 @@ _cv_enabled_tools:   ContextVar = ContextVar("exec_enabled_tools",   default=Non
 _TOOL_OUTPUT_CAP_CHARS = 4000
 _TOOL_OUTPUT_LARGE_TOOLS = {"bash_exec", "read_file", "file_read", "list_files", "search_in_files"}
 
+# Smoke-only tool definitions. These are intentionally kept out of the normal
+# builtin tool surface and are only injected for internal smoke-test tasks.
+SMOKE_ONLY_TOOLS = {
+    "smoke_lookup": {
+        "type": "function",
+        "function": {
+            "name": "smoke_lookup",
+            "description": (
+                "Look up a deterministic smoke-test token by key. "
+                "Available keys: 'alpha', 'beta', 'gamma', 'delta'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Lookup key, e.g. 'alpha'.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+}
+
 
 def _estimate_tokens(messages: List[Dict]) -> int:
     """Fast token estimate: ~4 chars per token + 10 overhead per message."""
@@ -597,8 +622,15 @@ class AgenticExecutor:
         _cv_task_id.set(task.id)
         self._tool_calls_made = 0
         # Propagate task context to registry for sub-agent dispatch linkage + role scoping
-        _task_role_id = (task.config or {}).get("role_id") if task.config else None
-        self._tool_registry.set_task_context(task.id, task.dispatch_depth, role_id=_task_role_id)
+        _task_config = task.config or {}
+        _task_role_id = _task_config.get("role_id")
+        _task_available_tools = _task_config.get("available_tools") or None
+        self._tool_registry.set_task_context(
+            task.id,
+            task.dispatch_depth,
+            role_id=_task_role_id,
+            available_tools=_task_available_tools,
+        )
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -847,6 +879,8 @@ class AgenticExecutor:
         # self._enabled_tool_names is set; nothing to re-resolve here.
         tool_defs = []
 
+        smoke_tool_defs = SMOKE_ONLY_TOOLS if config.get("_smoke_test") else {}
+
         for tool_name in enabled_tool_names:
             # Check dynamic registry first
             tool = self._tool_registry.get_tool(tool_name)
@@ -855,6 +889,8 @@ class AgenticExecutor:
             # Fallback to builtins
             elif tool_name in BUILTIN_TOOLS:
                 tool_defs.append(BUILTIN_TOOLS[tool_name])
+            elif tool_name in smoke_tool_defs:
+                tool_defs.append(smoke_tool_defs[tool_name])
 
         # --- Capability gap check (fresh starts only) ---
         # Phase 1: fast phrase-based check (no LLM, free).
@@ -2661,6 +2697,9 @@ class AgenticExecutor:
             )
             return {"query": query, "results": results, "count": len(results)}
 
+        if name == "smoke_lookup":
+            return self._execute_smoke_lookup(args)
+
         if name.startswith("browser_") or name == "browser":
             return await self._execute_browser_facade(name, args)
 
@@ -2695,6 +2734,29 @@ class AgenticExecutor:
                 duration_minutes=int(args.get("duration_minutes", 30)),
             )
         return {"error": f"Unknown google calendar tool: {name}"}
+
+    _SMOKE_LOOKUP_TABLE = {
+        "alpha": "smoke_ok:alpha:a7c3f1",
+        "beta": "smoke_ok:beta:b9d2e4",
+        "gamma": "smoke_ok:gamma:g1f8a6",
+        "delta": "smoke_ok:delta:d4e5b7",
+    }
+
+    def _execute_smoke_lookup(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        query = (args.get("query") or "").strip().lower()
+        if not query:
+            return {"error": "query is required"}
+        token = self._SMOKE_LOOKUP_TABLE.get(query)
+        if token is None:
+            return {
+                "query": query,
+                "result": None,
+                "error": (
+                    f"Unknown key '{query}'. "
+                    f"Valid keys: {sorted(self._SMOKE_LOOKUP_TABLE)}"
+                ),
+            }
+        return {"query": query, "result": token}
 
     # --- browser facade ---------------------------------------------------------
 
