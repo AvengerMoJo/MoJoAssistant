@@ -1,7 +1,7 @@
 """Discord Owner Push Adapter
 
-Delivers MoJo events to the owner's private Discord channel.
-Supports bidirectional HITL: owner can click buttons or type replies.
+Polls the EventLog for MoJo events and delivers them to the owner's private
+Discord channel via the registered DiscordHITLAdapter.
 
 Config example (notifications_config.json):
   {
@@ -29,26 +29,22 @@ class DiscordOwnerAdapter(PushAdapter):
     adapter_type = "discord_owner"
 
     async def _run(self) -> None:
-        """Wait for the Discord client to connect before starting the poll loop.
-
-        Catch-up for WAITING_FOR_INPUT tasks is handled by
-        DiscordOwnerNotifier._catchup_waiting_tasks() called from on_ready.
-        """
+        """Wait for the HITL adapter to be ready before starting the poll loop."""
         import asyncio
-        from app.community.discord_gateway import owner_notifier
-        while owner_notifier._client is None:
+        from app.community import discord_gateway
+        while discord_gateway._hitl_adapter is None or getattr(discord_gateway._hitl_adapter, "_client", None) is None:
             try:
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
                 return
-        logger.info("[push/discord_owner] client ready — starting poll loop")
+        logger.info("[push/discord_owner] HITL adapter ready — starting poll loop")
         await super()._run()
 
     async def dispatch(self, event: Dict[str, Any]) -> None:
-        from app.community.discord_gateway import owner_notifier
-
-        if not owner_notifier._client:
-            logger.debug("[push/discord_owner] client not ready — skipping %s", event.get("event_type"))
+        from app.community import discord_gateway
+        adapter = discord_gateway._hitl_adapter
+        if adapter is None or getattr(adapter, "_client", None) is None:
+            logger.debug("[push/discord_owner] HITL adapter not ready — skipping %s", event.get("event_type"))
             return
 
         event_type = event.get("event_type", "")
@@ -60,13 +56,13 @@ class DiscordOwnerAdapter(PushAdapter):
             if not task_id:
                 logger.warning("[push/discord_owner] task_waiting_for_input with no task_id")
                 return
-            await owner_notifier.send_hitl(
+            await adapter.send_hitl(
                 task_id=task_id,
                 question=question,
                 choices=choices,
             )
         else:
-            await owner_notifier.send_notification(
+            await adapter.send_notification(
                 title=self._format_title(event),
                 body=self._format_body(event),
                 severity=event.get("severity", "info"),

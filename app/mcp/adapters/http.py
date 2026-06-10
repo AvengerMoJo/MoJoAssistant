@@ -130,14 +130,15 @@ class HTTPAdapter(ProtocolAdapter):
             oauth_middleware = OAuthMiddleware(self.oauth_config)
             app.middleware("http")(oauth_middleware)
 
-        # Discord bot task handle — kept so shutdown_event can cancel it
+        # Discord bot task handle + HITL manager — kept so shutdown_event can clean up
         _discord_task: asyncio.Task = None
+        _hitl_manager = None
 
         # Add startup and shutdown event handlers
         @app.on_event("startup")
         async def startup_event():
             """Application startup event handler"""
-            nonlocal _discord_task
+            nonlocal _discord_task, _hitl_manager
             if self.logger:
                 self.logger.info("MCP Server startup initiated")
 
@@ -169,22 +170,34 @@ class HTTPAdapter(ProtocolAdapter):
                 except Exception as e:
                     self.logger.error(f"Error during startup initialization: {e}")
 
+            # Start HITL adapters (must happen before Discord bot so adapter
+            # registers itself with discord_gateway before on_ready fires)
+            _sched = getattr(
+                getattr(self.engine, "tool_registry", None), "scheduler", None
+            )
+            try:
+                from app.mcp.adapters.hitl.manager import HITLManager
+                _hitl_manager = HITLManager.load_from_config()
+                if _sched is not None:
+                    _hitl_manager.set_scheduler(_sched)
+                await _hitl_manager.start()
+                if self.logger:
+                    self.logger.info(
+                        "[hitl] started %d adapter(s)", len(_hitl_manager)
+                    )
+            except Exception as exc:
+                if self.logger:
+                    self.logger.warning("[hitl] manager startup failed: %s", exc)
+
             # Start Discord community bot if enabled
             if os.getenv("ENABLE_DISCORD_BOT", "false").lower() in ("true", "1", "yes"):
                 token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
                 if token:
                     try:
                         from app.community.discord_gateway import (
-                            DiscordCommunityConfig, start_bot_async, owner_notifier,
+                            DiscordCommunityConfig, start_bot_async,
                         )
                         cfg = DiscordCommunityConfig.from_env()
-                        # Give the owner notifier a direct scheduler ref so button
-                        # clicks and channel replies can resume HITL tasks immediately.
-                        _sched = getattr(
-                            getattr(self.engine, "tool_registry", None), "scheduler", None
-                        )
-                        if _sched is not None:
-                            owner_notifier.set_scheduler(_sched)
                         _discord_task = asyncio.create_task(
                             start_bot_async(cfg), name="discord_community_bot"
                         )
@@ -205,7 +218,7 @@ class HTTPAdapter(ProtocolAdapter):
         @app.on_event("shutdown")
         async def shutdown_event():
             """Application shutdown event handler"""
-            nonlocal _discord_task
+            nonlocal _discord_task, _hitl_manager
             if _discord_task and not _discord_task.done():
                 _discord_task.cancel()
                 try:
@@ -214,6 +227,9 @@ class HTTPAdapter(ProtocolAdapter):
                     pass
                 if self.logger:
                     self.logger.info("[discord_gateway] bot stopped")
+
+            if _hitl_manager is not None:
+                await _hitl_manager.stop()
 
             if self.logger:
                 self.logger.info("MCP Server shutdown initiated")
