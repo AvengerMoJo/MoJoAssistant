@@ -177,6 +177,7 @@ class CapabilityRegistry:
         self._scheduler = None
         self._current_task_id: Optional[str] = None
         self._current_dispatch_depth: int = 0
+        self._current_available_tools: Optional[list] = None  # enforced allowlist
         self._tools: Dict[str, CapabilityDefinition] = {}
         self._ensure_registry_seeded()
         self._load_registry()
@@ -552,6 +553,17 @@ class CapabilityRegistry:
         user_id: str = None,
     ) -> Dict[str, Any]:
         """Execute a tool, dispatching on executor type."""
+        # Enforce available_tools allowlist set by the current task context.
+        if self._current_available_tools is not None and name not in self._current_available_tools:
+            return {
+                "success": False,
+                "error": (
+                    f"Tool '{name}' is not in this task's available_tools list "
+                    f"({', '.join(self._current_available_tools)}). "
+                    "Remove it from your plan."
+                ),
+            }
+
         tool = self.get_tool(name)
         if not tool:
             return {"success": False, "error": f"Tool '{name}' not found"}
@@ -1541,11 +1553,19 @@ class CapabilityRegistry:
         """Set the MCPClientManager for external_mcp executor support."""
         self._mcp_client_manager = manager
 
-    def set_task_context(self, task_id: str, dispatch_depth: int = 0, role_id: Optional[str] = None) -> None:
+    def set_task_context(
+        self,
+        task_id: str,
+        dispatch_depth: int = 0,
+        role_id: Optional[str] = None,
+        available_tools: Optional[list] = None,
+    ) -> None:
         """Set the current task context so dispatch_subtask can link parent→child."""
         self._current_task_id = task_id
         self._current_dispatch_depth = dispatch_depth
         self._current_role_id = role_id  # used to scope memory_search to the active role
+        # None means "no restriction"; an explicit list is enforced as an allowlist.
+        self._current_available_tools = list(available_tools) if available_tools is not None else None
 
     def set_scheduler(self, scheduler) -> None:
         """Set the Scheduler for scheduler_add_task tool support."""
