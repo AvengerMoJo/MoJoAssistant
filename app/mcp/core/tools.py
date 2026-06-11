@@ -4034,6 +4034,24 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Context probe failed: {e}"}
 
+
+    async def _execute_config_doctor_smoke_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return recent resource smoke-history records from the append-only log."""
+        try:
+            rm = self._get_resource_manager()
+            resource_id = (args.get("resource_id") or "").strip() or None
+            limit = int(args.get("limit") or 20)
+            limit = max(1, min(limit, 200))
+            rows = rm.get_agentic_smoke_history(resource_id=resource_id, limit=limit)
+            return {
+                "status": "success",
+                "resource_id": resource_id,
+                "count": len(rows),
+                "items": rows,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"doctor_smoke_history failed: {e}"}
+
     async def _execute_config_healer(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Suggest (and optionally apply) config improvements driven by runtime data.
@@ -4372,6 +4390,9 @@ Agent resumes within seconds.
             for res_id, info in status.items():
                 capable = rm.get_agentic_capable(res_id)
                 info["agentic_capable"] = capable  # None = not yet tested
+                smoke_meta = rm.get_agentic_smoke_metadata(res_id)
+                if smoke_meta:
+                    info["agentic_smoke"] = smoke_meta
             return {
                 "status": "success",
                 "resources": status,
@@ -4454,6 +4475,8 @@ Agent resumes within seconds.
         merged.update({k: v for k, v in args.items() if v is not None})
 
         resource_id = str(merged.get("resource_id", "")).strip()
+        profile = (merged.get("profile") or "fast_gate").strip() or "fast_gate"
+        integration_checks = merged.get("integration_checks") or None
         full = bool(merged.get("full", False))
         role_id = (merged.get("role_id") or "").strip() or None
         dynamic_goal = (merged.get("dynamic_goal") or "").strip() or None
@@ -4471,6 +4494,7 @@ Agent resumes within seconds.
             tester = AgenticSmokeTest()
             result = await tester.run(
                 resource_id=resource_id,
+                profile=profile,
                 full=full,
                 role_id=role_id,
                 dynamic_goal=dynamic_goal,
@@ -4480,17 +4504,18 @@ Agent resumes within seconds.
                 dynamic_system_prompt=dynamic_system_prompt,
                 debug_artifact=debug_artifact,
                 issue_note=issue_note,
+                integration_checks=integration_checks,
             )
 
-            # Persist agentic_capable flag to ResourceManager
+            data = result.to_dict()
+
+            # Persist structured smoke result to ResourceManager + smoke log
             try:
                 from app.scheduler.resource_pool import ResourceManager
                 rm = ResourceManager()
-                rm.set_agentic_capable(resource_id, result.agentic_capable)
+                rm.record_agentic_smoke_result(resource_id, data)
             except Exception:
                 pass
-
-            data = result.to_dict()
             data["status"] = "success"
             return data
         except Exception as e:
@@ -5317,6 +5342,8 @@ Agent resumes within seconds.
             return await self._execute_config_doctor({})
         if action == "doctor_context_probe":
             return await self._execute_config_doctor_context_probe(args)
+        if action == "doctor_smoke_history":
+            return await self._execute_config_doctor_smoke_history(args)
         if action in ("doctor_improve", "doctor_apply"):
             return await self._execute_config_healer(args)
 
@@ -5365,6 +5392,7 @@ Agent resumes within seconds.
                         "capability_remove":     "Remove a user-created capability — params: tool_name (system capabilities are protected)",
                         "doctor":                "Full config pre-flight report",
                         "doctor_context_probe":  "Run cached empirical context-limit discovery script — params: resource_id? | all_enabled_local? | ladder? | connect_timeout? | read_timeout?",
+                        "doctor_smoke_history":  "Show recent resource smoke-test history from the append-only log — params: resource_id?, limit?",
                         "doctor_improve":        "Suggest config improvements from runtime data (benchmark history, failure patterns) — no changes written",
                         "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
                         "preflight":             "Check system dependencies and MCP tool installation status (use scripts/preflight.py for interactive install)",

@@ -68,7 +68,7 @@ SMOKE_ONLY_TOOLS = {
             "name": "smoke_lookup",
             "description": (
                 "Look up a deterministic smoke-test token by key. "
-                "Available keys: 'alpha', 'beta', 'gamma', 'delta'."
+                "Available keys include alpha/beta/gamma/delta and plan_red/plan_blue/plan_green."
             ),
             "parameters": {
                 "type": "object",
@@ -79,6 +79,26 @@ SMOKE_ONLY_TOOLS = {
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    "smoke_fail_once": {
+        "type": "function",
+        "function": {
+            "name": "smoke_fail_once",
+            "description": (
+                "Fails on the first call for a given key and succeeds on the second call. "
+                "Used only by internal smoke tests to validate retry behavior."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Retry test key, e.g. 'test'.",
+                    },
+                },
+                "required": ["key"],
             },
         },
     },
@@ -766,7 +786,10 @@ class AgenticExecutor:
 
         # Resolve tool names: system defaults + role capabilities + runtime override.
         enabled_tool_names = self._capability_resolver.resolve(
-            role, config.get("available_tools"), self._tool_registry
+            role,
+            config.get("available_tools"),
+            self._tool_registry,
+            allow_smoke_tools=bool(config.get("_smoke_test")),
         )
         self._enabled_tool_names = enabled_tool_names
         _cv_enabled_tools.set(enabled_tool_names)
@@ -2700,6 +2723,9 @@ class AgenticExecutor:
         if name == "smoke_lookup":
             return self._execute_smoke_lookup(args)
 
+        if name == "smoke_fail_once":
+            return self._execute_smoke_fail_once(args)
+
         if name.startswith("browser_") or name == "browser":
             return await self._execute_browser_facade(name, args)
 
@@ -2740,6 +2766,9 @@ class AgenticExecutor:
         "beta": "smoke_ok:beta:b9d2e4",
         "gamma": "smoke_ok:gamma:g1f8a6",
         "delta": "smoke_ok:delta:d4e5b7",
+        "plan_red": "plan=plan_red cost=4 latency=6 valid=yes",
+        "plan_blue": "plan=plan_blue cost=3 latency=3 valid=no",
+        "plan_green": "plan=plan_green cost=6 latency=4 valid=yes",
     }
 
     def _execute_smoke_lookup(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -2757,6 +2786,24 @@ class AgenticExecutor:
                 ),
             }
         return {"query": query, "result": token}
+
+    def _execute_smoke_fail_once(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        key = (args.get("key") or "default").strip()
+        seen = getattr(self, "_smoke_fail_once_seen", None)
+        if seen is None:
+            seen = set()
+            self._smoke_fail_once_seen = seen
+        if key not in seen:
+            seen.add(key)
+            return {
+                "error": f"Transient failure for key '{key}'. Please retry the same call.",
+                "retryable": True,
+            }
+        return {
+            "key": key,
+            "result": f"smoke_retry_ok:{key}",
+            "message": "Retry succeeded.",
+        }
 
     # --- browser facade ---------------------------------------------------------
 
