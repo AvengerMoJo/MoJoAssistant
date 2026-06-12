@@ -4052,6 +4052,54 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"doctor_smoke_history failed: {e}"}
 
+
+    async def _execute_config_doctor_mcp_surface(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Explain full vs lean MCP tool surfaces and report payload size differences."""
+        try:
+            size = self.get_tools_lean_json_size()
+            return {
+                "status": "success",
+                "mode": "mcp_tool_surface",
+                "summary": {
+                    "full_bytes": size["full_bytes"],
+                    "lean_bytes": size["lean_bytes"],
+                    "reduction_pct": size["reduction_pct"],
+                },
+                "behavior": {
+                    "full": "Full MCP tool schema with full descriptions and parameter metadata.",
+                    "lean": "Same MCP tools, but descriptions/defaults stripped from inputSchema and tool descriptions truncated.",
+                    "prompt_difference": "None in scheduler execution. Lean mode changes only the MCP tools/list payload, not the agentic system prompt.",
+                    "activation": "Set MOJO_LEAN_MCP=1 to return lean schemas from MCP tools/list.",
+                },
+                "per_tool": size["per_tool"],
+                "per_tool_lean": size["per_tool_lean"],
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"doctor_mcp_surface failed: {e}"}
+
+
+    async def _execute_config_doctor_mcp_surface_eval(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the same smoke profile with full vs lean tool schemas and compare the outcomes."""
+        try:
+            resource_id = (args.get("resource_id") or "").strip()
+            if not resource_id:
+                return {"status": "error", "message": "resource_id is required"}
+            profile = (args.get("profile") or "fast_gate").strip() or "fast_gate"
+            repeats = max(1, min(int(args.get("repeats") or 1), 10))
+            integration_checks = args.get("integration_checks") or None
+            from app.scheduler.agentic_smoke_test import AgenticSmokeTest
+            tester = AgenticSmokeTest()
+            result = await tester.compare_tool_schema_modes(
+                resource_id=resource_id,
+                profile=profile,
+                integration_checks=integration_checks,
+                repeats=repeats,
+            )
+            result["status"] = "success"
+            return result
+        except Exception as e:
+            return {"status": "error", "message": f"doctor_mcp_surface_eval failed: {e}"}
+
     async def _execute_config_healer(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Suggest (and optionally apply) config improvements driven by runtime data.
@@ -5344,6 +5392,10 @@ Agent resumes within seconds.
             return await self._execute_config_doctor_context_probe(args)
         if action == "doctor_smoke_history":
             return await self._execute_config_doctor_smoke_history(args)
+        if action == "doctor_mcp_surface":
+            return await self._execute_config_doctor_mcp_surface(args)
+        if action == "doctor_mcp_surface_eval":
+            return await self._execute_config_doctor_mcp_surface_eval(args)
         if action in ("doctor_improve", "doctor_apply"):
             return await self._execute_config_healer(args)
 
@@ -5393,6 +5445,8 @@ Agent resumes within seconds.
                         "doctor":                "Full config pre-flight report",
                         "doctor_context_probe":  "Run cached empirical context-limit discovery script — params: resource_id? | all_enabled_local? | ladder? | connect_timeout? | read_timeout?",
                         "doctor_smoke_history":  "Show recent resource smoke-test history from the append-only log — params: resource_id?, limit?",
+                        "doctor_mcp_surface":    "Compare full vs lean MCP tool surfaces and payload sizes",
+                        "doctor_mcp_surface_eval":"Run the same smoke profile with full vs lean tool schemas and compare results — params: resource_id, profile?, repeats?, integration_checks?",
                         "doctor_improve":        "Suggest config improvements from runtime data (benchmark history, failure patterns) — no changes written",
                         "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
                         "preflight":             "Check system dependencies and MCP tool installation status (use scripts/preflight.py for interactive install)",

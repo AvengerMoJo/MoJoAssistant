@@ -91,6 +91,7 @@ class SmokeTestResult:
     model: str
     agentic_capable: bool
     smoke_profile: str = "fast_gate"
+    tool_schema_mode: str = "full"
     checks: Dict[str, SmokeCheckResult] = field(default_factory=dict)
     iterations_used: int = 0
     duration_seconds: float = 0.0
@@ -103,6 +104,7 @@ class SmokeTestResult:
             "model": self.model,
             "agentic_capable": self.agentic_capable,
             "smoke_profile": self.smoke_profile,
+            "tool_schema_mode": self.tool_schema_mode,
             "checks": {
                 name: {
                     "status": c.status,
@@ -123,6 +125,7 @@ class SmokeTestResult:
 class _SingleResourceManager:
     def __init__(self, resource):
         self._resource = resource
+        self._resources = {resource.id: resource} if resource else {}
 
     def acquire(self, **kwargs):
         return self._resource
@@ -151,6 +154,7 @@ class AgenticSmokeTest:
         max_duration_seconds: int = 90,
         smoke_test: bool = False,
         memory_service: Optional[Any] = None,
+        tool_schema_mode: str = "full",
     ) -> tuple:
         from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
         task_config = {
@@ -161,6 +165,7 @@ class AgenticSmokeTest:
         }
         if smoke_test:
             task_config["_smoke_test"] = True
+        task_config["_tool_schema_mode"] = tool_schema_mode
         if role_id:
             task_config["role_id"] = role_id
         if planning_prompt:
@@ -200,6 +205,31 @@ class AgenticSmokeTest:
         task_result = await executor.execute(task)
         metrics = task_result.metrics or {}
         return task_result, metrics.get("iteration_log", []), metrics.get("final_answer")
+
+    async def _run_single_task_adhoc(
+        self,
+        resource,
+        task_id: str,
+        goal: str,
+        available_tools: list,
+        max_iterations: int = 4,
+        max_duration_seconds: int = 90,
+    ) -> tuple:
+        """Public wrapper for ad-hoc testing — returns (iteration_log, final_answer).
+
+        Same as _run_single_task but without role/planning/system overrides,
+        and returns only the parts the CLI needs.
+        """
+        _, iter_log, answer = await self._run_single_task(
+            resource=resource,
+            task_id=task_id,
+            goal=goal,
+            available_tools=available_tools,
+            max_iterations=max_iterations,
+            max_duration_seconds=max_duration_seconds,
+            smoke_test=True,
+        )
+        return iter_log, answer
 
     def _write_debug_bundle(self, payload: Dict[str, Any]) -> Optional[str]:
         try:
@@ -320,6 +350,7 @@ class AgenticSmokeTest:
                 available_tools=["bash_exec"],
                 max_iterations=4,
                 max_duration_seconds=90,
+                tool_schema_mode=tool_schema_mode,
             )
         except Exception as e:
             return SmokeCheckResult(
@@ -369,6 +400,7 @@ class AgenticSmokeTest:
         debug_artifact: bool = False,
         issue_note: Optional[str] = None,
         integration_checks: Optional[list[str]] = None,
+        tool_schema_mode: str = "full",
     ) -> SmokeTestResult:
         start = time.time()
         profile_cfg = _PROFILES.get(profile)
@@ -379,6 +411,7 @@ class AgenticSmokeTest:
                 agentic_capable=False,
                 smoke_profile=profile,
                 error=f"Unknown profile '{profile}'. Valid: {sorted(_PROFILES)}",
+                tool_schema_mode=tool_schema_mode,
             )
 
         try:
@@ -392,6 +425,7 @@ class AgenticSmokeTest:
                     agentic_capable=False,
                     smoke_profile=profile,
                     error=f"Resource '{resource_id}' not found in llm_config",
+                    tool_schema_mode=tool_schema_mode,
                 )
         except Exception as e:
             return SmokeTestResult(
@@ -400,6 +434,7 @@ class AgenticSmokeTest:
                 agentic_capable=False,
                 smoke_profile=profile,
                 error=f"Failed to load resource pool: {e}",
+                tool_schema_mode=tool_schema_mode,
             )
 
         model = resource.model or "?"
@@ -423,6 +458,7 @@ class AgenticSmokeTest:
                 max_iterations=profile_cfg["max_iterations"],
                 max_duration_seconds=profile_cfg["max_duration_seconds"],
                 smoke_test=True,
+                tool_schema_mode=tool_schema_mode,
             )
         except Exception as e:
             return SmokeTestResult(
@@ -432,6 +468,7 @@ class AgenticSmokeTest:
                 smoke_profile=profile,
                 error=f"Executor failed: {e}",
                 duration_seconds=time.time() - start,
+                tool_schema_mode=tool_schema_mode,
             )
 
         expected_tool = dynamic_expected_tool or "smoke_lookup"
@@ -482,6 +519,7 @@ class AgenticSmokeTest:
                     available_tools=["write_file"],
                     max_iterations=5,
                     max_duration_seconds=60,
+                    tool_schema_mode=tool_schema_mode,
                 )
                 write_tool_called = self._check_tool_called(wf_log, "write_file")
                 file_written = os.path.isfile(write_target)
@@ -541,6 +579,7 @@ class AgenticSmokeTest:
                     max_iterations=8,
                     max_duration_seconds=120,
                     smoke_test=True,
+                    tool_schema_mode=tool_schema_mode,
                 )
                 lookup_called = self._check_tool_called(tc_log, "smoke_lookup")
                 write_called = self._check_tool_called(tc_log, "write_file")
@@ -592,6 +631,7 @@ class AgenticSmokeTest:
                     max_iterations=6,
                     max_duration_seconds=90,
                     smoke_test=True,
+                    tool_schema_mode=tool_schema_mode,
                 )
                 retry_calls = sum(
                     1
@@ -640,6 +680,7 @@ class AgenticSmokeTest:
                     max_iterations=10,
                     max_duration_seconds=180,
                     smoke_test=True,
+                    tool_schema_mode=tool_schema_mode,
                 )
                 lookup_calls = sum(
                     e.get("tool_calls", []).count("smoke_lookup")
@@ -716,6 +757,7 @@ class AgenticSmokeTest:
             "available_tools": dynamic_available_tools or ["smoke_lookup"],
             "expected_tool": expected_tool,
             "planning_prompt": dynamic_planning_prompt,
+            "tool_schema_mode": tool_schema_mode,
             "checks": {
                 k: {
                     "status": v.status,
@@ -743,8 +785,64 @@ class AgenticSmokeTest:
             model=model,
             agentic_capable=agentic_capable,
             smoke_profile=profile,
+            tool_schema_mode=tool_schema_mode,
             checks=checks,
             iterations_used=len(iteration_log),
             duration_seconds=time.time() - start,
             debug_bundle=debug_bundle,
         )
+
+
+    async def compare_tool_schema_modes(
+        self,
+        resource_id: str,
+        profile: str = "fast_gate",
+        integration_checks: Optional[list[str]] = None,
+        repeats: int = 1,
+    ) -> Dict[str, Any]:
+        repeats = max(1, repeats)
+        runs: Dict[str, list[dict]] = {"full": [], "lean": []}
+        for mode in ("full", "lean"):
+            for _ in range(repeats):
+                result = await self.run(
+                    resource_id=resource_id,
+                    profile=profile,
+                    integration_checks=integration_checks,
+                    tool_schema_mode=mode,
+                )
+                runs[mode].append(result.to_dict())
+
+        def _summarize(items: list[dict]) -> Dict[str, Any]:
+            if not items:
+                return {"runs": 0, "pass_rate": 0.0, "avg_duration_seconds": None, "failing_checks": []}
+            pass_count = sum(1 for i in items if i.get("agentic_capable"))
+            durations = [float(i.get("duration_seconds") or 0.0) for i in items]
+            failing_checks = sorted({
+                name
+                for item in items
+                for name, check in (item.get("checks") or {}).items()
+                if check.get("status") == "fail"
+            })
+            return {
+                "runs": len(items),
+                "pass_rate": round(pass_count / len(items), 3),
+                "avg_duration_seconds": round(sum(durations) / len(durations), 2),
+                "failing_checks": failing_checks,
+            }
+
+        model = None
+        for mode_items in runs.values():
+            if mode_items:
+                model = mode_items[0].get("model")
+                break
+        return {
+            "resource_id": resource_id,
+            "model": model,
+            "profile": profile,
+            "integration_checks": list(integration_checks or []),
+            "modes": runs,
+            "summary": {
+                "full": _summarize(runs["full"]),
+                "lean": _summarize(runs["lean"]),
+            },
+        }

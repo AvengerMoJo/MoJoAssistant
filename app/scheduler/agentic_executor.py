@@ -105,6 +105,36 @@ SMOKE_ONLY_TOOLS = {
 }
 
 
+
+
+def _to_lean_openai_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Strip nonessential schema description/default fields from OpenAI tool defs."""
+    import copy
+
+    def _strip_schema(node: Any) -> Any:
+        if isinstance(node, dict):
+            out = {}
+            for key, value in node.items():
+                if key in {"description", "default"}:
+                    continue
+                out[key] = _strip_schema(value)
+            return out
+        if isinstance(node, list):
+            return [_strip_schema(v) for v in node]
+        return node
+
+    lean_tools: List[Dict[str, Any]] = []
+    for tool in tools:
+        lean = copy.deepcopy(tool)
+        fn = lean.get("function", {})
+        desc = fn.get("description")
+        if isinstance(desc, str):
+            fn["description"] = desc.split("\n", 1)[0]
+        if "parameters" in fn:
+            fn["parameters"] = _strip_schema(fn["parameters"])
+        lean_tools.append(lean)
+    return lean_tools
+
 def _estimate_tokens(messages: List[Dict]) -> int:
     """Fast token estimate: ~4 chars per token + 10 overhead per message."""
     total = 0
@@ -914,6 +944,9 @@ class AgenticExecutor:
                 tool_defs.append(BUILTIN_TOOLS[tool_name])
             elif tool_name in smoke_tool_defs:
                 tool_defs.append(smoke_tool_defs[tool_name])
+
+        if config.get("_tool_schema_mode") == "lean":
+            tool_defs = _to_lean_openai_tools(tool_defs)
 
         # --- Capability gap check (fresh starts only) ---
         # Phase 1: fast phrase-based check (no LLM, free).
