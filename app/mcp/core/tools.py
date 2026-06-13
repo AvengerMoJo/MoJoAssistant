@@ -4227,6 +4227,46 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+
+    async def _execute_config_doctor_smoke_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Backward-compatible wrapper for legacy smoke-history action."""
+        try:
+            rm = self._get_resource_manager()
+            resource_id = (args.get("resource_id") or "").strip() or None
+            limit = int(args.get("limit") or 20)
+            limit = max(1, min(limit, 200))
+            rows = rm.get_agentic_smoke_history(resource_id=resource_id, limit=limit)
+            return {
+                "status": "success",
+                "resource_id": resource_id,
+                "count": len(rows),
+                "items": rows,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"doctor_smoke_history failed: {e}"}
+
+    async def _execute_config_doctor_mcp_surface_eval(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Backward-compatible wrapper for legacy full-vs-lean compare action."""
+        try:
+            resource_id = (args.get("resource_id") or "").strip()
+            if not resource_id:
+                return {"status": "error", "message": "resource_id is required"}
+            profile = (args.get("profile") or "fast_gate").strip() or "fast_gate"
+            repeats = max(1, min(int(args.get("repeats") or 1), 10))
+            integration_checks = args.get("integration_checks") or None
+            from app.scheduler.agentic_smoke_test import AgenticSmokeTest
+            tester = AgenticSmokeTest()
+            result = await tester.compare_tool_schema_modes(
+                resource_id=resource_id,
+                profile=profile,
+                integration_checks=integration_checks,
+                repeats=repeats,
+            )
+            result["status"] = "success"
+            return result
+        except Exception as e:
+            return {"status": "error", "message": f"doctor_mcp_surface_eval failed: {e}"}
+
     async def _execute_doctor_eval_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Query evaluation history from eval_log.jsonl.
 
@@ -4787,6 +4827,7 @@ Agent resumes within seconds.
         dynamic_expected_tool = (merged.get("dynamic_expected_tool") or "").strip() or None
         dynamic_planning_prompt = (merged.get("dynamic_planning_prompt") or "").strip() or None
         dynamic_system_prompt = (merged.get("dynamic_system_prompt") or "").strip() or None
+        integration_checks = merged.get("integration_checks")
         debug_artifact = bool(merged.get("debug_artifact", False))
         issue_note = (merged.get("issue_note") or "").strip() or None
         if not resource_id:
@@ -4805,6 +4846,7 @@ Agent resumes within seconds.
                 dynamic_expected_tool=dynamic_expected_tool,
                 dynamic_planning_prompt=dynamic_planning_prompt,
                 dynamic_system_prompt=dynamic_system_prompt,
+                integration_checks=integration_checks,
                 debug_artifact=debug_artifact,
                 issue_note=issue_note,
             )

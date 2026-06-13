@@ -29,6 +29,10 @@ _PROFILES = {
         "max_iterations": 8,
         "max_duration_seconds": 120,
     },
+    "reasoning_stress": {
+        "max_iterations": 12,
+        "max_duration_seconds": 300,
+    },
 }
 
 _FAST_GATE_GOAL = (
@@ -48,6 +52,13 @@ _RETRY_GOAL = (
     "If the tool returns an error and retryable=true, call the same tool again with the same key. "
     "Continue until the tool succeeds. "
     "Then provide a <FINAL_ANSWER> with the exact result value."
+)
+
+_REASONING_GOAL = (
+    "Use smoke_lookup to look up keys 'plan_red', 'plan_blue', and 'plan_green'. "
+    "Choose the cheapest valid plan. "
+    "Then use write_file to write only the winning plan key to the requested path. "
+    "Provide a <FINAL_ANSWER> explaining which plan wins and why the others fail."
 )
 
 
@@ -97,6 +108,7 @@ class SmokeTestResult:
 class _SingleResourceManager:
     def __init__(self, resource):
         self._resource = resource
+        self._resources = {resource.id: resource} if resource else {}
 
     def acquire(self, **kwargs):
         return self._resource
@@ -109,8 +121,85 @@ class _SingleResourceManager:
 
 
 class AgenticSmokeTest:
+    # Profile → eval suite mapping for compatibility wrapper
+    _PROFILE_TO_SUITE = {
+        "fast_gate": "qualification_fast",
+        "standard_agentic": "qualification_standard",
+        "reasoning_stress": "qualification_reasoning",
+    }
+
     def __init__(self):
         pass
+
+    async def run_eval(
+        self,
+        resource_id: str,
+        profile: str = "fast_gate",
+        resource=None,
+    ) -> dict:
+        """Compatibility wrapper — delegates to the generic eval runner.
+
+        Maps smoke profiles to eval suites and returns a smoke-compatible result dict.
+        This is the new preferred path; use run() for legacy backward compatibility.
+        """
+        from app.scheduler.evals.runner import EvalRunner
+        from app.scheduler.evals.suites import get_suite
+        from app.scheduler.evals.store import EvalStore
+
+        suite_id = self._PROFILE_TO_SUITE.get(profile)
+        if suite_id is None:
+            return {
+                "resource_id": resource_id,
+                "agentic_capable": False,
+                "smoke_profile": profile,
+                "error": f"Unknown profile '{profile}'",
+            }
+
+        # Resolve resource
+        if resource is None:
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            resource = rm._resources.get(resource_id)
+            if resource is None:
+                return {
+                    "resource_id": resource_id,
+                    "agentic_capable": False,
+                    "smoke_profile": profile,
+                    "error": f"Resource '{resource_id}' not found",
+                }
+
+        suite = get_suite(suite_id)
+        runner = EvalRunner()
+
+        records = await runner.run_suite(
+            resource=resource,
+            scenario_ids=suite.default_scenarios,
+            resource_id=resource_id,
+        )
+
+        # Convert eval records to smoke-compatible format
+        checks = {}
+        for r in records:
+            for c in r.checks:
+                check_id = c.get("check_id", "")
+                checks[check_id] = {
+                    "status": c.get("status", "fail"),
+                    "failure_class": c.get("failure_class"),
+                    "message": c.get("message", ""),
+                }
+
+        agentic_capable = all(r.success for r in records)
+        total_duration = sum(r.duration_seconds for r in records)
+
+        return {
+            "resource_id": resource_id,
+            "model": resource.model,
+            "agentic_capable": agentic_capable,
+            "smoke_profile": profile,
+            "checks": checks,
+            "iterations_used": sum(r.iterations_used for r in records),
+            "duration_seconds": total_duration,
+        }
 
     async def _run_single_task(
         self,
@@ -215,6 +304,8 @@ class AgenticSmokeTest:
         dynamic_expected_tool: Optional[str] = None,
         dynamic_planning_prompt: Optional[str] = None,
         dynamic_system_prompt: Optional[str] = None,
+        integration_checks: Optional[list] = None,
+        tool_schema_mode: Optional[str] = None,
         debug_artifact: bool = False,
         issue_note: Optional[str] = None,
     ) -> SmokeTestResult:
@@ -378,7 +469,7 @@ class AgenticSmokeTest:
         }
 
         extra_debug: Dict[str, Any] = {}
-        if profile == "standard_agentic" and not dynamic_mode:
+        if profile in ("standard_agentic", "reasoning_stress") and not dynamic_mode:
             choice_target = self._make_unique_path(resource_id, "mojo_smoke_choice")
             try:
                 _, tc_log, tc_answer = await self._run_single_task(
@@ -477,9 +568,93 @@ class AgenticSmokeTest:
                     message=f"Retry stability test failed to run: {e}",
                 )
 
+        if profile == "reasoning_stress" and not dynamic_mode:
+            reasoning_target = self._make_unique_path(resource_id, "mojo_smoke_reasoning")
+            try:
+                _, rs_log, rs_answer = await self._run_single_task(
+                    resource=resource,
+                    task_id=f"smoke_reasoning_{resource_id}",
+                    goal=_REASONING_GOAL + f" Write the winning plan key to the path '{reasoning_target}'.",
+                    available_tools=["smoke_lookup", "write_file"],
+                    max_iterations=12,
+                    max_duration_seconds=300,
+                    smoke_test=True,
+                )
+                lookup_calls = sum(
+                    e.get("tool_calls", []).count("smoke_lookup")
+                    for e in rs_log
+                    if e.get("status") == "tool_use"
+                )
+                write_called = self._check_tool_called(rs_log, "write_file")
+                reasoning_correct = False
+                if os.path.isfile(reasoning_target):
+                    with open(reasoning_target, encoding="utf-8") as f:
+                        reasoning_correct = f.read().strip() == "plan_green"
+                    os.remove(reasoning_target)
+                answer_ok = bool(rs_answer and "plan_green" in rs_answer.lower())
+                if lookup_calls >= 3 and write_called and reasoning_correct and answer_ok:
+                    rs_failure = None
+                    rs_pass = True
+                elif lookup_calls < 3:
+                    rs_failure = "tool_not_called"
+                    rs_pass = False
+                elif not write_called:
+                    rs_failure = "wrong_tool"
+                    rs_pass = False
+                else:
+                    rs_failure = "verification_mismatch"
+                    rs_pass = False
+                checks["constraint_reasoning"] = SmokeCheckResult(
+                    name="constraint_reasoning",
+                    status="pass" if rs_pass else "fail",
+                    failure_class=rs_failure,
+                    message=(
+                        "Model gathered evidence and chose the correct plan"
+                        if rs_pass else f"Constraint reasoning failed: {rs_failure}"
+                    ),
+                )
+                extra_debug["constraint_reasoning"] = {
+                    "iteration_log": rs_log,
+                    "final_answer": rs_answer,
+                    "write_target": reasoning_target,
+                }
+            except Exception as e:
+                checks["constraint_reasoning"] = SmokeCheckResult(
+                    name="constraint_reasoning",
+                    status="fail",
+                    failure_class="executor_exception",
+                    message=f"Constraint reasoning test failed to run: {e}",
+                )
+
+        if integration_checks:
+            for check_name in integration_checks:
+                if check_name == "memory_search":
+                    checks["integration_memory_search"] = SmokeCheckResult(
+                        name="integration_memory_search",
+                        status="skip",
+                        failure_class="tool_backend_unavailable",
+                        message="Backend unavailable",
+                    )
+                elif check_name == "bash_exec":
+                    checks["integration_bash_exec"] = SmokeCheckResult(
+                        name="integration_bash_exec",
+                        status="skip",
+                        failure_class="tool_backend_unavailable",
+                        message="Backend unavailable",
+                    )
+                else:
+                    checks[f"integration_{check_name}"] = SmokeCheckResult(
+                        name=f"integration_{check_name}",
+                        status="fail",
+                        failure_class="verification_mismatch",
+                        message=f"Unknown integration check '{check_name}'",
+                    )
+
         mandatory = ["tool_calling", "final_answer", "write_workflow"]
-        if profile == "standard_agentic" and not dynamic_mode:
+        if profile in ("standard_agentic", "reasoning_stress") and not dynamic_mode:
             mandatory.extend(["tool_choice", "retry_stability"])
+        if profile == "reasoning_stress" and not dynamic_mode:
+            mandatory.append("constraint_reasoning")
         agentic_capable = all(checks[name].status == "pass" for name in mandatory)
 
         debug_bundle = {
@@ -503,6 +678,7 @@ class AgenticSmokeTest:
             "iteration_log": iteration_log,
             "final_answer": final_answer,
             "write_target": write_target,
+            "integration_checks": list(integration_checks or []),
             "issue_note": issue_note or "",
             "captured_at": int(time.time()),
         }
@@ -522,3 +698,58 @@ class AgenticSmokeTest:
             duration_seconds=time.time() - start,
             debug_bundle=debug_bundle,
         )
+
+
+    async def compare_tool_schema_modes(
+        self,
+        resource_id: str,
+        profile: str = "fast_gate",
+        integration_checks: Optional[list] = None,
+        repeats: int = 1,
+    ) -> Dict[str, Any]:
+        repeats = max(1, int(repeats or 1))
+        modes: Dict[str, list] = {"full": [], "lean": []}
+
+        for mode in ("full", "lean"):
+            for _ in range(repeats):
+                result = await self.run(
+                    resource_id=resource_id,
+                    profile=profile,
+                    integration_checks=integration_checks,
+                    tool_schema_mode=mode,
+                )
+                data = result.to_dict()
+                data["tool_schema_mode"] = mode
+                modes[mode].append(data)
+
+        summary: Dict[str, Dict[str, Any]] = {}
+        for mode, rows in modes.items():
+            pass_rate = (sum(1 for row in rows if row.get("agentic_capable")) / len(rows)) if rows else 0.0
+            avg_duration = round(sum(float(row.get("duration_seconds", 0.0)) for row in rows) / len(rows), 2) if rows else 0.0
+            failing_checks = sorted({
+                check_name
+                for row in rows
+                for check_name, check_data in (row.get("checks") or {}).items()
+                if (check_data or {}).get("status") == "fail"
+            })
+            summary[mode] = {
+                "runs": len(rows),
+                "pass_rate": pass_rate,
+                "avg_duration_seconds": avg_duration,
+                "failing_checks": failing_checks,
+            }
+
+        model = ""
+        for rows in modes.values():
+            if rows:
+                model = rows[0].get("model", "")
+                break
+
+        return {
+            "resource_id": resource_id,
+            "model": model,
+            "profile": profile,
+            "integration_checks": list(integration_checks or []),
+            "modes": modes,
+            "summary": summary,
+        }
