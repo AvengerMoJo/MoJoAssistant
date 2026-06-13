@@ -227,9 +227,7 @@ class CapabilityResolver:
             if t_name not in seen:
                 if t_name in tool_entries or (
                     allow_smoke_tools and t_name in SMOKE_ONLY_TOOLS
-                ) or (
-                    hasattr(tool_registry, "get_tool") and tool_registry.get_tool(t_name)
-                ):
+                ) or (hasattr(tool_registry, "get_tool") and tool_registry.get_tool(t_name)):
                     names.append(t_name)
 
         return names

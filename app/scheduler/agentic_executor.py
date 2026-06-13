@@ -82,6 +82,26 @@ SMOKE_ONLY_TOOLS = {
             },
         },
     },
+    "smoke_compare": {
+        "type": "function",
+        "function": {
+            "name": "smoke_compare",
+            "description": (
+                "Evaluate a named project option (A/B/C/D) against the canonical constraints "
+                "(reliability=high AND speed=fast). Returns properties and pass/fail verdict."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "option": {
+                        "type": "string",
+                        "description": "Project option label: 'A', 'B', 'C', or 'D'.",
+                    },
+                },
+                "required": ["option"],
+            },
+        },
+    },
     "smoke_fail_once": {
         "type": "function",
         "function": {
@@ -2755,7 +2775,8 @@ class AgenticExecutor:
 
         if name == "smoke_lookup":
             return self._execute_smoke_lookup(args)
-
+        if name == "smoke_compare":
+            return self._execute_smoke_compare(args)
         if name == "smoke_fail_once":
             return self._execute_smoke_fail_once(args)
 
@@ -2819,6 +2840,38 @@ class AgenticExecutor:
                 ),
             }
         return {"query": query, "result": token}
+
+    _SMOKE_COMPARE_TABLE = {
+        "a": {"cost": "low",    "speed": "fast", "reliability": "medium"},
+        "b": {"cost": "high",   "speed": "slow", "reliability": "high"},
+        "c": {"cost": "medium", "speed": "fast", "reliability": "high"},
+        "d": {"cost": "low",    "speed": "slow", "reliability": "low"},
+    }
+
+    def _execute_smoke_compare(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        option = (args.get("option") or "").strip().lower()
+        props = self._SMOKE_COMPARE_TABLE.get(option)
+        if props is None:
+            return {
+                "error": f"Unknown option '{option}'. Valid: A, B, C, D",
+                "option": option,
+            }
+        meets_reliability = props["reliability"] == "high"
+        meets_speed = props["speed"] == "fast"
+        passes = meets_reliability and meets_speed
+        verdict = "PASS" if passes else "FAIL"
+        reasons = []
+        if not meets_reliability:
+            reasons.append(f"reliability={props['reliability']} (need high)")
+        if not meets_speed:
+            reasons.append(f"speed={props['speed']} (need fast)")
+        return {
+            "option": option.upper(),
+            "properties": props,
+            "verdict": verdict,
+            "passes": passes,
+            "fail_reasons": reasons,
+        }
 
     def _execute_smoke_fail_once(self, args: Dict[str, Any]) -> Dict[str, Any]:
         key = (args.get("key") or "default").strip()

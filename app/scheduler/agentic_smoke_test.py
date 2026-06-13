@@ -4,13 +4,9 @@ Agentic Smoke Test
 Profiles:
 - fast_gate: deterministic, backend-independent baseline gate
 - standard_agentic: stronger multi-step profile on top of fast_gate
-- reasoning_stress: adds a deterministic constraint-solving task for thinking models
-
-Optional integration checks:
-- memory_search
-- bash_exec
 """
 
+import asyncio
 import json
 import os
 import time
@@ -33,10 +29,6 @@ _PROFILES = {
         "max_iterations": 8,
         "max_duration_seconds": 120,
     },
-    "reasoning_stress": {
-        "max_iterations": 10,
-        "max_duration_seconds": 180,
-    },
 }
 
 _FAST_GATE_GOAL = (
@@ -58,24 +50,6 @@ _RETRY_GOAL = (
     "Then provide a <FINAL_ANSWER> with the exact result value."
 )
 
-_REASONING_GOAL = (
-    "Use smoke_lookup to look up keys 'plan_red', 'plan_blue', and 'plan_green'. "
-    "Each result includes the plan id, cost, latency, and validity. "
-    "Choose the cheapest valid plan whose latency is less than or equal to 4. "
-    "Then use write_file to write only the chosen plan id to the requested path. "
-    "Finally provide a <FINAL_ANSWER> that includes the exact chosen plan id and briefly states why the other plans fail the constraints."
-)
-
-_MEMORY_SEARCH_GOAL = (
-    "You MUST use the memory_search tool with query 'test'. "
-    "After the tool returns, provide a <FINAL_ANSWER> stating exactly whether the result count was zero or nonzero."
-)
-
-_BASH_EXEC_GOAL = (
-    "You MUST use the bash_exec tool to run the exact command printf smoke_bash_ok. "
-    "After the tool returns, provide a <FINAL_ANSWER> containing the exact string smoke_bash_ok."
-)
-
 
 @dataclass
 class SmokeCheckResult:
@@ -91,7 +65,6 @@ class SmokeTestResult:
     model: str
     agentic_capable: bool
     smoke_profile: str = "fast_gate"
-    tool_schema_mode: str = "full"
     checks: Dict[str, SmokeCheckResult] = field(default_factory=dict)
     iterations_used: int = 0
     duration_seconds: float = 0.0
@@ -104,7 +77,6 @@ class SmokeTestResult:
             "model": self.model,
             "agentic_capable": self.agentic_capable,
             "smoke_profile": self.smoke_profile,
-            "tool_schema_mode": self.tool_schema_mode,
             "checks": {
                 name: {
                     "status": c.status,
@@ -125,7 +97,6 @@ class SmokeTestResult:
 class _SingleResourceManager:
     def __init__(self, resource):
         self._resource = resource
-        self._resources = {resource.id: resource} if resource else {}
 
     def acquire(self, **kwargs):
         return self._resource
@@ -153,8 +124,6 @@ class AgenticSmokeTest:
         max_iterations: int = 4,
         max_duration_seconds: int = 90,
         smoke_test: bool = False,
-        memory_service: Optional[Any] = None,
-        tool_schema_mode: str = "full",
     ) -> tuple:
         from app.scheduler.models import Task, TaskType, TaskPriority, TaskResources
         task_config = {
@@ -165,7 +134,6 @@ class AgenticSmokeTest:
         }
         if smoke_test:
             task_config["_smoke_test"] = True
-        task_config["_tool_schema_mode"] = tool_schema_mode
         if role_id:
             task_config["role_id"] = role_id
         if planning_prompt:
@@ -197,39 +165,10 @@ class AgenticSmokeTest:
         empty_mcp._exit_stack = AsyncExitStack()
         empty_mcp._connected = False
         empty_mcp._connect_lock = None
-        executor = AgenticExecutor(
-            resource_manager=single_rm,
-            mcp_client_manager=empty_mcp,
-            memory_service=memory_service,
-        )
+        executor = AgenticExecutor(resource_manager=single_rm, mcp_client_manager=empty_mcp)
         task_result = await executor.execute(task)
         metrics = task_result.metrics or {}
         return task_result, metrics.get("iteration_log", []), metrics.get("final_answer")
-
-    async def _run_single_task_adhoc(
-        self,
-        resource,
-        task_id: str,
-        goal: str,
-        available_tools: list,
-        max_iterations: int = 4,
-        max_duration_seconds: int = 90,
-    ) -> tuple:
-        """Public wrapper for ad-hoc testing — returns (iteration_log, final_answer).
-
-        Same as _run_single_task but without role/planning/system overrides,
-        and returns only the parts the CLI needs.
-        """
-        _, iter_log, answer = await self._run_single_task(
-            resource=resource,
-            task_id=task_id,
-            goal=goal,
-            available_tools=available_tools,
-            max_iterations=max_iterations,
-            max_duration_seconds=max_duration_seconds,
-            smoke_test=True,
-        )
-        return iter_log, answer
 
     def _write_debug_bundle(self, payload: Dict[str, Any]) -> Optional[str]:
         try:
@@ -259,132 +198,11 @@ class AgenticSmokeTest:
     def _build_choice_goal(self, path: str) -> str:
         return _STANDARD_CHOICE_GOAL + f" Write the token to the path '{path}'."
 
-    def _build_reasoning_goal(self, path: str) -> str:
-        return _REASONING_GOAL + f" Write the chosen plan id to the path '{path}'."
-
     def _check_tool_called(self, iteration_log: list, tool_name: str) -> bool:
         return any(
             it.get("status") == "tool_use" and tool_name in it.get("tool_calls", [])
             for it in iteration_log
         )
-
-    def _unknown_integration_check(self, name: str) -> SmokeCheckResult:
-        return SmokeCheckResult(
-            name=f"integration_{name}",
-            status="fail",
-            failure_class="executor_exception",
-            message=f"Unknown integration check '{name}'",
-        )
-
-    async def _run_integration_memory_search(self, resource, resource_id: str) -> tuple[SmokeCheckResult, Dict[str, Any]]:
-        from app.config.paths import get_memory_path
-        from app.services.memory_backend import create_hybrid_memory_service
-
-        try:
-            memory_service = create_hybrid_memory_service(data_dir=get_memory_path())
-        except Exception as e:
-            return SmokeCheckResult(
-                name="integration_memory_search",
-                status="skip",
-                failure_class="tool_backend_unavailable",
-                message=f"Memory backend unavailable: {e}",
-            ), {"error": str(e)}
-
-        if memory_service is None or not getattr(memory_service, "is_available", True):
-            reason = getattr(memory_service, "reason", "Memory backend unavailable") if memory_service else "Memory backend unavailable"
-            return SmokeCheckResult(
-                name="integration_memory_search",
-                status="skip",
-                failure_class="tool_backend_unavailable",
-                message=reason,
-            ), {"reason": reason}
-
-        try:
-            _, iteration_log, final_answer = await self._run_single_task(
-                resource=resource,
-                task_id=f"smoke_integration_memory_{resource_id}",
-                goal=_MEMORY_SEARCH_GOAL,
-                available_tools=["memory_search"],
-                max_iterations=4,
-                max_duration_seconds=90,
-                memory_service=memory_service,
-            )
-        except Exception as e:
-            return SmokeCheckResult(
-                name="integration_memory_search",
-                status="fail",
-                failure_class="executor_exception",
-                message=f"Integration memory_search failed to run: {e}",
-            ), {"error": str(e)}
-
-        tool_called = self._check_tool_called(iteration_log, "memory_search")
-        if tool_called and final_answer:
-            check = SmokeCheckResult(
-                name="integration_memory_search",
-                status="pass",
-                message="Model completed memory_search against a live memory backend.",
-            )
-        else:
-            failure_class = "final_answer_missing"
-            if not tool_called and final_answer:
-                failure_class = "premature_final_answer"
-            elif not tool_called:
-                failure_class = "tool_not_called"
-            check = SmokeCheckResult(
-                name="integration_memory_search",
-                status="fail",
-                failure_class=failure_class,
-                message="Integration memory_search check failed.",
-            )
-        return check, {
-            "iteration_log": iteration_log,
-            "final_answer": final_answer,
-        }
-
-    async def _run_integration_bash_exec(self, resource, resource_id: str) -> tuple[SmokeCheckResult, Dict[str, Any]]:
-        try:
-            _, iteration_log, final_answer = await self._run_single_task(
-                resource=resource,
-                task_id=f"smoke_integration_bash_{resource_id}",
-                goal=_BASH_EXEC_GOAL,
-                available_tools=["bash_exec"],
-                max_iterations=4,
-                max_duration_seconds=90,
-                tool_schema_mode=tool_schema_mode,
-            )
-        except Exception as e:
-            return SmokeCheckResult(
-                name="integration_bash_exec",
-                status="fail",
-                failure_class="executor_exception",
-                message=f"Integration bash_exec failed to run: {e}",
-            ), {"error": str(e)}
-
-        tool_called = self._check_tool_called(iteration_log, "bash_exec")
-        output_ok = bool(final_answer and "smoke_bash_ok" in final_answer)
-        if tool_called and output_ok:
-            check = SmokeCheckResult(
-                name="integration_bash_exec",
-                status="pass",
-                message="Model completed bash_exec against the live executor tool surface.",
-            )
-        else:
-            if not tool_called and final_answer:
-                failure_class = "premature_final_answer"
-            elif not tool_called:
-                failure_class = "tool_not_called"
-            else:
-                failure_class = "verification_mismatch"
-            check = SmokeCheckResult(
-                name="integration_bash_exec",
-                status="fail",
-                failure_class=failure_class,
-                message="Integration bash_exec check failed.",
-            )
-        return check, {
-            "iteration_log": iteration_log,
-            "final_answer": final_answer,
-        }
 
     async def run(
         self,
@@ -399,8 +217,6 @@ class AgenticSmokeTest:
         dynamic_system_prompt: Optional[str] = None,
         debug_artifact: bool = False,
         issue_note: Optional[str] = None,
-        integration_checks: Optional[list[str]] = None,
-        tool_schema_mode: str = "full",
     ) -> SmokeTestResult:
         start = time.time()
         profile_cfg = _PROFILES.get(profile)
@@ -411,7 +227,6 @@ class AgenticSmokeTest:
                 agentic_capable=False,
                 smoke_profile=profile,
                 error=f"Unknown profile '{profile}'. Valid: {sorted(_PROFILES)}",
-                tool_schema_mode=tool_schema_mode,
             )
 
         try:
@@ -425,7 +240,6 @@ class AgenticSmokeTest:
                     agentic_capable=False,
                     smoke_profile=profile,
                     error=f"Resource '{resource_id}' not found in llm_config",
-                    tool_schema_mode=tool_schema_mode,
                 )
         except Exception as e:
             return SmokeTestResult(
@@ -434,7 +248,6 @@ class AgenticSmokeTest:
                 agentic_capable=False,
                 smoke_profile=profile,
                 error=f"Failed to load resource pool: {e}",
-                tool_schema_mode=tool_schema_mode,
             )
 
         model = resource.model or "?"
@@ -458,7 +271,6 @@ class AgenticSmokeTest:
                 max_iterations=profile_cfg["max_iterations"],
                 max_duration_seconds=profile_cfg["max_duration_seconds"],
                 smoke_test=True,
-                tool_schema_mode=tool_schema_mode,
             )
         except Exception as e:
             return SmokeTestResult(
@@ -468,7 +280,6 @@ class AgenticSmokeTest:
                 smoke_profile=profile,
                 error=f"Executor failed: {e}",
                 duration_seconds=time.time() - start,
-                tool_schema_mode=tool_schema_mode,
             )
 
         expected_tool = dynamic_expected_tool or "smoke_lookup"
@@ -519,7 +330,6 @@ class AgenticSmokeTest:
                     available_tools=["write_file"],
                     max_iterations=5,
                     max_duration_seconds=60,
-                    tool_schema_mode=tool_schema_mode,
                 )
                 write_tool_called = self._check_tool_called(wf_log, "write_file")
                 file_written = os.path.isfile(write_target)
@@ -568,7 +378,7 @@ class AgenticSmokeTest:
         }
 
         extra_debug: Dict[str, Any] = {}
-        if profile in {"standard_agentic", "reasoning_stress"} and not dynamic_mode:
+        if profile == "standard_agentic" and not dynamic_mode:
             choice_target = self._make_unique_path(resource_id, "mojo_smoke_choice")
             try:
                 _, tc_log, tc_answer = await self._run_single_task(
@@ -579,7 +389,6 @@ class AgenticSmokeTest:
                     max_iterations=8,
                     max_duration_seconds=120,
                     smoke_test=True,
-                    tool_schema_mode=tool_schema_mode,
                 )
                 lookup_called = self._check_tool_called(tc_log, "smoke_lookup")
                 write_called = self._check_tool_called(tc_log, "write_file")
@@ -631,7 +440,6 @@ class AgenticSmokeTest:
                     max_iterations=6,
                     max_duration_seconds=90,
                     smoke_test=True,
-                    tool_schema_mode=tool_schema_mode,
                 )
                 retry_calls = sum(
                     1
@@ -669,82 +477,8 @@ class AgenticSmokeTest:
                     message=f"Retry stability test failed to run: {e}",
                 )
 
-        if profile == "reasoning_stress" and not dynamic_mode:
-            reasoning_target = self._make_unique_path(resource_id, "mojo_smoke_reasoning")
-            try:
-                _, rs_log, rs_answer = await self._run_single_task(
-                    resource=resource,
-                    task_id=f"smoke_reasoning_{resource_id}",
-                    goal=self._build_reasoning_goal(reasoning_target),
-                    available_tools=["smoke_lookup", "write_file"],
-                    max_iterations=10,
-                    max_duration_seconds=180,
-                    smoke_test=True,
-                    tool_schema_mode=tool_schema_mode,
-                )
-                lookup_calls = sum(
-                    e.get("tool_calls", []).count("smoke_lookup")
-                    for e in rs_log
-                    if e.get("status") == "tool_use"
-                )
-                write_called = self._check_tool_called(rs_log, "write_file")
-                reasoning_correct = False
-                if os.path.isfile(reasoning_target):
-                    with open(reasoning_target, encoding="utf-8") as f:
-                        reasoning_correct = f.read().strip() == "plan_green"
-                    os.remove(reasoning_target)
-                answer_grounded = bool(rs_answer and "plan_green" in rs_answer)
-                if lookup_calls >= 3 and write_called and reasoning_correct and answer_grounded:
-                    rs_failure = None
-                    rs_pass = True
-                elif lookup_calls < 3:
-                    rs_failure = "tool_not_called"
-                    rs_pass = False
-                elif not write_called:
-                    rs_failure = "wrong_tool"
-                    rs_pass = False
-                elif not reasoning_correct or not answer_grounded:
-                    rs_failure = "verification_mismatch"
-                    rs_pass = False
-                else:
-                    rs_failure = "final_answer_missing"
-                    rs_pass = False
-                checks["constraint_reasoning"] = SmokeCheckResult(
-                    name="constraint_reasoning",
-                    status="pass" if rs_pass else "fail",
-                    failure_class=rs_failure,
-                    message=(
-                        "Model selected the cheapest valid constrained plan and grounded the final answer."
-                        if rs_pass else f"Constraint reasoning failed: {rs_failure}"
-                    ),
-                )
-                extra_debug["constraint_reasoning"] = {
-                    "iteration_log": rs_log,
-                    "final_answer": rs_answer,
-                    "write_target": reasoning_target,
-                }
-            except Exception as e:
-                checks["constraint_reasoning"] = SmokeCheckResult(
-                    name="constraint_reasoning",
-                    status="fail",
-                    failure_class="executor_exception",
-                    message=f"Constraint reasoning test failed to run: {e}",
-                )
-
-        if integration_checks:
-            for name in integration_checks:
-                if name == "memory_search":
-                    check, debug = await self._run_integration_memory_search(resource, resource_id)
-                elif name == "bash_exec":
-                    check, debug = await self._run_integration_bash_exec(resource, resource_id)
-                else:
-                    check = self._unknown_integration_check(name)
-                    debug = {"error": check.message}
-                checks[check.name] = check
-                extra_debug[check.name] = debug
-
         mandatory = ["tool_calling", "final_answer", "write_workflow"]
-        if profile in {"standard_agentic", "reasoning_stress"} and not dynamic_mode:
+        if profile == "standard_agentic" and not dynamic_mode:
             mandatory.extend(["tool_choice", "retry_stability"])
         agentic_capable = all(checks[name].status == "pass" for name in mandatory)
 
@@ -757,7 +491,6 @@ class AgenticSmokeTest:
             "available_tools": dynamic_available_tools or ["smoke_lookup"],
             "expected_tool": expected_tool,
             "planning_prompt": dynamic_planning_prompt,
-            "tool_schema_mode": tool_schema_mode,
             "checks": {
                 k: {
                     "status": v.status,
@@ -770,7 +503,6 @@ class AgenticSmokeTest:
             "iteration_log": iteration_log,
             "final_answer": final_answer,
             "write_target": write_target,
-            "integration_checks": list(integration_checks or []),
             "issue_note": issue_note or "",
             "captured_at": int(time.time()),
         }
@@ -785,64 +517,8 @@ class AgenticSmokeTest:
             model=model,
             agentic_capable=agentic_capable,
             smoke_profile=profile,
-            tool_schema_mode=tool_schema_mode,
             checks=checks,
             iterations_used=len(iteration_log),
             duration_seconds=time.time() - start,
             debug_bundle=debug_bundle,
         )
-
-
-    async def compare_tool_schema_modes(
-        self,
-        resource_id: str,
-        profile: str = "fast_gate",
-        integration_checks: Optional[list[str]] = None,
-        repeats: int = 1,
-    ) -> Dict[str, Any]:
-        repeats = max(1, repeats)
-        runs: Dict[str, list[dict]] = {"full": [], "lean": []}
-        for mode in ("full", "lean"):
-            for _ in range(repeats):
-                result = await self.run(
-                    resource_id=resource_id,
-                    profile=profile,
-                    integration_checks=integration_checks,
-                    tool_schema_mode=mode,
-                )
-                runs[mode].append(result.to_dict())
-
-        def _summarize(items: list[dict]) -> Dict[str, Any]:
-            if not items:
-                return {"runs": 0, "pass_rate": 0.0, "avg_duration_seconds": None, "failing_checks": []}
-            pass_count = sum(1 for i in items if i.get("agentic_capable"))
-            durations = [float(i.get("duration_seconds") or 0.0) for i in items]
-            failing_checks = sorted({
-                name
-                for item in items
-                for name, check in (item.get("checks") or {}).items()
-                if check.get("status") == "fail"
-            })
-            return {
-                "runs": len(items),
-                "pass_rate": round(pass_count / len(items), 3),
-                "avg_duration_seconds": round(sum(durations) / len(durations), 2),
-                "failing_checks": failing_checks,
-            }
-
-        model = None
-        for mode_items in runs.values():
-            if mode_items:
-                model = mode_items[0].get("model")
-                break
-        return {
-            "resource_id": resource_id,
-            "model": model,
-            "profile": profile,
-            "integration_checks": list(integration_checks or []),
-            "modes": runs,
-            "summary": {
-                "full": _summarize(runs["full"]),
-                "lean": _summarize(runs["lean"]),
-            },
-        }

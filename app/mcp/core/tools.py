@@ -4034,72 +4034,6 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Context probe failed: {e}"}
 
-
-    async def _execute_config_doctor_smoke_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Return recent resource smoke-history records from the append-only log."""
-        try:
-            rm = self._get_resource_manager()
-            resource_id = (args.get("resource_id") or "").strip() or None
-            limit = int(args.get("limit") or 20)
-            limit = max(1, min(limit, 200))
-            rows = rm.get_agentic_smoke_history(resource_id=resource_id, limit=limit)
-            return {
-                "status": "success",
-                "resource_id": resource_id,
-                "count": len(rows),
-                "items": rows,
-            }
-        except Exception as e:
-            return {"status": "error", "message": f"doctor_smoke_history failed: {e}"}
-
-
-    async def _execute_config_doctor_mcp_surface(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Explain full vs lean MCP tool surfaces and report payload size differences."""
-        try:
-            size = self.get_tools_lean_json_size()
-            return {
-                "status": "success",
-                "mode": "mcp_tool_surface",
-                "summary": {
-                    "full_bytes": size["full_bytes"],
-                    "lean_bytes": size["lean_bytes"],
-                    "reduction_pct": size["reduction_pct"],
-                },
-                "behavior": {
-                    "full": "Full MCP tool schema with full descriptions and parameter metadata.",
-                    "lean": "Same MCP tools, but descriptions/defaults stripped from inputSchema and tool descriptions truncated.",
-                    "prompt_difference": "None in scheduler execution. Lean mode changes only the MCP tools/list payload, not the agentic system prompt.",
-                    "activation": "Set MOJO_LEAN_MCP=1 to return lean schemas from MCP tools/list.",
-                },
-                "per_tool": size["per_tool"],
-                "per_tool_lean": size["per_tool_lean"],
-            }
-        except Exception as e:
-            return {"status": "error", "message": f"doctor_mcp_surface failed: {e}"}
-
-
-    async def _execute_config_doctor_mcp_surface_eval(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Run the same smoke profile with full vs lean tool schemas and compare the outcomes."""
-        try:
-            resource_id = (args.get("resource_id") or "").strip()
-            if not resource_id:
-                return {"status": "error", "message": "resource_id is required"}
-            profile = (args.get("profile") or "fast_gate").strip() or "fast_gate"
-            repeats = max(1, min(int(args.get("repeats") or 1), 10))
-            integration_checks = args.get("integration_checks") or None
-            from app.scheduler.agentic_smoke_test import AgenticSmokeTest
-            tester = AgenticSmokeTest()
-            result = await tester.compare_tool_schema_modes(
-                resource_id=resource_id,
-                profile=profile,
-                integration_checks=integration_checks,
-                repeats=repeats,
-            )
-            result["status"] = "success"
-            return result
-        except Exception as e:
-            return {"status": "error", "message": f"doctor_mcp_surface_eval failed: {e}"}
-
     async def _execute_config_healer(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Suggest (and optionally apply) config improvements driven by runtime data.
@@ -4162,6 +4096,331 @@ Agent resumes within seconds.
 
         except Exception as e:
             return {"status": "error", "message": f"Config healer failed: {e}"}
+
+    # --- Eval actions (doctor_eval_run, doctor_eval_history, doctor_eval_summary, doctor_health) ---
+
+    async def _execute_doctor_eval_run(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run an eval suite or scenario against a resource.
+
+        Args:
+            resource_id: required — ID of the LLM resource to test
+            suite: optional — suite ID (e.g. "qualification_fast")
+            scenario_id: optional — individual scenario ID
+            repeats: optional — number of times to repeat (default 1)
+            tool_schema_mode: optional — "full" | "lean" | "either"
+            integration_checks: optional — list of backend checks to include
+            store_result: optional — persist to eval_log.jsonl (default true)
+        """
+        resource_id = str(args.get("resource_id", "")).strip()
+        suite_id = (args.get("suite") or "").strip() or None
+        scenario_id = (args.get("scenario_id") or "").strip() or None
+        repeats = int(args.get("repeats", 1))
+        tool_schema_mode = (args.get("tool_schema_mode") or "").strip() or None
+        integration_checks = args.get("integration_checks")
+        store_result = args.get("store_result", True)
+
+        if not resource_id:
+            return {"status": "error", "message": "resource_id is required"}
+        if not suite_id and not scenario_id:
+            return {"status": "error", "message": "Exactly one of suite or scenario_id is required"}
+
+        try:
+            from app.scheduler.evals.runner import EvalRunner
+            from app.scheduler.evals.scenarios import get_scenario
+            from app.scheduler.evals.suites import get_suite
+            from app.scheduler.resource_pool import ResourceManager
+
+            rm = ResourceManager()
+            resource = rm._resources.get(resource_id)
+            if resource is None:
+                return {"status": "error", "message": f"Resource '{resource_id}' not found"}
+
+            runner = EvalRunner()
+
+            if scenario_id:
+                scenario = get_scenario(scenario_id)
+                records = []
+                for _ in range(repeats):
+                    record = await runner.run_scenario(
+                        resource=resource,
+                        scenario=scenario,
+                        resource_id=resource_id,
+                        store_result=store_result,
+                    )
+                    records.append(record)
+            else:
+                suite = get_suite(suite_id)
+                # Copy the list to avoid mutating the shared suite definition
+                scenario_ids = list(suite.default_scenarios)
+
+                # Add integration scenarios if requested
+                # Match against task_family or requires_backends (not raw tags)
+                if integration_checks:
+                    from app.scheduler.evals.scenarios import ALL_SCENARIOS
+                    checks_set = set(integration_checks)
+                    for sid, s in ALL_SCENARIOS.items():
+                        if (
+                            s.task_family in checks_set
+                            or checks_set.intersection(getattr(s, "requires_backends", None) or [])
+                        ) and sid not in scenario_ids:
+                            scenario_ids.append(sid)
+
+                records = await runner.run_suite(
+                    resource=resource,
+                    scenario_ids=scenario_ids,
+                    resource_id=resource_id,
+                    repeats=repeats,
+                    tool_schema_mode=tool_schema_mode,
+                    store_result=store_result,
+                )
+
+            # Build response
+            results = []
+            for r in records:
+                results.append({
+                    "scenario_id": r.scenario_id,
+                    "success": r.success,
+                    "duration_seconds": round(r.duration_seconds, 2),
+                    "iterations_used": r.iterations_used,
+                    "checks": r.checks,
+                    "error": r.error,
+                })
+
+            total = len(results)
+            passed = sum(1 for r in results if r["success"])
+
+            return {
+                "status": "success",
+                "resource_id": resource_id,
+                "model": resource.model,
+                "suite": suite_id,
+                "total_scenarios": total,
+                "passed": passed,
+                "failed": total - passed,
+                "results": results,
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"Eval run failed: {e}"}
+
+    async def _execute_config_doctor_mcp_surface(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Report full-vs-lean tool payload sizes and behavioral notes."""
+        try:
+            sizes = self.get_tools_lean_json_size()
+            return {
+                "status": "success",
+                "summary": {
+                    "full_bytes": sizes["full_bytes"],
+                    "lean_bytes": sizes["lean_bytes"],
+                    "reduction_pct": sizes["reduction_pct"],
+                    "per_tool": sizes["per_tool"],
+                    "per_tool_lean": sizes["per_tool_lean"],
+                },
+                "behavior": {
+                    "prompt_difference": (
+                        "tool_schema_mode='lean' strips description and default fields from each "
+                        "tool definition before it is sent to the model. This is not the agentic "
+                        "system prompt — it only affects the tool JSON payload size."
+                    ),
+                },
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    async def _execute_doctor_eval_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Query evaluation history from eval_log.jsonl.
+
+        Args:
+            resource_id: optional — filter by resource
+            suite: optional — filter by suite
+            scenario_id: optional — filter by scenario
+            category: optional — filter by category (health/qualification/characterization)
+            limit: optional — max records (default 50)
+        """
+        resource_id = (args.get("resource_id") or "").strip() or None
+        suite = (args.get("suite") or "").strip() or None
+        scenario_id = (args.get("scenario_id") or "").strip() or None
+        category = (args.get("category") or "").strip() or None
+        limit = int(args.get("limit", 50))
+
+        try:
+            from app.scheduler.evals.store import EvalStore
+            store = EvalStore()
+            records = store.query(
+                resource_id=resource_id,
+                suite=suite,
+                scenario_id=scenario_id,
+                category=category,
+                limit=limit,
+            )
+
+            results = [r.to_dict() for r in records]
+            return {
+                "status": "success",
+                "count": len(results),
+                "records": results,
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"Eval history failed: {e}"}
+
+    async def _execute_doctor_eval_summary(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return aggregated capability summary for a resource.
+
+        Args:
+            resource_id: required — resource to summarize
+            window_days: optional — lookback window (default 30)
+        """
+        resource_id = str(args.get("resource_id", "")).strip()
+        window_days = int(args.get("window_days", 30))
+
+        if not resource_id:
+            return {"status": "error", "message": "resource_id is required"}
+
+        try:
+            from app.scheduler.evals.store import EvalStore
+            store = EvalStore()
+
+            # Try cached summary first
+            summary = store.load_summary(resource_id)
+
+            # Recompute if stale or missing
+            if summary is None or summary.total_evals == 0:
+                summary = store.compute_summary(resource_id, window_days=window_days)
+                store.save_summary(summary)
+
+            return {
+                "status": "success",
+                "summary": summary.to_dict(),
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"Eval summary failed: {e}"}
+
+    async def _execute_doctor_health(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """System health check — config validity, endpoint reachability, backend status.
+
+        No required params. Returns a structured health report.
+        """
+        report = {
+            "status": "success",
+            "checks": [],
+        }
+
+        # 1. Config validity
+        try:
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            resources = rm._resources
+            enabled = [r for r in resources.values() if r.enabled]
+            report["checks"].append({
+                "name": "config_valid",
+                "status": "pass",
+                "message": f"{len(resources)} resources loaded, {len(enabled)} enabled",
+            })
+        except Exception as e:
+            report["checks"].append({
+                "name": "config_valid",
+                "status": "fail",
+                "message": str(e),
+            })
+
+        # 2. Endpoint reachability (probe local server)
+        try:
+            import requests
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            local_resources = [
+                r for r in rm._resources.values()
+                if r.enabled and r.base_url and "localhost" in r.base_url
+            ]
+            if local_resources:
+                r = local_resources[0]
+                headers = {"Authorization": f"Bearer {r.api_key}"} if r.api_key else {}
+                base = r.base_url.rstrip("/")
+                resp = requests.get(f"{base}/models", headers=headers, timeout=5)
+                if resp.status_code == 200:
+                    models = resp.json().get("data", [])
+                    report["checks"].append({
+                        "name": "endpoint_reachable",
+                        "status": "pass",
+                        "message": f"{r.base_url} — {len(models)} models loaded",
+                    })
+                else:
+                    report["checks"].append({
+                        "name": "endpoint_reachable",
+                        "status": "fail",
+                        "message": f"{r.base_url} returned {resp.status_code}",
+                    })
+            else:
+                report["checks"].append({
+                    "name": "endpoint_reachable",
+                    "status": "skip",
+                    "message": "No local endpoints configured",
+                })
+        except Exception as e:
+            report["checks"].append({
+                "name": "endpoint_reachable",
+                "status": "fail",
+                "message": str(e),
+            })
+
+        # 3. Eval freshness
+        try:
+            from app.scheduler.evals.store import EvalStore
+            store = EvalStore()
+            from datetime import datetime, timedelta
+            summaries = store.list_summaries()
+            stale = []
+            for rid, s in summaries.items():
+                if s.last_evaluated_at:
+                    try:
+                        last = datetime.fromisoformat(s.last_evaluated_at)
+                        if datetime.utcnow() - last > timedelta(days=7):
+                            stale.append(rid)
+                    except Exception:
+                        pass
+            report["checks"].append({
+                "name": "eval_freshness",
+                "status": "warn" if stale else "pass",
+                "message": f"{len(summaries)} resources evaluated, {len(stale)} stale (>7 days)" if stale else f"{len(summaries)} resources evaluated, all fresh",
+                "stale_resources": stale,
+            })
+        except Exception as e:
+            report["checks"].append({
+                "name": "eval_freshness",
+                "status": "skip",
+                "message": str(e),
+            })
+
+        # 4. Scheduler status
+        try:
+            if hasattr(self, "scheduler") and self.scheduler:
+                stats = self.scheduler.statistics
+                report["checks"].append({
+                    "name": "scheduler_running",
+                    "status": "pass",
+                    "message": f"Running since {stats.get('started_at', '?')}, {stats.get('tasks_executed', 0)} tasks executed",
+                })
+            else:
+                report["checks"].append({
+                    "name": "scheduler_running",
+                    "status": "skip",
+                    "message": "Scheduler not available",
+                })
+        except Exception as e:
+            report["checks"].append({
+                "name": "scheduler_running",
+                "status": "skip",
+                "message": str(e),
+            })
+
+        # Overall status
+        any_fail = any(c["status"] == "fail" for c in report["checks"])
+        any_warn = any(c["status"] == "warn" for c in report["checks"])
+        report["overall"] = "fail" if any_fail else "warn" if any_warn else "healthy"
+
+        return report
 
     async def _execute_audit_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return audit records of external boundary crossings."""
@@ -4438,9 +4697,6 @@ Agent resumes within seconds.
             for res_id, info in status.items():
                 capable = rm.get_agentic_capable(res_id)
                 info["agentic_capable"] = capable  # None = not yet tested
-                smoke_meta = rm.get_agentic_smoke_metadata(res_id)
-                if smoke_meta:
-                    info["agentic_smoke"] = smoke_meta
             return {
                 "status": "success",
                 "resources": status,
@@ -4524,7 +4780,6 @@ Agent resumes within seconds.
 
         resource_id = str(merged.get("resource_id", "")).strip()
         profile = (merged.get("profile") or "fast_gate").strip() or "fast_gate"
-        integration_checks = merged.get("integration_checks") or None
         full = bool(merged.get("full", False))
         role_id = (merged.get("role_id") or "").strip() or None
         dynamic_goal = (merged.get("dynamic_goal") or "").strip() or None
@@ -4552,18 +4807,17 @@ Agent resumes within seconds.
                 dynamic_system_prompt=dynamic_system_prompt,
                 debug_artifact=debug_artifact,
                 issue_note=issue_note,
-                integration_checks=integration_checks,
             )
 
-            data = result.to_dict()
-
-            # Persist structured smoke result to ResourceManager + smoke log
+            # Persist agentic_capable flag to ResourceManager
             try:
                 from app.scheduler.resource_pool import ResourceManager
                 rm = ResourceManager()
-                rm.record_agentic_smoke_result(resource_id, data)
+                rm.set_agentic_capable(resource_id, result.agentic_capable)
             except Exception:
                 pass
+
+            data = result.to_dict()
             data["status"] = "success"
             return data
         except Exception as e:
@@ -5390,14 +5644,25 @@ Agent resumes within seconds.
             return await self._execute_config_doctor({})
         if action == "doctor_context_probe":
             return await self._execute_config_doctor_context_probe(args)
-        if action == "doctor_smoke_history":
-            return await self._execute_config_doctor_smoke_history(args)
-        if action == "doctor_mcp_surface":
-            return await self._execute_config_doctor_mcp_surface(args)
-        if action == "doctor_mcp_surface_eval":
-            return await self._execute_config_doctor_mcp_surface_eval(args)
         if action in ("doctor_improve", "doctor_apply"):
             return await self._execute_config_healer(args)
+
+        # --- eval actions ---
+        if action == "doctor_eval_run":
+            return await self._execute_doctor_eval_run(args)
+        if action == "doctor_eval_history":
+            return await self._execute_doctor_eval_history(args)
+        if action == "doctor_eval_summary":
+            return await self._execute_doctor_eval_summary(args)
+        if action == "doctor_health":
+            return await self._execute_doctor_health(args)
+        if action == "doctor_mcp_surface":
+            return await self._execute_config_doctor_mcp_surface(args)
+        # backward-compat aliases for pre-eval-engine actions
+        if action == "doctor_smoke_history":
+            return await self._execute_doctor_eval_history(args)
+        if action == "doctor_mcp_surface_eval":
+            return await self._execute_doctor_eval_run(args)
 
         # --- modules list ---
         if action == "modules":
@@ -5444,11 +5709,12 @@ Agent resumes within seconds.
                         "capability_remove":     "Remove a user-created capability — params: tool_name (system capabilities are protected)",
                         "doctor":                "Full config pre-flight report",
                         "doctor_context_probe":  "Run cached empirical context-limit discovery script — params: resource_id? | all_enabled_local? | ladder? | connect_timeout? | read_timeout?",
-                        "doctor_smoke_history":  "Show recent resource smoke-test history from the append-only log — params: resource_id?, limit?",
-                        "doctor_mcp_surface":    "Compare full vs lean MCP tool surfaces and payload sizes",
-                        "doctor_mcp_surface_eval":"Run the same smoke profile with full vs lean tool schemas and compare results — params: resource_id, profile?, repeats?, integration_checks?",
                         "doctor_improve":        "Suggest config improvements from runtime data (benchmark history, failure patterns) — no changes written",
                         "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
+                        "doctor_eval_run":       "Run eval suite or scenario — params: resource_id, suite? | scenario_id?, repeats?, tool_schema_mode?, integration_checks?, store_result?",
+                        "doctor_eval_history":   "Query eval history — params: resource_id?, suite?, scenario_id?, category?, limit?",
+                        "doctor_eval_summary":   "Capability summary for a resource — params: resource_id, window_days?",
+                        "doctor_health":         "System health check — config validity, endpoint reachability, backend status",
                         "preflight":             "Check system dependencies and MCP tool installation status (use scripts/preflight.py for interactive install)",
                     },
                     "example": 'config(action="resource_status")',
