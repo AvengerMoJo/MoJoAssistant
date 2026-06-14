@@ -51,12 +51,12 @@
     },
     {
       "id": "bonsai_growth_weekly",
-      "type": "dreaming",
+      "type": "growth",
       "cron": "0 5 * * 0",
       "priority": "low",
-      "description": "Weekly bonsai growth proposal — generates dimension drift reports for configured roles and sends HITL to owner",
+      "description": "Weekly BRIDLE growth run — collects one-on-one signals, computes dimension drift, creates snapshot, sends HITL to owner",
       "config": {
-        "mode": "bonsai_growth",
+        "mode": "growth",
         "roles": ["community_host", "popo", "researcher"],
         "notify_owner": true
       },

@@ -276,6 +276,8 @@ class TestRoleChatSession(unittest.TestCase):
             session._session_dir = Path(self.tmp) / "roles" / role_id / "chat_history"
             session._session_dir.mkdir(parents=True, exist_ok=True)
             session._session_file = session._session_dir / f"{session_id}.json"
+            from app.scheduler.interaction_mode import InteractionMode
+            session.mode = InteractionMode.DASHBOARD_CHAT
         return session
 
     # --- Session persistence ---

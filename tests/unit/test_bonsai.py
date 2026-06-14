@@ -84,6 +84,7 @@ class TestSnapshotManager(unittest.TestCase):
             system_prompt="test",
         )
         self.manager.save_snapshot(snap)
+        self.manager.pin_snapshot(1)
 
         current = self.manager.get_current()
         self.assertIsNotNone(current)
