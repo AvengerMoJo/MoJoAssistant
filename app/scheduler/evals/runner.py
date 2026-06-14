@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.scheduler.evals.models import (
@@ -234,7 +234,7 @@ class EvalRunner:
             unavailable = [b for b in required_backends if not self._is_backend_available(b)]
             if unavailable:
                 return EvalRecord(
-                    ts=datetime.utcnow().isoformat(),
+                    ts=datetime.now(UTC).isoformat(),
                     resource_id=rid,
                     model=resource.model or "",
                     suite=scenario.suite,
@@ -292,7 +292,7 @@ class EvalRunner:
 
         # Build record
         record = EvalRecord(
-            ts=datetime.utcnow().isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             resource_id=rid,
             model=resource.model or "",
             suite=scenario.suite,

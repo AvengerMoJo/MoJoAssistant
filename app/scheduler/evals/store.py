@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import statistics
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -117,7 +117,7 @@ class EvalStore:
         window_days: int = 30,
     ) -> CapabilitySummary:
         """Compute a capability summary from recent eval history."""
-        cutoff = datetime.utcnow() - timedelta(days=window_days)
+        cutoff = datetime.now(UTC) - timedelta(days=window_days)
         records = [
             r for r in self.query(resource_id=resource_id, limit=500)
             if _parse_ts(r.ts) and _parse_ts(r.ts) >= cutoff
@@ -244,7 +244,10 @@ def _parse_ts(ts_str: str) -> Optional[datetime]:
     if not ts_str:
         return None
     try:
-        return datetime.fromisoformat(ts_str)
+        parsed = datetime.fromisoformat(ts_str)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
     except Exception:
         return None
 
