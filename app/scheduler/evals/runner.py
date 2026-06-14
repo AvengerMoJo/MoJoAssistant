@@ -361,8 +361,8 @@ class EvalRunner:
                 return False
         if backend_name == "memory_search":
             try:
-                from app.memory.multi_model_storage import MultiModelStorage
-                MultiModelStorage()
+                import importlib
+                importlib.import_module("app.core.memory_client")
                 return True
             except Exception:
                 return False
