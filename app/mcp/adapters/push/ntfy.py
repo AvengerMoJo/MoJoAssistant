@@ -125,8 +125,20 @@ class NtfyAdapter(PushAdapter):
         }
 
         actions = self._build_hitl_actions(event)
+
+        # Always add View Report deep link when MOJO_BASE_URL is set and room allows
+        base_url = os.getenv("MOJO_BASE_URL", "").rstrip("/")
+        task_id = event.get("task_id") or (event.get("data") or {}).get("task_id")
+        if base_url and task_id and len(actions) < 3:
+            actions.append({
+                "action": "view",
+                "label": "View Report",
+                "url": f"{base_url}/dashboard/tasks/{task_id}",
+                "clear": False,
+            })
+
         if actions:
-            payload["actions"] = actions
+            payload["actions"] = actions[:3]
 
         data = json.dumps(payload).encode("utf-8")
 

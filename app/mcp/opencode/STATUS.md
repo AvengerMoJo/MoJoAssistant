@@ -1,7 +1,7 @@
 # OpenCode Manager - Current Status
 
-**Date**: 2026-02-24
-**Version**: v1.1.4-beta
+**Date**: 2026-05-27
+**Version**: v1.4.2-beta
 **Status**: Optional component (disabled by default, enable with `ENABLE_OPENCODE=true`)
 
 ## ✅ What's Complete and Working

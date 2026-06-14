@@ -59,6 +59,101 @@ _cv_enabled_tools:   ContextVar = ContextVar("exec_enabled_tools",   default=Non
 _TOOL_OUTPUT_CAP_CHARS = 4000
 _TOOL_OUTPUT_LARGE_TOOLS = {"bash_exec", "read_file", "file_read", "list_files", "search_in_files"}
 
+# Smoke-only tool definitions. These are intentionally kept out of the normal
+# builtin tool surface and are only injected for internal smoke-test tasks.
+SMOKE_ONLY_TOOLS = {
+    "smoke_lookup": {
+        "type": "function",
+        "function": {
+            "name": "smoke_lookup",
+            "description": (
+                "Look up a deterministic smoke-test token by key. "
+                "Available keys include alpha/beta/gamma/delta and plan_red/plan_blue/plan_green."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Lookup key, e.g. 'alpha'.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    "smoke_compare": {
+        "type": "function",
+        "function": {
+            "name": "smoke_compare",
+            "description": (
+                "Evaluate a named project option (A/B/C/D) against the canonical constraints "
+                "(reliability=high AND speed=fast). Returns properties and pass/fail verdict."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "option": {
+                        "type": "string",
+                        "description": "Project option label: 'A', 'B', 'C', or 'D'.",
+                    },
+                },
+                "required": ["option"],
+            },
+        },
+    },
+    "smoke_fail_once": {
+        "type": "function",
+        "function": {
+            "name": "smoke_fail_once",
+            "description": (
+                "Fails on the first call for a given key and succeeds on the second call. "
+                "Used only by internal smoke tests to validate retry behavior."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Retry test key, e.g. 'test'.",
+                    },
+                },
+                "required": ["key"],
+            },
+        },
+    },
+}
+
+
+
+
+def _to_lean_openai_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Strip nonessential schema description/default fields from OpenAI tool defs."""
+    import copy
+
+    def _strip_schema(node: Any) -> Any:
+        if isinstance(node, dict):
+            out = {}
+            for key, value in node.items():
+                if key in {"description", "default"}:
+                    continue
+                out[key] = _strip_schema(value)
+            return out
+        if isinstance(node, list):
+            return [_strip_schema(v) for v in node]
+        return node
+
+    lean_tools: List[Dict[str, Any]] = []
+    for tool in tools:
+        lean = copy.deepcopy(tool)
+        fn = lean.get("function", {})
+        desc = fn.get("description")
+        if isinstance(desc, str):
+            fn["description"] = desc.split("\n", 1)[0]
+        if "parameters" in fn:
+            fn["parameters"] = _strip_schema(fn["parameters"])
+        lean_tools.append(lean)
+    return lean_tools
 
 def _estimate_tokens(messages: List[Dict]) -> int:
     """Fast token estimate: ~4 chars per token + 10 overhead per message."""
@@ -597,8 +692,15 @@ class AgenticExecutor:
         _cv_task_id.set(task.id)
         self._tool_calls_made = 0
         # Propagate task context to registry for sub-agent dispatch linkage + role scoping
-        _task_role_id = (task.config or {}).get("role_id") if task.config else None
-        self._tool_registry.set_task_context(task.id, task.dispatch_depth, role_id=_task_role_id)
+        _task_config = task.config or {}
+        _task_role_id = _task_config.get("role_id")
+        _task_available_tools = _task_config.get("available_tools") or None
+        self._tool_registry.set_task_context(
+            task.id,
+            task.dispatch_depth,
+            role_id=_task_role_id,
+            available_tools=_task_available_tools,
+        )
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -734,7 +836,10 @@ class AgenticExecutor:
 
         # Resolve tool names: system defaults + role capabilities + runtime override.
         enabled_tool_names = self._capability_resolver.resolve(
-            role, config.get("available_tools"), self._tool_registry
+            role,
+            config.get("available_tools"),
+            self._tool_registry,
+            allow_smoke_tools=bool(config.get("_smoke_test")),
         )
         self._enabled_tool_names = enabled_tool_names
         _cv_enabled_tools.set(enabled_tool_names)
@@ -847,6 +952,8 @@ class AgenticExecutor:
         # self._enabled_tool_names is set; nothing to re-resolve here.
         tool_defs = []
 
+        smoke_tool_defs = SMOKE_ONLY_TOOLS if config.get("_smoke_test") else {}
+
         for tool_name in enabled_tool_names:
             # Check dynamic registry first
             tool = self._tool_registry.get_tool(tool_name)
@@ -855,6 +962,11 @@ class AgenticExecutor:
             # Fallback to builtins
             elif tool_name in BUILTIN_TOOLS:
                 tool_defs.append(BUILTIN_TOOLS[tool_name])
+            elif tool_name in smoke_tool_defs:
+                tool_defs.append(smoke_tool_defs[tool_name])
+
+        if config.get("_tool_schema_mode") == "lean":
+            tool_defs = _to_lean_openai_tools(tool_defs)
 
         # --- Capability gap check (fresh starts only) ---
         # Phase 1: fast phrase-based check (no LLM, free).
@@ -2661,6 +2773,13 @@ class AgenticExecutor:
             )
             return {"query": query, "results": results, "count": len(results)}
 
+        if name == "smoke_lookup":
+            return self._execute_smoke_lookup(args)
+        if name == "smoke_compare":
+            return self._execute_smoke_compare(args)
+        if name == "smoke_fail_once":
+            return self._execute_smoke_fail_once(args)
+
         if name.startswith("browser_") or name == "browser":
             return await self._execute_browser_facade(name, args)
 
@@ -2695,6 +2814,82 @@ class AgenticExecutor:
                 duration_minutes=int(args.get("duration_minutes", 30)),
             )
         return {"error": f"Unknown google calendar tool: {name}"}
+
+    _SMOKE_LOOKUP_TABLE = {
+        "alpha": "smoke_ok:alpha:a7c3f1",
+        "beta": "smoke_ok:beta:b9d2e4",
+        "gamma": "smoke_ok:gamma:g1f8a6",
+        "delta": "smoke_ok:delta:d4e5b7",
+        "plan_red": "plan=plan_red cost=4 latency=6 valid=yes",
+        "plan_blue": "plan=plan_blue cost=3 latency=3 valid=no",
+        "plan_green": "plan=plan_green cost=6 latency=4 valid=yes",
+    }
+
+    def _execute_smoke_lookup(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        query = (args.get("query") or "").strip().lower()
+        if not query:
+            return {"error": "query is required"}
+        token = self._SMOKE_LOOKUP_TABLE.get(query)
+        if token is None:
+            return {
+                "query": query,
+                "result": None,
+                "error": (
+                    f"Unknown key '{query}'. "
+                    f"Valid keys: {sorted(self._SMOKE_LOOKUP_TABLE)}"
+                ),
+            }
+        return {"query": query, "result": token}
+
+    _SMOKE_COMPARE_TABLE = {
+        "a": {"cost": "low",    "speed": "fast", "reliability": "medium"},
+        "b": {"cost": "high",   "speed": "slow", "reliability": "high"},
+        "c": {"cost": "medium", "speed": "fast", "reliability": "high"},
+        "d": {"cost": "low",    "speed": "slow", "reliability": "low"},
+    }
+
+    def _execute_smoke_compare(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        option = (args.get("option") or "").strip().lower()
+        props = self._SMOKE_COMPARE_TABLE.get(option)
+        if props is None:
+            return {
+                "error": f"Unknown option '{option}'. Valid: A, B, C, D",
+                "option": option,
+            }
+        meets_reliability = props["reliability"] == "high"
+        meets_speed = props["speed"] == "fast"
+        passes = meets_reliability and meets_speed
+        verdict = "PASS" if passes else "FAIL"
+        reasons = []
+        if not meets_reliability:
+            reasons.append(f"reliability={props['reliability']} (need high)")
+        if not meets_speed:
+            reasons.append(f"speed={props['speed']} (need fast)")
+        return {
+            "option": option.upper(),
+            "properties": props,
+            "verdict": verdict,
+            "passes": passes,
+            "fail_reasons": reasons,
+        }
+
+    def _execute_smoke_fail_once(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        key = (args.get("key") or "default").strip()
+        seen = getattr(self, "_smoke_fail_once_seen", None)
+        if seen is None:
+            seen = set()
+            self._smoke_fail_once_seen = seen
+        if key not in seen:
+            seen.add(key)
+            return {
+                "error": f"Transient failure for key '{key}'. Please retry the same call.",
+                "retryable": True,
+            }
+        return {
+            "key": key,
+            "result": f"smoke_retry_ok:{key}",
+            "message": "Retry succeeded.",
+        }
 
     # --- browser facade ---------------------------------------------------------
 

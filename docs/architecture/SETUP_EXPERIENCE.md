@@ -1,4 +1,4 @@
-# MoJoAssistant Setup Experience — v1.4.1 Design
+# MoJoAssistant Setup Experience — Implemented
 
 ## Goal
 

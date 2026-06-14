@@ -2,14 +2,53 @@
 
 This module intentionally keeps runtime dependencies optional:
 - If `discord.py` is not installed, import still works.
-- `run_bot()` will fail with a clear error message.
+- `run_bot()` / `start_bot_async()` will fail with a clear error message.
+
+Lifecycle integration:
+- Standalone: `run_bot()` blocks the calling thread (for scripts/run_discord_bot.py)
+- Managed:    `start_bot_async()` returns a coroutine for asyncio.create_task()
+              Used by http.py startup_event when ENABLE_DISCORD_BOT=true
+
+Owner HITL channel:
+- DiscordHITLAdapter registers itself via register_hitl_adapter().
+- The adapter owns the channel ID config, pending-message tracking, and button UI.
+- gateway only calls set_client() + on_ready_hook() on whatever is registered.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, Optional
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(f"mojo_assistant.{__name__}")
+
+
+# ---------------------------------------------------------------------------
+# HITL adapter hook — registered by DiscordHITLAdapter.start()
+# ---------------------------------------------------------------------------
+
+_hitl_adapter: Optional[Any] = None
+
+
+def register_hitl_adapter(adapter: Optional[Any]) -> None:
+    """Register (or clear) the active HITL adapter for the owner channel."""
+    global _hitl_adapter
+    _hitl_adapter = adapter
+    if adapter is not None:
+        logger.info("[discord_gateway] HITL adapter registered: %s", type(adapter).__name__)
+    else:
+        logger.info("[discord_gateway] HITL adapter cleared")
+
+
+def _discord_sessions_dir() -> Path:
+    from app.config.paths import get_memory_subpath
+    return Path(get_memory_subpath("discord_sessions"))
 
 
 def _sanitize_message(content: str, max_len: int = 2000) -> str:
@@ -51,8 +90,50 @@ class CommunityAssistantService:
     def __init__(self, role_id: str = "community_host") -> None:
         self.role_id = role_id
         self._sessions: Dict[str, str] = {}  # channel_id -> session_id
+        self._resource_manager = None
+        self._load_sessions_from_disk()
 
-    def ask(self, channel_id: str, user_message: str) -> str:
+    def _load_sessions_from_disk(self) -> None:
+        try:
+            sessions_dir = _discord_sessions_dir()
+            if not sessions_dir.exists():
+                return
+            for f in sessions_dir.glob("channel_*.json"):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    self._sessions[data["channel_id"]] = data["session_id"]
+                except Exception:
+                    pass
+            if self._sessions:
+                logger.info(f"[discord_gateway] restored {len(self._sessions)} channel session(s)")
+        except Exception as e:
+            logger.warning(f"[discord_gateway] could not load sessions from disk: {e}")
+
+    def _save_session_to_disk(self, channel_id: str, session_id: str) -> None:
+        try:
+            sessions_dir = _discord_sessions_dir()
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            (sessions_dir / f"channel_{channel_id}.json").write_text(
+                json.dumps({
+                    "channel_id": channel_id,
+                    "session_id": session_id,
+                    "saved_at": datetime.now().isoformat(),
+                }),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning(f"[discord_gateway] could not save session to disk: {e}")
+
+    def _get_resource_manager(self):
+        if self._resource_manager is None:
+            try:
+                from app.scheduler.resource_pool import ResourceManager
+                self._resource_manager = ResourceManager()
+            except Exception as e:
+                logger.warning(f"[discord_gateway] could not load ResourceManager: {e}")
+        return self._resource_manager
+
+    async def ask(self, channel_id: str, user_message: str) -> str:
         message = _sanitize_message(user_message)
         if not message:
             return "I can only help with project-support questions in normal chat format."
@@ -61,25 +142,15 @@ class CommunityAssistantService:
 
         session_id: Optional[str] = self._sessions.get(channel_id)
         role_chat = RoleChatSession(role_id=self.role_id, session_id=session_id)
-        reply = role_chat.chat(message)
+        result = await role_chat.exchange(message, resource_manager=self._get_resource_manager())
         self._sessions[channel_id] = role_chat.session_id
-        return reply
+        self._save_session_to_disk(channel_id, role_chat.session_id)
+        return result.get("response") or result.get("error") or "No response."
 
 
-def run_bot(config: Optional[DiscordCommunityConfig] = None) -> None:
-    """Run Discord bot loop.
-
-    Requires `discord.py`.
-    """
-    if config is None:
-        config = DiscordCommunityConfig.from_env()
-
-    try:
-        import discord  # type: ignore
-    except Exception as exc:
-        raise RuntimeError(
-            "discord.py is required. Install with: pip install discord.py"
-        ) from exc
+def _build_client(config: DiscordCommunityConfig):
+    """Build and wire a discord.Client for the given config. Returns the client."""
+    import discord  # type: ignore
 
     intents = discord.Intents.default()
     intents.message_content = True
@@ -88,12 +159,25 @@ def run_bot(config: Optional[DiscordCommunityConfig] = None) -> None:
 
     @client.event
     async def on_ready() -> None:
-        print(f"[discord_gateway] ready as {client.user}")
+        logger.info(f"[discord_gateway] ready as {client.user}")
+        if _hitl_adapter is not None:
+            _hitl_adapter.set_client(client)
+            await _hitl_adapter.on_ready_hook()
 
     @client.event
     async def on_message(message: "discord.Message") -> None:
         if message.author.bot:
             return
+
+        # Owner channel — route to HITL adapter, not community assistant
+        if (
+            _hitl_adapter is not None
+            and getattr(_hitl_adapter, "_channel_id", None) is not None
+            and message.channel.id == _hitl_adapter._channel_id
+        ):
+            await _hitl_adapter.handle_owner_message(message)
+            return
+
         if config.mention_only and client.user and client.user not in message.mentions:
             return
 
@@ -104,14 +188,61 @@ def run_bot(config: Optional[DiscordCommunityConfig] = None) -> None:
         content = _sanitize_message(content, max_len=config.max_prompt_chars)
         if not content:
             return
-        try:
-            answer = service.ask(str(message.channel.id), content)
-        except Exception:
-            answer = (
-                "I hit an internal issue while answering. "
-                "Please try again, or ask a maintainer to review."
-            )
-        await message.reply(answer)
 
+        async with message.channel.typing():
+            try:
+                answer = await service.ask(str(message.channel.id), content)
+            except Exception as e:
+                logger.error(f"[discord_gateway] error answering message: {e}")
+                answer = (
+                    "I hit an internal issue while answering. "
+                    "Please try again, or ask a maintainer to review."
+                )
+        await message.reply(answer[:2000])
+
+    return client
+
+
+async def start_bot_async(config: Optional[DiscordCommunityConfig] = None) -> None:
+    """Asyncio-native bot entry point — use with asyncio.create_task().
+
+    Called by http.py startup_event when ENABLE_DISCORD_BOT=true.
+    Reconnects automatically on disconnect (discord.py default behaviour).
+    """
+    if config is None:
+        config = DiscordCommunityConfig.from_env()
+
+    try:
+        import discord  # type: ignore  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError(
+            "discord.py is required. Install with: pip install 'discord.py>=2.3'"
+        ) from exc
+
+    client = _build_client(config)
+    try:
+        await client.start(config.token)
+    except asyncio.CancelledError:
+        await client.close()
+        logger.info("[discord_gateway] bot stopped")
+    except Exception as exc:
+        logger.error("[discord_gateway] bot task failed: %s", exc, exc_info=True)
+
+
+def run_bot(config: Optional[DiscordCommunityConfig] = None) -> None:
+    """Blocking entry point for standalone script (scripts/run_discord_bot.py).
+
+    Requires `discord.py` (pip install discord.py>=2.3).
+    """
+    if config is None:
+        config = DiscordCommunityConfig.from_env()
+
+    try:
+        import discord  # type: ignore  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError(
+            "discord.py is required. Install with: pip install 'discord.py>=2.3'"
+        ) from exc
+
+    client = _build_client(config)
     client.run(config.token)
-

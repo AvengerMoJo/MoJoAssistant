@@ -318,7 +318,7 @@ Start an OpenCode instance for a git repository.
 - `status`: "success" or "error"
 - `project`: Display name (e.g., "user-repo")
 - `git_url`: Normalized git URL
-- `opencode_port`: Port number (e.g., 4100)
+- `agent_port`: Port number (e.g., 4100)
 - `base_dir`: Project directory path
 - `message`: Human-readable status
 

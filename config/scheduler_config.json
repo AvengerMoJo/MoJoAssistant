@@ -50,6 +50,19 @@
       "resources": { "requires_gpu": false }
     },
     {
+      "id": "bonsai_growth_weekly",
+      "type": "growth",
+      "cron": "0 5 * * 0",
+      "priority": "low",
+      "description": "Weekly BRIDLE growth run — collects one-on-one signals, computes dimension drift, creates snapshot, sends HITL to owner",
+      "config": {
+        "mode": "growth",
+        "roles": ["community_host", "popo", "researcher"],
+        "notify_owner": true
+      },
+      "resources": { "requires_gpu": false }
+    },
+    {
       "id": "relationship_update_weekly",
       "type": "dreaming",
       "cron": "0 4 * * 0",

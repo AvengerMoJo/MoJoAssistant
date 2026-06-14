@@ -1,6 +1,6 @@
 # Agent Learning Loop — Self-Improving Agents Through Memory and Dreaming
 
-**Status:** Planned — v1.3.x
+**Status:** Implemented — v1.3.1
 **Design date:** 2026-03-26
 
 ---

@@ -36,22 +36,22 @@ class BonsaiGrowthModule(GrowthProvider):
     def snapshot(
         self, role_id: str, context: Optional[Dict[str, Any]] = None
     ) -> GrowthSnapshot:
-        """Return current growth state for the role.
+        """Return the live (owner-approved) growth state for the role.
 
-        Dimensions come from the live bonsai snapshot if one exists, otherwise
-        fall back to the dimensions stored in the role file itself.
+        Reads the pinned snapshot — only owner-approved growth takes effect.
+        Falls back to the role file dimensions if nothing has been pinned yet.
         """
         role = _role_manager.get(role_id) or {}
         sm = SnapshotManager(role_id)
-        current = sm.get_current()
+        pinned = sm.get_pinned()
 
-        if current is not None:
-            dims = current.dimensions
+        if pinned is not None:
+            dims = pinned.dimensions
             metadata: Dict[str, Any] = {
-                "version": current.version,
-                "trigger": current.trigger,
-                "approved_by": current.approved_by,
-                "presentation_patterns": current.presentation_patterns,
+                "version": pinned.version,
+                "trigger": pinned.trigger,
+                "approved_by": pinned.approved_by,
+                "presentation_patterns": pinned.presentation_patterns,
             }
         else:
             dims = role.get("dimensions") or {}
@@ -109,10 +109,10 @@ class BonsaiGrowthModule(GrowthProvider):
 
         engine = BonsaiEngine(role_id)
         sm = SnapshotManager(role_id)
-        current = sm.get_current()
+        pinned = sm.get_pinned()
 
         report = engine.generate_growth_report(
-            old_snapshot=current,
+            old_snapshot=pinned,
             new_dimensions=new_dims,
             signals=None,
         )

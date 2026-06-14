@@ -83,6 +83,7 @@ class ResourceManager:
     SANDBOX_ENV_FILE = Path(get_memory_subpath("resource_pool.env"))
     USAGE_FILE = Path(get_memory_subpath("resource_pool_usage.json"))
     META_FILE = Path(get_memory_subpath("resource_pool_meta.json"))
+    SMOKE_LOG_FILE = Path(get_memory_subpath("resource_pool_smoke_log.jsonl"))
 
     def __init__(self, config_path: str = "config/resource_pool.json", logger=None):
         self._config_path = config_path
@@ -731,16 +732,72 @@ class ResourceManager:
         except Exception:
             pass
 
-    def set_agentic_capable(self, resource_id: str, capable: bool) -> None:
-        """Record the smoke test result with a timestamp for TTL tracking."""
+    def _is_agentic_entry_stale(self, entry: Any) -> bool:
+        from datetime import datetime as _dt, timedelta as _td
+
+        if not isinstance(entry, dict):
+            return False
+        tested_at_str = entry.get("tested_at")
+        if not tested_at_str:
+            return False
+        try:
+            age = _dt.now() - _dt.fromisoformat(tested_at_str)
+            return age > _td(days=self.AGENTIC_CAPABLE_TTL_DAYS)
+        except Exception:
+            return False
+
+    def _append_smoke_log(self, payload: Dict[str, Any]) -> None:
+        try:
+            self.SMOKE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with self.SMOKE_LOG_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception as e:
+            self._log(f"Failed to append smoke log: {e}", "warning")
+
+    def record_agentic_smoke_result(self, resource_id: str, result: Dict[str, Any]) -> None:
+        """Persist the latest structured smoke result and append a compact history record."""
         from datetime import datetime as _dt
+
+        checks = result.get("checks") or {}
+        debug_bundle = result.get("debug_bundle") or {}
+        latest = {
+            "value": bool(result.get("agentic_capable", False)),
+            "tested_at": _dt.now().isoformat(),
+            "resource_id": resource_id,
+            "model": result.get("model") or "",
+            "smoke_profile": result.get("smoke_profile") or "fast_gate",
+            "checks": checks,
+            "iterations_used": result.get("iterations_used", 0),
+            "duration_seconds": result.get("duration_seconds", 0.0),
+            "error": result.get("error"),
+            "integration_checks": list(debug_bundle.get("integration_checks") or []),
+            "debug_artifact_path": debug_bundle.get("artifact_path"),
+        }
+        log_record = dict(latest)
+        log_record["logged_at"] = latest["tested_at"]
+
         with self._lock:
-            self._agentic_capable[resource_id] = {
-                "value": capable,
-                "tested_at": _dt.now().isoformat(),
-            }
+            self._agentic_capable[resource_id] = latest
             self._save_meta()
-            self._log(f"Resource '{resource_id}' agentic_capable = {capable}")
+            self._append_smoke_log(log_record)
+            self._log(
+                f"Resource '{resource_id}' smoke profile={latest['smoke_profile']} agentic_capable={latest['value']}"
+            )
+
+    def set_agentic_capable(self, resource_id: str, capable: bool) -> None:
+        """Backward-compatible helper for simple smoke result recording."""
+        self.record_agentic_smoke_result(
+            resource_id,
+            {
+                "resource_id": resource_id,
+                "agentic_capable": capable,
+                "smoke_profile": "legacy",
+                "checks": {},
+                "iterations_used": 0,
+                "duration_seconds": 0.0,
+                "error": None,
+            },
+        )
 
     def get_agentic_capable(self, resource_id: str) -> Optional[bool]:
         """
@@ -749,27 +806,63 @@ class ResourceManager:
         Results older than AGENTIC_CAPABLE_TTL_DAYS are treated as None so a
         model that previously failed is re-tested rather than blocked forever.
         """
-        from datetime import datetime as _dt, timedelta as _td
         entry = self._agentic_capable.get(resource_id)
         if entry is None:
             return None
         # Guard against legacy scalar values surviving migration
         if isinstance(entry, bool):
             return entry
-        tested_at_str = entry.get("tested_at")
-        if tested_at_str:
-            try:
-                age = _dt.now() - _dt.fromisoformat(tested_at_str)
-                if age > _td(days=self.AGENTIC_CAPABLE_TTL_DAYS):
-                    self._log(
-                        f"Resource '{resource_id}' agentic_capable expired "
-                        f"(age={age.days}d > TTL={self.AGENTIC_CAPABLE_TTL_DAYS}d) — treating as untested",
-                        "debug",
-                    )
-                    return None
-            except Exception:
-                pass
+        if self._is_agentic_entry_stale(entry):
+            self._log(
+                f"Resource '{resource_id}' agentic_capable expired "
+                f"(TTL={self.AGENTIC_CAPABLE_TTL_DAYS}d) — treating as untested",
+                "debug",
+            )
+            return None
         return entry.get("value")
+
+
+    def get_agentic_smoke_metadata(self, resource_id: str) -> Optional[Dict[str, Any]]:
+        """Return the latest structured smoke metadata for a resource."""
+        entry = self._agentic_capable.get(resource_id)
+        if entry is None:
+            return None
+        if isinstance(entry, bool):
+            return {"value": entry, "is_stale": False}
+        meta = dict(entry)
+        meta["is_stale"] = self._is_agentic_entry_stale(entry)
+        return meta
+
+
+    def get_agentic_smoke_history(
+        self,
+        resource_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Read recent smoke-history entries from the append-only JSONL log."""
+        try:
+            if limit <= 0:
+                return []
+            if not self.SMOKE_LOG_FILE.exists():
+                return []
+            lines = self.SMOKE_LOG_FILE.read_text(encoding="utf-8").splitlines()
+            rows: List[Dict[str, Any]] = []
+            for line in reversed(lines):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if resource_id and row.get("resource_id") != resource_id:
+                    continue
+                rows.append(row)
+                if len(rows) >= limit:
+                    break
+            return rows
+        except Exception as e:
+            self._log(f"Failed to read smoke history: {e}", "warning")
+            return []
 
     def approve_paid_resource(self, resource_id: str):
         with self._lock:

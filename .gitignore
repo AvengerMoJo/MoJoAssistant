@@ -214,7 +214,11 @@ package-lock.json
 
 # Generated screenshots/artifacts
 *.png
+!docs/assets/*.png
 scripts/install_amd.sh
 
 # Local GLM voice model checkout (WIP)
 submodules/glm-4-voice-9b-int4/
+
+# Editor / tool config that wandered into the repo root
+backup.json

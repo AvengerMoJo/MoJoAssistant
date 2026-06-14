@@ -11,6 +11,7 @@ from app.scheduler.handlers.scheduled import ScheduledHandler
 from app.scheduler.handlers.agent import AgentHandler
 from app.scheduler.handlers.custom import CustomHandler
 from app.scheduler.handlers.agentic import AgenticHandler
+from app.scheduler.handlers.bonsai import BonsaiGrowthHandler
 
 
 def build_registry() -> HandlerRegistry:
@@ -21,4 +22,5 @@ def build_registry() -> HandlerRegistry:
     registry.register(TaskType.CUSTOM, CustomHandler())
     registry.register(TaskType.INTERNAL_ASSIGNMENT, AgenticHandler())
     registry.register(TaskType.ASSISTANT, AgenticHandler())
+    registry.register(TaskType.GROWTH, BonsaiGrowthHandler())
     return registry

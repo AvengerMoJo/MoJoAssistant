@@ -116,7 +116,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           LOG_LEVEL: WARNING
         run: |
-          pip install pytest
+          pip install pytest pytest-asyncio
           python -m pytest tests/integration/test_mcp_surface_smoke.py -v --tb=short
 
       - name: Stable Smoke Suite Gate

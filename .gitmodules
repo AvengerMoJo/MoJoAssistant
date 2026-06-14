@@ -6,10 +6,10 @@
 	url = https://github.com/AvengerMoJo/dreaming-memory-pipeline.git
 [submodule "submodules/agency-agents"]
 	path = submodules/agency-agents
-	url = https://github.com/msitarzewski/agency-agents.git
+	url = https://github.com/AvengerMoJo/agency-agents.git
 [submodule "submodules/HITLOrchestrator"]
 	path = submodules/HITLOrchestrator
 	url = https://github.com/AvengerMoJo/HITLOrchestrator.git
 [submodule "submodules/mojo-voice"]
 	path = submodules/mojo-voice
-	url = git@github.com:AvengerMoJo/mojo-voice.git
+	url = https://github.com/AvengerMoJo/mojo-voice.git

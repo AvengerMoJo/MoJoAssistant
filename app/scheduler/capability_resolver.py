@@ -67,6 +67,8 @@ class CapabilityResolver:
         role: Optional[Dict[str, Any]],
         available_tools: Optional[List[str]],
         tool_registry: Any,  # CapabilityRegistry — avoid circular import
+        *,
+        allow_smoke_tools: bool = False,
     ) -> List[str]:
         """
         Resolve the final set of tool names for a task.
@@ -83,19 +85,19 @@ class CapabilityResolver:
 
         # Layer 1: system defaults
         system_tools: Set[str] = set(always)
-        system_tools |= set(self._expand(default_caps, tool_registry))
+        system_tools |= set(self._expand(default_caps, tool_registry, allow_smoke_tools=allow_smoke_tools))
 
         # Layer 2: role capabilities
         role_tools: Set[str] = set()
         if role:
             role_caps = role.get("capabilities") or []
-            role_tools = set(self._expand(role_caps, tool_registry))
+            role_tools = set(self._expand(role_caps, tool_registry, allow_smoke_tools=allow_smoke_tools))
 
         merged = system_tools | role_tools
 
         # Layer 3: runtime override
         if available_tools is not None:
-            merged = self._apply_override(merged, system_tools, available_tools, tool_registry)
+            merged = self._apply_override(merged, system_tools, available_tools, tool_registry, allow_smoke_tools=allow_smoke_tools)
 
         # Always-available survives all overrides
         merged |= always
@@ -119,6 +121,8 @@ class CapabilityResolver:
         system_tools: Set[str],
         available_tools: List[str],
         tool_registry: Any,
+        *,
+        allow_smoke_tools: bool = False,
     ) -> Set[str]:
         """
         Apply the runtime available_tools override to the merged set.
@@ -135,25 +139,31 @@ class CapabilityResolver:
             for t in available_tools:
                 if t.startswith("+"):
                     cap = t[1:]
-                    result |= set(self._expand([cap], tool_registry))
+                    result |= set(self._expand([cap], tool_registry, allow_smoke_tools=allow_smoke_tools))
                 elif t.startswith("-"):
                     cap = t[1:]
-                    result -= set(self._expand([cap], tool_registry))
+                    result -= set(self._expand([cap], tool_registry, allow_smoke_tools=allow_smoke_tools))
                 else:
                     plain.append(t)
             if plain:
-                result |= set(self._expand(plain, tool_registry))
+                result |= set(self._expand(plain, tool_registry, allow_smoke_tools=allow_smoke_tools))
             return result
         else:
             # Absolute override: replace role layer, keep system defaults
-            override_tools = set(self._expand(available_tools, tool_registry))
+            override_tools = set(self._expand(available_tools, tool_registry, allow_smoke_tools=allow_smoke_tools))
             return system_tools | override_tools
 
     # ------------------------------------------------------------------
     # Capability → tool name expansion (mirrors _resolve_capabilities)
     # ------------------------------------------------------------------
 
-    def _expand(self, capabilities: List[str], tool_registry: Any) -> List[str]:
+    def _expand(
+        self,
+        capabilities: List[str],
+        tool_registry: Any,
+        *,
+        allow_smoke_tools: bool = False,
+    ) -> List[str]:
         """
         Expand a list of capability category names and/or explicit tool names
         into concrete tool names via capability_catalog.json + CapabilityRegistry.
@@ -208,11 +218,16 @@ class CapabilityResolver:
                 seen.add(t_name)
 
         # Explicit names not yet resolved
+        try:
+            from app.scheduler.agentic_executor import SMOKE_ONLY_TOOLS
+        except Exception:
+            SMOKE_ONLY_TOOLS = {}
+
         for t_name in access_explicit:
             if t_name not in seen:
                 if t_name in tool_entries or (
-                    hasattr(tool_registry, "get_tool") and tool_registry.get_tool(t_name)
-                ):
+                    allow_smoke_tools and t_name in SMOKE_ONLY_TOOLS
+                ) or (hasattr(tool_registry, "get_tool") and tool_registry.get_tool(t_name)):
                     names.append(t_name)
 
         return names

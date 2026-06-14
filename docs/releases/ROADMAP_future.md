@@ -37,7 +37,7 @@ User / External World
 | v1.3.3 | Advanced Security + PII Sanitization | ✅ Shipped | PII scanner (`app/scheduler/security/pii_scanner.py`) — pattern-based detection for credentials, financial, health, infrastructure data; `scan_text()`, `redact_pii()` |
 | v1.3.x | Institutional Knowledge | ✅ Shipped | Inbox→dreaming→knowledge distillation (`app/dreaming/inbox_distillation.py`), resolved-interaction memory units |
 | **v1.4.0** | **Pluggable Module Architecture** | ✅ Shipped | All 11 modules DONE — pluggable memory/dream/persona/growth/skill/retrieval/embedding/storage; Agentic Bridge Pattern; Plugin SDK; open provider_type; 293 tests passing |
-| **v1.4.1** | **Setup Experience** | 🚧 In Progress | Live feature validator (`doctor --setup`), stable/experimental markers, interactive MCP + connectivity wizard (local / cloudflared / Tailscale), design doc in `docs/architecture/SETUP_EXPERIENCE.md` |
+| **v1.4.1** | **Setup Experience** | ✅ Shipped | Live feature validator (`doctor --setup`), stable/experimental markers, interactive MCP + connectivity wizard (local / cloudflared / Tailscale), design doc in `docs/architecture/SETUP_EXPERIENCE.md` |
 | **v2.0.0** | **Public release — dropping beta** | 🎯 Target | All quality gates passed; clean install story; stable vs experimental surface documented |
 | v2.x | Architecture evolution | 💭 Future | Message passing, containerization, multi-node, language-agnostic agents |
 
