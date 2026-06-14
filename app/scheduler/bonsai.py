@@ -36,6 +36,8 @@ class GrowthSnapshot:
         communication_style: Optional[List[str]] = None,
         trigger: str = "manual",
         approved_by: Optional[str] = None,
+        approved_at: Optional[str] = None,
+        created_at: Optional[str] = None,
     ):
         self.role_id = role_id
         self.version = version
@@ -45,7 +47,8 @@ class GrowthSnapshot:
         self.communication_style = communication_style or []
         self.trigger = trigger
         self.approved_by = approved_by
-        self.created_at = datetime.now().isoformat()
+        self.approved_at = approved_at
+        self.created_at = created_at or datetime.now().isoformat()
         self.system_prompt_hash = hashlib.sha256(system_prompt.encode()).hexdigest()[:16]
 
     def to_dict(self) -> Dict[str, Any]:
@@ -60,7 +63,7 @@ class GrowthSnapshot:
             "communication_style": self.communication_style,
             "presentation_patterns": self.presentation_patterns,
             "approved_by": self.approved_by,
-            "approved_at": self.created_at if self.approved_by else None,
+            "approved_at": self.approved_at,
         }
 
     @classmethod
@@ -74,6 +77,8 @@ class GrowthSnapshot:
             communication_style=data.get("communication_style", []),
             trigger=data.get("trigger", "unknown"),
             approved_by=data.get("approved_by"),
+            approved_at=data.get("approved_at"),
+            created_at=data.get("created_at"),
         )
 
 

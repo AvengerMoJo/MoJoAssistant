@@ -329,6 +329,69 @@ class TestSystemPromptRoundtrip(unittest.TestCase):
         self.assertEqual(current.system_prompt, "live prompt")
 
 
+class TestTimestampRoundtrip(unittest.TestCase):
+    """Approval and creation timestamps must be stable across save/load cycles."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.mkdtemp()
+        self._patcher = patch(
+            "app.scheduler.bonsai.get_memory_subpath",
+            return_value=self._tmp_dir,
+        )
+        self._patcher.start()
+        self.manager = SnapshotManager("test_role")
+
+    def tearDown(self):
+        self._patcher.stop()
+        import shutil
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def test_created_at_preserved_across_save_load(self):
+        snap = GrowthSnapshot(
+            role_id="test_role", version=1,
+            dimensions={}, system_prompt="test",
+        )
+        original_created_at = snap.created_at
+        self.manager.save_snapshot(snap)
+        self.manager.pin_snapshot(1)
+
+        loaded = self.manager.get_pinned()
+        self.assertEqual(loaded.created_at, original_created_at)
+
+    def test_approved_at_stable_after_pin_and_reload(self):
+        snap = GrowthSnapshot(role_id="test_role", version=1, dimensions={}, system_prompt="test")
+        self.manager.save_snapshot(snap)
+        self.manager.pin_snapshot(1, approved_by="owner")
+
+        pinned = self.manager.get_pinned()
+        first_approved_at = pinned.approved_at
+        self.assertIsNotNone(first_approved_at)
+
+        # Reload again — approved_at must not change
+        reloaded = self.manager.get_pinned()
+        self.assertEqual(reloaded.approved_at, first_approved_at)
+
+    def test_approved_at_distinct_from_created_at(self):
+        snap = GrowthSnapshot(role_id="test_role", version=1, dimensions={}, system_prompt="test")
+        self.manager.save_snapshot(snap)
+        original_created_at = snap.created_at
+
+        import time; time.sleep(0.01)
+        self.manager.pin_snapshot(1, approved_by="owner")
+        pinned = self.manager.get_pinned()
+
+        # approved_at is written at pin time, not baked into created_at
+        self.assertIsNotNone(pinned.approved_at)
+        self.assertEqual(pinned.created_at, original_created_at)
+
+    def test_unapproved_snapshot_has_none_approved_at(self):
+        snap = GrowthSnapshot(role_id="test_role", version=1, dimensions={}, system_prompt="test")
+        self.manager.save_snapshot(snap)
+        loaded = self.manager.get_snapshot(1)
+        self.assertIsNone(loaded.approved_at)
+        self.assertIsNone(loaded.approved_by)
+
+
 class TestApprovalMetadata(unittest.TestCase):
     """Bug 2 — pin_snapshot must write approved_by/approved_at into the JSON."""
 
