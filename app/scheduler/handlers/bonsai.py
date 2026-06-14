@@ -189,8 +189,12 @@ class BonsaiGrowthHandler(TaskHandler):
         self, role_id: str, notify_owner: bool, task_id: str, ctx: ExecutorContext
     ) -> Dict[str, Any]:
         watermark = _read_watermark(role_id)
-        since_iso = watermark.get("last_growth_run")
 
+        # Retry HITL delivery for an existing pending snapshot whose delivery failed.
+        if watermark.get("hitl_failed") and watermark.get("pending_version"):
+            return await self._retry_hitl(role_id, watermark, task_id, ctx)
+
+        since_iso = watermark.get("last_growth_run")
         sessions = _collect_owner_sessions(role_id, since_iso)
         if not sessions:
             return {"role_id": role_id, "status": "no_new_sessions", "snapshot_version": None}
@@ -221,14 +225,36 @@ class BonsaiGrowthHandler(TaskHandler):
         signal_summaries = [s["reason"] for s in signals[:5]]
         report = engine.generate_growth_report(old_snapshot, new_dims, signals=signal_summaries)
 
+        # Snapshot exists — record it, but do NOT mark sessions processed yet.
+        # last_growth_run is written only after the owner is successfully notified.
+        _write_watermark(role_id, {
+            **watermark,
+            "pending_version": new_snapshot.version,
+            "pending_report": report[:2000],
+            "sessions_to_process": [s.get("session_id") for s in sessions],
+            "hitl_failed": False,
+        })
+
+        if notify_owner:
+            try:
+                await self._send_hitl(role_id, new_snapshot.version, report, task_id, ctx)
+            except Exception as e:
+                logger.error(f"[bonsai] HITL delivery failed for {role_id} v{new_snapshot.version}: {e}")
+                _write_watermark(role_id, {**_read_watermark(role_id), "hitl_failed": True})
+                return {
+                    "role_id": role_id,
+                    "status": "hitl_failed",
+                    "snapshot_version": new_snapshot.version,
+                    "error": str(e),
+                }
+
+        # Sessions are fully processed only after owner notification succeeds.
         _write_watermark(role_id, {
             "last_growth_run": datetime.now().isoformat(),
             "pending_version": new_snapshot.version,
             "sessions_processed": [s.get("session_id") for s in sessions],
+            "hitl_failed": False,
         })
-
-        if notify_owner:
-            await self._send_hitl(role_id, new_snapshot.version, report, task_id, ctx)
 
         return {
             "role_id": role_id,
@@ -238,6 +264,27 @@ class BonsaiGrowthHandler(TaskHandler):
             "sessions_processed": len(sessions),
             "validation_warnings": validation.get("warnings", []),
         }
+
+    async def _retry_hitl(
+        self, role_id: str, watermark: Dict[str, Any], task_id: str, ctx: ExecutorContext
+    ) -> Dict[str, Any]:
+        """Re-attempt HITL delivery for a snapshot whose first delivery failed."""
+        version = int(watermark["pending_version"])
+        report = watermark.get("pending_report", f"Growth snapshot v{version} pending review.")
+        try:
+            await self._send_hitl(role_id, version, report, task_id, ctx)
+        except Exception as e:
+            logger.error(f"[bonsai] HITL retry failed for {role_id} v{version}: {e}")
+            return {"role_id": role_id, "status": "hitl_retry_failed", "snapshot_version": version, "error": str(e)}
+
+        sessions = watermark.get("sessions_to_process", [])
+        _write_watermark(role_id, {
+            "last_growth_run": datetime.now().isoformat(),
+            "pending_version": version,
+            "sessions_processed": sessions,
+            "hitl_failed": False,
+        })
+        return {"role_id": role_id, "status": "hitl_retried", "snapshot_version": version}
 
     async def _send_hitl(
         self, role_id: str, version: int, report: str, parent_task_id: str, ctx: ExecutorContext
@@ -271,19 +318,16 @@ class BonsaiGrowthHandler(TaskHandler):
         if scheduler and hasattr(scheduler, "queue"):
             scheduler.queue.add(review_task)
 
-        try:
-            from app.mcp.adapters.hitl.manager import HITLManager
-            mgr = HITLManager.load_from_config()
-            if scheduler:
-                mgr.set_scheduler(scheduler)
-            short_report = report[:1200] + ("\n…(truncated)" if len(report) > 1200 else "")
-            await mgr.send_hitl(
-                task_id=review_task_id,
-                question=f"**Bonsai Growth Report — {role_id} v{version}**\n\n{short_report}",
-                options=["accept", "reject"],
-            )
-        except Exception as e:
-            logger.warning(f"[bonsai] HITL send failed for {role_id} v{version}: {e}")
+        from app.mcp.adapters.hitl.manager import HITLManager
+        mgr = HITLManager.load_from_config()
+        if scheduler:
+            mgr.set_scheduler(scheduler)
+        short_report = report[:1200] + ("\n…(truncated)" if len(report) > 1200 else "")
+        await mgr.send_hitl(
+            task_id=review_task_id,
+            question=f"**Bonsai Growth Report — {role_id} v{version}**\n\n{short_report}",
+            options=["accept", "reject"],
+        )
 
     def _discover_roles(self) -> List[str]:
         """Return role IDs that have a growth_snapshots directory."""
@@ -334,7 +378,7 @@ class BonsaiPinReviewHandler(TaskHandler):
             )
 
         if reply in ("accept", "yes", "y", "approve", "pin"):
-            ok = SnapshotManager(role_id).pin_snapshot(version)
+            ok = SnapshotManager(role_id).pin_snapshot(version, approved_by="owner")
             if ok:
                 watermark = _read_watermark(role_id)
                 watermark.pop("pending_version", None)

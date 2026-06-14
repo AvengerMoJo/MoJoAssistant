@@ -266,5 +266,235 @@ class TestBonsaiEngine(unittest.TestCase):
         self.assertEqual(snap.role_id, "test_role")
 
 
+class TestSystemPromptRoundtrip(unittest.TestCase):
+    """Bug 1 — system_prompt must survive save/load/pin cycles."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.mkdtemp()
+        self._patcher = patch(
+            "app.scheduler.bonsai.get_memory_subpath",
+            return_value=self._tmp_dir,
+        )
+        self._patcher.start()
+        self.manager = SnapshotManager("test_role")
+
+    def tearDown(self):
+        self._patcher.stop()
+        import shutil
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def test_system_prompt_stored_in_dict(self):
+        snap = GrowthSnapshot(
+            role_id="test_role", version=1,
+            dimensions={"core_values": {"score": 80}},
+            system_prompt="You are a specialized assistant.",
+        )
+        d = snap.to_dict()
+        self.assertIn("system_prompt", d)
+        self.assertEqual(d["system_prompt"], "You are a specialized assistant.")
+
+    def test_system_prompt_restored_from_dict(self):
+        snap = GrowthSnapshot(
+            role_id="test_role", version=1,
+            dimensions={},
+            system_prompt="Restored prompt here.",
+        )
+        d = snap.to_dict()
+        restored = GrowthSnapshot.from_dict(d)
+        self.assertEqual(restored.system_prompt, "Restored prompt here.")
+
+    def test_from_dict_caller_arg_overrides_stored(self):
+        snap = GrowthSnapshot(role_id="test_role", version=1, dimensions={}, system_prompt="original")
+        d = snap.to_dict()
+        restored = GrowthSnapshot.from_dict(d, system_prompt="override")
+        self.assertEqual(restored.system_prompt, "override")
+
+    def test_system_prompt_survives_save_load_cycle(self):
+        snap = GrowthSnapshot(
+            role_id="test_role", version=1,
+            dimensions={"core_values": {"score": 75}},
+            system_prompt="Persistent prompt across cycles.",
+        )
+        self.manager.save_snapshot(snap)
+        self.manager.pin_snapshot(1)
+        loaded = self.manager.get_pinned()
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.system_prompt, "Persistent prompt across cycles.")
+
+    def test_system_prompt_survives_pin_and_get_current(self):
+        snap = GrowthSnapshot(role_id="test_role", version=1, dimensions={}, system_prompt="live prompt")
+        self.manager.save_snapshot(snap)
+        self.manager.pin_snapshot(1)
+        current = self.manager.get_current()
+        self.assertEqual(current.system_prompt, "live prompt")
+
+
+class TestApprovalMetadata(unittest.TestCase):
+    """Bug 2 — pin_snapshot must write approved_by/approved_at into the JSON."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.mkdtemp()
+        self._patcher = patch(
+            "app.scheduler.bonsai.get_memory_subpath",
+            return_value=self._tmp_dir,
+        )
+        self._patcher.start()
+        self.manager = SnapshotManager("test_role")
+
+    def tearDown(self):
+        self._patcher.stop()
+        import shutil
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def _save(self, version=1):
+        snap = GrowthSnapshot(
+            role_id="test_role", version=version,
+            dimensions={"core_values": {"score": 80}},
+            system_prompt="test",
+        )
+        self.manager.save_snapshot(snap)
+
+    def test_pin_writes_approved_by_to_json(self):
+        self._save()
+        self.manager.pin_snapshot(1, approved_by="owner")
+        path = self.manager._snapshot_path(1)
+        data = json.loads(path.read_text())
+        self.assertEqual(data["approved_by"], "owner")
+        self.assertIsNotNone(data.get("approved_at"))
+
+    def test_pin_default_approved_by_is_owner(self):
+        self._save()
+        self.manager.pin_snapshot(1)
+        data = json.loads(self.manager._snapshot_path(1).read_text())
+        self.assertEqual(data["approved_by"], "owner")
+
+    def test_approved_by_readable_via_get_pinned(self):
+        self._save()
+        self.manager.pin_snapshot(1, approved_by="owner")
+        pinned = self.manager.get_pinned()
+        self.assertEqual(pinned.approved_by, "owner")
+
+    def test_unset_approved_by_before_pin(self):
+        self._save()
+        data = json.loads(self.manager._snapshot_path(1).read_text())
+        self.assertIsNone(data.get("approved_by"))
+
+
+class TestHITLFailureWatermark(unittest.IsolatedAsyncioTestCase):
+    """Bug 3 — watermark must not mark sessions processed when HITL delivery fails."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.mkdtemp()
+        self._patches = [
+            patch("app.scheduler.handlers.bonsai.get_memory_subpath", return_value=self._tmp_dir),
+            patch("app.scheduler.bonsai.get_memory_subpath", return_value=self._tmp_dir),
+            patch("app.roles.role_manager.RoleManager.get", return_value=None),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        import shutil
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def _make_session(self, role_id, session_id):
+        chat_dir = Path(self._tmp_dir) / role_id / "chat_history"
+        chat_dir.mkdir(parents=True, exist_ok=True)
+        data = {
+            "session_id": session_id,
+            "session_type": "owner_one_on_one",
+            "last_active": "2026-06-14T10:00:00",
+            "exchanges": [{"user": "always lead with growth for investors", "assistant": "noted"}],
+        }
+        (chat_dir / f"{session_id}.json").write_text(json.dumps(data))
+
+    def _make_ctx(self):
+        ctx = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        ctx._scheduler = None
+        ctx.log = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        return ctx
+
+    def _make_task(self, config):
+        from app.scheduler.models import Task, TaskType, TaskPriority
+        return Task(id="test", type=TaskType.GROWTH, priority=TaskPriority.LOW,
+                    config=config, description="test", created_by="test")
+
+    async def test_hitl_failure_sets_hitl_failed_flag(self):
+        from app.scheduler.handlers.bonsai import BonsaiGrowthHandler, _read_watermark
+        self._make_session("test_role", "s1")
+
+        with patch("app.scheduler.handlers.bonsai.BonsaiGrowthHandler._send_hitl",
+                   side_effect=RuntimeError("discord down")):
+            handler = BonsaiGrowthHandler()
+            task = self._make_task({"mode": "growth", "roles": ["test_role"], "notify_owner": True})
+            result = await handler.execute(task, self._make_ctx())
+
+        summaries = result.metrics["roles"]
+        self.assertEqual(summaries[0]["status"], "hitl_failed")
+        wm = _read_watermark("test_role")
+        self.assertTrue(wm.get("hitl_failed"))
+
+    async def test_hitl_failure_does_not_set_last_growth_run(self):
+        from app.scheduler.handlers.bonsai import BonsaiGrowthHandler, _read_watermark
+        self._make_session("test_role", "s1")
+
+        with patch("app.scheduler.handlers.bonsai.BonsaiGrowthHandler._send_hitl",
+                   side_effect=RuntimeError("discord down")):
+            handler = BonsaiGrowthHandler()
+            task = self._make_task({"mode": "growth", "roles": ["test_role"], "notify_owner": True})
+            await handler.execute(task, self._make_ctx())
+
+        wm = _read_watermark("test_role")
+        # Sessions must NOT be marked processed — they need to be re-collected
+        self.assertNotIn("last_growth_run", wm)
+
+    async def test_next_run_retries_hitl_not_new_snapshot(self):
+        from app.scheduler.handlers.bonsai import BonsaiGrowthHandler, _write_watermark, _read_watermark
+        self._make_session("test_role", "s1")
+        # Simulate a previous run that created v1 but failed to deliver HITL
+        _write_watermark("test_role", {
+            "pending_version": 1,
+            "pending_report": "growth report text",
+            "sessions_to_process": ["s1"],
+            "hitl_failed": True,
+        })
+        from app.scheduler.bonsai import SnapshotManager, GrowthSnapshot
+        sm = SnapshotManager("test_role")
+        sm.save_snapshot(GrowthSnapshot("test_role", 1, {"core_values": {"score": 75}}, "test"))
+
+        send_calls = []
+        async def mock_send(self_arg, role_id, version, report, task_id, ctx):
+            send_calls.append((role_id, version))
+
+        with patch("app.scheduler.handlers.bonsai.BonsaiGrowthHandler._send_hitl", mock_send):
+            handler = BonsaiGrowthHandler()
+            task = self._make_task({"mode": "growth", "roles": ["test_role"], "notify_owner": True})
+            result = await handler.execute(task, self._make_ctx())
+
+        summaries = result.metrics["roles"]
+        self.assertEqual(summaries[0]["status"], "hitl_retried")
+        # Must retry v1, not create v2
+        self.assertEqual(send_calls[0][1], 1)
+        self.assertEqual(summaries[0]["snapshot_version"], 1)
+
+    async def test_successful_hitl_sets_last_growth_run(self):
+        from app.scheduler.handlers.bonsai import BonsaiGrowthHandler, _read_watermark
+        self._make_session("test_role", "s1")
+
+        async def mock_send(*args, **kwargs):
+            pass
+
+        with patch("app.scheduler.handlers.bonsai.BonsaiGrowthHandler._send_hitl", mock_send):
+            handler = BonsaiGrowthHandler()
+            task = self._make_task({"mode": "growth", "roles": ["test_role"], "notify_owner": True})
+            await handler.execute(task, self._make_ctx())
+
+        wm = _read_watermark("test_role")
+        self.assertIn("last_growth_run", wm)
+        self.assertFalse(wm.get("hitl_failed"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -55,6 +55,7 @@ class GrowthSnapshot:
             "created_at": self.created_at,
             "trigger": self.trigger,
             "dimensions": self.dimensions,
+            "system_prompt": self.system_prompt,
             "system_prompt_hash": self.system_prompt_hash,
             "communication_style": self.communication_style,
             "presentation_patterns": self.presentation_patterns,
@@ -68,7 +69,7 @@ class GrowthSnapshot:
             role_id=data.get("role_id", "unknown"),
             version=data.get("version", 0),
             dimensions=data.get("dimensions", {}),
-            system_prompt=system_prompt,
+            system_prompt=system_prompt or data.get("system_prompt", ""),
             presentation_patterns=data.get("presentation_patterns", {}),
             communication_style=data.get("communication_style", []),
             trigger=data.get("trigger", "unknown"),
@@ -141,22 +142,33 @@ class SnapshotManager:
         logger.info(f"Saved candidate snapshot v{snapshot.version} for {self.role_id}")
         return path
 
-    def pin_snapshot(self, version: int) -> bool:
+    def pin_snapshot(self, version: int, approved_by: str = "owner") -> bool:
         """Pin a specific version as the owner-approved live state.
 
-        Updates both pinned.json (approval record) and current.json (live pointer)
-        so the approved version is what roles and providers see immediately.
+        Writes approved_by and approved_at into the snapshot file, then updates
+        both pinned.json (approval record) and current.json (live pointer).
         """
         path = self._snapshot_path(version)
         if not path.exists():
             return False
+
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["approved_by"] = approved_by
+            data["approved_at"] = datetime.now().isoformat()
+            path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to write approval metadata for v{version}: {e}")
 
         for ptr in (self._pinned_path(), self._current_path()):
             if ptr.exists() or ptr.is_symlink():
                 ptr.unlink()
             ptr.symlink_to(path.name)
 
-        logger.info(f"Pinned and activated snapshot v{version} for {self.role_id}")
+        logger.info(f"Pinned and activated snapshot v{version} for {self.role_id} (approved_by={approved_by})")
         return True
 
     def activate_snapshot(self, version: int, *, pin: bool = False) -> bool:
