@@ -166,7 +166,8 @@ class SnapshotManager:
                 encoding="utf-8",
             )
         except Exception as e:
-            logger.warning(f"Failed to write approval metadata for v{version}: {e}")
+            logger.error(f"pin_snapshot: failed to write approval metadata for v{version}: {e}")
+            return False
 
         for ptr in (self._pinned_path(), self._current_path()):
             if ptr.exists() or ptr.is_symlink():

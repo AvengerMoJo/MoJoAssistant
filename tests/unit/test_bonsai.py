@@ -442,6 +442,15 @@ class TestApprovalMetadata(unittest.TestCase):
         data = json.loads(self.manager._snapshot_path(1).read_text())
         self.assertIsNone(data.get("approved_by"))
 
+    def test_pin_fails_closed_if_metadata_write_fails(self):
+        self._save()
+        with patch("pathlib.Path.write_text", side_effect=OSError("disk full")):
+            result = self.manager.pin_snapshot(1)
+        self.assertFalse(result)
+        # Symlinks must not have been created
+        self.assertFalse(self.manager._pinned_path().exists())
+        self.assertFalse(self.manager._current_path().exists())
+
 
 class TestHITLFailureWatermark(unittest.IsolatedAsyncioTestCase):
     """Bug 3 — watermark must not mark sessions processed when HITL delivery fails."""
