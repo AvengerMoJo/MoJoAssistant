@@ -177,6 +177,7 @@ class CapabilityRegistry:
         self._scheduler = None
         self._current_task_id: Optional[str] = None
         self._current_dispatch_depth: int = 0
+        self._current_available_tools: Optional[list] = None  # enforced allowlist
         self._tools: Dict[str, CapabilityDefinition] = {}
         self._ensure_registry_seeded()
         self._load_registry()
@@ -552,6 +553,17 @@ class CapabilityRegistry:
         user_id: str = None,
     ) -> Dict[str, Any]:
         """Execute a tool, dispatching on executor type."""
+        # Enforce available_tools allowlist set by the current task context.
+        if self._current_available_tools is not None and name not in self._current_available_tools:
+            return {
+                "success": False,
+                "error": (
+                    f"Tool '{name}' is not in this task's available_tools list "
+                    f"({', '.join(self._current_available_tools)}). "
+                    "Remove it from your plan."
+                ),
+            }
+
         tool = self.get_tool(name)
         if not tool:
             return {"success": False, "error": f"Tool '{name}' not found"}
@@ -932,6 +944,17 @@ class CapabilityRegistry:
             ),
         }
 
+    def _check_protected_paths(self, goal: str) -> List[str]:
+        """Return protected paths mentioned in goal text, or empty list if none."""
+        try:
+            from app.config.paths import get_memory_path
+            infra_path = Path(get_memory_path()) / "config" / "infra_context.json"
+            data = json.loads(infra_path.read_text(encoding="utf-8"))
+            protected = data.get("protected_paths", [])
+        except Exception:
+            return []
+        return [p for p in protected if p in goal]
+
     async def _dispatch_subtask(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Dispatch a sub-task to another agent role and block until it completes.
@@ -959,6 +982,43 @@ class CapabilityRegistry:
         goal = args.get("goal")
         if not role_id or not goal:
             return {"success": False, "error": "role_id and goal are required"}
+
+        # Gate tasks that touch protected infrastructure paths
+        matched_paths = self._check_protected_paths(goal)
+        if matched_paths:
+            gate_id = f"proposal_gate_{uuid.uuid4().hex[:8]}"
+            gate_task = Task(
+                id=gate_id,
+                type=TaskType.DREAMING,
+                priority=TaskPriority.HIGH,
+                config={
+                    "mode": "proposal_gate",
+                    "proposal_text": (
+                        f"Agent `{role_id}` wants to dispatch a task touching protected paths:\n"
+                        f"**Paths:** {', '.join(f'`{p}`' for p in matched_paths)}\n\n"
+                        f"**Goal:**\n{goal}"
+                    ),
+                    "on_approve_task": {
+                        "type": "internal_assignment",
+                        "priority": "medium",
+                        "config": {"goal": goal, "role_id": role_id,
+                                   **({"available_tools": args["available_tools"]}
+                                      if args.get("available_tools") else {})},
+                    },
+                },
+                resources=TaskResources(),
+                created_by="dispatch_guard",
+                parent_task_id=self._current_task_id,
+            )
+            self._scheduler.add_task(gate_task)
+            return {
+                "success": False,
+                "error": (
+                    f"Task touches protected paths {matched_paths}. "
+                    f"A proposal has been submitted for owner approval (task: {gate_id}). "
+                    "Do not retry — the task will be dispatched automatically if approved."
+                ),
+            }
 
         task_id = f"sub_{self._current_task_id or 'unknown'}_{uuid.uuid4().hex[:6]}"
         timeout_s = int(args.get("timeout_s", self.DISPATCH_DEFAULT_TIMEOUT_S))
@@ -1493,11 +1553,19 @@ class CapabilityRegistry:
         """Set the MCPClientManager for external_mcp executor support."""
         self._mcp_client_manager = manager
 
-    def set_task_context(self, task_id: str, dispatch_depth: int = 0, role_id: Optional[str] = None) -> None:
+    def set_task_context(
+        self,
+        task_id: str,
+        dispatch_depth: int = 0,
+        role_id: Optional[str] = None,
+        available_tools: Optional[list] = None,
+    ) -> None:
         """Set the current task context so dispatch_subtask can link parent→child."""
         self._current_task_id = task_id
         self._current_dispatch_depth = dispatch_depth
         self._current_role_id = role_id  # used to scope memory_search to the active role
+        # None means "no restriction"; an explicit list is enforced as an allowlist.
+        self._current_available_tools = list(available_tools) if available_tools is not None else None
 
     def set_scheduler(self, scheduler) -> None:
         """Set the Scheduler for scheduler_add_task tool support."""

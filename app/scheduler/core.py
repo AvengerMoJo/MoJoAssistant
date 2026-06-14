@@ -18,6 +18,8 @@ from app.scheduler.models import Task, TaskStatus, TaskType, Schedule, TaskPrior
 from app.scheduler.executor import TaskExecutor
 
 
+from . import __version__
+
 class Scheduler:
     """
     Core scheduler with persistent ticker loop
@@ -188,7 +190,7 @@ class Scheduler:
             "event_type": "system_notification",
             "severity": "info",
             "title": "Scheduler started",
-            "data": {"max_concurrent": self.max_concurrent, "version": "v1.1.9-beta"},
+            "data": {"max_concurrent": self.max_concurrent, "version": f"v{__version__}"},
         })
 
         # Set up signal handlers for graceful shutdown (only in main thread)
@@ -445,6 +447,8 @@ class Scheduler:
                 task.status = TaskStatus.WAITING_FOR_INPUT
                 task.pending_question = result.waiting_for_input
                 task.config["resume_from_task_id"] = task.id
+                if result.waiting_for_input_choices:
+                    task.config["pending_choices"] = result.waiting_for_input_choices
                 self.queue.update(task)
                 notify = self._should_notify_completion(task)
                 await self._broadcast({

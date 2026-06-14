@@ -206,7 +206,7 @@ class TaskQueue:
         self,
         status: Optional[TaskStatus] = None,
         priority: Optional[TaskPriority] = None,
-        limit: int = 100
+        limit: Optional[int] = None
     ) -> List[Task]:
         """
         List tasks with optional filtering
@@ -214,7 +214,7 @@ class TaskQueue:
         Args:
             status: Filter by status
             priority: Filter by priority
-            limit: Maximum number of tasks to return
+            limit: Maximum number of tasks to return (None = no limit)
 
         Returns:
             List of tasks matching criteria
@@ -231,7 +231,7 @@ class TaskQueue:
             # Sort by created_at (most recent first)
             tasks.sort(key=lambda t: t.created_at, reverse=True)
 
-            return tasks[:limit]
+            return tasks if limit is None else tasks[:limit]
 
     def get_statistics(self) -> Dict[str, Any]:
         """

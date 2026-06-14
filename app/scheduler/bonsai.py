@@ -36,6 +36,8 @@ class GrowthSnapshot:
         communication_style: Optional[List[str]] = None,
         trigger: str = "manual",
         approved_by: Optional[str] = None,
+        approved_at: Optional[str] = None,
+        created_at: Optional[str] = None,
     ):
         self.role_id = role_id
         self.version = version
@@ -45,7 +47,8 @@ class GrowthSnapshot:
         self.communication_style = communication_style or []
         self.trigger = trigger
         self.approved_by = approved_by
-        self.created_at = datetime.now().isoformat()
+        self.approved_at = approved_at
+        self.created_at = created_at or datetime.now().isoformat()
         self.system_prompt_hash = hashlib.sha256(system_prompt.encode()).hexdigest()[:16]
 
     def to_dict(self) -> Dict[str, Any]:
@@ -55,11 +58,12 @@ class GrowthSnapshot:
             "created_at": self.created_at,
             "trigger": self.trigger,
             "dimensions": self.dimensions,
+            "system_prompt": self.system_prompt,
             "system_prompt_hash": self.system_prompt_hash,
             "communication_style": self.communication_style,
             "presentation_patterns": self.presentation_patterns,
             "approved_by": self.approved_by,
-            "approved_at": self.created_at if self.approved_by else None,
+            "approved_at": self.approved_at,
         }
 
     @classmethod
@@ -68,11 +72,13 @@ class GrowthSnapshot:
             role_id=data.get("role_id", "unknown"),
             version=data.get("version", 0),
             dimensions=data.get("dimensions", {}),
-            system_prompt=system_prompt,
+            system_prompt=system_prompt or data.get("system_prompt", ""),
             presentation_patterns=data.get("presentation_patterns", {}),
             communication_style=data.get("communication_style", []),
             trigger=data.get("trigger", "unknown"),
             approved_by=data.get("approved_by"),
+            approved_at=data.get("approved_at"),
+            created_at=data.get("created_at"),
         )
 
 
@@ -132,34 +138,43 @@ class SnapshotManager:
             return None
 
     def save_snapshot(self, snapshot: GrowthSnapshot) -> Path:
-        """Save a growth snapshot and update current."""
+        """Save a growth snapshot as a versioned candidate. Does NOT update current or pinned."""
         path = self._snapshot_path(snapshot.version)
         path.write_text(
             json.dumps(snapshot.to_dict(), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-
-        # Update current symlink
-        current = self._current_path()
-        if current.exists() or current.is_symlink():
-            current.unlink()
-        current.symlink_to(path.name)
-
-        logger.info(f"Saved snapshot v{snapshot.version} for {self.role_id}")
+        logger.info(f"Saved candidate snapshot v{snapshot.version} for {self.role_id}")
         return path
 
-    def pin_snapshot(self, version: int) -> bool:
-        """Pin a specific version as the owner-approved state."""
+    def pin_snapshot(self, version: int, approved_by: str = "owner") -> bool:
+        """Pin a specific version as the owner-approved live state.
+
+        Writes approved_by and approved_at into the snapshot file, then updates
+        both pinned.json (approval record) and current.json (live pointer).
+        """
         path = self._snapshot_path(version)
         if not path.exists():
             return False
 
-        pinned = self._pinned_path()
-        if pinned.exists() or pinned.is_symlink():
-            pinned.unlink()
-        pinned.symlink_to(path.name)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["approved_by"] = approved_by
+            data["approved_at"] = datetime.now().isoformat()
+            path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.error(f"pin_snapshot: failed to write approval metadata for v{version}: {e}")
+            return False
 
-        logger.info(f"Pinned snapshot v{version} for {self.role_id}")
+        for ptr in (self._pinned_path(), self._current_path()):
+            if ptr.exists() or ptr.is_symlink():
+                ptr.unlink()
+            ptr.symlink_to(path.name)
+
+        logger.info(f"Pinned and activated snapshot v{version} for {self.role_id} (approved_by={approved_by})")
         return True
 
     def activate_snapshot(self, version: int, *, pin: bool = False) -> bool:

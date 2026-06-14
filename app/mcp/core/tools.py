@@ -2543,9 +2543,16 @@ Agent resumes within seconds.
         repo_name = args.get("repo_name")
         file_path = args.get("file_path")
         git_hash = args.get("git_hash")
+        max_chars = int(args.get("max_chars") or 8000)
 
         try:
             result = self.git_service.get_file_content(repo_name, file_path, git_hash)
+            content = result.get("content", "")
+            if isinstance(content, str) and len(content) > max_chars:
+                result["content"] = content[:max_chars]
+                result["truncated"] = True
+                result["total_chars"] = len(content)
+                result["hint"] = f"File truncated to {max_chars} chars. Pass max_chars=N for more."
             return result
         except Exception as e:
             return {
@@ -2878,40 +2885,36 @@ Agent resumes within seconds.
             if "priority" in args:
                 priority_filter = TaskPriority(args["priority"])
 
-            limit = args.get("limit", 100)
+            limit = args.get("limit", 20)
 
             # Get tasks
             tasks = self.scheduler.list_tasks(
                 status=status_filter, priority=priority_filter, limit=limit
             )
 
-            # Compact summary rows — full detail available via action='get', task_id=...
+            # Compact index rows — no debug/session reads; use action='get' for detail
             def _summarise(task) -> Dict[str, Any]:
                 config = task.config or {}
                 goal = config.get("goal", "")
                 result = task.result
-                debug = self._build_task_debug_summary(task.id)
-                intent_preflight = ((result.metrics or {}).get("intent_preflight") if result else None)
                 return {
                     "id": task.id,
                     "status": task.status.value,
-                    "type": task.type.value,
-                    "priority": task.priority.value,
                     "role_id": config.get("role_id"),
-                    "goal": goal[:120] + ("…" if len(goal) > 120 else ""),
+                    "goal": goal[:80] + ("…" if len(goal) > 80 else ""),
                     "created_at": task.created_at.isoformat(),
-                    "started_at": task.started_at.isoformat() if task.started_at else None,
                     "completed_at": task.completed_at.isoformat() if task.completed_at else None,
                     "pending_question": task.pending_question,
                     "success": result.success if result else None,
-                    "completion_mode": (result.metrics or {}).get("completion_mode") if result else None,
-                    "intent_preflight_ok": (intent_preflight or {}).get("ok") if intent_preflight else None,
-                    "debug": debug,
                 }
 
             tasks_data = [_summarise(t) for t in tasks]
-            return {"status": "success", "tasks": tasks_data, "total": len(tasks_data),
-                    "hint": "Use action='get', task_id=... for full detail including result and metrics."}
+            return {
+                "status": "success",
+                "tasks": tasks_data,
+                "total": len(tasks_data),
+                "hint": "Use action='get', task_id='...' for full detail including result, metrics, and iteration log.",
+            }
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to list tasks: {str(e)}"}
@@ -3087,7 +3090,7 @@ Agent resumes within seconds.
             target_status = args.get("status")
             exclude_ids = set(args.get("exclude_ids") or [])
 
-            all_tasks = self.scheduler.list_tasks()
+            all_tasks = self.scheduler.list_tasks(limit=None)
             removed = []
             for task in all_tasks:
                 if task.status.value == target_status and task.id not in exclude_ids:
@@ -3127,7 +3130,7 @@ Agent resumes within seconds.
             zombie_cutoff = now - timedelta(minutes=zombie_minutes)
             failed_cutoff = now - timedelta(days=failed_days)
 
-            all_tasks = self.scheduler.list_tasks()
+            all_tasks = self.scheduler.list_tasks(limit=None)
 
             zombies_killed = []
             failed_removed = []
@@ -3331,24 +3334,33 @@ Agent resumes within seconds.
     async def _execute_scheduler_list_assistant_tools(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Return all tools available for assignment to agentic tasks."""
+        """Return tools available for assignment to agentic tasks."""
         try:
             from app.scheduler.capability_registry import CapabilityRegistry
 
+            category_filter = (args.get("category") or "").strip() or None
             registry = CapabilityRegistry()
             tools = registry.list_tools()
+            rows = []
+            for name, meta in tools.items():
+                if category_filter and meta.get("category", "") != category_filter:
+                    continue
+                desc = meta.get("description", "")
+                rows.append({
+                    "name": name,
+                    "description": desc[:100] + ("…" if len(desc) > 100 else ""),
+                    "category": meta.get("category", ""),
+                    "danger_level": meta.get("danger_level", "low"),
+                    "requires_auth": meta.get("requires_auth", False),
+                })
             return {
                 "status": "success",
-                "tools": [
-                    {
-                        "name": name,
-                        "description": meta.get("description", ""),
-                        "danger_level": meta.get("danger_level", "low"),
-                        "requires_auth": meta.get("requires_auth", False),
-                    }
-                    for name, meta in tools.items()
-                ],
-                "usage": "Pass desired tool names in available_tools when calling scheduler_add_task with task_type='agentic'.",
+                "tools": rows,
+                "count": len(rows),
+                "hint": (
+                    "Filter by category (e.g. category='exec') to narrow results. "
+                    "Use config(action='capability_get', tool_name=...) for full tool spec."
+                ),
             }
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -3480,18 +3492,27 @@ Agent resumes within seconds.
         """Execute dreaming_list_archives tool"""
         try:
             from pathlib import Path
-            from dreaming.storage.json_backend import JsonFileBackend
+            from app.services.storage_factory import resolve_storage_backend
             from app.config.paths import get_memory_subpath
 
-            storage = JsonFileBackend(storage_path=Path(get_memory_subpath("dreams")))
-            archives = storage.list_archives()
+            limit = int(args.get("limit") or 20)
+            offset = int(args.get("offset") or 0)
 
-            return {
+            storage = resolve_storage_backend(storage_path=Path(get_memory_subpath("dreams")))
+            archives = storage.list_archives()
+            total = len(archives)
+            page = archives[offset: offset + limit]
+
+            result = {
                 "status": "success",
-                "archives": archives,
-                "count": len(archives),
-                "message": f"Found {len(archives)} archived conversations",
+                "archives": page,
+                "count": len(page),
+                "total": total,
+                "offset": offset,
             }
+            if offset + limit < total:
+                result["hint"] = f"More archives available. Pass offset={offset + limit} for next page."
+            return result
 
         except Exception as e:
             return {"status": "error", "message": f"Failed to list archives: {str(e)}"}
@@ -3503,12 +3524,14 @@ Agent resumes within seconds.
         try:
             conversation_id = args.get("conversation_id")
             version = args.get("version")
+            max_units = int(args.get("max_units") or 20)
+            offset = int(args.get("offset") or 0)
 
             from pathlib import Path
-            from dreaming.storage.json_backend import JsonFileBackend
+            from app.services.storage_factory import resolve_storage_backend
             from app.config.paths import get_memory_subpath
 
-            storage = JsonFileBackend(storage_path=Path(get_memory_subpath("dreams")))
+            storage = resolve_storage_backend(storage_path=Path(get_memory_subpath("dreams")))
 
             archive = storage.load_archive(
                 conversation_id=conversation_id, version=version
@@ -3516,22 +3539,41 @@ Agent resumes within seconds.
 
             if archive:
                 manifest = storage.get_manifest(conversation_id=conversation_id)
-                # Build lifecycle from manifest
                 lifecycle = None
                 if manifest:
                     av = version if version is not None else int(manifest.get("latest_version", 0))
                     lifecycle = manifest.get("versions", {}).get(str(av))
                     if lifecycle:
                         lifecycle = {"conversation_id": conversation_id, "version": av, **lifecycle}
-                return {
+
+                # Paginate knowledge units if archive contains them
+                units = None
+                total_units = None
+                if isinstance(archive, dict):
+                    raw_units = archive.get("knowledge_units") or archive.get("units") or []
+                    if isinstance(raw_units, list) and raw_units:
+                        total_units = len(raw_units)
+                        units = raw_units[offset: offset + max_units]
+                        archive = {k: v for k, v in archive.items()
+                                   if k not in ("knowledge_units", "units")}
+                        archive["knowledge_units"] = units
+
+                result = {
                     "status": "success",
                     "archive": archive,
                     "lifecycle": lifecycle,
-                    "latest_version": manifest.get("latest_version")
-                    if manifest
-                    else None,
-                    "message": f"Retrieved archive for {conversation_id}",
+                    "latest_version": manifest.get("latest_version") if manifest else None,
                 }
+                if total_units is not None:
+                    result["units_total"] = total_units
+                    result["units_returned"] = len(units)
+                    result["offset"] = offset
+                    if offset + max_units < total_units:
+                        result["hint"] = (
+                            f"Archive has {total_units} units. "
+                            f"Pass offset={offset + max_units} for next page."
+                        )
+                return result
             else:
                 return {
                     "status": "error",
@@ -3602,6 +3644,8 @@ Agent resumes within seconds.
 
             task_id = args.get("task_id")
             include_metadata = args.get("include_metadata", False)
+            last_n = int(args.get("last_n") or 20)
+            max_content_chars = int(args.get("max_content_chars") or 1000)
 
             storage = SessionStorage()
             session = storage.load_session(task_id)
@@ -3612,15 +3656,25 @@ Agent resumes within seconds.
                     "message": f"No session found for task '{task_id}'",
                 }
 
-            # Format messages
+            all_messages = session.messages
+            total_messages = len(all_messages)
+            windowed = all_messages[-last_n:] if last_n and len(all_messages) > last_n else all_messages
+
             messages = []
-            for msg in session.messages:
+            for msg in windowed:
+                content = msg.content or ""
+                truncated = False
+                if isinstance(content, str) and len(content) > max_content_chars:
+                    content = content[:max_content_chars] + "…"
+                    truncated = True
                 entry = {
                     "role": msg.role,
-                    "content": msg.content,
+                    "content": content,
                     "timestamp": msg.timestamp,
                     "iteration": msg.iteration,
                 }
+                if truncated:
+                    entry["content_truncated"] = True
                 if msg.tool_call_id:
                     entry["tool_call_id"] = msg.tool_call_id
                 if msg.tool_name:
@@ -3629,7 +3683,7 @@ Agent resumes within seconds.
                     entry["metadata"] = msg.metadata
                 messages.append(entry)
 
-            return {
+            result = {
                 "status": "success",
                 "task_id": session.task_id,
                 "session_status": session.status,
@@ -3637,10 +3691,17 @@ Agent resumes within seconds.
                 "completed_at": session.completed_at,
                 "final_answer": session.final_answer,
                 "error_message": session.error_message,
-                "message_count": len(messages),
+                "message_count": total_messages,
+                "messages_returned": len(messages),
                 "messages": messages,
                 "metadata": session.metadata,
             }
+            if total_messages > last_n:
+                result["hint"] = (
+                    f"Showing last {last_n} of {total_messages} messages. "
+                    f"Pass last_n=N or last_n=0 for all."
+                )
+            return result
 
         except Exception as e:
             return {
@@ -4036,6 +4097,371 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Config healer failed: {e}"}
 
+    # --- Eval actions (doctor_eval_run, doctor_eval_history, doctor_eval_summary, doctor_health) ---
+
+    async def _execute_doctor_eval_run(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run an eval suite or scenario against a resource.
+
+        Args:
+            resource_id: required — ID of the LLM resource to test
+            suite: optional — suite ID (e.g. "qualification_fast")
+            scenario_id: optional — individual scenario ID
+            repeats: optional — number of times to repeat (default 1)
+            tool_schema_mode: optional — "full" | "lean" | "either"
+            integration_checks: optional — list of backend checks to include
+            store_result: optional — persist to eval_log.jsonl (default true)
+        """
+        resource_id = str(args.get("resource_id", "")).strip()
+        suite_id = (args.get("suite") or "").strip() or None
+        scenario_id = (args.get("scenario_id") or "").strip() or None
+        repeats = int(args.get("repeats", 1))
+        tool_schema_mode = (args.get("tool_schema_mode") or "").strip() or None
+        integration_checks = args.get("integration_checks")
+        store_result = args.get("store_result", True)
+
+        if not resource_id:
+            return {"status": "error", "message": "resource_id is required"}
+        if not suite_id and not scenario_id:
+            return {"status": "error", "message": "Exactly one of suite or scenario_id is required"}
+
+        try:
+            from app.scheduler.evals.runner import EvalRunner
+            from app.scheduler.evals.scenarios import get_scenario
+            from app.scheduler.evals.suites import get_suite
+            from app.scheduler.resource_pool import ResourceManager
+
+            rm = ResourceManager()
+            resource = rm._resources.get(resource_id)
+            if resource is None:
+                return {"status": "error", "message": f"Resource '{resource_id}' not found"}
+
+            runner = EvalRunner()
+
+            if scenario_id:
+                scenario = get_scenario(scenario_id)
+                records = []
+                for _ in range(repeats):
+                    record = await runner.run_scenario(
+                        resource=resource,
+                        scenario=scenario,
+                        resource_id=resource_id,
+                        store_result=store_result,
+                    )
+                    records.append(record)
+            else:
+                suite = get_suite(suite_id)
+                # Copy the list to avoid mutating the shared suite definition
+                scenario_ids = list(suite.default_scenarios)
+
+                # Add integration scenarios if requested
+                # Match against task_family or requires_backends (not raw tags)
+                if integration_checks:
+                    from app.scheduler.evals.scenarios import ALL_SCENARIOS
+                    checks_set = set(integration_checks)
+                    for sid, s in ALL_SCENARIOS.items():
+                        if (
+                            s.task_family in checks_set
+                            or checks_set.intersection(getattr(s, "requires_backends", None) or [])
+                        ) and sid not in scenario_ids:
+                            scenario_ids.append(sid)
+
+                records = await runner.run_suite(
+                    resource=resource,
+                    scenario_ids=scenario_ids,
+                    resource_id=resource_id,
+                    repeats=repeats,
+                    tool_schema_mode=tool_schema_mode,
+                    store_result=store_result,
+                )
+
+            # Build response
+            results = []
+            for r in records:
+                results.append({
+                    "scenario_id": r.scenario_id,
+                    "success": r.success,
+                    "duration_seconds": round(r.duration_seconds, 2),
+                    "iterations_used": r.iterations_used,
+                    "checks": r.checks,
+                    "error": r.error,
+                })
+
+            total = len(results)
+            passed = sum(1 for r in results if r["success"])
+
+            return {
+                "status": "success",
+                "resource_id": resource_id,
+                "model": resource.model,
+                "suite": suite_id,
+                "total_scenarios": total,
+                "passed": passed,
+                "failed": total - passed,
+                "results": results,
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"Eval run failed: {e}"}
+
+    async def _execute_config_doctor_mcp_surface(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Report full-vs-lean tool payload sizes and behavioral notes."""
+        try:
+            sizes = self.get_tools_lean_json_size()
+            return {
+                "status": "success",
+                "summary": {
+                    "full_bytes": sizes["full_bytes"],
+                    "lean_bytes": sizes["lean_bytes"],
+                    "reduction_pct": sizes["reduction_pct"],
+                    "per_tool": sizes["per_tool"],
+                    "per_tool_lean": sizes["per_tool_lean"],
+                },
+                "behavior": {
+                    "prompt_difference": (
+                        "tool_schema_mode='lean' strips description and default fields from each "
+                        "tool definition before it is sent to the model. This is not the agentic "
+                        "system prompt — it only affects the tool JSON payload size."
+                    ),
+                },
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+
+    async def _execute_config_doctor_smoke_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Backward-compatible wrapper for legacy smoke-history action."""
+        try:
+            rm = self._get_resource_manager()
+            resource_id = (args.get("resource_id") or "").strip() or None
+            limit = int(args.get("limit") or 20)
+            limit = max(1, min(limit, 200))
+            rows = rm.get_agentic_smoke_history(resource_id=resource_id, limit=limit)
+            return {
+                "status": "success",
+                "resource_id": resource_id,
+                "count": len(rows),
+                "items": rows,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"doctor_smoke_history failed: {e}"}
+
+    async def _execute_config_doctor_mcp_surface_eval(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Backward-compatible wrapper for legacy full-vs-lean compare action."""
+        try:
+            resource_id = (args.get("resource_id") or "").strip()
+            if not resource_id:
+                return {"status": "error", "message": "resource_id is required"}
+            profile = (args.get("profile") or "fast_gate").strip() or "fast_gate"
+            repeats = max(1, min(int(args.get("repeats") or 1), 10))
+            integration_checks = args.get("integration_checks") or None
+            from app.scheduler.agentic_smoke_test import AgenticSmokeTest
+            tester = AgenticSmokeTest()
+            result = await tester.compare_tool_schema_modes(
+                resource_id=resource_id,
+                profile=profile,
+                integration_checks=integration_checks,
+                repeats=repeats,
+            )
+            result["status"] = "success"
+            return result
+        except Exception as e:
+            return {"status": "error", "message": f"doctor_mcp_surface_eval failed: {e}"}
+
+    async def _execute_doctor_eval_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Query evaluation history from eval_log.jsonl.
+
+        Args:
+            resource_id: optional — filter by resource
+            suite: optional — filter by suite
+            scenario_id: optional — filter by scenario
+            category: optional — filter by category (health/qualification/characterization)
+            limit: optional — max records (default 50)
+        """
+        resource_id = (args.get("resource_id") or "").strip() or None
+        suite = (args.get("suite") or "").strip() or None
+        scenario_id = (args.get("scenario_id") or "").strip() or None
+        category = (args.get("category") or "").strip() or None
+        limit = int(args.get("limit", 50))
+
+        try:
+            from app.scheduler.evals.store import EvalStore
+            store = EvalStore()
+            records = store.query(
+                resource_id=resource_id,
+                suite=suite,
+                scenario_id=scenario_id,
+                category=category,
+                limit=limit,
+            )
+
+            results = [r.to_dict() for r in records]
+            return {
+                "status": "success",
+                "count": len(results),
+                "records": results,
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"Eval history failed: {e}"}
+
+    async def _execute_doctor_eval_summary(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Return aggregated capability summary for a resource.
+
+        Args:
+            resource_id: required — resource to summarize
+            window_days: optional — lookback window (default 30)
+        """
+        resource_id = str(args.get("resource_id", "")).strip()
+        window_days = int(args.get("window_days", 30))
+
+        if not resource_id:
+            return {"status": "error", "message": "resource_id is required"}
+
+        try:
+            from app.scheduler.evals.store import EvalStore
+            store = EvalStore()
+
+            # Try cached summary first
+            summary = store.load_summary(resource_id)
+
+            # Recompute if stale or missing
+            if summary is None or summary.total_evals == 0:
+                summary = store.compute_summary(resource_id, window_days=window_days)
+                store.save_summary(summary)
+
+            return {
+                "status": "success",
+                "summary": summary.to_dict(),
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": f"Eval summary failed: {e}"}
+
+    async def _execute_doctor_health(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """System health check — config validity, endpoint reachability, backend status.
+
+        No required params. Returns a structured health report.
+        """
+        report = {
+            "status": "success",
+            "checks": [],
+        }
+
+        # 1. Config validity
+        try:
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            resources = rm._resources
+            enabled = [r for r in resources.values() if r.enabled]
+            report["checks"].append({
+                "name": "config_valid",
+                "status": "pass",
+                "message": f"{len(resources)} resources loaded, {len(enabled)} enabled",
+            })
+        except Exception as e:
+            report["checks"].append({
+                "name": "config_valid",
+                "status": "fail",
+                "message": str(e),
+            })
+
+        # 2. Endpoint reachability (probe local server)
+        try:
+            import requests
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            local_resources = [
+                r for r in rm._resources.values()
+                if r.enabled and r.base_url and "localhost" in r.base_url
+            ]
+            if local_resources:
+                r = local_resources[0]
+                headers = {"Authorization": f"Bearer {r.api_key}"} if r.api_key else {}
+                base = r.base_url.rstrip("/")
+                resp = requests.get(f"{base}/models", headers=headers, timeout=5)
+                if resp.status_code == 200:
+                    models = resp.json().get("data", [])
+                    report["checks"].append({
+                        "name": "endpoint_reachable",
+                        "status": "pass",
+                        "message": f"{r.base_url} — {len(models)} models loaded",
+                    })
+                else:
+                    report["checks"].append({
+                        "name": "endpoint_reachable",
+                        "status": "fail",
+                        "message": f"{r.base_url} returned {resp.status_code}",
+                    })
+            else:
+                report["checks"].append({
+                    "name": "endpoint_reachable",
+                    "status": "skip",
+                    "message": "No local endpoints configured",
+                })
+        except Exception as e:
+            report["checks"].append({
+                "name": "endpoint_reachable",
+                "status": "fail",
+                "message": str(e),
+            })
+
+        # 3. Eval freshness
+        try:
+            from app.scheduler.evals.store import EvalStore
+            store = EvalStore()
+            from datetime import datetime, timedelta
+            summaries = store.list_summaries()
+            stale = []
+            for rid, s in summaries.items():
+                if s.last_evaluated_at:
+                    try:
+                        last = datetime.fromisoformat(s.last_evaluated_at)
+                        if datetime.utcnow() - last > timedelta(days=7):
+                            stale.append(rid)
+                    except Exception:
+                        pass
+            report["checks"].append({
+                "name": "eval_freshness",
+                "status": "warn" if stale else "pass",
+                "message": f"{len(summaries)} resources evaluated, {len(stale)} stale (>7 days)" if stale else f"{len(summaries)} resources evaluated, all fresh",
+                "stale_resources": stale,
+            })
+        except Exception as e:
+            report["checks"].append({
+                "name": "eval_freshness",
+                "status": "skip",
+                "message": str(e),
+            })
+
+        # 4. Scheduler status
+        try:
+            if hasattr(self, "scheduler") and self.scheduler:
+                stats = self.scheduler.statistics
+                report["checks"].append({
+                    "name": "scheduler_running",
+                    "status": "pass",
+                    "message": f"Running since {stats.get('started_at', '?')}, {stats.get('tasks_executed', 0)} tasks executed",
+                })
+            else:
+                report["checks"].append({
+                    "name": "scheduler_running",
+                    "status": "skip",
+                    "message": "Scheduler not available",
+                })
+        except Exception as e:
+            report["checks"].append({
+                "name": "scheduler_running",
+                "status": "skip",
+                "message": str(e),
+            })
+
+        # Overall status
+        any_fail = any(c["status"] == "fail" for c in report["checks"])
+        any_warn = any(c["status"] == "warn" for c in report["checks"])
+        report["overall"] = "fail" if any_fail else "warn" if any_warn else "healthy"
+
+        return report
+
     async def _execute_audit_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Return audit records of external boundary crossings."""
         try:
@@ -4393,6 +4819,7 @@ Agent resumes within seconds.
         merged.update({k: v for k, v in args.items() if v is not None})
 
         resource_id = str(merged.get("resource_id", "")).strip()
+        profile = (merged.get("profile") or "fast_gate").strip() or "fast_gate"
         full = bool(merged.get("full", False))
         role_id = (merged.get("role_id") or "").strip() or None
         dynamic_goal = (merged.get("dynamic_goal") or "").strip() or None
@@ -4400,6 +4827,7 @@ Agent resumes within seconds.
         dynamic_expected_tool = (merged.get("dynamic_expected_tool") or "").strip() or None
         dynamic_planning_prompt = (merged.get("dynamic_planning_prompt") or "").strip() or None
         dynamic_system_prompt = (merged.get("dynamic_system_prompt") or "").strip() or None
+        integration_checks = merged.get("integration_checks")
         debug_artifact = bool(merged.get("debug_artifact", False))
         issue_note = (merged.get("issue_note") or "").strip() or None
         if not resource_id:
@@ -4410,6 +4838,7 @@ Agent resumes within seconds.
             tester = AgenticSmokeTest()
             result = await tester.run(
                 resource_id=resource_id,
+                profile=profile,
                 full=full,
                 role_id=role_id,
                 dynamic_goal=dynamic_goal,
@@ -4417,6 +4846,7 @@ Agent resumes within seconds.
                 dynamic_expected_tool=dynamic_expected_tool,
                 dynamic_planning_prompt=dynamic_planning_prompt,
                 dynamic_system_prompt=dynamic_system_prompt,
+                integration_checks=integration_checks,
                 debug_artifact=debug_artifact,
                 issue_note=issue_note,
             )
@@ -4831,18 +5261,27 @@ Agent resumes within seconds.
         role_id = args.get("role_id")
         if not role_id:
             return {"status": "error", "message": "role_id is required"}
+        limit = int(args.get("limit") or 20)
+        offset = int(args.get("offset") or 0)
         try:
             provider = get_registry().resolve_growth_provider()
             if not hasattr(provider, "list_snapshots"):
                 return {"status": "error", "message": "growth provider does not support snapshot history"}
             items = provider.list_snapshots(role_id)
-            return {
+            total = len(items)
+            page = items[offset: offset + limit]
+            result = {
                 "status": "success",
                 "provider": provider.get_version().provider_name,
                 "role_id": role_id,
-                "count": len(items),
-                "snapshots": items,
+                "total": total,
+                "count": len(page),
+                "offset": offset,
+                "snapshots": page,
             }
+            if offset + limit < total:
+                result["hint"] = f"Pass offset={offset + limit} for older snapshots."
+            return result
         except NotImplementedError as e:
             return {"status": "error", "message": str(e)}
         except Exception as e:
@@ -5019,9 +5458,13 @@ Agent resumes within seconds.
         }
 
     async def _execute_role_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """List all saved roles."""
+        """List roles as a compact index — id, name, purpose, capabilities only."""
         roles = self._role_manager.list_roles()
-        return {"roles": roles, "count": len(roles)}
+        return {
+            "roles": roles,
+            "count": len(roles),
+            "hint": "Use role(action='get', role_id='...') for full spec including system_prompt and policy.",
+        }
 
     async def _execute_role_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get a role config by ID."""
@@ -5031,7 +5474,15 @@ Agent resumes within seconds.
         role = self._role_manager.get(role_id)
         if role is None:
             return {"status": "error", "message": f"Role '{role_id}' not found"}
-        return role
+        # Truncate system_prompt by default — it can be several KB
+        include_full_prompt = args.get("include_full_prompt", False)
+        result = dict(role)
+        sp = result.get("system_prompt") or ""
+        if sp and not include_full_prompt and len(sp) > 500:
+            result["system_prompt"] = sp[:500] + "…"
+            result["system_prompt_truncated"] = True
+            result["hint"] = "system_prompt truncated. Pass include_full_prompt=true to get the full text."
+        return result
 
     # ── LLM Configuration Tools ──────────────────────────────────────
 
@@ -5238,6 +5689,23 @@ Agent resumes within seconds.
         if action in ("doctor_improve", "doctor_apply"):
             return await self._execute_config_healer(args)
 
+        # --- eval actions ---
+        if action == "doctor_eval_run":
+            return await self._execute_doctor_eval_run(args)
+        if action == "doctor_eval_history":
+            return await self._execute_doctor_eval_history(args)
+        if action == "doctor_eval_summary":
+            return await self._execute_doctor_eval_summary(args)
+        if action == "doctor_health":
+            return await self._execute_doctor_health(args)
+        if action == "doctor_mcp_surface":
+            return await self._execute_config_doctor_mcp_surface(args)
+        # backward-compat aliases for pre-eval-engine actions
+        if action == "doctor_smoke_history":
+            return await self._execute_doctor_eval_history(args)
+        if action == "doctor_mcp_surface_eval":
+            return await self._execute_doctor_eval_run(args)
+
         # --- modules list ---
         if action == "modules":
             modules = {}
@@ -5285,6 +5753,10 @@ Agent resumes within seconds.
                         "doctor_context_probe":  "Run cached empirical context-limit discovery script — params: resource_id? | all_enabled_local? | ladder? | connect_timeout? | read_timeout?",
                         "doctor_improve":        "Suggest config improvements from runtime data (benchmark history, failure patterns) — no changes written",
                         "doctor_apply":          "Apply auto-safe config improvements — params: auto_only? (default true; false applies all suggestions)",
+                        "doctor_eval_run":       "Run eval suite or scenario — params: resource_id, suite? | scenario_id?, repeats?, tool_schema_mode?, integration_checks?, store_result?",
+                        "doctor_eval_history":   "Query eval history — params: resource_id?, suite?, scenario_id?, category?, limit?",
+                        "doctor_eval_summary":   "Capability summary for a resource — params: resource_id, window_days?",
+                        "doctor_health":         "System health check — config validity, endpoint reachability, backend status",
                         "preflight":             "Check system dependencies and MCP tool installation status (use scripts/preflight.py for interactive install)",
                     },
                     "example": 'config(action="resource_status")',
@@ -5331,10 +5803,7 @@ Agent resumes within seconds.
                 if path:
                     try:
                         value = self._resolve_path(data, path)
-                        # Redact if the path itself is sensitive
-                        if self._matches_sensitive(
-                            path, meta.get("sensitive_keys", [])
-                        ):
+                        if self._matches_sensitive(path, meta.get("sensitive_keys", [])):
                             value = "***REDACTED***"
                         return {
                             "status": "success",
@@ -5348,13 +5817,25 @@ Agent resumes within seconds.
                             "message": f"Path '{path}' not found in {module_name} config.",
                         }
                 else:
-                    redacted = self._redact_sensitive(
-                        data, meta.get("sensitive_keys", [])
-                    )
+                    # No path — return top-level keys with type hints only.
+                    # Full values can be large (llm_config has many model defs).
+                    redacted = self._redact_sensitive(data, meta.get("sensitive_keys", []))
+                    preview = {}
+                    for k, v in redacted.items():
+                        if isinstance(v, dict):
+                            preview[k] = f"{{object, {len(v)} keys}}"
+                        elif isinstance(v, list):
+                            preview[k] = f"[list, {len(v)} items]"
+                        elif isinstance(v, str) and len(v) > 120:
+                            preview[k] = v[:120] + "…"
+                        else:
+                            preview[k] = v
                     return {
                         "status": "success",
                         "module": module_name,
-                        "config": redacted,
+                        "config": preview,
+                        "keys": preview,  # backward-compat alias
+                        "hint": f"Use path='<key>' to get the full value. E.g. config(action='get', module='{module_name}', path='<key>')",
                     }
             except Exception as e:
                 return {"status": "error", "message": f"Failed to load config: {e}"}

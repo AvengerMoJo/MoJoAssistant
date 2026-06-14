@@ -125,6 +125,12 @@ Declare models in `config/llm_config.json`. The resource pool picks available mo
 
 The server starts and runs normally without any of these — missing packages are detected at import time and the relevant feature is silently disabled.
 
+If you installed with `pip install .`, add Git features with:
+`pip install .[git]`
+
+For local inference dependencies (torch/transformers/llama.cpp), install:
+`pip install .[local-inference]`
+
 ## Connecting Claude Desktop / Claude Code
 
 Add MoJoAssistant as an MCP server in `claude_desktop_config.json`:
@@ -177,6 +183,57 @@ Every feature is labelled so you know what works on a clean install and what nee
 | CubeSandbox | `E2B_API_URL` + `E2B_API_KEY` in env or `infra_context.json` |
 | Cloudflared tunnel | `cloudflared` installed, for remote Claude.ai access |
 
+## Capacity Limits
+
+MoJoAssistant is designed for personal use. These are the tested defaults:
+
+| Limit | Default | Where |
+|-------|---------|-------|
+| Concurrent tasks | 3 | `Scheduler(max_concurrent=3)` |
+| Task iterations (agentic loop) | 10 per task | `Task.max_iterations` |
+| Budget extension grant | 20 max per request | `_BUDGET_EXTENSION_MAX_GRANT` |
+| Task retries | 3 | `Task.max_retries` |
+| Scheduler tick interval | 60 seconds | `Scheduler(tick_interval=60)` |
+| Tool calls per turn | 10 max | `_MAX_CALLS_PER_TURN` in agentic executor |
+| Sub-task dispatch depth | 2 levels | `CapabilityRegistry.MAX_DISPATCH_DEPTH` |
+| Event log size | 500 events (circular) | `EventLog.MAX_EVENTS` |
+| Role chat iterations | 5 per exchange | `MAX_CHAT_ITERATIONS` |
+| Role chat history | 10 turns carried | `MAX_HISTORY_TURNS` |
+| Knowledge units injected | 8 max | `MAX_KU_ITEMS` |
+| Bash command timeout | 60 seconds | safety policy |
+| Memory search results | 10 default, 20 max | `MAX_CONTEXT_ITEMS` |
+
+**What this means in practice:**
+- 3 agents can run simultaneously; additional tasks queue and wait
+- Each agent gets 10 LLM calls per task (request more via HITL if needed)
+- Old events are dropped after 500 (audit log is separate and never drops)
+- Sub-agent delegation goes 2 levels deep max (A→B→C, no deeper)
+
+**Not tested for:**
+- More than 10 concurrent tasks
+- More than 50 queued tasks
+- Context windows above 128K tokens (works, but context trimming may lose detail)
+
+## Security & Authentication
+
+MoJoAssistant is local-first. By default:
+
+- `MCP_REQUIRE_AUTH=false` — no authentication required for MCP endpoints
+- `DASHBOARD_PASSWORD=change_me` — dashboard is open until you set a password
+
+**This is intentional for personal use on a trusted machine.** The threat model assumes:
+- The machine is yours and physically secured
+- No untrusted users have network access to the MCP port
+- You are the only person using the system
+
+**If you expose MoJo to a network** (cloudflared tunnel, shared LAN, server):
+1. Set `MCP_REQUIRE_AUTH=true` in `.env`
+2. Set `MCP_API_KEY` to a strong random value: `openssl rand -hex 32`
+3. Set `DASHBOARD_PASSWORD` to something other than `change_me`
+4. Consider enabling OAuth: `OAUTH_ENABLED=true` (see `.env.example`)
+
+The policy pipeline, audit trail, and role-based data isolation are always active regardless of auth settings — they protect against agent misbehavior, not network adversaries.
+
 ## Running Tests
 
 ```bash
@@ -200,3 +257,27 @@ pip install -r requirements-runtime.txt   # picks up new dependencies
 ```
 
 No database migrations are needed. Config files are backwards-compatible; new keys are added with defaults.
+
+## Troubleshooting Task Failures
+
+When a task fails, the dashboard and `scheduler(action="get")` show a `last_error` message.
+Below are the common failure categories and what to do about them.
+
+| Error pattern | Category | What it means | What to do |
+|---|---|---|---|
+| "not found", "does not exist", "404" | `missing_resource` | Agent looked for something that isn't there | Check the task goal references real files/paths |
+| "blocked by policy", "permission denied" | `missing_permission` | Safety policy blocked a tool call | Check role capabilities; see policy violation log |
+| "rate limit", "timeout", "503", "429" | `external_unavailable` | External API (LLM, search) is down or throttled | Wait and retry; check API key; try a different tier |
+| "unclear", "ambiguous", "clarify" | `ambiguous_goal` | Agent couldn't understand the task | Rewrite the task goal more specifically |
+| "not supported", "requires browser" | `wrong_tool` | Agent tried something its tools can't do | Enable the right capability (browser, terminal) |
+| "don't know", "no information" | `knowledge_gap` | Agent has no relevant memory/knowledge | Feed it context via `add_conversation` first |
+| (empty or generic error) | `unknown` | Agent exhausted iterations without finishing | Grant more iterations via HITL reply, or simplify the goal |
+
+**Viewing task details:**
+```
+Use the scheduler tool with action="get" and task_id="<id>"
+Use the task_session_read tool to see the full conversation log
+```
+
+**Cron tasks:** A cron task that fails will reschedule to its next window automatically.
+The `last_error` from a failed run is preserved until the next successful run clears it.

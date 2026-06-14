@@ -23,8 +23,9 @@ _ADAPTER_REGISTRY: Dict[str, Any] = {}
 
 def _register_builtins():
     from app.mcp.adapters.push.ntfy import NtfyAdapter
+    from app.mcp.adapters.push.discord_owner import DiscordOwnerAdapter
     _ADAPTER_REGISTRY["ntfy"] = NtfyAdapter
-    # Future: FCM, APNs, Slack, Telegram, etc.
+    _ADAPTER_REGISTRY["discord_owner"] = DiscordOwnerAdapter
 
 
 class PushAdapterManager:

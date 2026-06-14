@@ -1,0 +1,13 @@
+{
+  "name": "default_skill",
+  "version": "1.0.0",
+  "contract_version": "1.0",
+  "provider_type": "skill",
+  "entry_point": "app.scheduler.skill_provider.DefaultSkillProvider",
+  "description": "Skill provider — blueprint catalog, template rendering, install/uninstall, test, search",
+  "dependencies": [],
+  "data_contracts": {
+    "SkillBlueprint": "1.0",
+    "InstallResult": "1.0"
+  }
+}

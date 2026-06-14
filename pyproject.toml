@@ -7,7 +7,7 @@ name = "mojoassistant"
 version = "1.4.2-beta"
 description = "AI memory and code understanding system with OpenCode Manager and git-aware capabilities"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
     {name = "MoJoAssistant Team"}
@@ -18,56 +18,70 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 
 dependencies = [
-    "langchain",
-    "GPT4ALL",
-    "llama_cpp_python",
-    "sacremoses==0.0.53",
-    "datasets",
-    "torch",
-    "torchvision",
-    "torchaudio",
-    "transformers[sentencepiece]",
-    "langchain-community",
-    "qdrant-client",
-    "llama-index-embeddings-huggingface",
-    "llama-index-vector-stores-qdrant",
-    "llama-index-readers-file",
-    "llama-index-llms-openai",
-    "llama_index",
-    "uvicorn",
-    "starlette",
-    "sse_starlette",
-    "starlette_context",
-    "fastapi",
-    "llama-cpp-python",
-    "requests",
-    "pydantic",
-    "sentence-transformers",
-    "einops",
+    # Web server
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "starlette>=0.36.0",
+    "sse-starlette>=1.8.0",
+    "starlette-context>=0.3.6",
+    "python-multipart>=0.0.6",
+    # MCP
+    "mcp>=1.0.0",
+    # HTTP clients
+    "httpx>=0.27.0",
+    "requests>=2.31.0",
+    "aiohttp>=3.9.0",
+    # Data / config
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "anyio>=4.0.0",
+    # Memory / vector store
+    "qdrant-client>=1.7.0",
+    "sentence-transformers>=2.6.0",
+    # Utilities
+    "psutil>=5.9.0",
     "prompt_toolkit",
-    "mcp",
-    "httpx",
-    "anyio",
+    # Auth (OAuth 2.1 / Claude Connectors)
     "PyJWT>=2.8.0",
     "python-jose[cryptography]>=3.3.0",
-    "python-multipart>=0.0.6",
-    "python-dotenv>=1.0.0",
-    "psutil",
 ]
 
 [project.optional-dependencies]
 git = [
-    "GitPython>=3.1.40"
+    "GitPython>=3.1.40",
+]
+local-inference = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "transformers[sentencepiece]",
+    "llama-cpp-python",
+    "einops",
+    "GPT4ALL",
+]
+llamaindex = [
+    "llama_index",
+    "llama-index-embeddings-huggingface",
+    "llama-index-vector-stores-qdrant",
+    "llama-index-readers-file",
+    "llama-index-llms-openai",
+]
+langchain = [
+    "langchain",
+    "langchain-community",
+    "sacremoses==0.0.53",
+    "datasets",
 ]
 dev = [
     "slowapi",
+    "pytest",
+    "pytest-asyncio",
 ]
 
 [project.urls]
@@ -83,6 +97,7 @@ asyncio_mode = "auto"
 markers = [
     "stable: tests that must pass on a clean install with no LLM or network (CI gate)",
     "experimental: tests that require an LLM, external API, or optional hardware",
+    "asyncio: marks a test as an asyncio test",
 ]
 
 [tool.setuptools.packages.find]
