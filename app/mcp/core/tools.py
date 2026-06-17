@@ -1004,7 +1004,15 @@ class ToolRegistry:
                     "action='backend_session_create', server_id? — create a new session\n"
                     "action='backend_session_message', session_id, content, server_id? — send a message\n"
                     "action='backend_session_messages', session_id, server_id? — get message history\n"
-                    "action='backend_session_delete', session_id, server_id? — delete a session\n\n"
+                    "action='backend_session_delete', session_id, server_id? — delete a session\n"
+                    "action='backend_session_run', prompt, backend_type?, server_id?, working_dir?, task_id?, session_id?, sandbox_id? — dispatch a long-running coding session task\n\n"
+                    "── Sandbox management ──\n"
+                    "action='sandbox_create', repo_url, agent_type? ('opencode'|'claude_code'), sandbox_id?, existing_dir? — provision a sandbox\n"
+                    "action='sandbox_start', sandbox_id — start the agent process\n"
+                    "action='sandbox_stop', sandbox_id — stop the agent process\n"
+                    "action='sandbox_status', sandbox_id — check live status\n"
+                    "action='sandbox_list' — list all sandboxes\n"
+                    "action='sandbox_destroy', sandbox_id — stop + delete sandbox\n\n"
                     "Future: action='github', action='slack', action='notion', ..."
                 ),
                 "inputSchema": {
@@ -1020,6 +1028,7 @@ class ToolRegistry:
                         "server_id": {"type": "string"},
                         "session_id": {"type": "string"},
                         "content": {"type": "string"},
+                        "backend_type": {"type": "string", "description": "Backend for coding_session_run: 'opencode' or 'goose'"},
                         "service": {"type": "string", "enum": ["calendar", "drive", "sheets", "gmail", "docs", "people"]},
                         "resource": {"type": "string"},
                         "method": {"type": "string", "enum": ["list", "get", "create", "update", "delete"]},
@@ -6530,6 +6539,7 @@ Agent resumes within seconds.
                 "backend_session_message": "Send a message and get a response — params: session_id, content, server_id?",
                 "backend_session_messages": "Get full message history — params: session_id, server_id?",
                 "backend_session_delete": "Delete a session — params: session_id, server_id?",
+                "backend_session_run": "Dispatch a long-running coding session task — params: prompt, backend_type?, server_id?, working_dir?, task_id?, session_id?",
             },
             "future": ["github", "slack", "notion"],
             "example": 'external_agent(action="ask_user", task_id="cc-task-1", question="Use approach A or B?")',
@@ -6552,6 +6562,12 @@ Agent resumes within seconds.
                 if not args.get(param):
                     return {"status": "error", "message": f"Parameter '{param}' is required for google action."}
             return await self._execute_google_service(args)
+
+        if action == "backend_session_run":
+            return await self._execute_backend_session_run(args)
+
+        if action.startswith("sandbox"):
+            return await self._execute_sandbox(action, args)
 
         if action.startswith("backend") or action.startswith("opencode"):
             # opencode_* prefix kept as a backward-compat alias
@@ -6698,6 +6714,114 @@ Agent resumes within seconds.
         if api_key:
             config["mcpServers"]["mojo"]["headers"] = {"MCP-API-Key": api_key}
         return config
+
+    async def _execute_backend_session_run(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatch a long-running coding session as a CODING_SESSION scheduler task."""
+        import time as _time
+
+        prompt = (args.get("prompt") or "").strip()
+        backend_type = (args.get("backend_type") or "opencode").strip()
+        if not prompt:
+            return {"status": "error", "message": "prompt is required"}
+
+        task_id = (args.get("task_id") or f"cs-{int(_time.time())}").strip()
+        working_dir = (args.get("working_dir") or "").strip()
+        server_id = (args.get("server_id") or "").strip()
+        session_id = (args.get("session_id") or "").strip()
+        sandbox_id = (args.get("sandbox_id") or "").strip()
+
+        from app.scheduler.models import Task, TaskType, TaskStatus
+
+        existing = self.scheduler.queue.get(task_id)
+        if existing is None:
+            task = Task(
+                id=task_id,
+                type=TaskType.CODING_SESSION,
+                status=TaskStatus.PENDING,
+                description=f"[{backend_type}] {prompt[:80]}",
+                config={
+                    "backend_type": backend_type,
+                    "sandbox_id": sandbox_id,
+                    "server_id": server_id,
+                    "prompt": prompt,
+                    "working_dir": working_dir,
+                    "session_id": session_id,
+                },
+            )
+            self.scheduler.queue.add(task)
+
+        return {
+            "status": "dispatched",
+            "task_id": task_id,
+            "backend_type": backend_type,
+            "monitor_with": f'scheduler(action="get", task_id="{task_id}")',
+        }
+
+    async def _execute_sandbox(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Sandbox lifecycle management via app.sandbox.SandboxManager."""
+        try:
+            from app.sandbox.manager import SandboxManager
+        except ImportError as e:
+            return {"status": "error", "message": f"sandbox module not available: {e}"}
+
+        mgr = SandboxManager()
+
+        try:
+            if action == "sandbox_create":
+                repo_url = (args.get("repo_url") or "").strip()
+                if not repo_url:
+                    return {"status": "error", "message": "repo_url is required"}
+                entry = mgr.create(
+                    repo_url=repo_url,
+                    agent_type=(args.get("agent_type") or "opencode").strip(),
+                    sandbox_id=(args.get("sandbox_id") or None),
+                    existing_dir=(args.get("existing_dir") or None),
+                )
+                return {"status": "ok", "sandbox": entry.to_dict()}
+
+            elif action == "sandbox_start":
+                sid = (args.get("sandbox_id") or "").strip()
+                if not sid:
+                    return {"status": "error", "message": "sandbox_id is required"}
+                entry = mgr.start(sid)
+                return {"status": "ok", "sandbox": entry.to_dict()}
+
+            elif action == "sandbox_stop":
+                sid = (args.get("sandbox_id") or "").strip()
+                if not sid:
+                    return {"status": "error", "message": "sandbox_id is required"}
+                entry = mgr.stop(sid)
+                return {"status": "ok", "sandbox": entry.to_dict()}
+
+            elif action == "sandbox_status":
+                sid = (args.get("sandbox_id") or "").strip()
+                if not sid:
+                    return {"status": "error", "message": "sandbox_id is required"}
+                entry = mgr.status(sid)
+                return {"status": "ok", "sandbox": entry.to_dict()}
+
+            elif action == "sandbox_list":
+                entries = mgr.list()
+                return {
+                    "status": "ok",
+                    "count": len(entries),
+                    "sandboxes": [e.to_dict() for e in entries],
+                }
+
+            elif action == "sandbox_destroy":
+                sid = (args.get("sandbox_id") or "").strip()
+                if not sid:
+                    return {"status": "error", "message": "sandbox_id is required"}
+                mgr.destroy(sid)
+                return {"status": "ok", "destroyed": sid}
+
+            else:
+                return {"status": "error", "message": f"Unknown sandbox action '{action}'"}
+
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception as e:
+            return {"status": "error", "message": f"{type(e).__name__}: {e}"}
 
     async def _execute_backend(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Coding agent backend actions via coding-agent-mcp-tool.
