@@ -188,6 +188,10 @@ class ProcessBackend(SandboxBackend):
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
                 return True
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    return True  # server up, password-protected
+                time.sleep(1)
             except (urllib.error.URLError, OSError):
                 time.sleep(1)
         return False
