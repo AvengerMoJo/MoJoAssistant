@@ -94,9 +94,13 @@ class OpenCodeSessionHandler(TaskHandler):
             task_sse.cancel()
             exc = task_send.exception()
             if exc is not None:
-                if "timed out" in str(exc).lower() or "ReadTimeout" in type(exc).__name__:
+                exc_str = str(exc)
+                exc_type = type(exc).__name__
+                if (not exc_str or "timed out" in exc_str.lower()
+                        or "ReadTimeout" in exc_type or "Timeout" in exc_type
+                        or "RemoteProtocol" in exc_type or "ConnectionReset" in exc_type):
                     return await self._chain_continue(task, ctx, backend, session_id)
-                return TaskResult(success=False, error_message=str(exc))
+                return TaskResult(success=False, error_message=exc_str or exc_type)
             result = task_send.result()
             return await self._complete(task, ctx, result)
 
