@@ -143,6 +143,7 @@ class OpenCodeSessionHandler(TaskHandler):
         cfg.pop("perm_directory", None)
         cfg.pop("_user_reply", None)
         cfg.pop("reply_to_question", None)
+        cfg.pop("_poll_count", None)
         cfg["prompt"] = "continue"
         ctx.queue.update(task)
 
@@ -217,20 +218,48 @@ class OpenCodeSessionHandler(TaskHandler):
         self, task: Task, ctx: ExecutorContext, backend, session_id: str
     ) -> TaskResult:
         """
-        send_message timed out. Check if there's a pending question before chaining.
+        send_message timed out — OpenCode is still running on its side.
+        Poll every 5 minutes for completion instead of sending a new message
+        (which would interrupt the running agent).
         """
+        _POLL_INTERVAL = 300  # 5 minutes
+        _MAX_POLLS = 36       # 3 hours total ceiling
+
+        polls = task.config.get("_poll_count", 0)
+        if polls >= _MAX_POLLS:
+            return TaskResult(
+                success=False,
+                error_message=f"OpenCode session {session_id} still running after 3 hours — giving up",
+            )
+
+        # Check for pending question first
         q = await self._poll_questions(backend, session_id)
         if q:
+            task.config.pop("_poll_count", None)
             return await self._handle_question_hitl(task, ctx, q)
 
-        # No question — chain "continue" by re-entering _run directly.
-        # Returning TaskResult(success=True) would cause the scheduler to
-        # mark_completed() which overrides PENDING to COMPLETED.
-        task.config["prompt"] = "continue where you left off"
+        # Check if the session has a completed response we haven't seen yet
+        try:
+            messages = await backend.get_messages(session_id)
+            if messages:
+                last = messages[-1]
+                if last.get("role") == "assistant":
+                    task.config.pop("_poll_count", None)
+                    ctx.queue.update(task)
+                    return await self._complete(task, ctx, last)
+        except Exception as e:
+            logger.debug("_chain_continue: get_messages failed: %s", e)
+
+        # Still running — wait 5 min then check again
+        task.config["_poll_count"] = polls + 1
         task.config["session_id"] = session_id
         ctx.queue.update(task)
-        logger.info("OpenCodeSessionHandler: chaining 'continue' for task %s", task.id)
-        return await self._run(task, ctx)
+        logger.info(
+            "OpenCodeSessionHandler: agent still running, poll %d/%d for task %s — sleeping %ds",
+            polls + 1, _MAX_POLLS, task.id, _POLL_INTERVAL,
+        )
+        await asyncio.sleep(_POLL_INTERVAL)
+        return await self._chain_continue(task, ctx, backend, session_id)
 
     async def _handle_question_hitl(
         self, task: Task, ctx: ExecutorContext, q: Dict[str, Any]
