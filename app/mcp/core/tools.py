@@ -1007,7 +1007,7 @@ class ToolRegistry:
                     "action='backend_session_delete', session_id, server_id? — delete a session\n"
                     "action='backend_session_run', prompt, backend_type?, server_id?, working_dir?, task_id?, session_id?, sandbox_id? — dispatch a long-running coding session task\n\n"
                     "── Sandbox management ──\n"
-                    "action='sandbox_create', repo_url, agent_type? ('opencode'|'claude_code'), sandbox_id?, existing_dir? — provision a sandbox\n"
+                    "action='sandbox_create', repo_url, agent_type? ('opencode'|'claude_code'), sandbox_id?, existing_dir?, password? — provision a sandbox (password sets OPENCODE_SERVER_PASSWORD)\n"
                     "action='sandbox_start', sandbox_id — start the agent process\n"
                     "action='sandbox_stop', sandbox_id — stop the agent process\n"
                     "action='sandbox_status', sandbox_id — check live status\n"
@@ -1029,6 +1029,7 @@ class ToolRegistry:
                         "session_id": {"type": "string"},
                         "content": {"type": "string"},
                         "backend_type": {"type": "string", "description": "Backend for coding_session_run: 'opencode' or 'goose'"},
+                        "sandbox_id": {"type": "string", "description": "Sandbox ID for backend_session_run and sandbox_* actions."},
                         "service": {"type": "string", "enum": ["calendar", "drive", "sheets", "gmail", "docs", "people"]},
                         "resource": {"type": "string"},
                         "method": {"type": "string", "enum": ["list", "get", "create", "update", "delete"]},
@@ -6776,6 +6777,7 @@ Agent resumes within seconds.
                     agent_type=(args.get("agent_type") or "opencode").strip(),
                     sandbox_id=(args.get("sandbox_id") or None),
                     existing_dir=(args.get("existing_dir") or None),
+                    password=(args.get("password") or None),
                 )
                 return {"status": "ok", "sandbox": entry.to_dict()}
 

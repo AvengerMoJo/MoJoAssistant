@@ -19,6 +19,7 @@ class SandboxEntry:
     status: str = "stopped"  # "stopped" | "starting" | "running" | "failed"
     port: int | None = None  # None for claude_code (no HTTP server)
     pid: int | None = None
+    password: str | None = None  # OPENCODE_SERVER_PASSWORD; None = unsecured
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     last_error: str | None = None
 

@@ -68,6 +68,7 @@ class SandboxManager:
         agent_type: str = "opencode",
         sandbox_id: str | None = None,
         existing_dir: str | None = None,
+        password: str | None = None,
     ) -> SandboxEntry:
         """
         Provision a sandbox for *repo_url*.
@@ -94,6 +95,7 @@ class SandboxManager:
             agent_type=agent_type,
             working_dir=working_dir,
             status="stopped",
+            password=password,
         )
         entry = self._backend.create(entry, self._base)
         entry.save(self._base)

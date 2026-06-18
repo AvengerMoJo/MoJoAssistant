@@ -67,18 +67,20 @@ class OpenCodeSessionHandler(TaskHandler):
             return_when=asyncio.FIRST_COMPLETED,
         )
 
-        # Case 1: SSE finished first — check for a permission event
+        # Case 1: SSE finished first — permission or question event
         if task_sse in done:
             sse_exc = task_sse.exception()
             if sse_exc is None:
-                perm = task_sse.result()
-                if perm is not None:
+                event = task_sse.result()
+                if event is not None:
                     task_send.cancel()
                     try:
                         await task_send
                     except (asyncio.CancelledError, Exception):
                         pass
-                    return await self._handle_permission(task, ctx, perm)
+                    if event.get("type") == "question.asked":
+                        return await self._handle_question_hitl(task, ctx, event)
+                    return await self._handle_permission(task, ctx, event)
             else:
                 logger.debug("SSE watcher exited with exception: %s", sse_exc)
             # SSE ended without a permission (None result or connection error).
@@ -308,7 +310,7 @@ class OpenCodeSessionHandler(TaskHandler):
                 return ClaudeCodeBackend.from_config(
                     ServerEntry(id=sandbox_id, backend_type="claude_code", working_dir=url)
                 )
-            return OpenCodeBackend(server_id=sandbox_id, base_url=url, password=None)
+            return OpenCodeBackend(server_id=sandbox_id, base_url=url, password=entry.password)
 
         # Legacy: load from static coding_agent_servers.json
         from coding_agent_mcp.backends import BackendRegistry

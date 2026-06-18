@@ -32,6 +32,9 @@ _OPENCODE_BIN = shutil.which("opencode") or os.path.expanduser("~/.bun/bin/openc
 class ProcessBackend(SandboxBackend):
     """Manage coding agents as plain OS processes."""
 
+    def __init__(self, hostname: str = "0.0.0.0") -> None:
+        self._hostname = hostname
+
     # ------------------------------------------------------------------ #
     #  create                                                              #
     # ------------------------------------------------------------------ #
@@ -74,13 +77,18 @@ class ProcessBackend(SandboxBackend):
         if not _OPENCODE_BIN:
             raise RuntimeError("opencode binary not found — install it or set PATH")
 
-        cmd = [_OPENCODE_BIN, "--port", str(port), "--hostname", "127.0.0.1", "serve"]
+        cmd = [_OPENCODE_BIN, "--port", str(port), "--hostname", self._hostname, "serve"]
         logger.info("ProcessBackend.start: %s", shlex.join(cmd))
+
+        env = os.environ.copy()
+        if entry.password:
+            env["OPENCODE_SERVER_PASSWORD"] = entry.password
 
         with open(log_path, "a") as logf:
             proc = subprocess.Popen(
                 cmd,
                 cwd=entry.working_dir,
+                env=env,
                 stdout=logf,
                 stderr=logf,
                 start_new_session=True,   # detach from our process group
