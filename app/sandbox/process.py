@@ -48,12 +48,29 @@ class ProcessBackend(SandboxBackend):
 
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
         logger.info("ProcessBackend.create: cloning %s → %s", entry.repo_url, repo_dir)
+
+        # Build env with SSH key — check GIT_SSH_COMMAND, then well-known key paths
+        clone_env = os.environ.copy()
+        if "GIT_SSH_COMMAND" not in clone_env:
+            for candidate in [
+                os.path.expanduser("~/.ssh/id_MoJoAssistant_read_key"),
+                os.path.expanduser("~/.ssh/id_rsa"),
+                os.path.expanduser("~/.ssh/id_ed25519"),
+            ]:
+                if os.path.exists(candidate):
+                    clone_env["GIT_SSH_COMMAND"] = (
+                        f"ssh -i {candidate} -o StrictHostKeyChecking=no"
+                    )
+                    logger.info("ProcessBackend.create: using SSH key %s", candidate)
+                    break
+
         try:
             subprocess.run(
                 ["git", "clone", entry.repo_url, str(repo_dir)],
                 check=True,
                 timeout=120,
                 capture_output=True,
+                env=clone_env,
             )
         except subprocess.CalledProcessError as e:
             err = e.stderr.decode(errors="replace").strip()
