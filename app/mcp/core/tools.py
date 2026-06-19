@@ -4601,9 +4601,14 @@ Agent resumes within seconds.
                     "To add a resource:\n"
                     "  config(action='resource_add', resource_id='my_resource', type='local'|'api',\n"
                     "         provider='openai', base_url='http://...', model='model-id',\n"
-                    "         tier='free'|'free_api'|'paid',\n"
+                    "         tier='free'|'free_api'|'paid', priority=1,\n"
+                    "         enabled=true,\n"
                     "         context_limit=32768, output_limit=8192, input_limit=null,\n"
                     "         api_key='...'|null, description='...')\n\n"
+                    "enabled        — REQUIRED. Must be true or the resource is silently excluded.\n"
+                    "priority       — REQUIRED for selection order. Lower number = selected first (1 wins over 10).\n"
+                    "                 Check resource_status to see current selection_order and any task_assignment_overrides\n"
+                    "                 that may bypass priority for specific task types.\n"
                     "context_limit  — total context window in tokens (check model card)\n"
                     "output_limit   — max tokens the model can generate per response\n"
                     "input_limit    — max input tokens per request if asymmetric (e.g. free-tier APIs)\n"
@@ -4747,10 +4752,51 @@ Agent resumes within seconds.
             for res_id, info in status.items():
                 capable = rm.get_agentic_capable(res_id)
                 info["agentic_capable"] = capable  # None = not yet tested
+
+            # Warn on resources where enabled is None/missing — silently excluded
+            disabled_warnings = [
+                rid for rid, info in status.items()
+                if info.get("enabled") is None
+            ]
+
+            # Show effective selection order (priority ascending = first selected)
+            enabled = sorted(
+                [(rid, info) for rid, info in status.items() if info.get("enabled")],
+                key=lambda x: (x[1].get("priority") or 999),
+            )
+            selection_order = [
+                f"{i+1}. {rid} (priority={info.get('priority','?')}, model={info.get('model','?')}, tier={info.get('tier','?')})"
+                for i, (rid, info) in enumerate(enabled)
+            ]
+
+            # Show task_assignment overrides that bypass priority
+            overrides = {}
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                _llm_cfg_path = _Path(__file__).parent.parent.parent / "config" / "llm_config.json"
+                _personal_path = _Path.home() / ".memory" / "config" / "llm_config.json"
+                for _p in [_llm_cfg_path, _personal_path]:
+                    if _p.exists():
+                        _d = _json.loads(_p.read_text())
+                        _ta = _d.get("task_assignments", {})
+                        for k, v in _ta.items():
+                            if isinstance(v, str):  # only pinned resource IDs, not dicts
+                                overrides[k] = v
+            except Exception:
+                pass
+
             return {
                 "status": "success",
                 "resources": status,
                 "count": len(status),
+                "selection_order": selection_order,
+                "task_assignment_overrides": overrides or None,
+                "warnings": (
+                    [f"⚠ enabled=null (silently excluded — set enabled:true to activate): {', '.join(disabled_warnings)}"]
+                    if disabled_warnings else []
+                ),
+                "_hint": "priority: lower number = selected first. task_assignment_overrides bypass priority for named task types.",
             }
         except Exception as e:
             return {
