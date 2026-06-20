@@ -75,6 +75,8 @@ class ProcessBackend(SandboxBackend):
         except subprocess.CalledProcessError as e:
             err = e.stderr.decode(errors="replace").strip()
             raise RuntimeError(f"git clone failed: {err}") from e
+
+        self._configure_git_identity(entry, repo_dir)
         return entry
 
     # ------------------------------------------------------------------ #
@@ -100,6 +102,11 @@ class ProcessBackend(SandboxBackend):
         env = os.environ.copy()
         if entry.password:
             env["OPENCODE_SERVER_PASSWORD"] = entry.password
+
+        # Inject git identity so commits are attributed to the real user
+        git_env = self._get_git_env(entry)
+        if git_env:
+            env.update(git_env)
 
         with open(log_path, "a") as logf:
             proc = subprocess.Popen(
@@ -198,6 +205,29 @@ class ProcessBackend(SandboxBackend):
                 except OSError:
                     continue
         raise RuntimeError(f"No free port in {_PORT_START}–{_PORT_END}")
+
+    def _configure_git_identity(self, entry: SandboxEntry, repo_dir: Path) -> None:
+        """Set git user.name/user.email in the cloned repo so commits are
+        attributed to the real user, not 'opencode@local'."""
+        try:
+            from app.sandbox.git_identity import load_git_identity, configure_repo_git_identity
+            identity = load_git_identity(entry.repo_url)
+            configure_repo_git_identity(repo_dir, identity)
+        except Exception as e:
+            logger.warning("git identity setup failed for %s: %s", repo_dir, e)
+
+    def _get_git_env(self, entry: SandboxEntry) -> dict:
+        """Return GIT_AUTHOR_*/GIT_COMMITTER_* env vars for OpenCode process."""
+        try:
+            from app.sandbox.git_identity import load_git_identity
+            identity = load_git_identity(entry.repo_url)
+            env = identity.to_env()
+            if identity.assistant_attribution:
+                env["MOJO_GIT_TRAILER"] = identity.assistant_attribution
+            return env
+        except Exception as e:
+            logger.warning("git env build failed: %s", e)
+            return {}
 
     def _wait_healthy(self, port: int, timeout: int) -> bool:
         deadline = time.monotonic() + timeout
