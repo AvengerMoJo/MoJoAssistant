@@ -1,8 +1,13 @@
 # MoJoAssistant — Docker Compose
 #
-# Two services — pick the one that matches your hardware:
+# Services:
 #   mojoassistant      → CPU only (works everywhere)
 #   mojoassistant-rocm → AMD GPU via ROCm (requires /dev/kfd)
+#   vllm-rocm          → vLLM inference server (ROCm) — shares model caches with host
+#
+# Shared model volumes (no duplicate downloads):
+#   ~/.lmstudio/models          → /models/lmstudio       (GGUF files from LMStudio)
+#   ~/.cache/huggingface/hub    → /root/.cache/huggingface/hub (safetensors for vLLM/HF)
 #
 # Build:
 #   docker compose -f docker/docker-compose.yml build
@@ -12,6 +17,9 @@
 #
 # Run (AMD ROCm):
 #   docker compose -f docker/docker-compose.yml up mojoassistant-rocm
+#
+# Run vLLM (ROCm):
+#   docker compose -f docker/docker-compose.yml up vllm-rocm
 #
 # Portainer: Stacks → Add Stack → Web editor → paste this file.
 # Set any API keys (OPENAI_API_KEY etc.) in Portainer's Environment variables UI.
@@ -83,6 +91,50 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+    networks:
+      - mojo-net
+
+  # ── vLLM Inference Server (ROCm) ───────────────────────────────────────────
+  # Shares model caches with the host so GGUF files downloaded by LMStudio and
+  # safetensors downloaded by HuggingFace are reused — no duplicate downloads.
+  #
+  # GGUF models:   --model /models/lmstudio/<publisher>/<model-dir>/<file>.gguf
+  # HF models:     --model <hf-repo> (auto-resolved from mounted HF cache)
+  #
+  # Port 8081 to avoid clashing with LMStudio on 8080.
+  vllm-rocm:
+    image: vllm/vllm-openai-rocm:latest
+    container_name: vllm-rocm
+    restart: unless-stopped
+    ports:
+      - "${VLLM_PORT:-8081}:8000"
+    environment:
+      - HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      # LMStudio GGUF model cache (read-only) — 338 GB shared
+      - ${HOME}/.lmstudio/models:/models/lmstudio:ro
+      # HuggingFace cache (read-write) — shared with host, avoids re-download
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri/renderD128:/dev/dri/renderD128
+    group_add:
+      - render
+      - video
+    # Override at runtime: docker compose run vllm-rocm --model <model-id>
+    command: >
+      --model qwen/qwen3.6-35b-a3b
+      --port 8000
+      --max-model-len 32768
+      --gpu-memory-utilization 0.90
+      --trust-remote-code
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     networks:
       - mojo-net
 

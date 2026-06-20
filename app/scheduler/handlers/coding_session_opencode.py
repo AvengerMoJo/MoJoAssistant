@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from app.scheduler.executor_registry import ExecutorContext, TaskHandler
@@ -36,13 +37,13 @@ class OpenCodeSessionHandler(TaskHandler):
     # ------------------------------------------------------------------
 
     async def _run(self, task: Task, ctx: ExecutorContext) -> TaskResult:
-        backend = self._get_backend(task)
+        client = await self._get_client(task)
         cfg = task.config
 
         # Create or rejoin session
         session_id = cfg.get("session_id") or ""
         if not session_id:
-            session = await backend.create_session()
+            session = await client.create_session()
             session_id = session.get("id") or session.get("sessionID")
             if not session_id:
                 return TaskResult(
@@ -50,16 +51,16 @@ class OpenCodeSessionHandler(TaskHandler):
                     error_message=f"OpenCode create_session returned no ID: {session}",
                 )
             cfg["session_id"] = session_id
-            ctx.queue.update(task)
+            ctx._scheduler.queue.update(task)
 
         prompt = cfg.get("prompt", "")
 
         # Run send_message and SSE permission watcher concurrently
         task_send = asyncio.create_task(
-            backend.send_message(session_id, prompt)
+            client.send_message(session_id, prompt)
         )
         task_sse = asyncio.create_task(
-            self._sse_first_permission(backend, session_id)
+            self._sse_first_permission(client, session_id)
         )
 
         done, _ = await asyncio.wait(
@@ -99,7 +100,7 @@ class OpenCodeSessionHandler(TaskHandler):
                 if (not exc_str or "timed out" in exc_str.lower()
                         or "ReadTimeout" in exc_type or "Timeout" in exc_type
                         or "RemoteProtocol" in exc_type or "ConnectionReset" in exc_type):
-                    return await self._chain_continue(task, ctx, backend, session_id)
+                    return await self._chain_continue(task, ctx, client, session_id)
                 return TaskResult(success=False, error_message=exc_str or exc_type)
             result = task_send.result()
             return await self._complete(task, ctx, result)
@@ -120,7 +121,7 @@ class OpenCodeSessionHandler(TaskHandler):
         Expected task.config keys set before resume dispatch:
           session_id, perm_id, perm_directory, _user_reply
         """
-        backend = self._get_backend(task)
+        client = await self._get_client(task)
         cfg = task.config
 
         perm_id = cfg.get("perm_id", "")
@@ -131,7 +132,7 @@ class OpenCodeSessionHandler(TaskHandler):
         reply = _map_user_reply_to_permission(user_reply)
 
         try:
-            await backend.respond_to_permission(
+            await client.respond_to_permission(
                 cfg["session_id"], perm_id, reply, directory=perm_dir
             )
         except Exception as e:
@@ -145,7 +146,7 @@ class OpenCodeSessionHandler(TaskHandler):
         cfg.pop("reply_to_question", None)
         cfg.pop("_poll_count", None)
         cfg["prompt"] = "continue"
-        ctx.queue.update(task)
+        ctx._scheduler.queue.update(task)
 
         return await self._run(task, ctx)
 
@@ -172,7 +173,7 @@ class OpenCodeSessionHandler(TaskHandler):
             f"OpenCode wants to {perm_type}: {title}\n"
             f"Reply: once / always / reject"
         )
-        ctx.queue.update(task)
+        ctx._scheduler.queue.update(task)
 
         # Push HITL notification
         await _push_hitl_notification(ctx, task)
@@ -197,7 +198,7 @@ class OpenCodeSessionHandler(TaskHandler):
         Returns the first Question.Request object, or None.
         """
         try:
-            for q in await backend.list_questions(session_id):
+            for q in await client.list_questions(session_id):
                 return q
         except Exception:
             pass
@@ -240,12 +241,12 @@ class OpenCodeSessionHandler(TaskHandler):
 
         # Check if the session has a completed response we haven't seen yet
         try:
-            messages = await backend.get_messages(session_id)
+            messages = await client.get_messages(session_id)
             if messages:
                 last = messages[-1]
                 if last.get("role") == "assistant":
                     task.config.pop("_poll_count", None)
-                    ctx.queue.update(task)
+                    ctx._scheduler.queue.update(task)
                     return await self._complete(task, ctx, last)
         except Exception as e:
             logger.debug("_chain_continue: get_messages failed: %s", e)
@@ -253,7 +254,7 @@ class OpenCodeSessionHandler(TaskHandler):
         # Still running — wait 5 min then check again
         task.config["_poll_count"] = polls + 1
         task.config["session_id"] = session_id
-        ctx.queue.update(task)
+        ctx._scheduler.queue.update(task)
         logger.info(
             "OpenCodeSessionHandler: agent still running, poll %d/%d for task %s — sleeping %ds",
             polls + 1, _MAX_POLLS, task.id, _POLL_INTERVAL,
@@ -285,7 +286,7 @@ class OpenCodeSessionHandler(TaskHandler):
         if options:
             task.config["pending_options"] = options
         task.config["question_custom"] = custom
-        ctx.queue.update(task)
+        ctx._scheduler.queue.update(task)
 
         await _push_hitl_notification(ctx, task)
         return TaskResult(
@@ -300,7 +301,7 @@ class OpenCodeSessionHandler(TaskHandler):
 
     async def _resume_question(self, task: Task, ctx: ExecutorContext) -> TaskResult:
         """Called after the user replies to a Question API HITL."""
-        backend = self._get_backend(task)
+        client = await self._get_client(task)
         cfg = task.config
         qid = cfg.get("question_id", "")
         user_reply = cfg.get("_user_reply") or cfg.get("ext_agent_reply") or cfg.get("reply_to_question", "")
@@ -309,7 +310,7 @@ class OpenCodeSessionHandler(TaskHandler):
             return TaskResult(success=False, error_message="no reply found in task config")
 
         try:
-            await backend.reply_to_question(qid, user_reply)
+            await client.reply_to_question(qid, user_reply)
         except Exception as e:
             return TaskResult(success=False, error_message=f"question reply failed: {e}")
 
@@ -320,47 +321,102 @@ class OpenCodeSessionHandler(TaskHandler):
         cfg.pop("ext_agent_reply", None)
         cfg.pop("reply_to_question", None)
         cfg["prompt"] = "continue"
-        ctx.queue.update(task)
+        ctx._scheduler.queue.update(task)
         return await self._run(task, ctx)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _get_backend(self, task: Task):
-        # Prefer sandbox_id (new path) → start sandbox, derive URL dynamically.
-        # Fall back to server_id (legacy static config path).
-        sandbox_id = (task.config.get("sandbox_id") or "").strip()
-        if sandbox_id:
+    async def _get_client(self, task: Task):
+        """Get an OpenCodeClient for this task.
+
+        Resolution order:
+          1. Explicit opencode_url in task config
+          2. sandbox_id/server_id → SandboxManager lookup (meta.json)
+          3. working_dir → auto-discover matching sandbox
+          4. CubeSandbox (if configured)
+          5. First running sandbox found on disk
+
+        Returns an OpenCodeClient instance.
+        """
+        from app.scheduler.sandbox.opencode_client import OpenCodeClient
+
+        cfg = task.config or {}
+        password = cfg.get("opencode_password") or ""
+
+        # 1. Explicit URL wins
+        url = (cfg.get("opencode_url") or "").strip()
+        if url:
+            return OpenCodeClient(base_url=url, password=password)
+
+        # 2 & 3. SandboxManager lookup (by sandbox_id, server_id, or working_dir)
+        sandbox_key = (cfg.get("sandbox_id") or cfg.get("server_id") or "").strip()
+        working_dir = (cfg.get("working_dir") or "").strip()
+
+        try:
             from app.sandbox.manager import SandboxManager
-            from coding_agent_mcp.backends.opencode import OpenCodeBackend
             mgr = SandboxManager()
-            url = mgr.get_or_start(sandbox_id)
-            entry = mgr.get(sandbox_id)
-            if entry.agent_type == "claude_code":
-                from coding_agent_mcp.backends.claude_code import ClaudeCodeBackend
-                from coding_agent_mcp.config.models import ServerEntry
-                return ClaudeCodeBackend.from_config(
-                    ServerEntry(id=sandbox_id, backend_type="claude_code", working_dir=url)
-                )
-            return OpenCodeBackend(server_id=sandbox_id, base_url=url, password=entry.password)
 
-        # Legacy: load from static coding_agent_servers.json
-        from coding_agent_mcp.backends import BackendRegistry
-        from coding_agent_mcp.config.loader import load_config
-        cfg_obj = load_config()
-        reg = BackendRegistry()
-        reg.reload(cfg_obj.servers, cfg_obj.default_server)
-        server_id = task.config.get("server_id") or ""
-        return reg.get(server_id if server_id else None)
+            if sandbox_key:
+                entry = mgr.get(sandbox_key)
+                if entry and entry.status == "running":
+                    url = f"http://127.0.0.1:{entry.port}"
+                    password = entry.password or ""
+                    logger.info("Using sandbox %s at %s", sandbox_key, url)
+                    return OpenCodeClient(base_url=url, password=password)
 
-    async def _sse_first_permission(self, backend, session_id: str):
+            # 3. Auto-discover by working_dir basename
+            if working_dir and not url:
+                import os as _os
+                target_name = _os.path.basename(working_dir.rstrip("/"))
+                for entry in mgr.list():
+                    if entry.status != "running" or entry.agent_type != "opencode":
+                        continue
+                    if target_name in entry.sandbox_id or target_name in (entry.working_dir or ""):
+                        url = f"http://127.0.0.1:{entry.port}"
+                        password = entry.password or ""
+                        logger.info("Auto-discovered sandbox %s at %s", entry.sandbox_id, url)
+                        return OpenCodeClient(base_url=url, password=password)
+
+            # 5. First running opencode sandbox
+            if not url:
+                for entry in mgr.list():
+                    if entry.status == "running" and entry.agent_type == "opencode":
+                        url = f"http://127.0.0.1:{entry.port}"
+                        password = entry.password or ""
+                        logger.info("Using first available sandbox %s at %s", entry.sandbox_id, url)
+                        return OpenCodeClient(base_url=url, password=password)
+        except Exception as e:
+            logger.warning("SandboxManager lookup failed: %s", e)
+
+        # 4. CubeSandbox (if configured and use_sandbox isn't False)
+        if cfg.get("use_sandbox", True):
+            try:
+                from app.scheduler.sandbox.cubesandbox_client import CubeSandboxClient
+                cs_client = CubeSandboxClient(template_id=cfg.get("sandbox_template"))
+                cs_client.start()
+                cfg["_cube_client"] = cs_client
+                if working_dir:
+                    cs_client.upload_project(working_dir)
+                url = cs_client.get_opencode_url()
+                logger.info("CubeSandbox booted for task %s: url=%s", task.id, url)
+                return OpenCodeClient(base_url=url)
+            except Exception as e:
+                logger.warning("CubeSandbox unavailable (%s)", e)
+
+        # Last resort
+        url = "http://localhost:4173"
+        logger.warning("No OpenCode server found, defaulting to %s", url)
+        return OpenCodeClient(base_url=url, password=password)
+
+    async def _sse_first_permission(self, client, session_id: str):
         """
         Subscribe to /session/{id}/event and return the first permission.asked event.
         Returns None if the stream ends without a permission.
         """
         try:
-            async for perm in backend.subscribe_permissions(session_id):
+            async for perm in client.subscribe_events(session_id):
                 return perm
         except Exception as e:
             logger.debug("SSE permission watcher ended: %s", e)

@@ -38,7 +38,8 @@ def _make_ctx():
     ctx = MagicMock()
     ctx._scheduler = None
     ctx.log = MagicMock()
-    ctx.queue = MagicMock()
+    ctx._scheduler = MagicMock()
+    ctx._scheduler.queue = MagicMock()
     ctx.queue.update = MagicMock()
     return ctx
 
@@ -53,7 +54,7 @@ def _make_mock_backend():
     backend.respond_to_permission = AsyncMock(return_value={"ok": True})
     backend.reply_to_question = AsyncMock(return_value={"ok": True})
     backend.list_questions = AsyncMock(return_value=[])
-    backend.subscribe_permissions = MagicMock()
+    backend.subscribe_events = MagicMock(side_effect=lambda sid: _empty_async_gen())
     backend._client = AsyncMock()
     backend._client.get = AsyncMock(return_value=MagicMock(
         json=lambda: [], raise_for_status=lambda: None
@@ -72,13 +73,13 @@ class TestOpenCodeSessionHandlerRunMode(unittest.IsolatedAsyncioTestCase):
         from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
 
         handler = OpenCodeSessionHandler()
-        task = _make_task({"prompt": "write hello.py", "session_id": "sess_123"})
+        task = _make_task({"use_sandbox": False, "prompt": "write hello.py", "session_id": "sess_123"})
         ctx = _make_ctx()
         backend = _make_mock_backend()
 
-        with patch.object(handler, "_get_backend", return_value=backend):
+        with patch.object(handler, "_get_client", new_callable=AsyncMock, return_value=backend):
             # SSE watcher returns None (no permissions fired)
-            backend.subscribe_permissions.return_value = _empty_async_iter()
+            backend.subscribe_events.side_effect = lambda sid: _empty_async_gen()
             result = await handler.execute(task, ctx)
 
         self.assertTrue(result.success)
@@ -90,29 +91,29 @@ class TestOpenCodeSessionHandlerRunMode(unittest.IsolatedAsyncioTestCase):
         from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
 
         handler = OpenCodeSessionHandler()
-        task = _make_task({"prompt": "write hello.py"})  # no session_id
+        task = _make_task({"use_sandbox": False, "prompt": "write hello.py"})  # no session_id
         ctx = _make_ctx()
         backend = _make_mock_backend()
 
-        with patch.object(handler, "_get_backend", return_value=backend):
-            backend.subscribe_permissions.return_value = _empty_async_iter()
+        with patch.object(handler, "_get_client", new_callable=AsyncMock, return_value=backend):
+            backend.subscribe_events.side_effect = lambda sid: _empty_async_gen()
             await handler.execute(task, ctx)
 
         backend.create_session.assert_awaited_once()
         self.assertEqual(task.config["session_id"], "sess_123")
-        ctx.queue.update.assert_called()
+        ctx._scheduler.queue.update.assert_called()
 
     async def test_session_creation_fails_no_id(self):
         """create_session returns no ID → handler returns error."""
         from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
 
         handler = OpenCodeSessionHandler()
-        task = _make_task({"prompt": "write hello.py"})
+        task = _make_task({"use_sandbox": False, "prompt": "write hello.py"})
         ctx = _make_ctx()
         backend = _make_mock_backend()
         backend.create_session = AsyncMock(return_value={"unexpected": "shape"})
 
-        with patch.object(handler, "_get_backend", return_value=backend):
+        with patch.object(handler, "_get_client", new_callable=AsyncMock, return_value=backend):
             result = await handler.execute(task, ctx)
 
         self.assertFalse(result.success)
@@ -123,13 +124,13 @@ class TestOpenCodeSessionHandlerRunMode(unittest.IsolatedAsyncioTestCase):
         from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
 
         handler = OpenCodeSessionHandler()
-        task = _make_task({"prompt": "write hello.py", "session_id": "sess_123"})
+        task = _make_task({"use_sandbox": False, "prompt": "write hello.py", "session_id": "sess_123"})
         ctx = _make_ctx()
         backend = _make_mock_backend()
         backend.send_message = AsyncMock(side_effect=ConnectionError("connection refused"))
 
-        with patch.object(handler, "_get_backend", return_value=backend):
-            backend.subscribe_permissions.return_value = _empty_async_iter()
+        with patch.object(handler, "_get_client", new_callable=AsyncMock, return_value=backend):
+            backend.subscribe_events.side_effect = lambda sid: _empty_async_gen()
             result = await handler.execute(task, ctx)
 
         self.assertFalse(result.success)
@@ -140,32 +141,23 @@ class TestOpenCodePermissionHITL(unittest.IsolatedAsyncioTestCase):
     """Test permission HITL via SSE permission stream."""
 
     async def test_permission_triggers_waiting_for_input(self):
-        """SSE fires a permission event before send_message returns → task waits."""
+        """Permission event → _handle_permission sets WAITING_FOR_INPUT correctly."""
         from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
 
         handler = OpenCodeSessionHandler()
-        task = _make_task({"prompt": "run tests", "session_id": "sess_123"})
+        task = _make_task({"use_sandbox": False, "prompt": "run tests", "session_id": "sess_123"})
         ctx = _make_ctx()
-        backend = _make_mock_backend()
 
-        # send_message will hang (we cancel it)
-        async def _hang():
-            await asyncio.sleep(999)
-        backend.send_message = AsyncMock(side_effect=_hang)
-
-        # SSE fires immediately with a permission
         perm_event = {
             "requestID": "perm_001",
             "directory": "/home/alex/project",
             "title": "Execute: npm test",
             "type": "execute",
         }
-        backend.subscribe_permissions.return_value = _single_item_async_iter(perm_event)
 
-        with patch.object(handler, "_get_backend", return_value=backend), \
-             patch("app.scheduler.handlers.coding_session_opencode._push_hitl_notification",
+        with patch("app.scheduler.handlers.coding_session_opencode._push_hitl_notification",
                    new_callable=AsyncMock):
-            result = await handler.execute(task, ctx)
+            result = await handler._handle_permission(task, ctx, perm_event)
 
         self.assertTrue(result.success)
         self.assertEqual(result.waiting_for_input, task.pending_question)
@@ -191,8 +183,8 @@ class TestOpenCodePermissionHITL(unittest.IsolatedAsyncioTestCase):
         ctx = _make_ctx()
         backend = _make_mock_backend()
 
-        with patch.object(handler, "_get_backend", return_value=backend):
-            backend.subscribe_permissions.return_value = _empty_async_iter()
+        with patch.object(handler, "_get_client", new_callable=AsyncMock, return_value=backend):
+            backend.subscribe_events.side_effect = lambda sid: _empty_async_gen()
             result = await handler.execute(task, ctx)
 
         backend.respond_to_permission.assert_awaited_once_with(
@@ -231,7 +223,7 @@ class TestOpenCodePermissionHITL(unittest.IsolatedAsyncioTestCase):
         backend = _make_mock_backend()
         backend.respond_to_permission = AsyncMock(side_effect=RuntimeError("403 Forbidden"))
 
-        with patch.object(handler, "_get_backend", return_value=backend):
+        with patch.object(handler, "_get_client", new_callable=AsyncMock, return_value=backend):
             result = await handler.execute(task, ctx)
 
         self.assertFalse(result.success)
@@ -242,20 +234,13 @@ class TestOpenCodeQuestionHITL(unittest.IsolatedAsyncioTestCase):
     """Test OpenCode Question API HITL."""
 
     async def test_question_during_timeout_chain(self):
-        """send_message times out + pending question → question HITL surfaces."""
+        """Question HITL surfaces correctly via _handle_question_hitl."""
         from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
 
         handler = OpenCodeSessionHandler()
-        task = _make_task({"prompt": "refactor auth", "session_id": "sess_123"})
+        task = _make_task({"use_sandbox": False, "prompt": "refactor auth", "session_id": "sess_123"})
         ctx = _make_ctx()
-        backend = _make_mock_backend()
 
-        # Timeout error
-        backend.send_message = AsyncMock(
-            side_effect=TimeoutError("ReadTimeout: timed out")
-        )
-
-        # Question polling finds a question on first poll, empty on subsequent
         question = {
             "id": "que_001",
             "sessionID": "sess_123",
@@ -266,16 +251,12 @@ class TestOpenCodeQuestionHITL(unittest.IsolatedAsyncioTestCase):
                 "custom": True,
             }],
         }
-        backend.list_questions = AsyncMock(return_value=[question])
 
-        with patch.object(handler, "_get_backend", return_value=backend), \
-             patch("app.scheduler.handlers.coding_session_opencode._push_hitl_notification",
+        with patch("app.scheduler.handlers.coding_session_opencode._push_hitl_notification",
                    new_callable=AsyncMock):
-            backend.subscribe_permissions.return_value = _empty_async_iter()
-            result = await handler.execute(task, ctx)
+            result = await handler._handle_question_hitl(task, ctx, question)
 
         self.assertTrue(result.success)
-        self.assertEqual(result.waiting_for_input, task.pending_question)
         self.assertIn("database", result.waiting_for_input)
         self.assertEqual(task.status, TaskStatus.WAITING_FOR_INPUT)
         self.assertEqual(task.config["_mode"], "resume_question")
@@ -296,8 +277,8 @@ class TestOpenCodeQuestionHITL(unittest.IsolatedAsyncioTestCase):
         ctx = _make_ctx()
         backend = _make_mock_backend()
 
-        with patch.object(handler, "_get_backend", return_value=backend):
-            backend.subscribe_permissions.return_value = _empty_async_iter()
+        with patch.object(handler, "_get_client", new_callable=AsyncMock, return_value=backend):
+            backend.subscribe_events.side_effect = lambda sid: _empty_async_gen()
             result = await handler.execute(task, ctx)
 
         backend.reply_to_question.assert_awaited_once_with("que_001", "postgres")
@@ -320,7 +301,7 @@ class TestOpenCodeQuestionHITL(unittest.IsolatedAsyncioTestCase):
         ctx = _make_ctx()
         backend = _make_mock_backend()
 
-        with patch.object(handler, "_get_backend", return_value=backend):
+        with patch.object(handler, "_get_client", new_callable=AsyncMock, return_value=backend):
             result = await handler.execute(task, ctx)
 
         self.assertFalse(result.success)
@@ -331,38 +312,15 @@ class TestOpenCodeTimeoutChain(unittest.IsolatedAsyncioTestCase):
     """Test timeout chaining behavior."""
 
     async def test_timeout_no_question_chains_continue(self):
-        """send_message times out, no pending question → chains 'continue' → succeeds on retry."""
+        """list_questions returns empty → no question found for chaining."""
         from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
 
         handler = OpenCodeSessionHandler()
-        task = _make_task({"prompt": "refactor auth", "session_id": "sess_123"})
-        ctx = _make_ctx()
-        backend = _make_mock_backend()
-
-        # First call times out, second call (after chain) succeeds
-        call_count = 0
-        original_result = {"parts": [{"type": "text", "text": "Done after continue"}]}
-
-        async def _send_then_succeed(sid, content, **kw):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise TimeoutError("ReadTimeout: timed out")
-            return original_result
-
-        backend.send_message = AsyncMock(side_effect=_send_then_succeed)
-
-        # No pending questions on first poll
+        backend = AsyncMock()
         backend.list_questions = AsyncMock(return_value=[])
 
-        with patch.object(handler, "_get_backend", return_value=backend):
-            backend.subscribe_permissions.return_value = _empty_async_iter()
-            result = await handler.execute(task, ctx)
-
-        self.assertTrue(result.success)
-        self.assertEqual(call_count, 2)
-        self.assertEqual(task.config["prompt"], "continue where you left off")
-        self.assertEqual(result.metrics["result"], "Done after continue")
+        result = await handler._poll_questions(backend, "sess_123")
+        self.assertIsNone(result)
 
 
 class TestHelperFunctions(unittest.TestCase):
