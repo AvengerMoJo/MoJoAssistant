@@ -424,7 +424,7 @@ async def tasks_list(request: Request, status: str = "", type: str = "", mojo_da
             time_col = _ts(t.get("created_at"))
         cron_expr = t.get("cron_expression", "")
         cron_badge = f' <span style="font-size:10px;color:#aaa" title="{cron_expr}">[cron]</span>' if is_cron else ""
-        label = str(cfg.get("goal") or t.get("description") or "")[:100]
+        label = str(cfg.get("goal") or cfg.get("prompt") or t.get("description") or "")[:100]
         rows += f"""<tr>
           <td><a href="/dashboard/tasks/{t['id']}">{t['id']}</a>{cron_badge}</td>
           <td>{_badge(display_status)}</td>
