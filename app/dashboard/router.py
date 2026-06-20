@@ -496,8 +496,11 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
       {row("Dispatch depth", depth_label)}
     </table>"""
 
-    # Goal
-    goal_html = f'<h2>Goal</h2><div class="pre">{cfg.get("goal","—")}</div>'
+    # Goal — different task types store the user prompt under different keys.
+    # coding_session uses "prompt"; assistant/agentic use "goal"; some use
+    # only the top-level "description". Fall back through all three.
+    goal = cfg.get("goal") or cfg.get("prompt") or task.get("description") or "—"
+    goal_html = f'<h2>Goal</h2><div class="pre">{html.escape(str(goal))}</div>'
 
     # Iteration log
     iter_html = ""
