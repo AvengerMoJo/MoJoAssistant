@@ -2,9 +2,10 @@
 
 > 3rd-party coding agent integration in MoJoAssistant — analysis of existing routes, the decision matrix, and the bridge + skills implementation plan.
 
-**Status:** Implemented on `wip_coding_agent_skill_bridge` (commit `c5f5544`)
+**Status:** Implemented on `wip_coding_agent_skill_bridge`; current worktree also adds
+CubeSandbox-backed isolation for OpenCode sessions.
 **Owner:** repo maintainer
-**Last reviewed:** 2026-06-17
+**Last reviewed:** 2026-06-20
 
 ---
 
@@ -49,6 +50,10 @@ Three-tier architecture, per the docstring at `coding_agent_executor.py:7`:
 **Trigger:** roles with `executor="coding_agent"` in their config (`app/scheduler/handlers/agentic.py:22`). Popo is the canonical example: `executor=coding_agent, backend_type=opencode` (`popo.json.example:7-9`).
 
 **Properties:** role persona, memory, sessions, permission policy, HITL, dream consolidation. The full stack of MoJo's value-add.
+
+In the current worktree, Route B attempts CubeSandbox first when `use_sandbox` is
+enabled and no explicit `opencode_url` / `server_id` is set, then falls back to a
+direct host URL if the sandbox stack is unavailable.
 
 ---
 
@@ -162,9 +167,9 @@ Both return JSON; the Claude Code variant returns `{task_id, pid, working_dir}` 
 | `config/skill_blueprints/opencode_session.json` | 35 | OpenCode session skill blueprint |
 | `config/skill_blueprints/claude_code_session.json` | 35 | Claude Code headless run skill blueprint |
 
-**Commit:** `c5f5544` on branch `wip_coding_agent_skill_bridge`
-**Pushed:** `origin/wip_coding_agent_skill_bridge`
-**Files changed:** 2 files changed, 70 insertions(+)
+**Baseline commit:** `c5f5544` on branch `wip_coding_agent_skill_bridge`
+**Current worktree delta:** CubeSandbox client + sandbox-first OpenCode bootstrap in
+`app/scheduler/sandbox/` and `app/scheduler/handlers/coding_session_opencode.py`
 
 ---
 
