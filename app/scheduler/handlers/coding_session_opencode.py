@@ -301,7 +301,16 @@ class OpenCodeSessionHandler(TaskHandler):
                 except Exception as e:
                     logger.warning("CubeSandbox cleanup failed for %s: %s", task.id, e)
 
-        # Per-task OpenCode sandbox (only if start_new=True created it)
+        # Per-task OpenCode (Phase 2: OpenCodePerTaskBackend) — kill our instance
+        ptb = cfg.get("_per_task_backend")
+        if ptb:
+            try:
+                if ptb.kill(task.id):
+                    logger.info("Killed per-task OpenCode for %s", task.id)
+            except Exception as e:
+                logger.warning("Per-task OpenCode cleanup failed for %s: %s", task.id, e)
+
+        # Legacy: per-task sandbox (only if start_new=True created it via SandboxManager)
         owned_sandbox = cfg.get("_owned_sandbox")
         if owned_sandbox:
             try:
@@ -517,28 +526,29 @@ class OpenCodeSessionHandler(TaskHandler):
             except Exception as e:
                 logger.warning("SandboxManager working_dir lookup failed: %s", e)
 
-        # 4. start_new=True → spawn a fresh per-task OpenCode in working_dir
+        # 4. start_new=True → spawn a fresh per-task OpenCode via OpenCodePerTaskBackend
+        # Each task gets its own port (4400-4499), own log, own CWD, own password.
+        # Lifecycle is tied to the task — killed in _cleanup() on task end.
         if start_new and working_dir:
             try:
-                from app.sandbox.manager import SandboxManager
-                mgr = SandboxManager()
-                sandbox_id = f"task-{task.id}"
-                entry = mgr.create_or_get(
-                    sandbox_id=sandbox_id,
-                    working_dir=working_dir,
-                    agent_type="opencode",
+                from app.scheduler.sandbox.per_task import OpenCodePerTaskBackend
+                ptb = OpenCodePerTaskBackend()
+                instance = ptb.spawn(task_id=task.id, working_dir=working_dir)
+                cfg["_per_task_backend"] = ptb
+                cfg["_per_task_instance"] = instance
+                url = f"http://127.0.0.1:{instance.port}"
+                password = instance.password
+                logger.info(
+                    "Started per-task OpenCode for %s on port %d (log: %s)",
+                    task.id, instance.port, instance.log_path,
                 )
-                entry = mgr.start(sandbox_id)
-                cfg["sandbox_id"] = sandbox_id
-                cfg["_owned_sandbox"] = sandbox_id  # mark for cleanup
-                url = f"http://127.0.0.1:{entry.port}"
-                password = entry.password or ""
-                logger.info("Started fresh per-task sandbox %s at %s", sandbox_id, url)
                 client = OpenCodeClient(base_url=url, password=password)
                 cfg["_opencode_client"] = client
                 return client
             except Exception as e:
-                logger.error("Failed to start per-task OpenCode in %s: %s", working_dir, e)
+                logger.error(
+                    "Failed to start per-task OpenCode in %s: %s", working_dir, e
+                )
                 raise
 
         # 5. CubeSandbox (if configured and use_sandbox isn't False)

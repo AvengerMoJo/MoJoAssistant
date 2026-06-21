@@ -1005,7 +1005,7 @@ class ToolRegistry:
                     "action='backend_session_message', session_id, content, server_id? — send a message\n"
                     "action='backend_session_messages', session_id, server_id? — get message history\n"
                     "action='backend_session_delete', session_id, server_id? — delete a session\n"
-                    "action='backend_session_run', prompt, backend_type?, server_id?, working_dir?, task_id?, session_id?, sandbox_id? — dispatch a long-running coding session task\n\n"
+                    "action='backend_session_run', prompt, backend_type?, server_id?, working_dir?, task_id?, session_id?, sandbox_id?, start_new?, opencode_url?, use_sandbox? — dispatch a long-running coding session task. start_new=True spawns a fresh per-task OpenCode in working_dir (port 4400-4499, own log at ~/.memory/task_logs/<task_id>/).\n\n"
                     "── Sandbox management ──\n"
                     "action='sandbox_create', repo_url, agent_type? ('opencode'|'claude_code'), sandbox_id?, existing_dir?, password? — provision a sandbox (password sets OPENCODE_SERVER_PASSWORD)\n"
                     "action='sandbox_start', sandbox_id — start the agent process\n"
@@ -6586,7 +6586,7 @@ Agent resumes within seconds.
                 "backend_session_message": "Send a message and get a response — params: session_id, content, server_id?",
                 "backend_session_messages": "Get full message history — params: session_id, server_id?",
                 "backend_session_delete": "Delete a session — params: session_id, server_id?",
-                "backend_session_run": "Dispatch a long-running coding session task — params: prompt, backend_type?, server_id?, working_dir?, task_id?, session_id?",
+                "backend_session_run": "Dispatch a long-running coding session task — params: prompt, backend_type?, server_id?, working_dir?, task_id?, session_id?, start_new?, opencode_url?, use_sandbox? Set start_new=True to spawn a fresh per-task OpenCode in working_dir.",
             },
             "future": ["github", "slack", "notion"],
             "example": 'external_agent(action="ask_user", task_id="cc-task-1", question="Use approach A or B?")',
