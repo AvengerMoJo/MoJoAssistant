@@ -13,7 +13,7 @@
 #     --writable-layer-size 2G \
 #     --expose-port 4173 \
 #     --probe 4173 \
-#     --probe-path /health
+#     --probe-path /api/health
 
 FROM ubuntu:22.04
 
@@ -43,8 +43,9 @@ WORKDIR /workspace
 # OpenCode server port
 EXPOSE 4173
 
-# Health check endpoint is provided by OpenCode's built-in server
-# CubeSandbox probes GET /health during template creation
+# Health check: OpenCode 1.17+ exposes /api/health and /global/health
+HEALTHCHECK --interval=2s --timeout=2s --start-period=5s --retries=15 \
+  CMD curl -fsS http://127.0.0.1:4173/api/health || exit 1
 
-# Start OpenCode in server mode
-CMD ["opencode", "serve", "--port", "4173", "--host", "0.0.0.0"]
+# Start OpenCode in server mode (1.17+ uses --hostname, not --host)
+CMD ["opencode", "serve", "--port", "4173", "--hostname", "0.0.0.0", "--print-logs"]
