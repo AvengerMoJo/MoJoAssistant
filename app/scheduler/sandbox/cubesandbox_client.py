@@ -87,7 +87,9 @@ class CubeSandboxClient:
             )
 
         try:
-            self._sandbox = Sandbox(
+            # e2b SDK >= 2.x exposes create as a classmethod; the old
+            # direct constructor (Sandbox(template=...)) was removed.
+            self._sandbox = Sandbox.create(
                 template=self._template_id,
                 timeout=self._timeout,
             )
