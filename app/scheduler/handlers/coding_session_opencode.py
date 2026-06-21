@@ -54,7 +54,12 @@ def _check_duration_warn(task: Task, log: logging.LoggerAdapter) -> None:
     started = task.started_at
     if not started:
         return
-    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    # Normalize to aware UTC for comparison — some code paths set naive
+    # datetimes, others set tz-aware.
+    now = datetime.now(timezone.utc)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    elapsed = (now - started).total_seconds()
     remaining = TASK_DURATION_CAP_S - elapsed
     if remaining < 0:
         log.warning("Task exceeded duration cap (%ds); will be killed by scheduler", TASK_DURATION_CAP_S)
