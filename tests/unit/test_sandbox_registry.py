@@ -53,20 +53,34 @@ def test_session_store_roundtrip():
 
 
 def test_list_handles_filters_by_backend():
+    """Filters by backend and returns all when no filter given.
+
+    Saves and restores the store around the test to avoid pollution from
+    other tests (e.g. test_v1_2_2_smoke.py uses the same store).
+    """
     from app.scheduler.sandbox.base import (
-        SandboxHandle, store_handle, list_handles,
+        SESSION_STORE_PATH, SandboxHandle, store_handle, list_handles,
+        _load_store, _save_store,
     )
-    store_handle(SandboxHandle(task_id="t1", backend="cube", sandbox_id="c1"))
-    store_handle(SandboxHandle(task_id="t2", backend="host", sandbox_id="h1"))
-    store_handle(SandboxHandle(task_id="t3", backend="cube", sandbox_id="c2"))
+    # Snapshot the existing store
+    backup = dict(_load_store()) if SESSION_STORE_PATH.exists() else {}
 
-    cubes = list_handles(backend="cube")
-    hosts = list_handles(backend="host")
-    all_ = list_handles()
+    try:
+        # Clear to a known state
+        _save_store({})
+        store_handle(SandboxHandle(task_id="t1", backend="cube", sandbox_id="c1"))
+        store_handle(SandboxHandle(task_id="t2", backend="host", sandbox_id="h1"))
+        store_handle(SandboxHandle(task_id="t3", backend="cube", sandbox_id="c2"))
 
-    assert {h.task_id for h in cubes} == {"t1", "t3"}
-    assert {h.task_id for h in hosts} == {"t2"}
-    assert {h.task_id for h in all_} == {"t1", "t2", "t3"}
+        cubes = list_handles(backend="cube")
+        hosts = list_handles(backend="host")
+        all_ = list_handles()
+
+        assert {h.task_id for h in cubes} == {"t1", "t3"}
+        assert {h.task_id for h in hosts} == {"t2"}
+        assert {h.task_id for h in all_} == {"t1", "t2", "t3"}
+    finally:
+        _save_store(backup)
 
 
 # ----------------------------------------------------------------------

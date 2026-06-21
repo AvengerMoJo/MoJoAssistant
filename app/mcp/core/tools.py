@@ -1147,6 +1147,72 @@ class ToolRegistry:
                 },
             },
             {
+                "name": "sandbox_list_sessions",
+                "description": (
+                    "List live and paused sandbox sessions from the registry. "
+                    "Sandboxes persist across handler restarts — when a coding task "
+                    "ends, the OpenCode VM is paused (not killed) so you can re-attach "
+                    "to inspect what the agent did or continue debugging. "
+                    "Filter by backend ('cube' for KVM microVM, 'host' for host-process) "
+                    "to narrow the list. Use sandbox_attach_session to resume a paused "
+                    "session and sandbox_kill_session to remove it."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "backend": {
+                            "type": "string",
+                            "enum": ["cube", "host"],
+                            "description": "Filter by backend. Omit to list all.",
+                        },
+                        "state": {
+                            "type": "string",
+                            "enum": ["running", "paused", "pending", "completed", "failed"],
+                            "description": "Filter by handle state. Omit to list all.",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "sandbox_attach_session",
+                "description": (
+                    "Re-attach to a paused sandbox session. Resumes the underlying "
+                    "OpenCode server (cube microVM or host process) and returns its "
+                    "URL so you can talk to it directly. Use this to debug, inspect, "
+                    "or continue a session that the agent left in a paused state. "
+                    "Returns the URL plus the OpenCode /api/health probe result."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID to re-attach to"},
+                        "log_tail_lines": {
+                            "type": "integer",
+                            "description": "Include last N lines of the session log (default 50)",
+                            "default": 50,
+                        },
+                    },
+                    "required": ["task_id"],
+                },
+            },
+            {
+                "name": "sandbox_kill_session",
+                "description": (
+                    "Tear down a sandbox session by task_id. Kills the underlying "
+                    "OpenCode server (cube microVM or host process) and removes "
+                    "the handle from the registry. Cannot be undone — for debug, "
+                    "prefer sandbox_attach_session which keeps state intact."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID to tear down"},
+                    },
+                    "required": ["task_id"],
+                },
+            },
+            {
                 "name": "task_report_read",
                 "description": (
                     "Read a normalized task completion record by task_id. "
@@ -1735,6 +1801,12 @@ Agent resumes within seconds.
         # Task Session Tools
         elif name == "task_session_read":
             return await self._execute_task_session_read(args)
+        elif name == "sandbox_list_sessions":
+            return await self._execute_sandbox_list_sessions(args)
+        elif name == "sandbox_attach_session":
+            return await self._execute_sandbox_attach_session(args)
+        elif name == "sandbox_kill_session":
+            return await self._execute_sandbox_kill_session(args)
         elif name == "task_report_read":
             return await self._execute_task_report_read(args)
         elif name == "scheduler_resume_task":
@@ -3721,6 +3793,122 @@ Agent resumes within seconds.
                 "status": "error",
                 "message": f"Failed to read task session: {str(e)}",
             }
+
+    # ------------------------------------------------------------------
+    # Sandbox session tools — list / attach / kill
+    # ------------------------------------------------------------------
+
+    async def _execute_sandbox_list_sessions(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List live/paused sandbox handles from the session registry."""
+        try:
+            from app.scheduler.sandbox import list_handles
+
+            backend = args.get("backend")
+            state_filter = args.get("state")
+
+            handles = list_handles(backend=backend)
+            if state_filter:
+                handles = [h for h in handles if h.state == state_filter]
+
+            sessions = []
+            for h in handles:
+                sessions.append({
+                    **h.to_dict(),
+                    "log_path_exists": __import__("os").path.exists(h.log_path) if h.log_path else False,
+                })
+
+            return {
+                "status": "success",
+                "count": len(sessions),
+                "sessions": sessions,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"sandbox_list_sessions failed: {e}"}
+
+    async def _execute_sandbox_attach_session(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Re-attach to a paused sandbox session.
+
+        Resumes the backend (cube or host), probes OpenCode /api/health, and
+        returns the URL plus log tail so the user can talk to the session
+        directly (debug, inspect history, continue the conversation).
+        """
+        try:
+            from app.scheduler.sandbox import (
+                SandboxRegistry, load_handle,
+            )
+
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required"}
+
+            log_tail_lines = int(args.get("log_tail_lines", 50))
+
+            handle = load_handle(task_id)
+            if handle is None:
+                return {
+                    "status": "error",
+                    "message": f"No persisted sandbox handle for task_id={task_id!r}. "
+                               "The session may have been killed or never paused.",
+                }
+
+            backend = SandboxRegistry.create(handle.backend, config={})
+            # Resume if paused
+            if handle.state == "paused":
+                handle = backend.resume(handle)
+
+            # Probe health
+            health = backend.health_check(handle)
+
+            # Read log tail
+            log_tail = []
+            if handle.log_path and __import__("os").path.exists(handle.log_path):
+                try:
+                    with open(handle.log_path, "r", encoding="utf-8", errors="replace") as f:
+                        lines = f.readlines()
+                    log_tail = [l.rstrip("\n") for l in lines[-log_tail_lines:]]
+                except Exception as e:
+                    log_tail = [f"(failed to read log: {e})"]
+
+            return {
+                "status": "success",
+                "task_id": task_id,
+                "backend": handle.backend,
+                "sandbox_id": handle.sandbox_id,
+                "opencode_url": handle.url,
+                "handle_state": handle.state,
+                "health": health,
+                "log_tail": log_tail,
+                "log_path": handle.log_path,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"sandbox_attach_session failed: {e}"}
+
+    async def _execute_sandbox_kill_session(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Tear down a sandbox session."""
+        try:
+            from app.scheduler.sandbox import (
+                SandboxRegistry, load_handle,
+            )
+
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required"}
+
+            handle = load_handle(task_id)
+            if handle is None:
+                return {"status": "error", "message": f"No sandbox handle for task_id={task_id!r}"}
+
+            backend = SandboxRegistry.create(handle.backend, config={})
+            backend.kill(handle)
+            return {
+                "status": "success",
+                "task_id": task_id,
+                "backend": handle.backend,
+                "sandbox_id": handle.sandbox_id,
+                "message": "Sandbox killed and removed from registry.",
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"sandbox_kill_session failed: {e}"}
 
     async def _execute_task_report_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute task_report_read tool"""
