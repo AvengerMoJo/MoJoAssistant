@@ -325,18 +325,58 @@ class OpenCodeSessionHandler(TaskHandler):
         Called in a finally block so cleanup happens on success, failure, timeout.
         Only resources marked as owned by THIS task are released — never stops
         a sandbox that was already running before the task started.
+
+        Default teardown policy: PAUSE rather than KILL. Paused sessions
+        survive handler restarts so the user can re-attach from the dashboard
+        to inspect what the agent did, or continue debugging. To force-kill,
+        set task.config["sandbox_teardown"] = "kill".
         """
         cfg = task.config or {}
+        teardown = cfg.get("sandbox_teardown", "pause")
 
-        # CubeSandbox VM (only if we started it in this task)
-        if cfg.get("_owned_cube"):
+        # CubeSandbox VM (registry-managed)
+        handle = cfg.get("_handle_cube")
+        backend = cfg.get("_backend_cube")
+        if handle and backend:
+            try:
+                if teardown == "kill":
+                    backend.kill(handle)
+                    logger.info("Killed CubeSandbox VM for task %s", task.id)
+                else:
+                    backend.pause(handle)
+                    logger.info(
+                        "Paused CubeSandbox VM for task %s (sandbox_id=%s) "
+                        "— re-attach with sandbox_backend=cube",
+                        task.id, handle.sandbox_id,
+                    )
+            except Exception as e:
+                logger.warning("CubeSandbox teardown failed for %s: %s", task.id, e)
+
+        # Legacy path (older code paths that didn't go through registry)
+        if cfg.get("_owned_cube") and not backend:
             cube = cfg.get("_cube_client")
             if cube:
                 try:
                     cube.kill()
-                    logger.info("Killed CubeSandbox VM for task %s", task.id)
+                    logger.info("Killed legacy CubeSandbox VM for task %s", task.id)
                 except Exception as e:
-                    logger.warning("CubeSandbox cleanup failed for %s: %s", task.id, e)
+                    logger.warning("Legacy CubeSandbox cleanup failed: %s", e)
+
+        # Host OpenCode backend (registry-managed)
+        handle_host = cfg.get("_handle_host")
+        backend_host = cfg.get("_backend_host")
+        if handle_host and backend_host:
+            try:
+                if teardown == "kill":
+                    backend_host.kill(handle_host)
+                else:
+                    backend_host.pause(handle_host)
+                    logger.info(
+                        "Paused host OpenCode for task %s (pid=%s) — re-attach with sandbox_backend=host",
+                        task.id, handle_host.sandbox_id,
+                    )
+            except Exception as e:
+                logger.warning("Host sandbox teardown failed for %s: %s", task.id, e)
 
         # Per-task OpenCode (Phase 2: OpenCodePerTaskBackend) — kill our instance
         ptb = cfg.get("_per_task_backend")
@@ -563,43 +603,86 @@ class OpenCodeSessionHandler(TaskHandler):
             except Exception as e:
                 logger.warning("SandboxManager working_dir lookup failed: %s", e)
 
-        # 4. start_new=True → spawn a fresh per-task OpenCode via OpenCodePerTaskBackend
-        # Each task gets its own port (4400-4499), own log, own CWD, own password.
-        # Lifecycle is tied to the task — killed in _cleanup() on task end.
-        if start_new and working_dir:
+        # 4. Pick sandbox backend via registry
+        # Default order: explicit cfg["sandbox_backend"] > env override > "host"
+        backend_name = (
+            cfg.get("sandbox_backend")
+            or os.getenv("MOJO_SANDBOX_BACKEND", "host")
+        )
+        # Backwards compat: legacy "use_sandbox=True" -> "cube", False -> "host"
+        if "sandbox_backend" not in cfg and "use_sandbox" in cfg:
+            backend_name = "cube" if cfg["use_sandbox"] else "host"
+
+        # 4a. start_new=True (or no existing paused session) -> boot fresh
+        if start_new or backend_name != "host":
             try:
-                from app.scheduler.sandbox.per_task import OpenCodePerTaskBackend
-                ptb = OpenCodePerTaskBackend()
-                instance = ptb.spawn(task_id=task.id, working_dir=working_dir)
-                cfg["_per_task_backend"] = ptb
-                cfg["_per_task_instance"] = instance
-                url = f"http://127.0.0.1:{instance.port}"
-                password = instance.password
-                logger.info(
-                    "Started per-task OpenCode for %s on port %d (log: %s)",
-                    task.id, instance.port, instance.log_path,
+                from app.scheduler.sandbox import SandboxRegistry
+                backend = SandboxRegistry.create(
+                    name=backend_name,
+                    config={
+                        "template_id": cfg.get("sandbox_template"),
+                    },
                 )
-                client = OpenCodeClient(base_url=url, password=password)
+                handle = backend.start(
+                    task_id=task.id,
+                    working_dir=working_dir or "",
+                )
+                cfg[f"_backend_{backend_name}"] = backend
+                cfg[f"_handle_{backend_name}"] = handle
+                url = backend.get_opencode_url(handle)
+                logger.info(
+                    "Started %s sandbox for %s (sandbox_id=%s url=%s)",
+                    backend_name, task.id, handle.sandbox_id, url,
+                )
+                client = OpenCodeClient(base_url=url)
                 cfg["_opencode_client"] = client
                 return client
             except Exception as e:
                 logger.error(
-                    "Failed to start per-task OpenCode in %s: %s", working_dir, e
+                    "Failed to start %s sandbox in %s: %s",
+                    backend_name, working_dir, e,
                 )
-                raise
+                if backend_name == "host":
+                    raise
+                # CubeSandbox unavailable -> try host fallback
+                logger.warning("Falling back to host backend")
+                backend_name = "host"
+                # Retry via host path below
 
-        # 5. CubeSandbox (if configured and use_sandbox isn't False)
-        if cfg.get("use_sandbox", True):
+        # 4b. Resume existing persisted session (no start_new, backend already chosen)
+        if working_dir or sandbox_key:
+            from app.scheduler.sandbox import SandboxRegistry
             try:
-                from app.scheduler.sandbox.cubesandbox_client import CubeSandboxClient
-                cs_client = CubeSandboxClient(template_id=cfg.get("sandbox_template"))
-                cs_client.start()
-                cfg["_cube_client"] = cs_client
-                cfg["_owned_cube"] = True  # mark for cleanup
-                if working_dir:
-                    cs_client.upload_project(working_dir)
-                url = cs_client.get_opencode_url()
-                logger.info("CubeSandbox booted for task %s: url=%s", task.id, url)
+                backend = SandboxRegistry.create(name=backend_name, config={})
+                handle = backend.start(
+                    task_id=task.id,
+                    working_dir=working_dir or "",
+                )
+                cfg[f"_backend_{backend_name}"] = backend
+                cfg[f"_handle_{backend_name}"] = handle
+                url = backend.get_opencode_url(handle)
+                client = OpenCodeClient(base_url=url)
+                cfg["_opencode_client"] = client
+                return client
+            except Exception as e:
+                logger.warning(
+                    "Could not resume %s session for %s: %s",
+                    backend_name, task.id, e,
+                )
+
+        # 5. CubeSandbox (legacy path — kept for cfg["use_sandbox"]=True without sandbox_backend)
+        # The registry path above supersedes this when sandbox_backend is set.
+        if cfg.get("use_sandbox", False) and backend_name == "cube":
+            try:
+                from app.scheduler.sandbox import SandboxRegistry
+                backend = SandboxRegistry.create(
+                    name="cube",
+                    config={"template_id": cfg.get("sandbox_template")},
+                )
+                handle = backend.start(task_id=task.id, working_dir=working_dir or "")
+                cfg["_backend_cube"] = backend
+                cfg["_handle_cube"] = handle
+                url = backend.get_opencode_url(handle)
                 client = OpenCodeClient(base_url=url)
                 cfg["_opencode_client"] = client
                 return client
