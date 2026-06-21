@@ -1,0 +1,35 @@
+{
+  "id": "claude_code_session",
+  "name": "Claude Code — Headless Run",
+  "description": "Spawn a headless Claude Code subprocess with MoJo injected as its MCP server. The spawned agent can call back via external_agent(ask_user) for HITL. Returns the task_id and pid. Use scheduler(action='get', task_id=...) to monitor. Requires the claude CLI on PATH or CLAUDE_BIN env var.",
+  "category": "coding",
+  "danger_level": "medium",
+  "version": "1.0.0",
+  "requires_auth": false,
+  "tags": ["claude-code", "coding-agent", "delegate", "headless"],
+  "source": "local",
+  "template_vars": {
+    "MOJO_BASE_URL": {
+      "description": "MoJo MCP HTTP base URL (use http://localhost:8000 for local)",
+      "type": "str",
+      "default": "http://localhost:8000",
+      "required": false
+    }
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt":      {"type": "string", "description": "The task description for Claude Code"},
+      "working_dir": {"type": "string", "description": "Absolute path to the working directory (default: $HOME)"},
+      "model":       {"type": "string", "description": "Override Claude Code's default model (optional)"},
+      "task_id":     {"type": "string", "description": "Pre-assign a task_id for tracking (optional, auto-generated if omitted)"}
+    },
+    "required": ["prompt"]
+  },
+  "executor_template": {
+    "type": "shell",
+    "timeout": 30,
+    "command": "python3 -c \"\nimport json, sys, urllib.request, urllib.error, os\nargs = json.load(sys.stdin)\nprompt = (args.get('prompt') or '').strip()\nif not prompt:\n    print(json.dumps({'success': False, 'error': 'prompt is required'})); sys.exit(0)\nworking_dir = args.get('working_dir') or os.path.expanduser('~')\nworking_dir = os.path.expanduser(working_dir)\nif not os.path.isdir(working_dir):\n    print(json.dumps({'success': False, 'error': f'working_dir does not exist: {working_dir}'})); sys.exit(0)\nbase = '${MOJO_BASE_URL}'.rstrip('/')\napi_key = os.environ.get('MCP_API_KEY', '')\nheaders = {'Content-Type': 'application/json'}\nif api_key:\n    headers['MCP-API-Key'] = api_key\n\ntool_args = {'action': 'run_task', 'prompt': prompt, 'working_dir': working_dir}\nif args.get('model'):\n    tool_args['model'] = args['model']\nif args.get('task_id'):\n    tool_args['task_id'] = args['task_id']\n\npayload = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'external_agent', 'arguments': tool_args}}\ntry:\n    req = urllib.request.Request(base + '/mcp', data=json.dumps(payload).encode(), headers=headers)\n    with urllib.request.urlopen(req, timeout=25) as r:\n        body = json.loads(r.read())\n    result = body.get('result', body)\n    print(json.dumps({'success': True, 'result': result}))\nexcept urllib.error.HTTPError as e:\n    print(json.dumps({'success': False, 'error': f'HTTP {e.code}: {e.read().decode(errors=\\\"replace\\\")[:500]}'}))\nexcept urllib.error.URLError as e:\n    print(json.dumps({'success': False, 'error': f'Cannot reach MoJo at {base}: {e.reason}'}))\nexcept Exception as e:\n    print(json.dumps({'success': False, 'error': f'{type(e).__name__}: {e}'}))\n\""
+  },
+  "test_args": {}
+}

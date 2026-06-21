@@ -1,0 +1,56 @@
+# CubeSandbox ingress block for church-tunnel.
+#
+# This file is MERGED into ~/.cloudflared/config.yml by scripts/merge_cloudflared_config.py
+# at deploy time. The agent owns this file; it never edits the user's
+# ~/.cloudflared/config.yml directly (that file also carries hostnames owned by
+# the user, e.g. mbti.eclipsogate.org which is served by this same tunnel,
+# and docker.eclipsogate.org served by a separate portainer-tunnel).
+#
+# To add a new CubeSandbox-related hostname:
+#   1. append the ingress entry below (specific hostnames BEFORE the wildcard)
+#   2. run: python scripts/merge_cloudflared_config.py
+#   3. reload cloudflared: cloudflared tunnel run c7a1ca2b-c1ea-407d-8078-bdb65412f693
+#
+# Convention: CubeSandbox components bind to host 120XX ports so they live in
+# one memorable block. See docs/architecture/CUBESANDBOX_SETUP.md.
+
+# cube-proxy (HTTPS) — currently unused by the e2b SDK since cube-proxy only
+# proxies *existing* sandboxes (no POST /sandboxes). Kept for direct access
+# to a running sandbox if needed.
+- hostname: sandbox.eclipsogate.org
+  service: https://127.0.0.1:12443
+  originRequest:
+    noTLSVerify: true   # mkcert self-signed cert on cube-proxy
+    connectTimeout: 30s
+    keepAliveTimeout: 180s
+
+# cube-webui dashboard
+- hostname: dashboard.eclipsogate.org
+  service: http://127.0.0.1:12088
+  originRequest:
+    noTLSVerify: true
+
+# cube-api (e2b-compatible REST gateway) — this is what the e2b SDK talks to
+# for Sandbox.create() / list / kill. cube-proxy on :12443 only forwards
+# traffic to *existing* sandboxes via the <port>-<id>.cube.app Host pattern,
+# so the create flow has to go through cube-api.
+- hostname: sandbox-api.eclipsogate.org
+  service: http://127.0.0.1:12300
+  originRequest:
+    noTLSVerify: true
+    connectTimeout: 30s
+    keepAliveTimeout: 180s
+
+# Catch-all wildcard for <port>-<sandbox_id>.eclipsogate.org hostnames
+# returned by cube-api's get_host(port) when CUBE_API_SANDBOX_DOMAIN=eclipsogate.org.
+# cube-proxy's lua router expects exactly this <port>-<id>.<domain> pattern
+# and forwards to the right microVM. Must come AFTER the specific hostnames
+# above so explicit subdomains (mbti/tinyi/dashboard/etc.) take precedence.
+# Match expression is anchored to the <digits>-<hex> prefix that cube-proxy
+# requires; everything else falls through to http_status:404 (in user config).
+- hostname: '*.eclipsogate.org'
+  service: https://127.0.0.1:12443
+  originRequest:
+    noTLSVerify: true
+    connectTimeout: 30s
+    keepAliveTimeout: 180s

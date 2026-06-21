@@ -12,6 +12,7 @@ from app.scheduler.handlers.agent import AgentHandler
 from app.scheduler.handlers.custom import CustomHandler
 from app.scheduler.handlers.agentic import AgenticHandler
 from app.scheduler.handlers.bonsai import BonsaiGrowthHandler
+from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
 
 
 def build_registry() -> HandlerRegistry:
@@ -23,4 +24,5 @@ def build_registry() -> HandlerRegistry:
     registry.register(TaskType.INTERNAL_ASSIGNMENT, AgenticHandler())
     registry.register(TaskType.ASSISTANT, AgenticHandler())
     registry.register(TaskType.GROWTH, BonsaiGrowthHandler())
+    registry.register(TaskType.CODING_SESSION, OpenCodeSessionHandler())
     return registry

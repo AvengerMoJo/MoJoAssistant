@@ -1004,7 +1004,15 @@ class ToolRegistry:
                     "action='backend_session_create', server_id? — create a new session\n"
                     "action='backend_session_message', session_id, content, server_id? — send a message\n"
                     "action='backend_session_messages', session_id, server_id? — get message history\n"
-                    "action='backend_session_delete', session_id, server_id? — delete a session\n\n"
+                    "action='backend_session_delete', session_id, server_id? — delete a session\n"
+                    "action='backend_session_run', prompt, backend_type?, server_id?, working_dir?, task_id?, session_id?, sandbox_id?, start_new?, opencode_url?, use_sandbox? — dispatch a long-running coding session task. start_new=True spawns a fresh per-task OpenCode in working_dir (port 4400-4499, own log at ~/.memory/task_logs/<task_id>/).\n\n"
+                    "── Sandbox management ──\n"
+                    "action='sandbox_create', repo_url, agent_type? ('opencode'|'claude_code'), sandbox_id?, existing_dir?, password? — provision a sandbox (password sets OPENCODE_SERVER_PASSWORD)\n"
+                    "action='sandbox_start', sandbox_id — start the agent process\n"
+                    "action='sandbox_stop', sandbox_id — stop the agent process\n"
+                    "action='sandbox_status', sandbox_id — check live status\n"
+                    "action='sandbox_list' — list all sandboxes\n"
+                    "action='sandbox_destroy', sandbox_id — stop + delete sandbox\n\n"
                     "Future: action='github', action='slack', action='notion', ..."
                 ),
                 "inputSchema": {
@@ -1020,6 +1028,11 @@ class ToolRegistry:
                         "server_id": {"type": "string"},
                         "session_id": {"type": "string"},
                         "content": {"type": "string"},
+                        "backend_type": {"type": "string", "description": "Backend for coding_session_run: 'opencode' or 'goose'"},
+                        "sandbox_id": {"type": "string", "description": "Sandbox ID for backend_session_run and sandbox_* actions."},
+                        "start_new": {"type": "boolean", "description": "For backend_session_run: spawn a fresh per-task OpenCode in working_dir (port 4400-4499). Each task gets its own CWD, port, and log file."},
+                        "opencode_url": {"type": "string", "description": "For backend_session_run: explicit OpenCode server URL. Bypasses sandbox auto-discovery."},
+                        "use_sandbox": {"type": "boolean", "description": "For backend_session_run: try CubeSandbox microVM if configured (default: true)."},
                         "service": {"type": "string", "enum": ["calendar", "drive", "sheets", "gmail", "docs", "people"]},
                         "resource": {"type": "string"},
                         "method": {"type": "string", "enum": ["list", "get", "create", "update", "delete"]},
@@ -1129,6 +1142,72 @@ class ToolRegistry:
                             "description": "Include per-message metadata when true",
                             "default": False,
                         },
+                    },
+                    "required": ["task_id"],
+                },
+            },
+            {
+                "name": "sandbox_list_sessions",
+                "description": (
+                    "List live and paused sandbox sessions from the registry. "
+                    "Sandboxes persist across handler restarts — when a coding task "
+                    "ends, the OpenCode VM is paused (not killed) so you can re-attach "
+                    "to inspect what the agent did or continue debugging. "
+                    "Filter by backend ('cube' for KVM microVM, 'host' for host-process) "
+                    "to narrow the list. Use sandbox_attach_session to resume a paused "
+                    "session and sandbox_kill_session to remove it."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "backend": {
+                            "type": "string",
+                            "enum": ["cube", "host"],
+                            "description": "Filter by backend. Omit to list all.",
+                        },
+                        "state": {
+                            "type": "string",
+                            "enum": ["running", "paused", "pending", "completed", "failed"],
+                            "description": "Filter by handle state. Omit to list all.",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "sandbox_attach_session",
+                "description": (
+                    "Re-attach to a paused sandbox session. Resumes the underlying "
+                    "OpenCode server (cube microVM or host process) and returns its "
+                    "URL so you can talk to it directly. Use this to debug, inspect, "
+                    "or continue a session that the agent left in a paused state. "
+                    "Returns the URL plus the OpenCode /api/health probe result."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID to re-attach to"},
+                        "log_tail_lines": {
+                            "type": "integer",
+                            "description": "Include last N lines of the session log (default 50)",
+                            "default": 50,
+                        },
+                    },
+                    "required": ["task_id"],
+                },
+            },
+            {
+                "name": "sandbox_kill_session",
+                "description": (
+                    "Tear down a sandbox session by task_id. Kills the underlying "
+                    "OpenCode server (cube microVM or host process) and removes "
+                    "the handle from the registry. Cannot be undone — for debug, "
+                    "prefer sandbox_attach_session which keeps state intact."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID to tear down"},
                     },
                     "required": ["task_id"],
                 },
@@ -1722,6 +1801,12 @@ Agent resumes within seconds.
         # Task Session Tools
         elif name == "task_session_read":
             return await self._execute_task_session_read(args)
+        elif name == "sandbox_list_sessions":
+            return await self._execute_sandbox_list_sessions(args)
+        elif name == "sandbox_attach_session":
+            return await self._execute_sandbox_attach_session(args)
+        elif name == "sandbox_kill_session":
+            return await self._execute_sandbox_kill_session(args)
         elif name == "task_report_read":
             return await self._execute_task_report_read(args)
         elif name == "scheduler_resume_task":
@@ -3709,6 +3794,122 @@ Agent resumes within seconds.
                 "message": f"Failed to read task session: {str(e)}",
             }
 
+    # ------------------------------------------------------------------
+    # Sandbox session tools — list / attach / kill
+    # ------------------------------------------------------------------
+
+    async def _execute_sandbox_list_sessions(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List live/paused sandbox handles from the session registry."""
+        try:
+            from app.scheduler.sandbox import list_handles
+
+            backend = args.get("backend")
+            state_filter = args.get("state")
+
+            handles = list_handles(backend=backend)
+            if state_filter:
+                handles = [h for h in handles if h.state == state_filter]
+
+            sessions = []
+            for h in handles:
+                sessions.append({
+                    **h.to_dict(),
+                    "log_path_exists": __import__("os").path.exists(h.log_path) if h.log_path else False,
+                })
+
+            return {
+                "status": "success",
+                "count": len(sessions),
+                "sessions": sessions,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"sandbox_list_sessions failed: {e}"}
+
+    async def _execute_sandbox_attach_session(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Re-attach to a paused sandbox session.
+
+        Resumes the backend (cube or host), probes OpenCode /api/health, and
+        returns the URL plus log tail so the user can talk to the session
+        directly (debug, inspect history, continue the conversation).
+        """
+        try:
+            from app.scheduler.sandbox import (
+                SandboxRegistry, load_handle,
+            )
+
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required"}
+
+            log_tail_lines = int(args.get("log_tail_lines", 50))
+
+            handle = load_handle(task_id)
+            if handle is None:
+                return {
+                    "status": "error",
+                    "message": f"No persisted sandbox handle for task_id={task_id!r}. "
+                               "The session may have been killed or never paused.",
+                }
+
+            backend = SandboxRegistry.create(handle.backend, config={})
+            # Resume if paused
+            if handle.state == "paused":
+                handle = backend.resume(handle)
+
+            # Probe health
+            health = backend.health_check(handle)
+
+            # Read log tail
+            log_tail = []
+            if handle.log_path and __import__("os").path.exists(handle.log_path):
+                try:
+                    with open(handle.log_path, "r", encoding="utf-8", errors="replace") as f:
+                        lines = f.readlines()
+                    log_tail = [l.rstrip("\n") for l in lines[-log_tail_lines:]]
+                except Exception as e:
+                    log_tail = [f"(failed to read log: {e})"]
+
+            return {
+                "status": "success",
+                "task_id": task_id,
+                "backend": handle.backend,
+                "sandbox_id": handle.sandbox_id,
+                "opencode_url": handle.url,
+                "handle_state": handle.state,
+                "health": health,
+                "log_tail": log_tail,
+                "log_path": handle.log_path,
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"sandbox_attach_session failed: {e}"}
+
+    async def _execute_sandbox_kill_session(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Tear down a sandbox session."""
+        try:
+            from app.scheduler.sandbox import (
+                SandboxRegistry, load_handle,
+            )
+
+            task_id = args.get("task_id")
+            if not task_id:
+                return {"status": "error", "message": "task_id is required"}
+
+            handle = load_handle(task_id)
+            if handle is None:
+                return {"status": "error", "message": f"No sandbox handle for task_id={task_id!r}"}
+
+            backend = SandboxRegistry.create(handle.backend, config={})
+            backend.kill(handle)
+            return {
+                "status": "success",
+                "task_id": task_id,
+                "backend": handle.backend,
+                "sandbox_id": handle.sandbox_id,
+                "message": "Sandbox killed and removed from registry.",
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"sandbox_kill_session failed: {e}"}
+
     async def _execute_task_report_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute task_report_read tool"""
         try:
@@ -4591,9 +4792,14 @@ Agent resumes within seconds.
                     "To add a resource:\n"
                     "  config(action='resource_add', resource_id='my_resource', type='local'|'api',\n"
                     "         provider='openai', base_url='http://...', model='model-id',\n"
-                    "         tier='free'|'free_api'|'paid',\n"
+                    "         tier='free'|'free_api'|'paid', priority=1,\n"
+                    "         enabled=true,\n"
                     "         context_limit=32768, output_limit=8192, input_limit=null,\n"
                     "         api_key='...'|null, description='...')\n\n"
+                    "enabled        — REQUIRED. Must be true or the resource is silently excluded.\n"
+                    "priority       — REQUIRED for selection order. Lower number = selected first (1 wins over 10).\n"
+                    "                 Check resource_status to see current selection_order and any task_assignment_overrides\n"
+                    "                 that may bypass priority for specific task types.\n"
                     "context_limit  — total context window in tokens (check model card)\n"
                     "output_limit   — max tokens the model can generate per response\n"
                     "input_limit    — max input tokens per request if asymmetric (e.g. free-tier APIs)\n"
@@ -4737,10 +4943,51 @@ Agent resumes within seconds.
             for res_id, info in status.items():
                 capable = rm.get_agentic_capable(res_id)
                 info["agentic_capable"] = capable  # None = not yet tested
+
+            # Warn on resources where enabled is None/missing — silently excluded
+            disabled_warnings = [
+                rid for rid, info in status.items()
+                if info.get("enabled") is None
+            ]
+
+            # Show effective selection order (priority ascending = first selected)
+            enabled = sorted(
+                [(rid, info) for rid, info in status.items() if info.get("enabled")],
+                key=lambda x: (x[1].get("priority") or 999),
+            )
+            selection_order = [
+                f"{i+1}. {rid} (priority={info.get('priority','?')}, model={info.get('model','?')}, tier={info.get('tier','?')})"
+                for i, (rid, info) in enumerate(enabled)
+            ]
+
+            # Show task_assignment overrides that bypass priority
+            overrides = {}
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                _llm_cfg_path = _Path(__file__).parent.parent.parent / "config" / "llm_config.json"
+                _personal_path = _Path.home() / ".memory" / "config" / "llm_config.json"
+                for _p in [_llm_cfg_path, _personal_path]:
+                    if _p.exists():
+                        _d = _json.loads(_p.read_text())
+                        _ta = _d.get("task_assignments", {})
+                        for k, v in _ta.items():
+                            if isinstance(v, str):  # only pinned resource IDs, not dicts
+                                overrides[k] = v
+            except Exception:
+                pass
+
             return {
                 "status": "success",
                 "resources": status,
                 "count": len(status),
+                "selection_order": selection_order,
+                "task_assignment_overrides": overrides or None,
+                "warnings": (
+                    [f"⚠ enabled=null (silently excluded — set enabled:true to activate): {', '.join(disabled_warnings)}"]
+                    if disabled_warnings else []
+                ),
+                "_hint": "priority: lower number = selected first. task_assignment_overrides bypass priority for named task types.",
             }
         except Exception as e:
             return {
@@ -6530,6 +6777,7 @@ Agent resumes within seconds.
                 "backend_session_message": "Send a message and get a response — params: session_id, content, server_id?",
                 "backend_session_messages": "Get full message history — params: session_id, server_id?",
                 "backend_session_delete": "Delete a session — params: session_id, server_id?",
+                "backend_session_run": "Dispatch a long-running coding session task — params: prompt, backend_type?, server_id?, working_dir?, task_id?, session_id?, start_new?, opencode_url?, use_sandbox? Set start_new=True to spawn a fresh per-task OpenCode in working_dir.",
             },
             "future": ["github", "slack", "notion"],
             "example": 'external_agent(action="ask_user", task_id="cc-task-1", question="Use approach A or B?")',
@@ -6552,6 +6800,12 @@ Agent resumes within seconds.
                 if not args.get(param):
                     return {"status": "error", "message": f"Parameter '{param}' is required for google action."}
             return await self._execute_google_service(args)
+
+        if action == "backend_session_run":
+            return await self._execute_backend_session_run(args)
+
+        if action.startswith("sandbox"):
+            return await self._execute_sandbox(action, args)
 
         if action.startswith("backend") or action.startswith("opencode"):
             # opencode_* prefix kept as a backward-compat alias
@@ -6698,6 +6952,121 @@ Agent resumes within seconds.
         if api_key:
             config["mcpServers"]["mojo"]["headers"] = {"MCP-API-Key": api_key}
         return config
+
+    async def _execute_backend_session_run(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatch a long-running coding session as a CODING_SESSION scheduler task."""
+        import time as _time
+
+        prompt = (args.get("prompt") or "").strip()
+        backend_type = (args.get("backend_type") or "opencode").strip()
+        if not prompt:
+            return {"status": "error", "message": "prompt is required"}
+
+        task_id = (args.get("task_id") or f"cs-{int(_time.time())}").strip()
+        working_dir = (args.get("working_dir") or "").strip()
+        server_id = (args.get("server_id") or "").strip()
+        session_id = (args.get("session_id") or "").strip()
+        sandbox_id = (args.get("sandbox_id") or "").strip()
+        opencode_url = (args.get("opencode_url") or "").strip()
+        use_sandbox = args.get("use_sandbox", True)
+        start_new = bool(args.get("start_new", False))
+
+        from app.scheduler.models import Task, TaskType, TaskStatus
+
+        existing = self.scheduler.queue.get(task_id)
+        if existing is None:
+            task = Task(
+                id=task_id,
+                type=TaskType.CODING_SESSION,
+                status=TaskStatus.PENDING,
+                description=f"[{backend_type}] {prompt[:80]}",
+                config={
+                    "backend_type": backend_type,
+                    "sandbox_id": sandbox_id,
+                    "server_id": server_id,
+                    "prompt": prompt,
+                    "working_dir": working_dir,
+                    "session_id": session_id,
+                    "opencode_url": opencode_url,
+                    "use_sandbox": use_sandbox,
+                    "start_new": start_new,
+                },
+            )
+            self.scheduler.queue.add(task)
+
+        return {
+            "status": "dispatched",
+            "task_id": task_id,
+            "backend_type": backend_type,
+            "monitor_with": f'scheduler(action="get", task_id="{task_id}")',
+        }
+
+    async def _execute_sandbox(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Sandbox lifecycle management via app.sandbox.SandboxManager."""
+        try:
+            from app.sandbox.manager import SandboxManager
+        except ImportError as e:
+            return {"status": "error", "message": f"sandbox module not available: {e}"}
+
+        mgr = SandboxManager()
+
+        try:
+            if action == "sandbox_create":
+                repo_url = (args.get("repo_url") or "").strip()
+                if not repo_url:
+                    return {"status": "error", "message": "repo_url is required"}
+                entry = mgr.create(
+                    repo_url=repo_url,
+                    agent_type=(args.get("agent_type") or "opencode").strip(),
+                    sandbox_id=(args.get("sandbox_id") or None),
+                    existing_dir=(args.get("existing_dir") or None),
+                    password=(args.get("password") or None),
+                )
+                return {"status": "ok", "sandbox": entry.to_dict()}
+
+            elif action == "sandbox_start":
+                sid = (args.get("sandbox_id") or "").strip()
+                if not sid:
+                    return {"status": "error", "message": "sandbox_id is required"}
+                entry = mgr.start(sid)
+                return {"status": "ok", "sandbox": entry.to_dict()}
+
+            elif action == "sandbox_stop":
+                sid = (args.get("sandbox_id") or "").strip()
+                if not sid:
+                    return {"status": "error", "message": "sandbox_id is required"}
+                entry = mgr.stop(sid)
+                return {"status": "ok", "sandbox": entry.to_dict()}
+
+            elif action == "sandbox_status":
+                sid = (args.get("sandbox_id") or "").strip()
+                if not sid:
+                    return {"status": "error", "message": "sandbox_id is required"}
+                entry = mgr.status(sid)
+                return {"status": "ok", "sandbox": entry.to_dict()}
+
+            elif action == "sandbox_list":
+                entries = mgr.list()
+                return {
+                    "status": "ok",
+                    "count": len(entries),
+                    "sandboxes": [e.to_dict() for e in entries],
+                }
+
+            elif action == "sandbox_destroy":
+                sid = (args.get("sandbox_id") or "").strip()
+                if not sid:
+                    return {"status": "error", "message": "sandbox_id is required"}
+                mgr.destroy(sid)
+                return {"status": "ok", "destroyed": sid}
+
+            else:
+                return {"status": "error", "message": f"Unknown sandbox action '{action}'"}
+
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception as e:
+            return {"status": "error", "message": f"{type(e).__name__}: {e}"}
 
     async def _execute_backend(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Coding agent backend actions via coding-agent-mcp-tool.

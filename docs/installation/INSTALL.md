@@ -253,6 +253,7 @@ The MCP server provides 30+ tools for Claude Desktop:
   - `agent_start` (with `agent_type="opencode"`) - Start coding project
   - `agent_status` (with `agent_type="opencode"`) - Check project status
   - `agent_stop` (with `agent_type="opencode"`) - Stop project
+- **CubeSandbox-backed OpenCode** - Isolated coding sessions (optional, requires `E2B_API_URL` + `E2B_API_KEY` and a built template)
 
 ### Configure Advanced Features
 

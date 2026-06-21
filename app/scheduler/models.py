@@ -46,6 +46,7 @@ class TaskType(Enum):
     INTERNAL_ASSIGNMENT = "internal_assignment"  # Internal role-based LLM think-act loop
     ASSISTANT = "assistant"  # Role-based agentic session (alias for INTERNAL_ASSIGNMENT routing)
     GROWTH = "growth"  # BRIDLE: role growth cycle — one-on-one → drift → snapshot → HITL
+    CODING_SESSION = "coding_session"  # Long-running external coding agent session (OpenCode, Goose)
 
 
 @dataclass
@@ -221,7 +222,13 @@ class Task:
             "cron_expression": self.cron_expression,
             "status": self.status.value,
             "priority": self.priority.value,
-            "config": self.config,
+            # Strip non-serializable runtime objects (per-task backends, HTTP clients)
+            # from config before serialization. These hold process references that
+            # don't survive JSON encoding and aren't needed after task completion.
+            "config": {
+                k: v for k, v in (self.config or {}).items()
+                if not k.startswith("_") and not callable(v)
+            },
             "resources": self.resources.to_dict(),
             "result": self.result.to_dict() if self.result else None,
             "retry_count": self.retry_count,

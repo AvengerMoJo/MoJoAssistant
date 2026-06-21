@@ -259,8 +259,10 @@ Acceptance:
 ### Runtime validation — CubeSandbox
 **https://github.com/tencentcloud/CubeSandbox** is the canonical integration test for #9.
 
-Status: **IN PROGRESS** — Ahman (task `a0e521ed`) is installing CubeSandbox as a systemd
-service on localhost or the 249 server (`ssh -p 12345 ai-agent@192.168.2.249`).
+Status: **PARTIALLY COMPLETE** — the repo now includes the CubeSandbox client and
+the sandbox-first OpenCode boot path (`app/scheduler/sandbox/` and
+`app/scheduler/handlers/coding_session_opencode.py`). Live server/systemd validation
+on the 249 host is still pending.
 
 Once the server is live, the full validation is:
 ```
@@ -271,7 +273,7 @@ skill(action="install", skill_id="cubesandbox_exec", env={
 })
 skill(action="test", skill_id="cubesandbox_exec")
 ```
-Reference blueprints: `config/skill_blueprints/cubesandbox_exec.json` and `cubesandbox_create.json`.
+Reference blueprints: `config/skill_blueprints/cubesandbox_exec.json` and `config/skill_blueprints/cubesandbox_create.json`.
 
 ---
 

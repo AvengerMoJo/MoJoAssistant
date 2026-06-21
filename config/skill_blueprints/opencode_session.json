@@ -1,0 +1,35 @@
+{
+  "id": "opencode_session",
+  "name": "OpenCode — Run Session (single prompt)",
+  "description": "Send one prompt to an OpenCode backend via MoJo's external_agent hub. Creates a new session, sends the message, returns the response. For multi-turn work, use opencode_session_chat instead. Requires coding-agent-mcp-tool to be running.",
+  "category": "coding",
+  "danger_level": "medium",
+  "version": "1.0.0",
+  "requires_auth": false,
+  "tags": ["opencode", "coding-agent", "delegate", "session"],
+  "source": "local",
+  "template_vars": {
+    "MOJO_BASE_URL": {
+      "description": "MoJo MCP HTTP base URL (use http://localhost:8000 for local)",
+      "type": "str",
+      "default": "http://localhost:8000",
+      "required": false
+    }
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt":      {"type": "string", "description": "The task to send to OpenCode"},
+      "working_dir": {"type": "string", "description": "Absolute path to the working directory (default: $HOME)"},
+      "model":       {"type": "string", "description": "Override the default model (optional)"},
+      "server_id":   {"type": "string", "description": "OpenCode server_id (default: first registered backend)"}
+    },
+    "required": ["prompt"]
+  },
+  "executor_template": {
+    "type": "shell",
+    "timeout": 120,
+    "command": "python3 -c \"\nimport json, sys, urllib.request, urllib.error, os\nargs = json.load(sys.stdin)\nprompt = (args.get('prompt') or '').strip()\nif not prompt:\n    print(json.dumps({'success': False, 'error': 'prompt is required'})); sys.exit(0)\nworking_dir = args.get('working_dir') or os.path.expanduser('~')\nworking_dir = os.path.expanduser(working_dir)\nif not os.path.isdir(working_dir):\n    print(json.dumps({'success': False, 'error': f'working_dir does not exist: {working_dir}'})); sys.exit(0)\nbase = '${MOJO_BASE_URL}'.rstrip('/')\napi_key = os.environ.get('MCP_API_KEY', '')\nheaders = {'Content-Type': 'application/json'}\nif api_key:\n    headers['MCP-API-Key'] = api_key\n\ndef call(tool, arguments):\n    payload = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': tool, 'arguments': arguments}}\n    req = urllib.request.Request(base + '/mcp', data=json.dumps(payload).encode(), headers=headers)\n    with urllib.request.urlopen(req, timeout=110) as r:\n        return json.loads(r.read())\n\ntry:\n    create_resp = call('external_agent', {'action': 'backend_session_create', 'server_id': args.get('server_id', '')})\n    if 'error' in create_resp:\n        print(json.dumps({'success': False, 'error': create_resp['error']})); sys.exit(0)\n    session_id = (create_resp.get('result') or {}).get('session_id') or ((create_resp.get('result') or {}).get('data') or {}).get('session_id')\n    if not session_id:\n        print(json.dumps({'success': False, 'error': 'no session_id in create response', 'raw': create_resp})); sys.exit(0)\n    msg_args = {'action': 'backend_session_message', 'session_id': session_id, 'content': prompt, 'server_id': args.get('server_id', '')}\n    if args.get('model'):\n        msg_args['model'] = args['model']\n    msg_resp = call('external_agent', msg_args)\n    print(json.dumps({'success': True, 'session_id': session_id, 'response': msg_resp.get('result', msg_resp)}))\nexcept urllib.error.HTTPError as e:\n    print(json.dumps({'success': False, 'error': f'HTTP {e.code}: {e.read().decode(errors=\\\"replace\\\")[:500]}'}))\nexcept urllib.error.URLError as e:\n    print(json.dumps({'success': False, 'error': f'Cannot reach MoJo at {base}: {e.reason}'}))\nexcept Exception as e:\n    print(json.dumps({'success': False, 'error': f'{type(e).__name__}: {e}'}))\n\""
+  },
+  "test_args": {}
+}

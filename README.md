@@ -442,7 +442,7 @@ and PII scanning are production-ready for personal use.
 - LLM resource selection (local models, LMStudio integration)
 - Agent execution on local models (Qwen, Gemma — tool-calling reliability varies)
 - OpenAI-compatible proxy (`/v1/models`, `/v1/chat/completions`)
-- Coding agent integration (OpenCode, Claude Code)
+- Coding agent integration (OpenCode, Claude Code, CubeSandbox-backed sessions)
 - External MCP servers (tmux terminal, Playwright browser)
 - Google Workspace integration (Calendar, Drive, Gmail)
 - agency-agents persona import (184 personas)
