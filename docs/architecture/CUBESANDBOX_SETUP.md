@@ -128,3 +128,68 @@ task.config["opencode_url"] = "http://localhost:4173"
 
 Or leave `use_sandbox=True` — if CubeSandbox fails to start, the handler
 catches the error and falls back to `http://localhost:4173` automatically.
+
+## Current Local Setup Status (2026-06-21)
+
+What's running on this machine:
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Docker MySQL (cube-mysql) | running | port 33060 → 3306, db `cube_mvp` |
+| Docker Redis (cube-redis) | running | port 16379 → 6379, pwd `ceuhvu123` |
+| `cubemaster` daemon | running | port 8089, config at `~/.memory/cubemaster-config/cubemaster.yaml` |
+| `cubemastercli` | ready | `~/.memory/sandboxes/cubesandbox/CubeMaster/build/` |
+| `opencode-sandbox` Docker image | built | `opencode-sandbox:latest`, exposes 4173 |
+| `cubelet` binary | built from source | protoc + protoc-gen-go installed under `/home/alex/go/bin` |
+
+### Blockers preventing end-to-end CubeSandbox VM creation
+
+The following **cannot be completed without `sudo`**:
+
+1. **Cubelet boot hangs at startup.** It opens no sockets to `cubemaster`,
+   no containerd connection, and produces no log output. Likely missing:
+   - `/etc/containerd/config.toml` (permission denied to create)
+   - CNI plugins at `/opt/cni/bin`, `/etc/cni/net.d`
+   - Kernel artifacts under `/data/CubeMaster/...`
+   - `XDG_RUNTIME_DIR` and other containerd runtime paths
+2. **CubeSandbox is e2b-API incompatible out of the box.** The e2b SDK calls
+   `POST /sandboxes`, but cubemaster's actual route is `/cube/sandbox` (POST).
+   Adapting requires either:
+   - **CubeProxy** (OpenResty/Lua nginx) — needs sudo to install
+   - A custom adapter in `app/scheduler/sandbox/cubesandbox_client.py`
+3. **The official `online-install.sh` script needs root** (creates
+   `/usr/local/services/cubetoolbox`, `/var/run/cube-sandbox-one-click`,
+   `/var/log/cube-sandbox-one-click`).
+
+### What works today without CubeSandbox
+
+The Phase-2 `OpenCodePerTaskBackend` already provides **per-task OpenCode
+isolation** on the host: each coding session gets its own `opencode serve`
+process on a unique port (e.g. 4101), with CWD scoped to the project
+directory. This is the fallback path used by the handler today.
+
+To switch back to direct OpenCode mode in production:
+
+```python
+# In the coding session task config
+task.config["use_sandbox"] = False
+```
+
+The next session will start a fresh `opencode serve` process and run the
+session against it — same HITL, same questions, same notification flow.
+
+### Files created for the partial setup
+
+```
+~/.memory/sandboxes/cubesandbox/        # cloned source (prebuilt bin + Cubelet/)
+~/.memory/cubemaster-config/
+  ├── cubemaster.yaml                   # config with port overrides
+  ├── start.sh                          # starts cubemaster daemon
+  ├── cubelet.yaml                      # cubelet config (meta_server_endpoint)
+  └── start-cubelet.sh                  # starts cubelet (hangs without root)
+~/.memory/cubemaster-data/
+  ├── log/CubeMaster/                   # cubemaster logs
+  └── cubelet-stdout.log                # cubelet output (empty)
+~/.memory/cubelet-data/                 # cubelet root (empty)
+docker/opencode-sandbox/Dockerfile      # OpenCode 1.17.9 + bun + unzip
+```

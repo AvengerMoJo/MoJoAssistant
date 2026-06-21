@@ -23,7 +23,7 @@ ENV PATH="/root/.bun/bin:$PATH"
 
 # Base packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git ca-certificates \
+    curl git ca-certificates unzip \
     build-essential \
     python3 python3-pip \
     openssh-client \
@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://bun.sh/install | bash
 
 # Install OpenCode globally
-RUN bun install -g opencode
+RUN bun install -g opencode-ai
 
 # Create workspace directory
 RUN mkdir -p /workspace
