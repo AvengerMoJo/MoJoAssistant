@@ -121,20 +121,48 @@ class OpenCodeSessionHandler(TaskHandler):
 
         prompt = cfg.get("prompt", "")
 
-        # Run send_message and SSE permission watcher concurrently
+        # Run send_message + two permission watchers concurrently:
+        #   task_sse  — SSE event stream (fast, may miss newer OpenCode versions)
+        #   task_poll — HTTP /permission polling (slower but reliable, 1s interval)
+        # Whichever finds a permission first triggers HITL.
         task_send = asyncio.create_task(
             client.send_message(session_id, prompt)
         )
         task_sse = asyncio.create_task(
             self._sse_first_permission(client, session_id)
         )
-
-        done, _ = await asyncio.wait(
-            [task_send, task_sse],
-            return_when=asyncio.FIRST_COMPLETED,
+        task_poll = asyncio.create_task(
+            self._poll_first_hitl(client, session_id)
         )
 
-        # Case 1: SSE finished first — permission or question event
+        # Whichever finishes first wins; cancel the others
+        done, pending = await asyncio.wait(
+            [task_send, task_sse, task_poll],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+
+        # Case 1: Poller won (OpenCode 1.17+ uses /permission and /question,
+        # not the SSE event stream). Handler dispatches to permission or
+        # question HITL based on the event type.
+        if task_poll in done:
+            poll_exc = task_poll.exception()
+            if poll_exc is None:
+                hitl = task_poll.result()
+                if hitl is not None:
+                    task_send.cancel()
+                    try:
+                        await task_send
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    if hitl["type"] == "question":
+                        return await self._handle_question_hitl(task, ctx, hitl["data"])
+                    return await self._handle_permission(task, ctx, hitl["data"])
+            else:
+                logger.debug("HITL poller exited with exception: %s", poll_exc)
+
+        # Case 2: SSE won (older OpenCode or polled event arrived first)
         if task_sse in done:
             sse_exc = task_sse.exception()
             if sse_exc is None:
@@ -150,11 +178,12 @@ class OpenCodeSessionHandler(TaskHandler):
                     return await self._handle_permission(task, ctx, event)
             else:
                 logger.debug("SSE watcher exited with exception: %s", sse_exc)
-            # SSE ended without a permission (None result or connection error).
-            # send_message is still running — wait for it before proceeding.
-            if task_send not in done:
-                done2, _ = await asyncio.wait([task_send])
-                done = done | done2
+
+        # Case 3: send_message won — both watchers returned no permission
+        # (or raised). Wait for it to finish if not already.
+        if task_send not in done:
+            done2, _ = await asyncio.wait([task_send])
+            done = done | done2
 
         # Case 2: send_message has a result
         if task_send in done:
@@ -603,6 +632,46 @@ class OpenCodeSessionHandler(TaskHandler):
                 return perm
         except Exception as e:
             logger.debug("SSE permission watcher ended: %s", e)
+        return None
+
+    async def _poll_first_hitl(self, client, session_id: str, poll_interval: float = 1.0):
+        """
+        Poll /permission and /question for pending requests on this session.
+
+        Backup for the SSE event stream — newer OpenCode versions (1.17+) use
+        /permission/ask and /question endpoints, not the SSE event stream.
+        Polling is slower but reliable.
+
+        Returns a dict with type ("permission" or "question") and the data, or
+        None on timeout/cancel.
+        """
+        import asyncio as _asyncio
+        deadline = _asyncio.get_event_loop().time() + 600  # 10 min max wait
+        seen_perm_ids = set()
+        seen_question_ids = set()
+        try:
+            while _asyncio.get_event_loop().time() < deadline:
+                try:
+                    perms = await client.list_permissions(session_id)
+                    for p in perms:
+                        pid = p.get("id", "")
+                        if pid and pid not in seen_perm_ids:
+                            seen_perm_ids.add(pid)
+                            return {"type": "permission", "data": p}
+                except Exception as e:
+                    logger.debug("Permission poll error: %s", e)
+                try:
+                    questions = await client.list_questions(session_id)
+                    for q in questions:
+                        qid = q.get("id", "")
+                        if qid and qid not in seen_question_ids:
+                            seen_question_ids.add(qid)
+                            return {"type": "question", "data": q}
+                except Exception as e:
+                    logger.debug("Question poll error: %s", e)
+                await _asyncio.sleep(poll_interval)
+        except _asyncio.CancelledError:
+            return None
         return None
 
 
