@@ -131,54 +131,71 @@ catches the error and falls back to `http://localhost:4173` automatically.
 
 ## Current Local Setup Status (2026-06-21)
 
-What's running on this machine:
+### What's live on this machine
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Docker MySQL (cube-mysql) | running | port 33060 → 3306, db `cube_mvp` |
-| Docker Redis (cube-redis) | running | port 16379 → 6379, pwd `ceuhvu123` |
-| `cubemaster` daemon | running | port 8089, config at `~/.memory/cubemaster-config/cubemaster.yaml` |
-| `cubemastercli` | ready | `~/.memory/sandboxes/cubesandbox/CubeMaster/build/` |
-| `opencode-sandbox` Docker image | built | `opencode-sandbox:latest`, exposes 4173 |
-| `cubelet` binary | built from source | protoc + protoc-gen-go installed under `/home/alex/go/bin` |
+| Component | Host port | Internal port | Status |
+|-----------|-----------|---------------|--------|
+| `cubemaster` (one-click) | 8089 | 8089 | ✅ HEALTHY |
+| `cubelet` gRPC (one-click) | 9999 | 9999 | ✅ Node `192.168.2.248` RUNNING |
+| `cube-api` (one-click) | 3000 | 3000 | ✅ up |
+| `cube-webui` (one-click) | **12088** | 80 | ✅ up |
+| `network-agent` (one-click) | **19090** | 19090 | ✅ up |
+| `cube-proxy` (e2b API) | **12080 / 12443** | 80 / 443 | ⚠️ needs `sudo` to start |
+| MySQL (one-click) | 3306 | 3306 | ✅ up |
+| Redis (one-click) | 6379 | 6379 | ✅ up |
+| `portainer_agent` (Docker) | 9001 | 9001 | ✅ up |
+| `opencode-sandbox` template | — | — | ✅ READY (`tpl-674134307cfa458a986b05ab`) |
 
-### Blockers preventing end-to-end CubeSandbox VM creation
+### Port scheme: 120XX convention
 
-The following **cannot be completed without `sudo`**:
+All CubeSandbox-related services bind to **120XX host ports** so they live in one memorable block. Default cube-proxy 80/443 was kept as container-internal — only the *host* port mapping is 12080/12443, which avoids clashing with the host's Nextcloud on 80/443.
 
-1. **Cubelet boot hangs at startup.** It opens no sockets to `cubemaster`,
-   no containerd connection, and produces no log output. Likely missing:
-   - `/etc/containerd/config.toml` (permission denied to create)
-   - CNI plugins at `/opt/cni/bin`, `/etc/cni/net.d`
-   - Kernel artifacts under `/data/CubeMaster/...`
-   - `XDG_RUNTIME_DIR` and other containerd runtime paths
-2. **CubeSandbox is e2b-API incompatible out of the box.** The e2b SDK calls
-   `POST /sandboxes`, but cubemaster's actual route is `/cube/sandbox` (POST).
-   Adapting requires either:
-   - **CubeProxy** (OpenResty/Lua nginx) — needs sudo to install
-   - A custom adapter in `app/scheduler/sandbox/cubesandbox_client.py`
-3. **The official `online-install.sh` script needs root** (creates
-   `/usr/local/services/cubetoolbox`, `/var/run/cube-sandbox-one-click`,
-   `/var/log/cube-sandbox-one-click`).
+### Cloudflared hostnames
 
-### What works today without CubeSandbox
+`~/.cloudflared/config.yml` adds three new ingress entries:
 
-The Phase-2 `OpenCodePerTaskBackend` already provides **per-task OpenCode
-isolation** on the host: each coding session gets its own `opencode serve`
-process on a unique port (e.g. 4101), with CWD scoped to the project
-directory. This is the fallback path used by the handler today.
+| Hostname | → Host port | Purpose |
+|----------|-------------|---------|
+| `sandbox.eclipsogate.org` | 12443 (HTTPS, mkcert) | cube-proxy e2b-API |
+| `dashboard.eclipsogate.org` | 12088 (HTTP) | cube-webui dashboard |
+| `portainer.eclipsogate.org` | 9001 (HTTP) | portainer agent |
 
-To switch back to direct OpenCode mode in production:
-
-```python
-# In the coding session task config
-task.config["use_sandbox"] = False
+To switch the MoJo handler to the tunneled endpoint, set in `.env`:
+```
+E2B_API_URL=https://sandbox.eclipsogate.org
 ```
 
-The next session will start a fresh `opencode serve` process and run the
-session against it — same HITL, same questions, same notification flow.
+### To bring up cube-proxy (still needs sudo)
 
-### Files created for the partial setup
+```bash
+sudo CUBE_PROXY_HTTP_PORT=12080 \
+     CUBE_PROXY_HTTPS_PORT=12443 \
+     bash /usr/local/services/cubetoolbox/scripts/one-click/up-cube-proxy.sh
+```
+
+The script accepts these env vars natively (no config patch needed) and renders `nginx.conf` with the new listen ports. With `network_mode: host`, the container will then bind 12080/12443 directly on the host.
+
+### `.env` additions for CubeSandbox
+
+```
+E2B_API_URL=http://127.0.0.1:12080          # local cube-proxy (or https://sandbox.eclipsogate.org)
+E2B_API_KEY=local-dev-key                   # cube-proxy accepts any non-empty key
+CUBE_TEMPLATE_ID=tpl-674134307cfa458a986b05ab
+E2B_VALIDATE_API_KEY=false                  # disable e2b SDK key-format check
+```
+
+### What was done without sudo
+
+- Built `opencode-sandbox:latest` Docker image
+- Compiled `cubelet` binary from source (protoc + protoc-gen-go installed in `~/go/bin`)
+- Patched `docker/opencode-sandbox/Dockerfile` (unzip, `opencode-ai` package, `/api/health` probe, `--hostname`)
+- Updated `app/scheduler/sandbox/cubesandbox_client.py` health check to `/api/health`
+- Added cloudflared ingress entries (3 new hostnames)
+- Appended `E2B_*` and `CUBE_TEMPLATE_ID` to `.env`
+
+### Blockers remaining
+
+The one-click installer and cube-proxy startup both require `sudo` (touch `/etc/systemd`, mount XFS on `/data`, bind host ports <1024 are fine, but `docker compose build` and `nginx` exec need root). Until those run, the e2b SDK path is non-functional — the handler falls back to direct OpenCode on the host via the Phase-2 `OpenCodePerTaskBackend`.
 
 ```
 ~/.memory/sandboxes/cubesandbox/        # cloned source (prebuilt bin + Cubelet/)

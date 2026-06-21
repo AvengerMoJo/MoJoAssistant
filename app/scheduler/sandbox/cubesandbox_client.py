@@ -13,9 +13,11 @@ Architecture:
   5. All OpenCode HTTP calls (session, message, permissions) go through the proxy
 
 Prerequisites:
-  - CubeSandbox server running (CUBEMASTER_ADDR)
+  - cube-proxy reachable at $E2B_API_URL (e.g. http://127.0.0.1:12080 or
+    https://sandbox.eclipsogate.org via cloudflared)
   - pip install e2b
   - OpenCode template built (see docker/opencode-sandbox/Dockerfile)
+  - E2B_API_KEY and CUBE_TEMPLATE_ID set in env
 """
 
 from __future__ import annotations
@@ -222,7 +224,7 @@ class CubeSandboxClient:
         try:
             url = self.get_opencode_url()
             import httpx
-            resp = httpx.get(f"{url}/health", timeout=5)
+            resp = httpx.get(f"{url}/api/health", timeout=5)
             return {
                 "status": "ok" if resp.status_code == 200 else "error",
                 "url": url,
