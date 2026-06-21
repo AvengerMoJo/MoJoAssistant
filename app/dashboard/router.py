@@ -424,7 +424,7 @@ async def tasks_list(request: Request, status: str = "", type: str = "", mojo_da
             time_col = _ts(t.get("created_at"))
         cron_expr = t.get("cron_expression", "")
         cron_badge = f' <span style="font-size:10px;color:#aaa" title="{cron_expr}">[cron]</span>' if is_cron else ""
-        label = str(cfg.get("goal") or t.get("description") or "")[:100]
+        label = str(cfg.get("goal") or cfg.get("prompt") or t.get("description") or "")[:100]
         rows += f"""<tr>
           <td><a href="/dashboard/tasks/{t['id']}">{t['id']}</a>{cron_badge}</td>
           <td>{_badge(display_status)}</td>
@@ -496,8 +496,11 @@ async def task_detail(task_id: str, mojo_dash: Optional[str] = Cookie(default=No
       {row("Dispatch depth", depth_label)}
     </table>"""
 
-    # Goal
-    goal_html = f'<h2>Goal</h2><div class="pre">{cfg.get("goal","—")}</div>'
+    # Goal — different task types store the user prompt under different keys.
+    # coding_session uses "prompt"; assistant/agentic use "goal"; some use
+    # only the top-level "description". Fall back through all three.
+    goal = cfg.get("goal") or cfg.get("prompt") or task.get("description") or "—"
+    goal_html = f'<h2>Goal</h2><div class="pre">{html.escape(str(goal))}</div>'
 
     # Iteration log
     iter_html = ""

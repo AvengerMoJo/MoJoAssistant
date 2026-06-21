@@ -329,7 +329,7 @@ When a user installs a skill, MoJo substitutes their values for the `${VAR}` pla
 
 **Agent-mediated adoption:** The `skill_installer_prompt.md` is a self-contained agent prompt for adopting any external tool. The agent studies the target, generates a conforming blueprint dict, and calls `install_blueprint()`. MoJo validates the blueprint, saves it, and renders the tool. No developer involvement.
 
-**CubeSandbox** (`https://github.com/tencentcloud/CubeSandbox`) is the canonical proof-of-concept: a KVM/RustVMM-based sandbox with an E2B-compatible Python SDK. The reference blueprints (`cubesandbox_exec`, `cubesandbox_create`) are the expected output of the skill installer agent run against the CubeSandbox README. Once the server is running (Ahman's infra task), the full end-to-end test is: dispatch agent → generates blueprints independently → installs → smoke test passes.
+**CubeSandbox** (`https://github.com/tencentcloud/CubeSandbox`) is the canonical proof-of-concept: a KVM/RustVMM-based sandbox with an E2B-compatible Python SDK. The current worktree already includes the CubeSandbox client (`app/scheduler/sandbox/cubesandbox_client.py`) and the sandbox-first OpenCode bootstrap path (`app/scheduler/handlers/coding_session_opencode.py`). The reference blueprints (`cubesandbox_exec`, `cubesandbox_create`) are the expected output of the skill installer agent run against the CubeSandbox README. With a live server, the full end-to-end test is: dispatch agent → generates blueprints independently → installs → smoke test passes.
 
 ---
 
@@ -378,7 +378,7 @@ Self-hosted Headscale (open-source Tailscale control plane) + WireGuard for stab
 
 MoJo has dedicated infrastructure roles:
 
-**Ahman** (`agent_type: provisioner`) — infrastructure guardian. Handles Docker/Portainer management, system setup, sandbox provisioning, service configuration. Currently: installing CubeSandbox on the 249 server (`ssh -p 12345 ai-agent@192.168.2.249`).
+**Ahman** (`agent_type: provisioner`) — infrastructure guardian. Handles Docker/Portainer management, system setup, sandbox provisioning, service configuration, and CubeSandbox validation on the 249 server (`ssh -p 12345 ai-agent@192.168.2.249`).
 
 Ahman uses `tmux` sessions for persistent terminal work and `ask_user` only for genuine blockers (missing root access, missing credentials). Everything else he executes directly.
 
