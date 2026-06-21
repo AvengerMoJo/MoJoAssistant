@@ -135,13 +135,15 @@ class OpenCodeSessionHandler(TaskHandler):
             self._poll_first_hitl(client, session_id)
         )
 
-        # Whichever finishes first wins; cancel the others
+        # Whichever finishes first wins. We do NOT cancel the others here —
+        # the handler decides based on which task finished and what it found.
+        # If the poller found a hitl we cancel send_message; otherwise we
+        # wait for send_message to complete normally. Cancelling prematurely
+        # would cause CancelledError in task_send and mark the task as failed.
         done, pending = await asyncio.wait(
             [task_send, task_sse, task_poll],
             return_when=asyncio.FIRST_COMPLETED,
         )
-        for t in pending:
-            t.cancel()
 
         # Case 1: Poller won (OpenCode 1.17+ uses /permission and /question,
         # not the SSE event stream). Handler dispatches to permission or
@@ -261,6 +263,7 @@ class OpenCodeSessionHandler(TaskHandler):
         """
         Save permission state, set task to WAITING_FOR_INPUT, push Discord HITL.
         """
+        from app.scheduler.models import TaskResult, TaskStatus
         perm_id = perm.get("requestID") or perm.get("id", "")
         perm_dir = perm.get("directory", "")
         title = perm.get("title", "")
