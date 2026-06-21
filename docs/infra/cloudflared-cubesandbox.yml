@@ -1,0 +1,27 @@
+# CubeSandbox ingress block for church-tunnel.
+#
+# This file is MERGED into ~/.cloudflared/config.yml by scripts/merge_cloudflared_config.py
+# at deploy time. The agent owns this file; it never edits the user's
+# ~/.cloudflared/config.yml directly (that file also carries hostnames owned by
+# the user, e.g. docker.eclipsogate.org served by portainer-tunnel, which would
+# be lost on a wholesale overwrite).
+#
+# To add a new CubeSandbox-related hostname:
+#   1. append the ingress entry below
+#   2. run: python scripts/merge_cloudflared_config.py
+#   3. reload cloudflared: cloudflared tunnel run c7a1ca2b-c1ea-407d-8078-bdb65412f693
+#
+# Each entry maps an eclipsogate.org subdomain to a localhost port serving the
+# matching CubeSandbox component. 120XX host ports are the convention (see
+# docs/architecture/CUBESANDBOX_SETUP.md).
+
+- hostname: sandbox.eclipsogate.org
+  service: https://127.0.0.1:12443
+  originRequest:
+    noTLSVerify: true   # mkcert self-signed cert on cube-proxy
+    connectTimeout: 30s
+    keepAliveTimeout: 180s
+- hostname: dashboard.eclipsogate.org
+  service: http://127.0.0.1:12088
+  originRequest:
+    noTLSVerify: true
