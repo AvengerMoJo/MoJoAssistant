@@ -131,71 +131,100 @@ catches the error and falls back to `http://localhost:4173` automatically.
 
 ## Current Local Setup Status (2026-06-21)
 
-### What's live on this machine
+### ✅ End-to-end verified working
 
-| Component | Host port | Internal port | Status |
-|-----------|-----------|---------------|--------|
+```python
+import os, e2b
+sb = e2b.Sandbox.create(template=os.environ['CUBE_TEMPLATE_ID'])
+# OK sandbox_id = 8fad30160801419a984f7ddb8aa49049
+host = sb.get_host(4173)
+# Host: 4173-8fad30160801419a984f7ddb8aa49049.eclipsogate.org
+
+import httpx
+httpx.get(f'http://{host}/api/health', timeout=10)
+# HTTP 200 {"healthy":true}
+```
+
+### Live component layout
+
+| Component | Host port | Container port | Status |
+|-----------|-----------|----------------|--------|
 | `cubemaster` (one-click) | 8089 | 8089 | ✅ HEALTHY |
-| `cubelet` gRPC (one-click) | 9999 | 9999 | ✅ Node `192.168.2.248` RUNNING |
-| `cube-api` (one-click) | 3000 | 3000 | ✅ up |
-| `cube-webui` (one-click) | **12088** | 80 | ✅ up |
-| `network-agent` (one-click) | **19090** | 19090 | ✅ up |
-| `cube-proxy` (e2b API) | **12080 / 12443** | 80 / 443 | ⚠️ needs `sudo` to start |
+| `cubelet` gRPC | 9999 | 9999 | ✅ Node `192.168.2.248` RUNNING |
+| `cube-api` (e2b gateway) | **12300** | 3000 | ✅ up |
+| `cube-webui` dashboard | **12088** | 80 | ✅ up |
+| `cube-proxy` HTTP | **12080** | 80 | ✅ up |
+| `cube-proxy` HTTPS | **12443** | 443 | ✅ up |
+| `network-agent` | 19090 | 19090 | ✅ up |
 | MySQL (one-click) | 3306 | 3306 | ✅ up |
-| Redis (one-click) | 6379 | 6379 | ✅ up |
-| `portainer_agent` (Docker) | 9001 | 9001 | ✅ up |
+| Redis (docker, pwd `ceuhvu123`) | 16379 | 6379 | ✅ up |
+| `portainer_agent` | 9001 | 9001 | ✅ up |
 | `opencode-sandbox` template | — | — | ✅ READY (`tpl-674134307cfa458a986b05ab`) |
 
-### Port scheme: 120XX convention
+### Cloudflared hostnames (agent-owned overlay)
 
-All CubeSandbox-related services bind to **120XX host ports** so they live in one memorable block. Default cube-proxy 80/443 was kept as container-internal — only the *host* port mapping is 12080/12443, which avoids clashing with the host's Nextcloud on 80/443.
-
-### Cloudflared hostnames
-
-`~/.cloudflared/config.yml` adds three new ingress entries:
+`docs/infra/cloudflared-cubesandbox.yml` (merged into `~/.cloudflared/config.yml`):
 
 | Hostname | → Host port | Purpose |
 |----------|-------------|---------|
-| `sandbox.eclipsogate.org` | 12443 (HTTPS, mkcert) | cube-proxy e2b-API |
-| `dashboard.eclipsogate.org` | 12088 (HTTP) | cube-webui dashboard |
-| `portainer.eclipsogate.org` | 9001 (HTTP) | portainer agent |
+| `sandbox-api.eclipsogate.org` | 12300 (HTTP) | **cube-api** — POST /sandboxes |
+| `dashboard.eclipsogate.org` | 12088 (HTTP) | cube-webui |
+| `sandbox.eclipsogate.org` | 12443 (HTTPS) | cube-proxy (direct access) |
+| `*.eclipsogate.org` (wildcard) | 12443 (HTTPS) | cube-proxy handles `<port>-<sandbox_id>.eclipsogate.org` |
 
-To switch the MoJo handler to the tunneled endpoint, set in `.env`:
-```
-E2B_API_URL=https://sandbox.eclipsogate.org
-```
-
-### To bring up cube-proxy (still needs sudo)
+### To bring up the stack after reboot (sudo required)
 
 ```bash
-sudo CUBE_PROXY_HTTP_PORT=12080 \
-     CUBE_PROXY_HTTPS_PORT=12443 \
-     bash /usr/local/services/cubetoolbox/scripts/one-click/up-cube-proxy.sh
+# Persisted in /usr/local/services/cubetoolbox/.one-click.env so this survives reboots:
+#   CUBE_PROXY_HTTP_PORT=12080
+#   CUBE_PROXY_HTTPS_PORT=12443
+#   CUBE_PROXY_REDIS_IP=127.0.0.1
+#   CUBE_PROXY_REDIS_PORT=16379
+#   CUBE_PROXY_REDIS_PASSWORD=ceuhvu123
+
+sudo bash /usr/local/services/cubetoolbox/scripts/one-click/up-cube-proxy.sh
+sudo CUBE_API_BIND=0.0.0.0:12300 CUBE_API_SANDBOX_DOMAIN=eclipsogate.org \
+     bash /usr/local/services/cubetoolbox/scripts/systemd/cube-api-start.sh
+
+# Cloudflared (user-level):
+pkill -f 'cloudflared tunnel'
+nohup cloudflared tunnel --config /home/alex/.cloudflared/config.yml \
+     run c7a1ca2b-c1ea-407d-8078-bdb65412f693 > /tmp/cloudflared.log 2>&1 &
 ```
 
-The script accepts these env vars natively (no config patch needed) and renders `nginx.conf` with the new listen ports. With `network_mode: host`, the container will then bind 12080/12443 directly on the host.
+### Why each env var matters
+
+| Var | Why |
+|-----|-----|
+| `CUBE_PROXY_HTTP_PORT=12080` | Avoids Nextcloud on host 80/443 |
+| `CUBE_PROXY_REDIS_PORT=16379` | cube-proxy's default (6379) points at one-click Redis (no password); docker Redis on 16379 has `ceuhvu123` which matches `redis_pd` |
+| `CUBE_API_BIND=0.0.0.0:12300` | 120XX scheme |
+| `CUBE_API_SANDBOX_DOMAIN=eclipsogate.org` | Makes SDK receive `<port>-<id>.eclipsogate.org`; requires `*.eclipsogate.org` wildcard DNS to be reachable |
+
+### Critical bugs found during integration
+
+1. **`sudo` strips env vars** — write port overrides to `/usr/local/services/cubetoolbox/.one-click.env`, not inline.
+2. **Redis password mismatch** — cube-proxy defaults to one-click Redis (no password) but config has `ceuhvu123`. Fix via `CUBE_PROXY_REDIS_*` env vars.
+3. **No `*.eclipsogate.org` wildcard DNS** — SDK can't reach per-sandbox URLs without it. `cloudflared tunnel route dns ... '*.eclipsogate.org'`.
+4. **cube-proxy doesn't implement `POST /sandboxes`** — only forwards to *existing* sandboxes via the `<port>-<id>` Host regex. The create flow goes through **cube-api**.
 
 ### `.env` additions for CubeSandbox
 
 ```
-E2B_API_URL=http://127.0.0.1:12080          # local cube-proxy (or https://sandbox.eclipsogate.org)
-E2B_API_KEY=local-dev-key                   # cube-proxy accepts any non-empty key
+E2B_API_URL=https://sandbox-api.eclipsogate.org
+E2B_API_KEY=local-dev-key
 CUBE_TEMPLATE_ID=tpl-674134307cfa458a986b05ab
-E2B_VALIDATE_API_KEY=false                  # disable e2b SDK key-format check
+E2B_VALIDATE_API_KEY=false
 ```
 
-### What was done without sudo
+### Agent-owned files
 
-- Built `opencode-sandbox:latest` Docker image
-- Compiled `cubelet` binary from source (protoc + protoc-gen-go installed in `~/go/bin`)
-- Patched `docker/opencode-sandbox/Dockerfile` (unzip, `opencode-ai` package, `/api/health` probe, `--hostname`)
-- Updated `app/scheduler/sandbox/cubesandbox_client.py` health check to `/api/health`
-- Added cloudflared ingress entries (3 new hostnames)
-- Appended `E2B_*` and `CUBE_TEMPLATE_ID` to `.env`
+- `docs/infra/cloudflared-cubesandbox.yml` — ingress overlay (4 entries)
+- `scripts/merge_cloudflared_config.py` — merges overlay into `~/.cloudflared/config.yml`
+- `tests/unit/test_cloudflared_merge.py` — 6 tests for the merge
+- `app/scheduler/sandbox/cubesandbox_client.py` — uses e2b SDK with `/api/health` probe
 
-### Blockers remaining
-
-The one-click installer and cube-proxy startup both require `sudo` (touch `/etc/systemd`, mount XFS on `/data`, bind host ports <1024 are fine, but `docker compose build` and `nginx` exec need root). Until those run, the e2b SDK path is non-functional — the handler falls back to direct OpenCode on the host via the Phase-2 `OpenCodePerTaskBackend`.
+### Files created for the partial setup
 
 ```
 ~/.memory/sandboxes/cubesandbox/        # cloned source (prebuilt bin + Cubelet/)
