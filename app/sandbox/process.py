@@ -32,8 +32,11 @@ _OPENCODE_BIN = shutil.which("opencode") or os.path.expanduser("~/.bun/bin/openc
 class ProcessBackend(SandboxBackend):
     """Manage coding agents as plain OS processes."""
 
-    def __init__(self, hostname: str = "0.0.0.0") -> None:
+    def __init__(self, hostname: str = "0.0.0.0", base_dir: Path | None = None) -> None:
         self._hostname = hostname
+        # Default to ~/.memory/sandboxes — needed by status() to persist meta.json
+        from pathlib import Path as _P
+        self._base = base_dir or _P.home() / ".memory" / "sandboxes"
 
     # ------------------------------------------------------------------ #
     #  create                                                              #
@@ -96,6 +99,10 @@ class ProcessBackend(SandboxBackend):
         if not _OPENCODE_BIN:
             raise RuntimeError("opencode binary not found — install it or set PATH")
 
+        # Configure git identity for both new and pre-existing repos
+        # (one-time migration for sandboxes created before git_identity existed)
+        self._configure_git_identity(entry, Path(entry.working_dir))
+
         cmd = [_OPENCODE_BIN, "--port", str(port), "--hostname", self._hostname, "serve"]
         logger.info("ProcessBackend.start: %s", shlex.join(cmd))
 
@@ -115,11 +122,15 @@ class ProcessBackend(SandboxBackend):
                 env=env,
                 stdout=logf,
                 stderr=logf,
-                start_new_session=True,   # detach from our process group
+                start_new_session=True,   # detach into new session/process group
             )
 
         pid_path.write_text(str(proc.pid))
-        logger.info("ProcessBackend.start: pid=%d port=%d", proc.pid, port)
+        # Also write PGID so stop() can kill the whole process group
+        # (children spawned by opencode would otherwise survive)
+        pgid_path = Path(entry.working_dir).parent / "agent.pgid"
+        pgid_path.write_text(str(proc.pid))  # start_new_session=True makes pid == pgid
+        logger.info("ProcessBackend.start: pid=%d pgid=%d port=%d", proc.pid, proc.pid, port)
 
         # Wait for the HTTP server to answer
         if not self._wait_healthy(port, timeout=_HEALTH_TIMEOUT):
@@ -144,21 +155,39 @@ class ProcessBackend(SandboxBackend):
 
     def stop(self, entry: SandboxEntry) -> SandboxEntry:
         pid = self._read_pid(entry)
+        # Prefer PGID for process group kill (catches children)
+        pgid = self._read_pgid(entry) or pid
         if pid and self._pid_alive(pid):
             try:
-                os.kill(pid, signal.SIGTERM)
+                # SIGTERM the whole process group; children get it too
+                if pgid:
+                    try:
+                        os.killpg(pgid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError):
+                        os.kill(pid, signal.SIGTERM)
+                else:
+                    os.kill(pid, signal.SIGTERM)
                 for _ in range(10):
                     time.sleep(0.5)
                     if not self._pid_alive(pid):
                         break
                 else:
-                    os.kill(pid, signal.SIGKILL)
+                    # Force kill the whole group
+                    if pgid:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError):
+                            os.kill(pid, signal.SIGKILL)
+                    else:
+                        os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            logger.info("ProcessBackend.stop: pid=%d stopped", pid)
+            logger.info("ProcessBackend.stop: pid=%d pgid=%d stopped", pid, pgid)
 
         pid_path = Path(entry.working_dir).parent / "agent.pid"
         pid_path.unlink(missing_ok=True)
+        pgid_path = Path(entry.working_dir).parent / "agent.pgid"
+        pgid_path.unlink(missing_ok=True)
 
         return SandboxEntry(**{**entry.to_dict(), "pid": None, "status": "stopped"})
 
@@ -166,20 +195,35 @@ class ProcessBackend(SandboxBackend):
     #  status                                                              #
     # ------------------------------------------------------------------ #
 
-    def status(self, entry: SandboxEntry) -> SandboxEntry:
+    def status(self, entry: SandboxEntry, persist: bool = True) -> SandboxEntry:
+        """Compute live status from PID/port. If persist=True, also write meta.json.
+
+        Persisting on every status() call fixes the desync where meta.json says
+        'running' but the process is dead. Caller can set persist=False for
+        pure read-only checks.
+        """
         if entry.agent_type == "claude_code":
             return SandboxEntry(**{**entry.to_dict(), "status": "running"})
 
         pid = self._read_pid(entry) or entry.pid
         if not pid or not self._pid_alive(pid):
-            return SandboxEntry(**{**entry.to_dict(), "pid": None, "status": "stopped"})
+            new_entry = SandboxEntry(**{**entry.to_dict(), "pid": None, "status": "stopped"})
+            if persist:
+                new_entry.save(self._base)
+            return new_entry
 
         port = entry.port
         if port and not self._wait_healthy(port, timeout=2):
-            return SandboxEntry(**{**entry.to_dict(), "status": "failed",
-                                   "last_error": f"port {port} not responding"})
+            new_entry = SandboxEntry(**{**entry.to_dict(), "status": "failed",
+                                         "last_error": f"port {port} not responding"})
+            if persist:
+                new_entry.save(self._base)
+            return new_entry
 
-        return SandboxEntry(**{**entry.to_dict(), "pid": pid, "status": "running"})
+        new_entry = SandboxEntry(**{**entry.to_dict(), "pid": pid, "status": "running"})
+        if persist:
+            new_entry.save(self._base)
+        return new_entry
 
     # ------------------------------------------------------------------ #
     #  destroy                                                             #
@@ -242,6 +286,16 @@ class ProcessBackend(SandboxBackend):
             except (urllib.error.URLError, OSError):
                 time.sleep(1)
         return False
+
+    def _read_pgid(self, entry: SandboxEntry) -> int | None:
+        """Read the process group ID from agent.pgid."""
+        pgid_path = Path(entry.working_dir).parent / "agent.pgid"
+        if not pgid_path.exists():
+            return None
+        try:
+            return int(pgid_path.read_text().strip())
+        except (ValueError, OSError):
+            return None
 
     def _read_pid(self, entry: SandboxEntry) -> int | None:
         pid_path = Path(entry.working_dir).parent / "agent.pid"

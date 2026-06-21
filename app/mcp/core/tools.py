@@ -6778,6 +6778,7 @@ Agent resumes within seconds.
         sandbox_id = (args.get("sandbox_id") or "").strip()
         opencode_url = (args.get("opencode_url") or "").strip()
         use_sandbox = args.get("use_sandbox", True)
+        start_new = bool(args.get("start_new", False))
 
         from app.scheduler.models import Task, TaskType, TaskStatus
 
@@ -6797,6 +6798,7 @@ Agent resumes within seconds.
                     "session_id": session_id,
                     "opencode_url": opencode_url,
                     "use_sandbox": use_sandbox,
+                    "start_new": start_new,
                 },
             )
             self.scheduler.queue.add(task)

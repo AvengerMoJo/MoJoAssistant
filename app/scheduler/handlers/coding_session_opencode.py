@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from app.scheduler.executor_registry import ExecutorContext, TaskHandler
@@ -20,11 +21,60 @@ from app.scheduler.models import Task, TaskResult, TaskStatus
 logger = logging.getLogger(__name__)
 
 
+class TaskLogAdapter(logging.LoggerAdapter):
+    """Logger adapter that prefixes every message with the task_id.
+
+    Until we have per-task OpenCode instances (Phase 2), this gives every
+    log line a task_id tag so the scheduler log file can be filtered by task.
+    """
+    def process(self, msg, kwargs):
+        # LoggerAdapter stores the dict in self.extra; older code accessed
+        # it as an attribute — both forms are common in stdlib examples.
+        if isinstance(self.extra, dict):
+            task_id = self.extra.get("task_id")
+        else:
+            task_id = getattr(self.extra, "task_id", None)
+        if task_id:
+            return f"[{task_id}] {msg}", kwargs
+        return msg, kwargs
+
+
+def _task_logger(task_id: str) -> logging.LoggerAdapter:
+    return TaskLogAdapter(logger, {"task_id": task_id})
+
+
+# Tasks hitting the scheduler's max_duration cap (default 1800s = 30 min) get
+# killed mid-build with no warning. This helper logs a countdown so the dashboard
+# shows the user their task is approaching the wall.
+TASK_DURATION_CAP_S = 1800
+TASK_DURATION_WARN_S = 300   # warn 5 min before cap
+
+
+def _check_duration_warn(task: Task, log: logging.LoggerAdapter) -> None:
+    started = task.started_at
+    if not started:
+        return
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    remaining = TASK_DURATION_CAP_S - elapsed
+    if remaining < 0:
+        log.warning("Task exceeded duration cap (%ds); will be killed by scheduler", TASK_DURATION_CAP_S)
+    elif remaining < TASK_DURATION_WARN_S:
+        log.warning(
+            "Task approaching duration cap: %ds remaining (cap=%ds). "
+            "Reply via reply_to_task to extend, or wait for completion.",
+            int(remaining), TASK_DURATION_CAP_S,
+        )
+
+
 class OpenCodeSessionHandler(TaskHandler):
 
     async def execute(self, task: Task, ctx: ExecutorContext) -> TaskResult:
         cfg = task.config or {}
         mode = cfg.get("_mode", "run")
+        log = _task_logger(task.id)
+
+        log.info("execute start: mode=%s backend_type=%s working_dir=%r",
+                 mode, cfg.get("backend_type"), cfg.get("working_dir"))
 
         if mode == "resume":
             return await self._resume(task, ctx)
@@ -39,6 +89,17 @@ class OpenCodeSessionHandler(TaskHandler):
     async def _run(self, task: Task, ctx: ExecutorContext) -> TaskResult:
         client = await self._get_client(task)
         cfg = task.config
+        try:
+            return await self._run_inner(task, ctx, client, cfg)
+        finally:
+            await self._cleanup(task, ctx)
+
+    async def _run_inner(self, task: Task, ctx: ExecutorContext, client, cfg) -> "TaskResult":
+        from app.scheduler.models import TaskResult, TaskStatus
+        log = _task_logger(task.id)
+
+        # Check duration cap (once at start so the user gets a warning early)
+        _check_duration_warn(task, log)
 
         # Create or rejoin session
         session_id = cfg.get("session_id") or ""
@@ -114,7 +175,7 @@ class OpenCodeSessionHandler(TaskHandler):
     # Resume mode — user replied to a permission HITL
     # ------------------------------------------------------------------
 
-    async def _resume(self, task: Task, ctx: ExecutorContext) -> TaskResult:
+    async def _resume(self, task: Task, ctx: ExecutorContext) -> "TaskResult":
         """
         Called after the user replies to a permission HITL.
 
@@ -122,6 +183,12 @@ class OpenCodeSessionHandler(TaskHandler):
           session_id, perm_id, perm_directory, _user_reply
         """
         client = await self._get_client(task)
+        try:
+            return await self._resume_inner(task, ctx, client)
+        finally:
+            await self._cleanup(task, ctx)
+
+    async def _resume_inner(self, task: Task, ctx: ExecutorContext, client) -> "TaskResult":
         cfg = task.config
 
         perm_id = cfg.get("perm_id", "")
@@ -215,6 +282,44 @@ class OpenCodeSessionHandler(TaskHandler):
         await _push_completion_notification(ctx, task, summary)
         return TaskResult(success=True, metrics={"result": summary, "raw": result})
 
+    async def _cleanup(self, task: Task, ctx: ExecutorContext) -> None:
+        """Release resources owned by this task: CubeSandbox VM, per-task OpenCode, etc.
+
+        Called in a finally block so cleanup happens on success, failure, timeout.
+        Only resources marked as owned by THIS task are released — never stops
+        a sandbox that was already running before the task started.
+        """
+        cfg = task.config or {}
+
+        # CubeSandbox VM (only if we started it in this task)
+        if cfg.get("_owned_cube"):
+            cube = cfg.get("_cube_client")
+            if cube:
+                try:
+                    cube.kill()
+                    logger.info("Killed CubeSandbox VM for task %s", task.id)
+                except Exception as e:
+                    logger.warning("CubeSandbox cleanup failed for %s: %s", task.id, e)
+
+        # Per-task OpenCode sandbox (only if start_new=True created it)
+        owned_sandbox = cfg.get("_owned_sandbox")
+        if owned_sandbox:
+            try:
+                from app.sandbox.manager import SandboxManager
+                mgr = SandboxManager()
+                mgr.stop(owned_sandbox)
+                logger.info("Stopped per-task sandbox %s for task %s", owned_sandbox, task.id)
+            except Exception as e:
+                logger.warning("Sandbox cleanup failed for %s: %s", owned_sandbox, e)
+
+        # Best-effort: close the OpenCode HTTP client
+        client = cfg.get("_opencode_client")
+        if client:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
     async def _chain_continue(
         self, task: Task, ctx: ExecutorContext, backend, session_id: str
     ) -> TaskResult:
@@ -299,9 +404,15 @@ class OpenCodeSessionHandler(TaskHandler):
     # Resume question (Question API reply)
     # ------------------------------------------------------------------
 
-    async def _resume_question(self, task: Task, ctx: ExecutorContext) -> TaskResult:
+    async def _resume_question(self, task: Task, ctx: ExecutorContext) -> "TaskResult":
         """Called after the user replies to a Question API HITL."""
         client = await self._get_client(task)
+        try:
+            return await self._resume_question_inner(task, ctx, client)
+        finally:
+            await self._cleanup(task, ctx)
+
+    async def _resume_question_inner(self, task: Task, ctx: ExecutorContext, client) -> "TaskResult":
         cfg = task.config
         qid = cfg.get("question_id", "")
         user_reply = cfg.get("_user_reply") or cfg.get("ext_agent_reply") or cfg.get("reply_to_question", "")
@@ -334,9 +445,10 @@ class OpenCodeSessionHandler(TaskHandler):
         Resolution order:
           1. Explicit opencode_url in task config
           2. sandbox_id/server_id → SandboxManager lookup (meta.json)
-          3. working_dir → auto-discover matching sandbox
-          4. CubeSandbox (if configured)
-          5. First running sandbox found on disk
+          3. working_dir → exact match against running sandboxes ONLY
+          4. start_new=True → spawn a fresh OpenCode in working_dir
+          5. CubeSandbox (if configured)
+          6. Fail loud with clear error (no silent fallback to wrong project)
 
         Returns an OpenCodeClient instance.
         """
@@ -348,67 +460,123 @@ class OpenCodeSessionHandler(TaskHandler):
         # 1. Explicit URL wins
         url = (cfg.get("opencode_url") or "").strip()
         if url:
-            return OpenCodeClient(base_url=url, password=password)
+            client = OpenCodeClient(base_url=url, password=password)
+            cfg["_opencode_client"] = client
+            return client
 
-        # 2 & 3. SandboxManager lookup (by sandbox_id, server_id, or working_dir)
         sandbox_key = (cfg.get("sandbox_id") or cfg.get("server_id") or "").strip()
         working_dir = (cfg.get("working_dir") or "").strip()
+        start_new = bool(cfg.get("start_new", False))
 
-        try:
-            from app.sandbox.manager import SandboxManager
-            mgr = SandboxManager()
-
-            if sandbox_key:
+        # 2. Explicit sandbox_id/server_id → SandboxManager lookup
+        if sandbox_key:
+            try:
+                from app.sandbox.manager import SandboxManager
+                mgr = SandboxManager()
                 entry = mgr.get(sandbox_key)
                 if entry and entry.status == "running":
                     url = f"http://127.0.0.1:{entry.port}"
                     password = entry.password or ""
                     logger.info("Using sandbox %s at %s", sandbox_key, url)
-                    return OpenCodeClient(base_url=url, password=password)
+                    client = OpenCodeClient(base_url=url, password=password)
+                    cfg["_opencode_client"] = client
+                    return client
+                if entry and entry.status != "running":
+                    logger.info("Sandbox %s exists but is %s; will start fresh", sandbox_key, entry.status)
+            except Exception as e:
+                logger.warning("SandboxManager lookup for %s failed: %s", sandbox_key, e)
 
-            # 3. Auto-discover by working_dir basename
-            if working_dir and not url:
-                import os as _os
-                target_name = _os.path.basename(working_dir.rstrip("/"))
-                for entry in mgr.list():
-                    if entry.status != "running" or entry.agent_type != "opencode":
-                        continue
-                    if target_name in entry.sandbox_id or target_name in (entry.working_dir or ""):
-                        url = f"http://127.0.0.1:{entry.port}"
-                        password = entry.password or ""
-                        logger.info("Auto-discovered sandbox %s at %s", entry.sandbox_id, url)
-                        return OpenCodeClient(base_url=url, password=password)
+        # 3. EXACT working_dir match against running sandboxes — no fuzzy match
+        if working_dir and not start_new:
+            try:
+                from app.sandbox.manager import SandboxManager
+                mgr = SandboxManager()
+                normalized = working_dir.rstrip("/")
+                matches = [
+                    e for e in mgr.list()
+                    if e.status == "running"
+                    and e.agent_type == "opencode"
+                    and (e.working_dir or "").rstrip("/") == normalized
+                ]
+                if len(matches) == 1:
+                    entry = matches[0]
+                    url = f"http://127.0.0.1:{entry.port}"
+                    password = entry.password or ""
+                    logger.info("Matched working_dir to sandbox %s at %s", entry.sandbox_id, url)
+                    client = OpenCodeClient(base_url=url, password=password)
+                    cfg["_opencode_client"] = client
+                    return client
+                if len(matches) > 1:
+                    raise RuntimeError(
+                        f"Multiple running sandboxes match working_dir={working_dir}. "
+                        "Specify sandbox_id explicitly to disambiguate."
+                    )
+                # No match — fall through to either start_new or error
+            except RuntimeError:
+                raise
+            except Exception as e:
+                logger.warning("SandboxManager working_dir lookup failed: %s", e)
 
-            # 5. First running opencode sandbox
-            if not url:
-                for entry in mgr.list():
-                    if entry.status == "running" and entry.agent_type == "opencode":
-                        url = f"http://127.0.0.1:{entry.port}"
-                        password = entry.password or ""
-                        logger.info("Using first available sandbox %s at %s", entry.sandbox_id, url)
-                        return OpenCodeClient(base_url=url, password=password)
-        except Exception as e:
-            logger.warning("SandboxManager lookup failed: %s", e)
+        # 4. start_new=True → spawn a fresh per-task OpenCode in working_dir
+        if start_new and working_dir:
+            try:
+                from app.sandbox.manager import SandboxManager
+                mgr = SandboxManager()
+                sandbox_id = f"task-{task.id}"
+                entry = mgr.create_or_get(
+                    sandbox_id=sandbox_id,
+                    working_dir=working_dir,
+                    agent_type="opencode",
+                )
+                entry = mgr.start(sandbox_id)
+                cfg["sandbox_id"] = sandbox_id
+                cfg["_owned_sandbox"] = sandbox_id  # mark for cleanup
+                url = f"http://127.0.0.1:{entry.port}"
+                password = entry.password or ""
+                logger.info("Started fresh per-task sandbox %s at %s", sandbox_id, url)
+                client = OpenCodeClient(base_url=url, password=password)
+                cfg["_opencode_client"] = client
+                return client
+            except Exception as e:
+                logger.error("Failed to start per-task OpenCode in %s: %s", working_dir, e)
+                raise
 
-        # 4. CubeSandbox (if configured and use_sandbox isn't False)
+        # 5. CubeSandbox (if configured and use_sandbox isn't False)
         if cfg.get("use_sandbox", True):
             try:
                 from app.scheduler.sandbox.cubesandbox_client import CubeSandboxClient
                 cs_client = CubeSandboxClient(template_id=cfg.get("sandbox_template"))
                 cs_client.start()
                 cfg["_cube_client"] = cs_client
+                cfg["_owned_cube"] = True  # mark for cleanup
                 if working_dir:
                     cs_client.upload_project(working_dir)
                 url = cs_client.get_opencode_url()
                 logger.info("CubeSandbox booted for task %s: url=%s", task.id, url)
-                return OpenCodeClient(base_url=url)
+                client = OpenCodeClient(base_url=url)
+                cfg["_opencode_client"] = client
+                return client
             except Exception as e:
                 logger.warning("CubeSandbox unavailable (%s)", e)
 
-        # Last resort
-        url = "http://localhost:4173"
-        logger.warning("No OpenCode server found, defaulting to %s", url)
-        return OpenCodeClient(base_url=url, password=password)
+        # 6. No working_dir and no sandbox_key — if start_new not set, allow localhost fallback
+        if not working_dir and not sandbox_key:
+            url = f"http://localhost:{os.getenv("OPENCODE_PORT", "4173")}"
+            logger.warning(
+                "No working_dir or sandbox_id; defaulting to %s. "
+                "Pass start_new=True + working_dir to spawn a fresh OpenCode.",
+                url,
+            )
+            client = OpenCodeClient(base_url=url, password=password)
+            cfg["_opencode_client"] = client
+            return client
+
+        # 7. working_dir was given but no sandbox matched and start_new not set
+        raise RuntimeError(
+            f"No running sandbox matches working_dir={working_dir!r}. "
+            f"Either start a sandbox for this dir (set start_new=True in config) "
+            f"or pass opencode_url explicitly."
+        )
 
     async def _sse_first_permission(self, client, session_id: str):
         """
