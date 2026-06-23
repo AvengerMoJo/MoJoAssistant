@@ -342,7 +342,15 @@ def _validate_embedding_model(model_name: str, model_config: Dict[str, Any]) -> 
                 if not isinstance(dim, int) or dim <= 0:
                     errors.append(f"Random model '{model_name}' has invalid embedding_dim (must be positive integer)")
         
-        elif backend not in ["huggingface", "api", "local", "random"]:
+        elif backend == "openai_api":
+            if "model_name" not in model_config:
+                errors.append(f"OpenAI API model '{model_name}' missing 'model_name' field")
+            api_key = model_config.get("api_key", "")
+            if not api_key or api_key.startswith("YOUR_"):
+                if not os.getenv("OPENAI_API_KEY"):
+                    errors.append(f"OpenAI API model '{model_name}' missing api_key (set api_key in config or OPENAI_API_KEY env var)")
+        
+        elif backend not in ["huggingface", "api", "local", "random", "openai_api"]:
             errors.append(f"Model '{model_name}' has unsupported backend '{backend}'")
     
     # Validate embedding_dim if present
@@ -409,7 +417,7 @@ Required Structure:
 }
 
 Embedding Model Fields:
-- backend: "huggingface" | "api" | "local" | "random" (required)
+- backend: "huggingface" | "api" | "local" | "random" | "openai_api" (required)
 - model_name: string (required for huggingface/api)
 - embedding_dim: positive integer (required for random)
 - device: "cpu" | "cuda" | "auto" (optional, for huggingface)
