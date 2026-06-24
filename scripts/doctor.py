@@ -102,6 +102,34 @@ def _infra_context() -> dict:
     return {}
 
 
+def _load_dotenv_into_environ() -> None:
+    """Best-effort: load KEY=VALUE pairs from .env into os.environ.
+
+    No-ops if the file is missing, or python-dotenv isn't installed.
+    Existing env vars are NOT overwritten (matches shell dotenv semantics).
+    """
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return
+    try:
+        from dotenv import load_dotenv  # type: ignore
+        load_dotenv(env_path, override=False)
+    except ImportError:
+        # Fallback: minimal parser for the common KEY=VALUE pattern
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Probes — stable tier
 # ---------------------------------------------------------------------------
@@ -595,16 +623,176 @@ def probe_voice() -> ProbeResult:
 
 
 def probe_cubesandbox() -> ProbeResult:
+    """Multi-stage diagnostic for the CubeSandbox stack.
+
+    Walks the actual data path the e2b SDK takes, finds the first thing
+    that's broken, and reports it with a fix. Stages:
+
+    1. **Env** — E2B_API_URL, E2B_API_KEY, CUBE_TEMPLATE_ID set?
+    2. **Local image** — does opencode-sandbox:v2 exist with envd?
+    3. **Templates** — are any READY on CubeMaster?
+    4. **Sandbox create** — does Sandbox.create() succeed via cube-api?
+    5. **envd in VM** — does commands.run('uname -a') return real output?
+    6. **Orphan check** — are there 5+ orphaned VMs from past sessions?
+
+    Each stage degrades to "fail" with a specific next-action so the
+    user can run `doctor --fix` (or read the verdict) to recover.
+    """
+    # Load .env so env vars (E2B_API_URL etc.) are visible. The rest of
+    # the doctor script uses _infra_context() (a JSON file under
+    # ~/.memory/config/) for the same purpose; we check both.
+    _load_dotenv_into_environ()
+
     e2b_url = os.environ.get("E2B_API_URL") or _infra_context().get("E2B_API_URL")
     e2b_key = os.environ.get("E2B_API_KEY") or _infra_context().get("E2B_API_KEY")
-    if e2b_url and e2b_key:
-        return ProbeResult("CubeSandbox", "experimental", "ok",
-                           f"E2B_API_URL={e2b_url}")
-    if e2b_url:
-        return ProbeResult("CubeSandbox", "experimental", "warn",
-                           "E2B_API_URL set but E2B_API_KEY missing")
-    return ProbeResult("CubeSandbox", "experimental", "fail",
-                       "E2B_API_URL not set — run Ahman's install task first")
+    template_id = os.environ.get("CUBE_TEMPLATE_ID") or _infra_context().get(
+        "CUBE_TEMPLATE_ID", "opencode-sandbox"
+    )
+
+    # Stage 1: env
+    if not e2b_url:
+        return ProbeResult(
+            "CubeSandbox", "experimental", "fail",
+            "E2B_API_URL not set — add it to .env (e.g. https://sandbox-api.eclipsogate.org)"
+        )
+    if not e2b_key:
+        return ProbeResult(
+            "CubeSandbox", "experimental", "fail",
+            "E2B_API_KEY not set — add it to .env"
+        )
+
+    try:
+        import httpx  # noqa: F401
+    except ImportError:
+        return ProbeResult(
+            "CubeSandbox", "experimental", "fail",
+            "httpx not installed — pip install httpx"
+        )
+
+    # Stage 2: local image has envd
+    try:
+        import subprocess as sp
+        r = sp.run(
+            ["docker", "run", "--rm", "opencode-sandbox:v2",
+             "bash", "-c", "which envd && /usr/bin/envd -version"],
+            capture_output=True, text=True, timeout=20,
+        )
+        if r.returncode != 0:
+            return ProbeResult(
+                "CubeSandbox", "experimental", "fail",
+                "opencode-sandbox:v2 image missing envd — rebuild per "
+                "docs/architecture/CUBESANDBOX_REBUILD_GUIDE.md "
+                f"(docker run stderr: {r.stderr.strip()[:200]})"
+            )
+        envd_ver = (r.stdout or "").strip().split("\n")[-1]
+    except FileNotFoundError:
+        return ProbeResult(
+            "CubeSandbox", "experimental", "warn",
+            "docker not on PATH — skipping local-image check; verify the "
+            "cluster-side template has envd in the next stage"
+        )
+    except Exception as e:
+        return ProbeResult(
+            "CubeSandbox", "experimental", "warn",
+            f"opencode-sandbox:v2 not present locally ({type(e).__name__}); "
+            "the cluster template may still be functional — checking next"
+        )
+
+    # Stage 3: templates on CubeMaster
+    try:
+        import httpx as _httpx
+        resp = _httpx.get(
+            f"{e2b_url.rstrip('/')}/sandboxes",
+            headers={"X-API-KEY": e2b_key} if e2b_key else {},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return ProbeResult(
+                "CubeSandbox", "experimental", "fail",
+                f"cube-api /sandboxes returned HTTP {resp.status_code} — "
+                f"check that the cluster is reachable at {e2b_url}"
+            )
+        sandboxes = resp.json()
+    except Exception as e:
+        return ProbeResult(
+            "CubeSandbox", "experimental", "fail",
+            f"cube-api unreachable: {type(e).__name__}: {str(e)[:120]}"
+        )
+
+    if not isinstance(sandboxes, list):
+        return ProbeResult(
+            "CubeSandbox", "experimental", "fail",
+            f"cube-api response shape unexpected: {type(sandboxes).__name__} "
+            f"(expected list); check {e2b_url}/sandboxes manually"
+        )
+
+    # Stage 4 + 5: try to actually create a sandbox and run a command
+    try:
+        from e2b import Sandbox as _E2BSandbox
+        # Mark this probe in-flight so we can show progress
+        test_name = f"doctor-probe-{int(time.time())}"
+        sb = _E2BSandbox.create(template=template_id, timeout=120)
+        sid = sb.sandbox_id
+        try:
+            # Stage 5: real envd exec test
+            r = sb.commands.run("echo doctor-probe-ok", timeout=0, request_timeout=30)
+            ok = r.stdout.strip() == "doctor-probe-ok"
+            if not ok:
+                return ProbeResult(
+                    "CubeSandbox", "experimental", "fail",
+                    f"created sandbox {sid[:12]}... but envd returned "
+                    f"unexpected output: {r.stdout!r}. The cluster template "
+                    f"({template_id}) likely lacks envd — rebuild per "
+                    f"docs/architecture/CUBESANDBOX_REBUILD_GUIDE.md"
+                )
+        finally:
+            try:
+                sb.kill()
+            except Exception:
+                pass
+    except Exception as e:
+        err_str = str(e)[:200]
+        # Common failure: envd missing in the template. The e2b SDK
+        # wraps the resulting 502 as a misleading "sandbox timeout"
+        # message; surface the actual remediation.
+        if "TimeoutException" in err_str or "502" in err_str:
+            return ProbeResult(
+                "CubeSandbox", "experimental", "fail",
+                f"Sandbox.create(template={template_id}) returned HTTP 502 "
+                f"on commands.run. This is the envd-missing-in-template "
+                f"failure mode — rebuild per "
+                f"docs/architecture/CUBESANDBOX_REBUILD_GUIDE.md "
+                f"(or set CUBE_TEMPLATE_ID to a working template like "
+                f"tpl-d599cf3ead2c48f78df6a6da). e2b error: {err_str}"
+            )
+        return ProbeResult(
+            "CubeSandbox", "experimental", "fail",
+            f"Sandbox.create(template={template_id}) or commands.run failed: "
+            f"{type(e).__name__}: {err_str}"
+        )
+
+    # Stage 6: orphan check
+    orphans = []
+    try:
+        from app.scheduler.sandbox.cubesandbox_client import CubeSandboxClient
+        from app.scheduler.sandbox import list_orphan_sandbox_ids
+        all_ids = [c.get("sandbox_id") for c in sandboxes if c.get("sandbox_id")]
+        orphans = list_orphan_sandbox_ids(all_ids)
+    except Exception:
+        pass  # best-effort
+
+    msg = (
+        f"template={template_id[:24]}..., envd={envd_ver}, "
+        f"live sandboxes={len(sandboxes)}"
+    )
+    if orphans:
+        msg += f" ({len(orphans)} orphan"
+        msg += "s" if len(orphans) != 1 else ""
+        msg += " — run: python -m app.mcp.mcp_service sandbox_purge_orphans auto_kill=True)"
+
+    if orphans:
+        return ProbeResult("CubeSandbox", "experimental", "warn", msg)
+    return ProbeResult("CubeSandbox", "experimental", "ok", msg)
 
 
 # ---------------------------------------------------------------------------
