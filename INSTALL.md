@@ -156,6 +156,69 @@ claude --mcp-config /path/to/mojo-mcp.json
 
 Where `mojo-mcp.json` contains the same server definition. A pre-built example is at `config/claude_desktop_config.json`.
 
+## Optional Plugins
+
+### Discord Community Bot
+
+MoJoAssistant can run a Discord bot that answers community support questions using the role-chat backend.
+
+**Required env vars** (add to `.env`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENABLE_DISCORD_BOT` | `false` | Set `true` to start the bot with the main service |
+| `DISCORD_BOT_TOKEN` | — | Bot token from [Discord Developer Portal](https://discord.com/developers/applications) |
+| `DISCORD_COMMUNITY_ROLE_ID` | `community_host` | MoJo role that answers questions |
+| `DISCORD_MENTION_ONLY` | `true` | Only respond when @mentioned |
+| `DISCORD_MAX_PROMPT_CHARS` | `2000` | Max characters accepted per message |
+
+**Quick setup:**
+
+1. Create a bot at https://discord.com/developers/applications and copy the token
+2. Add the env vars above to `.env`
+3. Copy the role template:
+   ```bash
+   mkdir -p ~/.memory/config/roles
+   cp config/examples/roles/community_host.example.json ~/.memory/config/roles/community_host.json
+   ```
+4. Restart MoJoAssistant
+
+See `docs/integrations/DISCORD_COMMUNITY_ASSISTANT_SPEC.md` for the full security model and operational rules.
+
+### tmux Terminal MCP
+
+Persistent terminal sessions for agents — run commands, manage windows, read output.
+
+**Requirements:** tmux + Rust toolchain (cargo)
+
+```bash
+sudo apt install tmux          # or: brew install tmux
+cargo install tmux-mcp-rs
+```
+
+Enabled by default in `config/mcp_servers.json`. See `docs/guides/TMUX_MCP_SETUP.md` for full setup and troubleshooting.
+
+### Browser MCP (Playwright or Webwright)
+
+Browser automation for agents — two backends available:
+
+| Backend | Style | Install |
+|---|---|---|
+| **Playwright MCP** | Step-by-step (click, type, snapshot) | `npm install -g @playwright/mcp && npx playwright install chromium` |
+| **Webwright** | Code-as-action (agent writes scripts) | `pip install webwright && playwright install chromium` |
+
+Playwright is enabled by default. Webwright is available as an alternative — both share the `browser` tool category. See `docs/guides/BROWSER_MCP_SETUP.md` for choosing between them.
+
+### Google Workspace
+
+Calendar, Drive, Gmail via the `gws` CLI. See `docs/guides/GOOGLE_WORKSPACE_SETUP.md`.
+
+### ntfy Push Notifications
+
+Push alerts to your phone. See `docs/guides/NOTIFICATIONS_SETUP.md`.
+
+---
+
 ## Feature Surface: Stable vs Experimental
 
 Every feature is labelled so you know what works on a clean install and what needs extra setup.
@@ -179,6 +242,11 @@ Every feature is labelled so you know what works on a clean install and what nee
 |---|---|
 | Agent execution | LLM reachable at configured endpoint (LM Studio, Ollama, OpenRouter) |
 | Coding agent bridge | `claude` or `opencode` binary in PATH |
+| Terminal tools (tmux) | `tmux` + `cargo install tmux-mcp-rs` — see `docs/guides/TMUX_MCP_SETUP.md` |
+| Browser tools | Playwright (`npx @playwright/mcp@latest`) or Webwright (`pip install webwright`) — see `docs/guides/BROWSER_MCP_SETUP.md` |
+| Discord community bot | `DISCORD_BOT_TOKEN` in `.env` — see Discord section above |
+| Google Workspace | `gcloud` + `gws` CLI — see `docs/guides/GOOGLE_WORKSPACE_SETUP.md` |
+| ntfy notifications | ntfy.sh account or self-hosted instance — see `docs/guides/NOTIFICATIONS_SETUP.md` |
 | Voice pipeline | `mojo-voice` submodule configured |
 | CubeSandbox | `E2B_API_URL` + `E2B_API_KEY` in env or `infra_context.json` |
 | Cloudflared tunnel | `cloudflared` installed, for remote Claude.ai access |

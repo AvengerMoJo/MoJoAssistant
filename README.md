@@ -331,6 +331,15 @@ Configure them in `config/mcp_servers.json` (system defaults) or
 Two transport modes: `stdio` (MoJo spawns the process) and `http` (connect to a running server).
 The preflight checker validates required binaries (`tmux`, `node`, `cargo`) before install.
 
+**Browser automation — pick your backend:**
+
+| Backend | Style | Install |
+|---|---|---|
+| Playwright MCP (default) | Step-by-step browser control | `npx @playwright/mcp@latest` |
+| [Webwright](https://github.com/microsoft/Webwright) | Code-as-action (agent writes scripts) | `pip install webwright` |
+
+Both share the `browser` tool category — enable one or both. See `docs/guides/BROWSER_MCP_SETUP.md`.
+
 ---
 
 ## Documentation
@@ -346,6 +355,9 @@ The preflight checker validates required binaries (`tmux`, `node`, `cargo`) befo
 - [Resource Pool Onboarding](docs/guides/RESOURCE_POOL_ACCOUNT_ONBOARDING.md)
 - [Notifications Setup](docs/guides/NOTIFICATIONS_SETUP.md)
 - [Google Workspace Setup](docs/guides/GOOGLE_WORKSPACE_SETUP.md)
+- [tmux MCP Setup](docs/guides/TMUX_MCP_SETUP.md) — terminal tools for agents
+- [Browser MCP Setup](docs/guides/BROWSER_MCP_SETUP.md) — Playwright vs Webwright
+- [Discord Community Assistant](docs/integrations/DISCORD_COMMUNITY_ASSISTANT_SPEC.md)
 
 ### Architecture
 - [System Overview](docs/architecture/SYSTEM_README.md)
@@ -443,15 +455,17 @@ and PII scanning are production-ready for personal use.
 - Agent execution on local models (Qwen, Gemma — tool-calling reliability varies)
 - OpenAI-compatible proxy (`/v1/models`, `/v1/chat/completions`)
 - Coding agent integration (OpenCode, Claude Code, CubeSandbox-backed sessions)
-- External MCP servers (tmux terminal, Playwright browser)
+- External MCP servers (tmux terminal, Playwright/Webwright browser)
 - Google Workspace integration (Calendar, Drive, Gmail)
+- Discord community bot
 - agency-agents persona import (184 personas)
 
 **Requires additional setup:**
-- tmux terminal tools (requires tmux installed)
-- Playwright browser tools (requires `npx @playwright/mcp@latest`)
-- Google Workspace (requires OAuth setup)
-- ntfy push notifications (requires ntfy.sh or self-hosted instance)
+- tmux terminal tools (requires tmux + `cargo install tmux-mcp-rs`) — see `docs/guides/TMUX_MCP_SETUP.md`
+- Browser tools — Playwright (`npx @playwright/mcp@latest`) or Webwright (`pip install webwright`) — see `docs/guides/BROWSER_MCP_SETUP.md`
+- Discord community bot (requires `DISCORD_BOT_TOKEN`) — see `docs/integrations/DISCORD_COMMUNITY_ASSISTANT_SPEC.md`
+- Google Workspace (requires `gcloud` + `gws` CLI) — see `docs/guides/GOOGLE_WORKSPACE_SETUP.md`
+- ntfy push notifications (requires ntfy.sh or self-hosted instance) — see `docs/guides/NOTIFICATIONS_SETUP.md`
 
 ---
 

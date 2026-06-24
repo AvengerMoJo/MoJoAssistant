@@ -82,6 +82,21 @@
       "category": "google",
       "enabled": false,
       "comment": "port shorthand → http://localhost:3200/mcp. Start the gws MCP server separately."
+    },
+    "webwright": {
+      "id": "webwright",
+      "name": "Webwright (code-as-action browser agent)",
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "webwright.run.cli", "--mcp"],
+      "category": "browser",
+      "enabled": false,
+      "install_hint": "pip install webwright && playwright install chromium",
+      "requires": [
+        {"binary": "python"},
+        {"binary": "playwright"}
+      ],
+      "comment": "Alternative to Playwright MCP. Agent writes Playwright scripts instead of step-by-step commands. See docs/guides/BROWSER_MCP_SETUP.md. Same category as Playwright — enable one or both."
     }
   }
 }
