@@ -78,7 +78,7 @@ class DiscordHITLAdapter(HITLAdapter):
             for task in waiting:
                 if not task.pending_question:
                     continue
-                choices = task.config.get("pending_choices") or []
+                choices = task.config.get("pending_options") or task.config.get("pending_choices") or []
                 if task.id not in {tid for tid, _ in self._pending.values()}:
                     logger.info("[hitl/discord] catch-up: notifying task %s", task.id)
                     await self.send_hitl(task.id, task.pending_question, choices)

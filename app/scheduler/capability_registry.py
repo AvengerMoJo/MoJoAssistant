@@ -285,6 +285,24 @@ class CapabilityRegistry:
                 }, "required": ["query"]},
             ),
             CapabilityDefinition(
+                name="task_complete",
+                description=(
+                    "Signal that your task is fully done and provide your final answer. "
+                    "Call this instead of writing <FINAL_ANSWER> tags. "
+                    "Use 'answer' for a concise summary of what was accomplished. "
+                    "Do NOT call this until the work is genuinely complete — "
+                    "all required files written, all required actions taken."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "answer": {
+                        "type": "string",
+                        "description": "Summary of what was accomplished and any key results.",
+                    },
+                }, "required": ["answer"]},
+            ),
+            CapabilityDefinition(
                 name="bash_exec",
                 description=(
                     "Run shell commands on this machine. Accepts a single command string "

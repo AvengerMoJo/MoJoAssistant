@@ -22,7 +22,9 @@ from app.scheduler.sandbox.base import (
     SandboxBackend,
     SandboxHandle,
     delete_handle,
+    find_by_sandbox_id,
     list_handles,
+    list_orphan_sandbox_ids,
     load_handle,
     store_handle,
 )
@@ -42,8 +44,10 @@ __all__ = [
     "SandboxHandle",
     "SandboxRegistry",
     "delete_handle",
+    "find_by_sandbox_id",
     "list_backends",
     "list_handles",
+    "list_orphan_sandbox_ids",
     "load_handle",
     "store_handle",
 ]

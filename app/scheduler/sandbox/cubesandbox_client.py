@@ -234,3 +234,188 @@ class CubeSandboxClient:
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
+
+    # ------------------------------------------------------------------
+    #  Orphan / kill-by-id path (recovery for VMs not in our registry) #
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def kill_by_id(sandbox_id: str) -> Dict[str, Any]:
+        """Force-kill a microVM by its cube-id, even when we never held a handle.
+
+        Two kill paths, tried in order:
+          1. e2b SDK: ``Sandbox.connect(sandbox_id).kill()``  (preferred)
+          2. HTTP fallback: ``DELETE $E2B_API_URL/sandboxes/{id}``  (works
+             even when the e2b SDK is not installed or its ``Sandbox.connect``
+             method is missing in older versions)
+
+        This is the recovery path for the 5-stranded-VM class of bug: a
+        microVM exists on CubeMaster but the local ``sandbox_sessions.json``
+        has no record of it (handle_store write failed or was wiped).
+
+        Returns a dict ``{killed, sandbox_id, error, path}`` — never raises
+        so the MCP caller can iterate over a list of orphans safely.
+        """
+        if not sandbox_id:
+            return {"killed": False, "sandbox_id": None, "error": "sandbox_id is required", "path": None}
+        if not os.getenv("E2B_API_URL") or not os.getenv("E2B_API_KEY"):
+            return {
+                "killed": False,
+                "sandbox_id": sandbox_id,
+                "error": "E2B_API_URL and E2B_API_KEY must be set",
+                "path": None,
+            }
+
+        # Path 1: e2b SDK
+        try:
+            from e2b import Sandbox
+            attached = Sandbox.connect(sandbox_id)
+            attached.kill()
+            logger.info("CubeSandbox.kill_by_id: killed %s via e2b SDK", sandbox_id)
+            return {
+                "killed": True,
+                "sandbox_id": sandbox_id,
+                "error": None,
+                "path": "e2b_sdk",
+            }
+        except ImportError:
+            logger.debug("CubeSandbox.kill_by_id: e2b SDK not installed, trying HTTP")
+        except Exception as e:
+            logger.warning(
+                "CubeSandbox.kill_by_id: e2b SDK failed (%s), trying HTTP fallback",
+                e,
+            )
+
+        # Path 2: HTTP DELETE
+        try:
+            import httpx
+            api_url = os.getenv("E2B_API_URL", "").rstrip("/")
+            api_key = os.getenv("E2B_API_KEY", "")
+            for path in (f"/sandboxes/{sandbox_id}", f"/cube/sandbox/{sandbox_id}"):
+                resp = httpx.delete(
+                    f"{api_url}{path}",
+                    headers={"X-API-KEY": api_key} if api_key else {},
+                    timeout=15,
+                )
+                if resp.status_code in (200, 204):
+                    logger.info(
+                        "CubeSandbox.kill_by_id: killed %s via HTTP %s %s",
+                        sandbox_id, "DELETE", path,
+                    )
+                    return {
+                        "killed": True,
+                        "sandbox_id": sandbox_id,
+                        "error": None,
+                        "path": f"http_delete:{path}",
+                    }
+                if resp.status_code == 404:
+                    # Already gone — treat as success
+                    logger.info(
+                        "CubeSandbox.kill_by_id: %s already gone (HTTP 404 on %s)",
+                        sandbox_id, path,
+                    )
+                    return {
+                        "killed": True,
+                        "sandbox_id": sandbox_id,
+                        "error": None,
+                        "path": f"http_delete_404:{path}",
+                    }
+            return {
+                "killed": False,
+                "sandbox_id": sandbox_id,
+                "error": "All HTTP kill paths returned non-success",
+                "path": "http_delete",
+            }
+        except Exception as e:
+            logger.error("CubeSandbox.kill_by_id(%s) HTTP fallback failed: %s", sandbox_id, e)
+            return {
+                "killed": False,
+                "sandbox_id": sandbox_id,
+                "error": f"{type(e).__name__}: {e}",
+                "path": "http_delete",
+            }
+
+    @staticmethod
+    def list_cubemaster_sandboxes() -> list[Dict[str, Any]]:
+        """Enumerate every microVM CubeMaster currently has on file.
+
+        Talks to ``$E2B_API_URL`` via HTTP. Different CubeSandbox deployments
+        expose different paths, so we try them in order:
+          1. ``/sandboxes``  (e2b / CubeSandbox cloud)
+          2. ``/cube/sandbox/list``  (legacy / one-click deploy)
+          3. ``/cube/sandboxes``     (alt)
+
+        Returns the JSON list as plain dicts — caller decides which are
+        orphans via ``list_orphan_sandbox_ids``.
+
+        Used by the ``sandbox_purge_orphans`` MCP tool.
+        """
+        api_url = os.getenv("E2B_API_URL", "").rstrip("/")
+        api_key = os.getenv("E2B_API_KEY", "")
+        if not api_url:
+            return []
+        try:
+            import httpx
+        except ImportError:
+            return []
+        candidates = ["/sandboxes", "/cube/sandbox/list", "/cube/sandboxes"]
+        for path in candidates:
+            try:
+                resp = httpx.get(
+                    f"{api_url}{path}",
+                    headers={"X-API-KEY": api_key} if api_key else {},
+                    timeout=15,
+                )
+            except Exception as e:
+                logger.debug("list_cubemaster_sandboxes: %s failed: %s", path, e)
+                continue
+            if resp.status_code != 200:
+                continue
+            try:
+                data = resp.json()
+            except Exception as e:
+                logger.debug("list_cubemaster_sandboxes: %s bad JSON: %s", path, e)
+                continue
+            if isinstance(data, list):
+                logger.info(
+                    "list_cubemaster_sandboxes: hit %s (%d items)", path, len(data)
+                )
+                return [CubeSandboxClient._normalize_sandbox(c) for c in data]
+            for key in ("data", "sandboxes", "items"):
+                if isinstance(data, dict) and isinstance(data.get(key), list):
+                    items = data[key]
+                    logger.info(
+                        "list_cubemaster_sandboxes: hit %s (key=%s, %d items)",
+                        path, key, len(items),
+                    )
+                    return [CubeSandboxClient._normalize_sandbox(c) for c in items]
+        logger.warning(
+            "list_cubemaster_sandboxes: none of %s responded with a list", candidates
+        )
+        return []
+
+    @staticmethod
+    def _normalize_sandbox(raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize CubeSandbox / e2b response shape into snake_case.
+
+        The cloud e2b API returns camelCase (``sandboxID``); the on-prem
+        cube-api returns snake_case (``sandbox_id``). Other deployments
+        may differ. We pick whichever is non-empty and pass through.
+        """
+        sid = (
+            raw.get("sandbox_id")
+            or raw.get("sandboxID")
+            or raw.get("id")
+        )
+        return {
+            "sandbox_id": sid,
+            "host_ip": raw.get("host_ip") or raw.get("clientID") or raw.get("client_id"),
+            "sandbox_ip": raw.get("sandbox_ip"),
+            "create_at": raw.get("create_at") or raw.get("startedAt"),
+            "end_at": raw.get("end_at") or raw.get("endAt"),
+            "template_id": raw.get("template_id") or raw.get("templateID"),
+            "cpu_count": raw.get("cpu_count") or raw.get("cpuCount"),
+            "memory_mb": raw.get("memory_mb") or raw.get("memoryMB"),
+            "metadata": raw.get("metadata", {}),
+            "raw": raw,
+        }

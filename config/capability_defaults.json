@@ -14,7 +14,8 @@
     "  Same schema. Keys in personal config are merged/override system values."
   ],
   "always_available": [
-    "ask_user"
+    "ask_user",
+    "task_complete"
   ],
   "agent_defaults": [
     "knowledge",

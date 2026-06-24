@@ -74,6 +74,12 @@ class CubeSandboxBackend(SandboxBackend):
         client = self._client_for(task_id)
         sandbox_id = client.start()
         url = client.get_opencode_url()
+        # Provenance kwargs — passed by the handler from task.config so the
+        # sandbox can be associated with the role/parent/environment that
+        # created it (orphan-recovery + dashboard grouping).
+        role_id = kwargs.get("role_id")
+        parent_task_id = kwargs.get("parent_task_id")
+        environment = kwargs.get("environment")
         handle = SandboxHandle(
             task_id=task_id,
             backend=self.name,
@@ -82,6 +88,9 @@ class CubeSandboxBackend(SandboxBackend):
             state="running",
             working_dir=working_dir,
             log_path=str(self._session_log_path(task_id, sandbox_id)),
+            role_id=role_id,
+            parent_task_id=parent_task_id,
+            environment=environment,
         )
         if working_dir and Path(working_dir).is_dir():
             try:
