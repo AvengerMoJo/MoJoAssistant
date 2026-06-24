@@ -130,19 +130,26 @@ def cubesandbox_create(args: Dict[str, Any]) -> Dict[str, Any]:
 def cubesandbox_exec(args: Dict[str, Any]) -> Dict[str, Any]:
     """Execute a shell command inside the microVM registered as ``name``.
 
-    Required: ``name``, ``command``. Returns ``{"success": true, "stdout":
-    ..., "stderr": ..., "exit_code": int}`` on completion. The command
-    runs as the VM's default user (the OpenCode template runs as root
-    in the microVM) and has no host-filesystem access — the host
-    secrets at ``~/.ssh``, ``~/.aws``, ``~/.memory`` are physically
-    unreachable from inside the VM.
+    Required: ``name``, ``command``. Optional: ``timeout`` (seconds,
+    default 60). Returns ``{"success": true, "stdout": ..., "stderr":
+    ..., "exit_code": int}`` on completion. The command runs as the
+    VM's default user (the OpenCode template runs as root in the
+    microVM) and has no host-filesystem access — the host secrets at
+    ``~/.ssh``, ``~/.aws``, ``~/.memory`` are physically unreachable
+    from inside the VM.
 
-    Failures (VM not running, E2B timeout) return
+    For long-running commands the agent should split them into smaller
+    pieces (e.g. ``cubesandbox_exec(name="x", command="npm install")``
+    followed by separate calls for the next steps) so the 60-second
+    default timeout doesn't fire on big builds.
+
+    Failures (VM not running, e2b timeout) return
     ``{"success": false, "error": ...}`` without raising so the agentic
     loop can recover gracefully.
     """
     name = (args.get("name") or "").strip()
     command = args.get("command")
+    timeout = int(args.get("timeout", 60))
     if not name or not command:
         return {"success": False, "error": "name and command are required"}
 
@@ -155,15 +162,28 @@ def cubesandbox_exec(args: Dict[str, Any]) -> Dict[str, Any]:
         }
     client = entry["client"]
     try:
-        proc = client._sandbox.process.start(command)
-        out = proc.wait()
+        # e2b SDK 2.x: shell exec via client.commands.run(cmd). The
+        # `timeout` parameter is the command-connection timeout (not
+        # wallclock). Pass timeout=0 to disable the cap; the agent
+        # should use background=True + handle.wait() for long commands
+        # but the synchronous case is the common one for a coding
+        # agent running build/test commands.
+        # `request_timeout` controls the HTTP round-trip — set it
+        # explicitly so it doesn't inherit the sandbox default.
+        request_timeout = max(timeout + 30, 60)
+        result = client._sandbox.commands.run(
+            command,
+            background=False,
+            timeout=0,           # 0 = no command-connection timeout
+            request_timeout=float(request_timeout),
+        )
         return {
             "success": True,
             "name": name,
             "sandbox_id": client.sandbox_id,
-            "stdout": getattr(out, "stdout", "") or "",
-            "stderr": getattr(out, "stderr", "") or "",
-            "exit_code": getattr(out, "exit_code", 0),
+            "stdout": getattr(result, "stdout", "") or "",
+            "stderr": getattr(result, "stderr", "") or "",
+            "exit_code": getattr(result, "exit_code", 0),
         }
     except Exception as e:
         return {"success": False, "error": f"{type(e).__name__}: {e}"}

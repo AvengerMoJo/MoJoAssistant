@@ -130,13 +130,12 @@ class TestCubesandboxExec:
             cubesandbox_create, cubesandbox_exec,
         )
 
+        # e2b SDK 2.x: client.commands.run(cmd) returns a CommandResult
+        # synchronously. Set up the mock to return one.
         fake_sandbox = MagicMock()
         fake_sandbox.sandbox_id = "fake-vm-exec"
-        fake_proc = MagicMock()
-        fake_proc.wait.return_value = MagicMock(
-            stdout="hello\n", stderr="", exit_code=0
-        )
-        fake_sandbox.process.start.return_value = fake_proc
+        fake_result = MagicMock(stdout="hello\n", stderr="", exit_code=0)
+        fake_sandbox.commands.run.return_value = fake_result
 
         with patch("e2b.Sandbox") as MockSandbox:
             MockSandbox.create.return_value = fake_sandbox
@@ -146,6 +145,7 @@ class TestCubesandboxExec:
         assert er["success"]
         assert er["stdout"] == "hello\n"
         assert er["exit_code"] == 0
+        fake_sandbox.commands.run.assert_called_once()
 
     def test_exec_captures_nonzero_exit_code(self):
         from app.scheduler.agentic.cubesandbox_tools import (
@@ -154,11 +154,8 @@ class TestCubesandboxExec:
 
         fake_sandbox = MagicMock()
         fake_sandbox.sandbox_id = "fake-vm-fail"
-        fake_proc = MagicMock()
-        fake_proc.wait.return_value = MagicMock(
-            stdout="partial output", stderr="oops", exit_code=2
-        )
-        fake_sandbox.process.start.return_value = fake_proc
+        fake_result = MagicMock(stdout="partial output", stderr="oops", exit_code=2)
+        fake_sandbox.commands.run.return_value = fake_result
 
         with patch("e2b.Sandbox") as MockSandbox:
             MockSandbox.create.return_value = fake_sandbox
