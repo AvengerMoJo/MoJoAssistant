@@ -10,7 +10,8 @@
     "browser":      { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP server — config/mcp_servers.json)" },
     "terminal":     { "description": "Persistent tmux sessions — create windows, send keys, capture output (via tmux-mcp-rs — config/mcp_servers.json). Distinct from exec: use when the task needs persistent session state across commands." },
     "orchestration":{ "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" },
-    "google":       { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (requires Google Workspace MCP server configured in ~/.memory/config/mcp_servers.json)" }
+    "google":       { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (requires Google Workspace MCP server configured in ~/.memory/config/mcp_servers.json)" },
+    "cubesandbox":  { "description": "KVM microVM isolation via CubeSandbox — full isolated execution environment with no path restrictions. Use for coding tasks that need git clone, pip install, pytest, and arbitrary shell commands." }
   },
   "tools": {
     "memory_search":   {
@@ -156,6 +157,16 @@
     "playwright__browser_console_messages":{ "category": "browser", "danger_level": "low",    "description": "Return browser console messages." },
     "playwright__browser_network_requests":{ "category": "browser", "danger_level": "low",    "description": "Return network requests since page load." },
     "playwright__browser_close":           { "category": "browser", "danger_level": "low",    "description": "Close the current browser page." },
+
+    "container_create":  { "category": "exec", "danger_level": "medium", "description": "Create a Docker container sandbox for isolated code execution. Returns artifact path for file staging." },
+    "container_exec":    { "category": "exec", "danger_level": "high", "requires_auth": true, "description": "Execute a command inside a running Docker container. Full filesystem access within the container." },
+    "container_destroy": { "category": "exec", "danger_level": "medium", "description": "Stop and remove a Docker container sandbox." },
+
+    "cubesandbox_create":  { "category": "cubesandbox", "danger_level": "medium", "description": "Create a CubeSandbox KVM microVM session. Optionally clones a repo inside the VM. Returns session_id, sandbox_path, status." },
+    "cubesandbox_exec":    { "category": "cubesandbox", "danger_level": "high",   "requires_auth": true, "description": "Execute a command inside a running CubeSandbox session. No path restrictions — full VM isolation. Returns stdout, stderr, exit_code." },
+    "cubesandbox_list":    { "category": "cubesandbox", "danger_level": "low",    "description": "List all active CubeSandbox sessions." },
+    "cubesandbox_destroy": { "category": "cubesandbox", "danger_level": "medium", "description": "Destroy a CubeSandbox KVM microVM session and clean up resources." },
+    "cubesandbox_upload":  { "category": "cubesandbox", "danger_level": "medium", "description": "Upload a file into a running CubeSandbox session." },
 
     "google_calendar_list":   { "category": "google", "danger_level": "low",    "mcp_external": true, "description": "List events from Google Calendar for a date range. Provided by the Google Workspace MCP server (gws CLI)." },
     "google_calendar_create": { "category": "google", "danger_level": "medium", "mcp_external": true, "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary. Provided by the Google Workspace MCP server (gws CLI)." }

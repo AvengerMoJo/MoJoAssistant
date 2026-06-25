@@ -131,7 +131,11 @@ def _probe_url(base_url: str, api_key: Optional[str] = None, timeout: int = 5) -
 
 def _fetch_model_list(base_url: str, api_key: Optional[str] = None, timeout: int = 5) -> Optional[List[str]]:
     """Fetch available model IDs from a /v1/models endpoint. Returns None on error."""
-    url = base_url.rstrip("/") + "/v1/models"
+    base = base_url.rstrip("/")
+    # Strip trailing /v1 so we don't double it when appending /v1/models
+    if base.endswith("/v1"):
+        base = base[:-3]
+    url = base + "/v1/models"
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

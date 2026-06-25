@@ -170,7 +170,7 @@ class CapabilityRegistry:
         self.example_registry_path = os.path.join(
             config_dir, "examples", "dynamic_tools.example.json"
         )
-        self.sandbox = SandboxSecurity()
+        self.sandbox = SandboxSecurity(allowed_paths=self._load_sandbox_allowed_paths())
         self._memory_service = None
         self._mcp_registry = None
         self._mcp_client_manager = None
@@ -182,6 +182,19 @@ class CapabilityRegistry:
         self._ensure_registry_seeded()
         self._load_registry()
         self._register_builtins()
+
+    def _load_sandbox_allowed_paths(self) -> List[str]:
+        """Load additional allowed paths from policy config."""
+        try:
+            import json
+            policy_path = Path(get_memory_path()) / "config" / "safety_policy.json"
+            if policy_path.exists():
+                data = json.loads(policy_path.read_text())
+                paths = data.get("sandbox_policy", {}).get("allowed_paths", [])
+                return [p for p in paths if p != "~/.memory/"]  # memory path is already included
+        except Exception:
+            pass
+        return []
 
     def _ensure_registry_seeded(self):
         """Seed runtime registry from example template if runtime file is missing."""
