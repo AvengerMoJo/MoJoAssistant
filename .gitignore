@@ -226,3 +226,4 @@ backup.json
 # MiMoCode agent config
 .mimocode/
 mimocode.json
+package.json
