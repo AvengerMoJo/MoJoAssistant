@@ -1,0 +1,6 @@
+{
+  "_comment": "Example: expand read_file sandbox to include project directory during development. Copy to ~/.memory/config/safety_policy.json to apply. The system default only allows ~/.memory/.",
+  "sandbox_policy": {
+    "allowed_paths": ["~/.memory/", "~/Development/your-project/"]
+  }
+}

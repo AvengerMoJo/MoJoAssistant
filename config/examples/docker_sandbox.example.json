@@ -1,0 +1,16 @@
+{
+  "_comment": "Docker sandbox configuration example. Copy entries to ~/.memory/config/resource_pool.json or set as env vars. The Docker backend uses these for agentic sandbox_create and the SandboxRegistry 'docker' backend.",
+  "docker_sandbox": {
+    "image": "opencode-sandbox:latest",
+    "memory": "2g",
+    "cpus": "2",
+    "port_range": {
+      "backend": [4500, 4599],
+      "agentic": [4600, 4699]
+    }
+  },
+  "env_vars": {
+    "DOCKER_SANDBOX_IMAGE": "opencode-sandbox:latest"
+  },
+  "build_command": "docker build -t opencode-sandbox:latest -f docker/opencode-sandbox/Dockerfile.standalone ."
+}
