@@ -144,7 +144,7 @@ In Claude Desktop, you can now use tools like:
 
 ### 3. Read the Full Documentation
 
-- **[INSTALL.md](INSTALL.md)** - Comprehensive installation guide with troubleshooting
+- **[Installation Guide](../INSTALL.md)** - Comprehensive installation guide with troubleshooting
 - **[README.md](README.md)** - Full project documentation
 - **[app/dreaming/README.md](app/dreaming/README.md)** - Dreaming system details
 
@@ -188,7 +188,7 @@ python unified_mcp_server.py --mode stdio
 
 ### Need More Help?
 
-See **[INSTALL.md](INSTALL.md)** for detailed troubleshooting or open an issue on GitHub.
+See **[Installation Guide](../INSTALL.md)** for detailed troubleshooting or open an issue on GitHub.
 
 ---
 
@@ -241,7 +241,7 @@ DREAMING_SCHEDULE=0 3 * * *  # Daily at 3 AM
 ## Support
 
 - **GitHub Issues**: Report bugs or request features
-- **Documentation**: See `README.md` and `INSTALL.md`
+- **Documentation**: See `README.md` and [Installation Guide](../INSTALL.md)
 - **Logs**: Check `server.log` and `mcp_server.log`
 
 ---
