@@ -217,18 +217,32 @@ class CapabilityResolver:
                 names.append(t_name)
                 seen.add(t_name)
 
-        # Explicit names not yet resolved
+        # Explicit names not yet resolved — with classifier fallback for unknowns
         try:
             from app.scheduler.agentic_executor import SMOKE_ONLY_TOOLS
         except Exception:
             SMOKE_ONLY_TOOLS = {}
 
+        from app.scheduler.capability_classifier import normalize_tool_name
+        known_tools = list(tool_entries.keys()) + [
+            t for t in getattr(tool_registry, "_tools", {}).keys()
+        ]
+
         for t_name in access_explicit:
-            if t_name not in seen:
-                if t_name in tool_entries or (
-                    allow_smoke_tools and t_name in SMOKE_ONLY_TOOLS
-                ) or (hasattr(tool_registry, "get_tool") and tool_registry.get_tool(t_name)):
-                    names.append(t_name)
+            if t_name in seen:
+                continue
+            # Direct match
+            if t_name in tool_entries or (
+                allow_smoke_tools and t_name in SMOKE_ONLY_TOOLS
+            ) or (hasattr(tool_registry, "get_tool") and tool_registry.get_tool(t_name)):
+                names.append(t_name)
+                seen.add(t_name)
+                continue
+            # Unknown — try alias table then LLM classifier
+            resolved = normalize_tool_name(t_name, known_tools)
+            if resolved and resolved not in seen:
+                names.append(resolved)
+                seen.add(resolved)
 
         return names
 

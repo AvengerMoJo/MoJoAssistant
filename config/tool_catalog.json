@@ -6,7 +6,7 @@
     "web":          { "description": "Web search and HTTP requests" },
     "exec":         { "description": "Shell commands and code execution" },
     "comms":        { "description": "Communication with the user (HITL)" },
-    "browser":      { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP)" },
+    "browser":      { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP or Webwright)" },
     "terminal":     { "description": "Persistent terminal sessions via tmux — run commands, read output" },
     "orchestration":{ "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" },
     "google":       { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (via Google Workspace MCP or gws CLI)" }

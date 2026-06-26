@@ -154,6 +154,7 @@ class MemoryConfig:
     """Memory system configuration"""
 
     embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_backend: str = "huggingface"
     multi_model_enabled: bool = False
     vector_store: str = "duckdb"
     memory_path: str = ""  # resolved at init via get_memory_path()
@@ -266,6 +267,7 @@ class AppConfig:
             ),
             memory=MemoryConfig(
                 embedding_model=os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
+                embedding_backend=os.getenv("EMBEDDING_BACKEND", "huggingface"),
                 multi_model_enabled=os.getenv("MULTI_MODEL_ENABLED", "false").lower()
                 in ("true", "1", "yes"),
                 vector_store=os.getenv("VECTOR_STORE", "duckdb"),

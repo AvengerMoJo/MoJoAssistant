@@ -9,8 +9,13 @@
     },
     {
       "name": "investigate",
-      "instruction": "Gather information from multiple independent sources. Prefer primary sources. Use web_search for current information, fetch_url for detailed content, browser tools for JS-heavy sites.",
-      "tools": ["web_search", "fetch_url", "browser_navigate", "browser_snapshot"]
+      "instruction": "Gather information from multiple independent sources. Prefer primary sources. Use web_search for current information, fetch_url for detailed content, browser tools for JS-heavy sites. Use read_file to read local files directly — do NOT use search_in_files as a substitute for read_file.",
+      "tools": ["web_search", "fetch_url", "browser_navigate", "browser_snapshot", "read_file", "list_files"]
+    },
+    {
+      "name": "checkpoint",
+      "instruction": "After every 10 investigation iterations: stop and write your current findings to the output file — even if incomplete. A partial file on disk is better than no file. If the goal specifies an output file path, call write_file now with what you have, then decide whether to continue investigating. Never exhaust the budget without having called write_file at least once when a file output was requested.",
+      "tools": ["write_file"]
     },
     {
       "name": "synthesize",
@@ -19,11 +24,16 @@
     },
     {
       "name": "deliver",
-      "instruction": "Provide a complete, evidence-based answer. Include source citations. Flag any gaps or areas needing further investigation. Write learnings to memory if the finding is reusable.",
-      "tools": ["add_conversation"]
+      "instruction": "Provide a complete, evidence-based answer. If the goal specified an output file path, write the final version now with write_file — overwrite the checkpoint draft. Include source citations. Flag any gaps. Write learnings to memory if the finding is reusable. Call task_complete when done.",
+      "tools": ["write_file", "add_conversation", "task_complete"]
     }
   ],
-  "success_criteria": "Goal is covered by evidence from at least 2 independent sources. Uncertainties are explicitly named. Key findings are synthesized, not just listed.",
+  "hard_rules": [
+    "If the goal specifies an output file path, write_file MUST be called before task_complete. Completing without a written file when one was requested is a failure.",
+    "Do NOT use search_in_files to read entire file contents — use read_file instead. search_in_files is for grep-style pattern matching only.",
+    "Do NOT dispatch subtasks to handle your own deliverable. Write the output yourself."
+  ],
+  "success_criteria": "Goal is covered by evidence from at least 2 independent sources. Uncertainties are explicitly named. Key findings are synthesized, not just listed. If an output file was specified, it exists on disk.",
   "escalation_triggers": [
     "A required source is permanently unavailable after trying alternatives",
     "The task requires information only the user possesses"

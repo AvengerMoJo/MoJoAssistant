@@ -17,6 +17,37 @@ logger = logging.getLogger(f"mojo_assistant.{__name__}")
 # ---------------------------------------------------------------------------
 _ADAPTER_REGISTRY: Dict[str, Type[HITLAdapter]] = {}
 
+# ---------------------------------------------------------------------------
+# Shared live manager — initialized once at startup, reused by all callers
+# ---------------------------------------------------------------------------
+_shared_manager: Optional["HITLManager"] = None
+
+
+def init_shared_manager(mgr: "HITLManager") -> None:
+    """Store the already-started live manager for process-wide reuse.
+
+    Called once during app startup (http.py) after manager.start() succeeds.
+    All notification helpers should call get_shared_manager() instead of
+    HITLManager.load_from_config() so they reach the live adapter instances.
+    """
+    global _shared_manager
+    _shared_manager = mgr
+
+
+def get_shared_manager() -> "HITLManager":
+    """Return the live shared manager.
+
+    Falls back to a fresh (unstarted) instance with a warning if called before
+    init_shared_manager() — adapters won't have live state in that case.
+    """
+    if _shared_manager is not None:
+        return _shared_manager
+    logger.warning(
+        "[hitl/manager] get_shared_manager called before init_shared_manager — "
+        "creating unstarted fallback; HITL delivery may fail"
+    )
+    return HITLManager.load_from_config()
+
 
 def register_adapter_type(cls: Type[HITLAdapter]) -> Type[HITLAdapter]:
     """Decorator: register an HITLAdapter subclass by its adapter_type string."""

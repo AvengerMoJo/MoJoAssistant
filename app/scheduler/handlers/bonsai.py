@@ -318,15 +318,13 @@ class BonsaiGrowthHandler(TaskHandler):
         if scheduler and hasattr(scheduler, "queue"):
             scheduler.queue.add(review_task)
 
-        from app.mcp.adapters.hitl.manager import HITLManager
-        mgr = HITLManager.load_from_config()
-        if scheduler:
-            mgr.set_scheduler(scheduler)
+        from app.mcp.adapters.hitl.manager import get_shared_manager
+        mgr = get_shared_manager()
         short_report = report[:1200] + ("\n…(truncated)" if len(report) > 1200 else "")
         await mgr.send_hitl(
             task_id=review_task_id,
             question=f"**Bonsai Growth Report — {role_id} v{version}**\n\n{short_report}",
-            options=["accept", "reject"],
+            choices=["accept", "reject"],
         )
 
     def _discover_roles(self) -> List[str]:

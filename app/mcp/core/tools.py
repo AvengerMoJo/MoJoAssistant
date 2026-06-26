@@ -1213,6 +1213,83 @@ class ToolRegistry:
                 },
             },
             {
+                "name": "sandbox_find_by_id",
+                "description": (
+                    "Look up a persisted sandbox handle by its backend sandbox_id "
+                    "(the hex UUID for cube microVMs, the PID-as-string for host "
+                    "processes). Returns task_id, role_id, parent_task_id and "
+                    "environment so you can identify the owner before issuing a "
+                    "kill. Returns found=False for orphaned sandboxes that have "
+                    "no persisted MoJo handle — use sandbox_purge_orphans or "
+                    "sandbox_kill_by_id in that case."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "sandbox_id": {
+                            "type": "string",
+                            "description": "Backend sandbox_id (hex UUID or PID-as-string)",
+                        },
+                    },
+                    "required": ["sandbox_id"],
+                },
+            },
+            {
+                "name": "sandbox_kill_by_id",
+                "description": (
+                    "Tear down a sandbox by its backend sandbox_id, even when "
+                    "the originating task_id has been forgotten. If the sandbox "
+                    "is in the persisted registry this routes through the normal "
+                    "backend.kill() — clean shutdown. If it is orphaned (no "
+                    "MoJo handle, only CubeMaster knows it), this force-kills "
+                    "the cube microVM via e2b SDK's Sandbox.connect(sandbox_id).kill(). "
+                    "Use this to clean up the stranded-microVM class of bug."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "sandbox_id": {
+                            "type": "string",
+                            "description": "Backend sandbox_id to kill",
+                        },
+                    },
+                    "required": ["sandbox_id"],
+                },
+            },
+            {
+                "name": "sandbox_purge_orphans",
+                "description": (
+                    "Reconcile CubeMaster-resident microVMs against MoJo's "
+                    "persisted sandbox store. Identifies orphaned microVMs "
+                    "(sandbox_ids that exist on CubeMaster but have NO entry in "
+                    "sandbox_sessions.json — the source of the 'stranded VM' "
+                    "resource leak). Default is dry_run=True (lists orphans "
+                    "without killing). Set auto_kill=True to actually force-kill "
+                    "them. Run this daily to recover leaked resources."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "dry_run": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "List orphans without killing (default true)",
+                        },
+                        "auto_kill": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Force-kill orphans after listing",
+                        },
+                        "only_cube": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Only check the cube backend (host is PID-based)",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
                 "name": "task_report_read",
                 "description": (
                     "Read a normalized task completion record by task_id. "
@@ -1807,6 +1884,12 @@ Agent resumes within seconds.
             return await self._execute_sandbox_attach_session(args)
         elif name == "sandbox_kill_session":
             return await self._execute_sandbox_kill_session(args)
+        elif name == "sandbox_kill_by_id":
+            return await self._execute_sandbox_kill_by_id(args)
+        elif name == "sandbox_purge_orphans":
+            return await self._execute_sandbox_purge_orphans(args)
+        elif name == "sandbox_find_by_id":
+            return await self._execute_sandbox_find_by_id(args)
         elif name == "task_report_read":
             return await self._execute_task_report_read(args)
         elif name == "scheduler_resume_task":
@@ -3909,6 +3992,175 @@ Agent resumes within seconds.
             }
         except Exception as e:
             return {"status": "error", "message": f"sandbox_kill_session failed: {e}"}
+
+    async def _execute_sandbox_kill_by_id(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Kill a sandbox by its backend sandbox_id, even when the task_id
+        has been forgotten or the handle is missing from sandbox_sessions.json.
+
+        This is the recovery path for stranded CubeMaster microVMs (the
+        "5 orphaned sandboxes" problem). Strategy:
+          1. If the sandbox_id is in the persisted store, route through
+             the regular backend.kill() — clean shutdown.
+          2. Otherwise, for the cube backend, call CubeSandboxClient.kill_by_id()
+             which uses e2b SDK's Sandbox.connect(sandbox_id).kill() against
+             CubeMaster directly. For host backend, the orphan is unrecoverable
+             (the PID is gone) — we report it as already-gone.
+        """
+        try:
+            from app.scheduler.sandbox import (
+                find_by_sandbox_id, SandboxRegistry,
+            )
+            from app.scheduler.sandbox.cubesandbox_client import CubeSandboxClient
+
+            sandbox_id = (args.get("sandbox_id") or "").strip()
+            if not sandbox_id:
+                return {"status": "error", "message": "sandbox_id is required"}
+
+            # Path 1: handle is in our registry — clean shutdown.
+            handle = find_by_sandbox_id(sandbox_id)
+            if handle is not None:
+                backend = SandboxRegistry.create(handle.backend, config={})
+                backend.kill(handle)
+                return {
+                    "status": "success",
+                    "sandbox_id": sandbox_id,
+                    "task_id": handle.task_id,
+                    "backend": handle.backend,
+                    "path": "registry",
+                    "message": "Sandbox killed via persisted handle.",
+                }
+
+            # Path 2: orphan — try cube backend force-kill via e2b SDK.
+            result = CubeSandboxClient.kill_by_id(sandbox_id)
+            if result.get("killed"):
+                return {
+                    "status": "success",
+                    "sandbox_id": sandbox_id,
+                    "task_id": None,
+                    "backend": "cube",
+                    "path": "orphan_force_kill",
+                    "message": "Orphaned CubeSandbox killed via e2b Sandbox.connect().kill()",
+                }
+            return {
+                "status": "error",
+                "sandbox_id": sandbox_id,
+                "task_id": None,
+                "backend": "cube",
+                "path": "orphan_force_kill",
+                "message": f"Orphan kill failed: {result.get('error')}",
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"sandbox_kill_by_id failed: {e}"}
+
+    async def _execute_sandbox_purge_orphans(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Reconcile CubeMaster-resident microVMs against MoJo's persisted store.
+
+        Lists every sandbox CubeMaster currently has, then identifies the
+        orphans (those with no entry in ``~/.memory/sandbox_sessions.json``),
+        and optionally force-kills them. This is the daily-cleanup entry
+        point — run it once a day to prevent resource leaks from past
+        sandbox-creation bugs.
+
+        Args:
+          dry_run: bool (default True) — if True, return orphans without killing
+          auto_kill: bool (default False) — if True, kill orphans after listing
+          only_cube: bool (default True) — only check cube backend (host is PID-based)
+        """
+        try:
+            from app.scheduler.sandbox import list_orphan_sandbox_ids
+            from app.scheduler.sandbox.cubesandbox_client import CubeSandboxClient
+
+            dry_run = bool(args.get("dry_run", True))
+            auto_kill = bool(args.get("auto_kill", False))
+            only_cube = bool(args.get("only_cube", True))
+
+            if not only_cube:
+                return {
+                    "status": "error",
+                    "message": "Only the cube backend supports orphan reconciliation.",
+                }
+
+            cubes = CubeSandboxClient.list_cubemaster_sandboxes()
+            all_ids = [
+                c.get("sandbox_id") for c in cubes if c.get("sandbox_id")
+            ]
+            orphans = list_orphan_sandbox_ids(all_ids)
+
+            orphan_details = []
+            for c in cubes:
+                sid = c.get("sandbox_id")
+                if sid in orphans:
+                    orphan_details.append({
+                        "sandbox_id": sid,
+                        "host_ip": c.get("host_ip"),
+                        "sandbox_ip": c.get("sandbox_ip"),
+                        "create_at": c.get("create_at"),
+                        "containers": c.get("containers", []),
+                    })
+
+            killed = []
+            kill_errors = []
+            if auto_kill and not dry_run:
+                for orphan in orphan_details:
+                    result = CubeSandboxClient.kill_by_id(orphan["sandbox_id"])
+                    if result.get("killed"):
+                        killed.append(orphan["sandbox_id"])
+                    else:
+                        kill_errors.append({
+                            "sandbox_id": orphan["sandbox_id"],
+                            "error": result.get("error"),
+                        })
+
+            return {
+                "status": "success",
+                "cubes_total": len(cubes),
+                "orphans_found": len(orphan_details),
+                "orphans": orphan_details,
+                "killed": killed,
+                "kill_errors": kill_errors,
+                "dry_run": dry_run,
+                "auto_kill": auto_kill,
+                "message": (
+                    f"Found {len(orphan_details)} orphaned cube microVMs. "
+                    f"{'Killed' if auto_kill and not dry_run else 'Dry-run'}: "
+                    f"{len(killed)}/{len(orphan_details)}"
+                ),
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"sandbox_purge_orphans failed: {e}"}
+
+    async def _execute_sandbox_find_by_id(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Look up a persisted sandbox handle by its backend sandbox_id.
+
+        Returns task_id, role_id, parent_task_id, environment — enough to
+        identify the owner before issuing sandbox_kill_by_id. Returns
+        ``found=False`` if the sandbox_id is unknown to MoJo (i.e. it is
+        an orphan, and the user should use sandbox_purge_orphans or
+        sandbox_kill_by_id to clean it up).
+        """
+        try:
+            from app.scheduler.sandbox import find_by_sandbox_id
+
+            sandbox_id = (args.get("sandbox_id") or "").strip()
+            if not sandbox_id:
+                return {"status": "error", "message": "sandbox_id is required"}
+
+            handle = find_by_sandbox_id(sandbox_id)
+            if handle is None:
+                return {
+                    "status": "success",
+                    "found": False,
+                    "sandbox_id": sandbox_id,
+                    "message": "No persisted handle — sandbox is likely orphaned.",
+                }
+            return {
+                "status": "success",
+                "found": True,
+                "sandbox_id": sandbox_id,
+                "handle": handle.to_dict(),
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"sandbox_find_by_id failed: {e}"}
 
     async def _execute_task_report_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute task_report_read tool"""

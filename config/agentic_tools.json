@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-03-05T00:47:42.931940",
+  "last_updated": "2026-06-24T00:18:56.463695",
   "tools": [
     {
       "name": "read_file",
@@ -54,6 +54,120 @@
       "requires_auth": false,
       "created_at": "2026-03-05T00:34:01.036315",
       "created_by": "system"
+    },
+    {
+      "name": "cubesandbox_create",
+      "description": "Create a new KVM-isolated CubeSandbox microVM and register it under ``name``. Returns the VM's OpenCode HTTP URL for AI-native code edits. The VM has no access to host secrets (~/.ssh, ~/.aws, ~/.memory are physically unreachable). Optional: template_id, timeout, upload_dir (host directory seeded into the VM at create time).",
+      "danger_level": "medium",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-06-24T00:00:00.000000",
+      "created_by": "system",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Unique identifier for the VM (use this in subsequent cubesandbox_exec / cubesandbox_destroy calls)"},
+          "template_id": {"type": "string", "description": "CubeSandbox template id (default: CUBE_TEMPLATE_ID env var)"},
+          "timeout": {"type": "integer", "description": "VM lifetime in seconds (default 300)"},
+          "upload_dir": {"type": "string", "description": "Host directory to seed into the VM (optional)"}
+        },
+        "required": ["name"]
+      },
+      "executor": {
+        "type": "python",
+        "module": "app.scheduler.agentic.cubesandbox_tools",
+        "function": "cubesandbox_create"
+      },
+      "category": "orchestration"
+    },
+    {
+      "name": "cubesandbox_exec",
+      "description": "Execute a shell command inside the CubeSandbox microVM registered as ``name``. The command runs as the VM's default user with no host-filesystem access. Returns stdout, stderr, and exit_code. Call cubesandbox_create first.",
+      "danger_level": "medium",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-06-24T00:00:00.000000",
+      "created_by": "system",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "VM identifier (must match a prior cubesandbox_create call)"},
+          "command": {"type": "string", "description": "Shell command to run inside the VM"}
+        },
+        "required": ["name", "command"]
+      },
+      "executor": {
+        "type": "python",
+        "module": "app.scheduler.agentic.cubesandbox_tools",
+        "function": "cubesandbox_exec"
+      },
+      "category": "orchestration"
+    },
+    {
+      "name": "cubesandbox_list",
+      "description": "List the CubeSandbox microVMs the agentic process has live handles for. Returns name, sandbox_id, is_running, last_used_ts for each VM created via cubesandbox_create. This is the in-process view, not a CubeMaster-wide listing.",
+      "danger_level": "low",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-06-24T00:00:00.000000",
+      "created_by": "system",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "executor": {
+        "type": "python",
+        "module": "app.scheduler.agentic.cubesandbox_tools",
+        "function": "cubesandbox_list"
+      },
+      "category": "orchestration"
+    },
+    {
+      "name": "cubesandbox_destroy",
+      "description": "Tear down the CubeSandbox microVM registered as ``name`` and release its resources. Idempotent: destroying a name that doesn't exist returns success=true. The VM's host secrets are never accessible, so destroy is safe to call at any point.",
+      "danger_level": "medium",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-06-24T00:00:00.000000",
+      "created_by": "system",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "VM identifier to destroy"}
+        },
+        "required": ["name"]
+      },
+      "executor": {
+        "type": "python",
+        "module": "app.scheduler.agentic.cubesandbox_tools",
+        "function": "cubesandbox_destroy"
+      },
+      "category": "orchestration"
+    },
+    {
+      "name": "cubesandbox_upload",
+      "description": "Upload a host directory into the CubeSandbox microVM registered as ``name``. Use this to push a cloned repo or build artifacts into the VM after cubesandbox_create.",
+      "danger_level": "medium",
+      "version": "1.0.0",
+      "requires_auth": false,
+      "created_at": "2026-06-24T00:00:00.000000",
+      "created_by": "system",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "VM identifier"},
+          "local_path": {"type": "string", "description": "Host directory to upload (must exist)"},
+          "remote_path": {"type": "string", "description": "Destination in VM (default /root)"}
+        },
+        "required": ["name", "local_path"]
+      },
+      "executor": {
+        "type": "python",
+        "module": "app.scheduler.agentic.cubesandbox_tools",
+        "function": "cubesandbox_upload"
+      },
+      "category": "orchestration"
     }
   ]
 }

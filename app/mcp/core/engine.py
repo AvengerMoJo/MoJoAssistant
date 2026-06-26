@@ -36,11 +36,19 @@ class MCPEngine:
         if not self.memory_service:
             from app.services.memory_backend import create_hybrid_memory_service
 
+            # Extract embedding config from engine config
+            embedding_model = self.config.get("embedding_model", "BAAI/bge-m3")
+            embedding_backend = self.config.get("embedding_backend", "huggingface")
+            embedding_device = self.config.get("embedding_device")
+
             self.memory_service = create_hybrid_memory_service(
                 data_dir=get_memory_path(),
                 config=self.config,
+                embedding_model=embedding_model,
+                embedding_backend=embedding_backend,
+                embedding_device=embedding_device,
             )
-            self.logger.info("Memory service initialized")
+            self.logger.info(f"Memory service initialized with embedding: {embedding_backend}/{embedding_model}")
 
         self.tool_registry = ToolRegistry(self.memory_service, self.config)
         self.logger.info(

@@ -1133,9 +1133,10 @@ class RoleChatSession:
                             for chunk in _split_chunks(response_text):
                                 yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
 
-        except Exception as e:
-            logger.error(f"RoleChatSession.exchange_stream failed for {self.role_id}: {e}")
-            err = f"(Error: {e})"
+        except Exception as exc:
+            err_msg = str(exc)
+            logger.error(f"RoleChatSession.exchange_stream failed for {self.role_id}: {err_msg}")
+            err = f"(Error: {err_msg})"
             yield f'data: {json.dumps({"type": "token", "text": err})}\n\n'
             response_text = err
 

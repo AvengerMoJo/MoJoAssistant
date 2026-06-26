@@ -49,7 +49,7 @@ _cv_tool_calls:      ContextVar = ContextVar("exec_tool_calls",      default=0)
 _cv_consec_notool:   ContextVar = ContextVar("exec_consec_notool",   default=0)
 _cv_budget_ext:      ContextVar = ContextVar("exec_budget_ext",      default=0)
 _cv_exhausts_ask:    ContextVar = ContextVar("exec_exhausts_ask",    default=False)
-_cv_requires_tool:   ContextVar = ContextVar("exec_requires_tool",   default=False)
+_cv_requires_tool:   ContextVar = ContextVar("exec_requires_tool",   default=True)
 _cv_task_id:         ContextVar = ContextVar("exec_task_id",         default=None)
 _cv_role_id:         ContextVar = ContextVar("exec_role_id",         default=None)
 _cv_enabled_tools:   ContextVar = ContextVar("exec_enabled_tools",   default=None)
@@ -756,7 +756,7 @@ class AgenticExecutor:
                         "exhausts_tools_before_asking", False
                     ))
                     _cv_requires_tool.set(behavior_rules.get(
-                        "requires_tool_use", False
+                        "requires_tool_use", True
                     ))
                     # Pull expanded data_boundary from monitor (local_only expansion applied)
                     self._data_boundary = self._policy_monitor.data_boundary
@@ -1416,6 +1416,36 @@ class AgenticExecutor:
                     },
                 )
 
+                # Intercept task_complete before executing — it's a termination
+                # signal, not a real tool.  Extract the answer and break out of
+                # the iteration loop exactly as FINAL_ANSWER would.
+                _task_complete_call = next(
+                    (tc for tc in tool_calls if tc["function"]["name"] == "task_complete"),
+                    None,
+                )
+                if _task_complete_call:
+                    _tc_args = _task_complete_call["function"].get("arguments") or {}
+                    if isinstance(_tc_args, str):
+                        try:
+                            _tc_args = json.loads(_tc_args)
+                        except Exception:
+                            _tc_args = {}
+                    _tc_answer = _tc_args.get("answer", response_text or "Task complete.")
+                    self._log(f"Task {task.id}: task_complete tool called — treating as FINAL_ANSWER")
+                    final_answer = _tc_answer
+                    iteration_log.append({
+                        "iteration": iteration,
+                        "resource": resource.id,
+                        "model": used_model,
+                        "tier_preference": [t.value for t in iter_tiers],
+                        "selection_reason": selection_reason,
+                        "status": "final",
+                        "tool_calls": ["task_complete"],
+                        "estimated_input_tokens": _estimated_tokens,
+                        "elapsed_s": round(time.time() - iter_start, 1),
+                    })
+                    break
+
                 tool_results = await self._execute_tool_calls(tool_calls)
                 waiting = _cv_waiting_q.get()
                 for tc, result_content in zip(tool_calls, tool_results):
@@ -1532,10 +1562,16 @@ class AgenticExecutor:
             # behavior_rules.requires_tool_use: if the agent tries to submit a
             # final answer without having called any tools yet, reject it and
             # inject a targeted forcing message so the next iteration acts.
-            if (
-                candidate_final_answer is not None
-                and _cv_requires_tool.get()
-                and _cv_tool_calls.get() == 0
+            #
+            # Bug fix (v1.4.4): this guard now defaults ON. Previous default
+            # of False let fake completions through (Paul c4f8efca, Popo
+            # e5e02fbf — 1 iteration, 0 tool calls, FINAL_ANSWER accepted as
+            # success). See tests/unit/test_final_answer_guard.py for the
+            # regression cases.
+            if self._should_reject_empty_final_answer(
+                candidate_final_answer=candidate_final_answer,
+                requires_tool=_cv_requires_tool.get(),
+                tool_calls=_cv_tool_calls.get(),
             ):
                 forcing_msg = (
                     "Your plan is noted but you have not called any tools yet. "
@@ -1672,6 +1708,55 @@ class AgenticExecutor:
             )
 
         success = final_answer is not None
+
+        # Post-condition check (v1.4.4): if the task is being marked success
+        # but the agent never called any tools AND tools were available, that's
+        # a fake completion. Downgrade to failure with a clear error so the
+        # scheduler doesn't mark the task done. This is defense in depth
+        # behind the in-loop guard at the requires_tool_use check.
+        total_tool_calls = sum(
+            len(entry.get("tool_calls", []) or [])
+            for entry in iteration_log
+        )
+        if success and total_tool_calls == 0:
+            available_tools = list(_cv_enabled_tools.get() or [])
+            if available_tools:
+                self._log(
+                    f"Task {task.id}: post-condition downgrade — FINAL_ANSWER accepted "
+                    f"but zero tool calls across {len(iteration_log)} iterations despite "
+                    f"available tools ({len(available_tools)}). Treating as fake completion."
+                )
+                success = False
+                final_answer = None
+                metrics = {
+                    "iterations": len(iteration_log),
+                    "iteration_log": iteration_log,
+                    "duration_seconds": total_elapsed,
+                    "final_answer": None,
+                    "session_file": session_file,
+                    "total_context_trims": _context_trim_count,
+                    "resource_id": _last_resource_id,
+                    "model": _last_used_model,
+                    "post_condition_failure": "zero_tool_calls_with_tools_available",
+                    "available_tools": available_tools,
+                }
+                if self._session_storage and current_session and current_session.status == "running":
+                    self._session_storage.update_status(
+                        task.id,
+                        "fake_completion_detected",
+                        error_message="Post-condition: FINAL_ANSWER accepted but zero tool calls.",
+                    )
+                return TaskResult(
+                    success=False,
+                    error_message=(
+                        f"Post-condition failure: task ended with FINAL_ANSWER but "
+                        f"zero tool calls were made despite {len(available_tools)} tools "
+                        f"available. Rejecting to prevent fake completion. "
+                        f"(See tests/unit/test_final_answer_guard.py for the guard.)"
+                    ),
+                    output_file=session_file,
+                    metrics=metrics,
+                )
 
         # Finalize session status if not already set
         current_session = self._session_storage.load_session(task.id)
@@ -3191,6 +3276,38 @@ class AgenticExecutor:
         if max_iter >= 6:
             score += 1
         return max(1, min(score, 5))
+
+    def _should_reject_empty_final_answer(
+        self,
+        candidate_final_answer: Optional[str],
+        requires_tool: bool,
+        tool_calls: int,
+    ) -> bool:
+        """Decide whether to reject a <FINAL_ANSWER> submitted with zero tool calls.
+
+        This is the v1.4.4 fix for the fake-completion bug. Returns True
+        when:
+          - The agent produced a candidate FINAL_ANSWER (non-None), AND
+          - The role's behavior_rules.requires_tool_use is True (default
+            since v1.4.4), AND
+          - The agent has called zero tools so far in this task.
+
+        In that case the loop injects a forcing message instead of accepting
+        the answer as success. Without this guard, models like qwen3.5-35b-a3b
+        can produce "I'm starting fresh..." or "Starting discovery phase..."
+        output wrapped in <FINAL_ANSWER> tags on iteration 1, which the
+        scheduler then marks as success — leaving the task effectively
+        un-done (real examples: Paul c4f8efca, Popo e5e02fbf on 2026-06-22).
+
+        Tests: tests/unit/test_final_answer_guard.py
+        """
+        if candidate_final_answer is None:
+            return False
+        if not requires_tool:
+            return False
+        if tool_calls > 0:
+            return False
+        return True
 
     def _validate_final_answer(
         self, final_answer: str, goal: str, config: Dict[str, Any]

@@ -176,11 +176,12 @@ class HTTPAdapter(ProtocolAdapter):
                 getattr(self.engine, "tool_registry", None), "scheduler", None
             )
             try:
-                from app.mcp.adapters.hitl.manager import HITLManager
+                from app.mcp.adapters.hitl.manager import HITLManager, init_shared_manager
                 _hitl_manager = HITLManager.load_from_config()
                 if _sched is not None:
                     _hitl_manager.set_scheduler(_sched)
                 await _hitl_manager.start()
+                init_shared_manager(_hitl_manager)
                 if self.logger:
                     self.logger.info(
                         "[hitl] started %d adapter(s)", len(_hitl_manager)

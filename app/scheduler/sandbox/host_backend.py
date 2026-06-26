@@ -47,25 +47,42 @@ class HostOpenCodeBackend(SandboxBackend):
     # ------------------------------------------------------------------
 
     def start(self, task_id: str, working_dir: str, **kwargs: Any) -> SandboxHandle:
-        # Resume an existing persisted instance if the PID is still alive
+        # Resume an existing persisted session if the process is still alive.
+        # Check the PID from the persisted handle directly — _instances is
+        # in-memory and will be empty after a handler/process restart.
         existing = load_handle(task_id)
-        if existing and existing.state in ("running", "paused"):
-            inst = self._backend._instances.get(task_id)
-            if inst is not None and _pid_alive(inst.pid):
-                url = f"http://127.0.0.1:{inst.port}"
-                existing.url = url
-                existing.state = "running" if existing.state == "paused" else existing.state
+        if existing and existing.state in ("running", "paused") and existing.sandbox_id:
+            pid = int(existing.sandbox_id)
+            if _pid_alive(pid):
+                if existing.state == "paused":
+                    try:
+                        os.killpg(pid, signal.SIGCONT)
+                        logger.info("HostOpenCodeBackend.start: SIGCONT pid=%s task=%s", pid, task_id)
+                    except ProcessLookupError:
+                        logger.warning("HostOpenCodeBackend.start: pid=%s gone during SIGCONT", pid)
+                        self._backend._instances.pop(task_id, None)
+                        delete_handle(task_id)
+                        return self.start(task_id, working_dir, **kwargs)
+                existing.state = "running"
                 store_handle(existing)
-                logger.info("HostOpenCodeBackend.start: re-attached %s pid=%s port=%s",
-                            task_id, inst.pid, inst.port)
+                logger.info(
+                    "HostOpenCodeBackend.start: re-attached %s pid=%s url=%s",
+                    task_id, pid, existing.url,
+                )
                 return existing
             # Process died — clean up and start fresh
-            logger.info("HostOpenCodeBackend.start: stale handle for %s, restarting", task_id)
+            logger.info("HostOpenCodeBackend.start: stale handle for %s (pid=%s dead), restarting",
+                        task_id, pid)
             self._backend._instances.pop(task_id, None)
             delete_handle(task_id)
 
         inst = self._backend.spawn(task_id, working_dir)
         url = f"http://127.0.0.1:{inst.port}"
+        # Provenance kwargs — host backend reuses PID-as-sandbox_id but
+        # still records role/parent/environment for the dashboard.
+        role_id = kwargs.get("role_id")
+        parent_task_id = kwargs.get("parent_task_id")
+        environment = kwargs.get("environment")
         handle = SandboxHandle(
             task_id=task_id,
             backend=self.name,
@@ -74,6 +91,9 @@ class HostOpenCodeBackend(SandboxBackend):
             state="running",
             working_dir=working_dir,
             log_path=inst.log_path,
+            role_id=role_id,
+            parent_task_id=parent_task_id,
+            environment=environment,
         )
         store_handle(handle)
         return handle
@@ -110,7 +130,18 @@ class HostOpenCodeBackend(SandboxBackend):
         return handle
 
     def kill(self, handle: SandboxHandle) -> None:
-        self._backend.kill(handle.task_id)
+        # Try the in-memory registry first; fall back to direct signal on the
+        # persisted PID so re-attached sessions are fully torn down even when
+        # _instances is empty after a handler restart.
+        try:
+            self._backend.kill(handle.task_id)
+        except Exception:
+            pass
+        if handle.sandbox_id:
+            try:
+                os.killpg(int(handle.sandbox_id), signal.SIGTERM)
+            except (ProcessLookupError, ValueError):
+                pass
         delete_handle(handle.task_id)
 
     def health_check(self, handle: SandboxHandle) -> Dict[str, Any]:

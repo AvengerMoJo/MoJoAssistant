@@ -11,7 +11,7 @@ Usage in the handler:
 Available backends:
   - "host"  : OpenCodePerTaskBackend (one host process per task)
   - "cube"  : CubeSandboxBackend (one KVM microVM per task, persisted)
-  - "docker": DockerSandboxBackend (planned — one docker container per task)
+  - "docker": DockerSandboxBackend (one docker container per task)
 
 Adding a new backend = register in _BACKENDS below.
 """
@@ -61,6 +61,13 @@ def _register_builtins() -> None:
             register_backend("cube")(CubeSandboxBackend)
         except Exception as e:
             logger.warning("Failed to register 'cube' backend: %s", e)
+
+    if "docker" not in _BACKENDS:
+        try:
+            from app.scheduler.sandbox.docker_backend import DockerSandboxBackend
+            register_backend("docker")(DockerSandboxBackend)
+        except Exception as e:
+            logger.warning("Failed to register 'docker' backend: %s", e)
 
 
 _register_builtins()

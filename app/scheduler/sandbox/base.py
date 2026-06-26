@@ -32,7 +32,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SandboxHandle:
-    """Concrete reference to a running (or paused) sandbox session."""
+    """Concrete reference to a running (or paused) sandbox session.
+
+    Identity is preserved across handler restarts via the session_store
+    (keyed by task_id). The optional ``role_id``, ``parent_task_id`` and
+    ``environment`` fields let callers (scheduler, MCP tools, dashboard)
+    trace a sandbox back to the originating MoJoAssistant context so
+    orphaned VMs can be matched to their owner before being killed.
+    """
 
     task_id: str
     backend: str
@@ -43,6 +50,10 @@ class SandboxHandle:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     log_path: Optional[str] = None  # for debug/learn — points at the backend's log file
+    # Provenance — set at sandbox creation, immutable afterwards.
+    role_id: Optional[str] = None
+    parent_task_id: Optional[str] = None
+    environment: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -118,6 +129,40 @@ def _load_store() -> Dict[str, Dict[str, Any]]:
     except Exception as e:
         logger.warning("Failed to load session store at %s: %s", SESSION_STORE_PATH, e)
         return {}
+
+
+def find_by_sandbox_id(sandbox_id: str) -> Optional[SandboxHandle]:
+    """Reverse-lookup: given a backend sandbox_id, return the persisted handle.
+
+    Scans the in-memory store and returns the first handle whose ``sandbox_id``
+    matches. Useful when CubeMaster reports a VM that no longer has a
+    ``task_id`` known to the caller (orphan reconciliation, kill-by-id).
+    """
+    if not sandbox_id:
+        return None
+    for entry in _load_store().values():
+        if entry.get("sandbox_id") == sandbox_id:
+            try:
+                return SandboxHandle.from_dict(entry)
+            except Exception as e:
+                logger.warning("find_by_sandbox_id(%s): corrupt entry: %s", sandbox_id, e)
+    return None
+
+
+def list_orphan_sandbox_ids(sandbox_ids: List[str]) -> List[str]:
+    """Return the subset of ``sandbox_ids`` that have NO matching persisted handle.
+
+    Used by the cube orphan-reconciler: pass in the IDs that CubeMaster
+    currently reports, get back the ones MoJo has no record of (stranded VMs).
+    """
+    if not sandbox_ids:
+        return []
+    known = {
+        entry.get("sandbox_id")
+        for entry in _load_store().values()
+        if entry.get("sandbox_id")
+    }
+    return [sid for sid in sandbox_ids if sid not in known]
 
 
 def _save_store(store: Dict[str, Dict[str, Any]]) -> None:

@@ -623,16 +623,25 @@ class OpenCodeSessionHandler(TaskHandler):
                         "template_id": cfg.get("sandbox_template"),
                     },
                 )
+                # Pipe provenance kwargs through to the backend so the
+                # persisted handle records who/what created this sandbox.
+                _provenance_kwargs = {
+                    "role_id": getattr(task, "role_id", None) or cfg.get("role_id"),
+                    "parent_task_id": getattr(task, "parent_task_id", None) or cfg.get("parent_task_id"),
+                    "environment": cfg.get("environment") or cfg.get("env"),
+                }
                 handle = backend.start(
                     task_id=task.id,
                     working_dir=working_dir or "",
+                    **_provenance_kwargs,
                 )
                 cfg[f"_backend_{backend_name}"] = backend
                 cfg[f"_handle_{backend_name}"] = handle
                 url = backend.get_opencode_url(handle)
                 logger.info(
-                    "Started %s sandbox for %s (sandbox_id=%s url=%s)",
+                    "Started %s sandbox for %s (sandbox_id=%s url=%s role=%s env=%s)",
                     backend_name, task.id, handle.sandbox_id, url,
+                    handle.role_id, handle.environment,
                 )
                 client = OpenCodeClient(base_url=url)
                 cfg["_opencode_client"] = client
@@ -784,10 +793,8 @@ def _map_user_reply_to_permission(reply: str) -> str:
 async def _push_hitl_notification(ctx: ExecutorContext, task: Task) -> None:
     """Send a Discord HITL push for a WAITING_FOR_INPUT task."""
     try:
-        from app.mcp.adapters.hitl.manager import HITLManager
-        mgr = HITLManager.load_from_config()
-        if ctx._scheduler:
-            mgr.set_scheduler(ctx._scheduler)
+        from app.mcp.adapters.hitl.manager import get_shared_manager
+        mgr = get_shared_manager()
         choices = task.config.get("pending_options") or ["once", "always", "reject"]
         await mgr.send_hitl(
             task_id=task.id,
@@ -803,10 +810,8 @@ async def _push_completion_notification(
 ) -> None:
     """Send a completion push notification."""
     try:
-        from app.mcp.adapters.hitl.manager import HITLManager
-        mgr = HITLManager.load_from_config()
-        if ctx._scheduler:
-            mgr.set_scheduler(ctx._scheduler)
+        from app.mcp.adapters.hitl.manager import get_shared_manager
+        mgr = get_shared_manager()
         msg = f"Coding task complete [{task.id}]:\n{summary[:300]}"
         await mgr.send_notification(title="Coding Session Complete", body=msg)
     except Exception as e:
