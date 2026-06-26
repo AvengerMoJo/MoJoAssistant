@@ -6176,6 +6176,15 @@ Agent resumes within seconds.
         if action == "registry_refresh":
             return await self._execute_registry_refresh()
 
+        # --- embedding pool ---
+        if action == "embedding_pool_status":
+            try:
+                from app.memory.embedding_pool import get_embedding_pool
+                pool = get_embedding_pool()
+                return {"status": "success", "resources": pool.list_resources()}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
         # --- custom tool management ---
         if action in ("capability_list", "capability_get", "capability_add", "capability_remove"):
             return await self._execute_tool_manage(action, args)

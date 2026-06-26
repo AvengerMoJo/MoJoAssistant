@@ -237,6 +237,7 @@ class ConfigDoctor:
         report = DoctorReport()
         self._check_resources(report)
         self._check_resource_pool_refinement(report)
+        self._check_embedding_pool(report)
         self._check_mcp_servers(report)
         self._check_roles(report)
         self._check_nine_chapter_scores(report)
@@ -247,6 +248,43 @@ class ConfigDoctor:
         self._check_capabilities(report)
         self._check_modules(report)
         return report
+
+    # ------------------------------------------------------------------
+    # Embedding pool checks
+    # ------------------------------------------------------------------
+
+    def _check_embedding_pool(self, report: DoctorReport) -> None:
+        """Check embedding pool health and configuration."""
+        try:
+            from app.memory.embedding_pool import get_embedding_pool
+            pool = get_embedding_pool()
+            resources = pool.list_resources()
+
+            for r in resources:
+                status = "pass" if r["enabled"] else "warn"
+                if r["status"] == "failed":
+                    status = "error"
+
+                report.add(CheckResult(
+                    category="embedding_pool",
+                    id=r["id"],
+                    field="status",
+                    value=r["status"],
+                    status=status,
+                    message=f"Backend={r['backend']} model={r['model_name']} dim={r['embedding_dim']} "
+                            f"priority={r['priority']} calls={r['calls']} failures={r['failures']}"
+                            + (f" error={r['last_error']}" if r['last_error'] else ""),
+                ))
+
+        except Exception as e:
+            report.add(CheckResult(
+                category="embedding_pool",
+                id="pool",
+                field="init",
+                value=None,
+                status="warn",
+                message=f"Could not load embedding pool: {e}",
+            ))
 
     # ------------------------------------------------------------------
     # MCP server checks
