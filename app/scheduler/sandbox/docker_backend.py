@@ -77,7 +77,7 @@ class DockerSandboxBackend(SandboxBackend):
 
     def _run_docker(self, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
         cmd = ["docker"] + args
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, errors='replace')
 
     def _inspect_container(self, container_id: str) -> Optional[Dict[str, Any]]:
         result = self._run_docker(["inspect", container_id])
@@ -128,7 +128,7 @@ class DockerSandboxBackend(SandboxBackend):
         cmd.append(self._image)
 
         logger.info("DockerSandboxBackend.start: running %s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, errors='replace')
 
         if result.returncode != 0:
             _release_port(port)

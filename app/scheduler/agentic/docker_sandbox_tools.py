@@ -49,7 +49,7 @@ def _release_port(port: int) -> None:
 
 
 def _run_docker(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
-    return subprocess.run(["docker"] + args, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["docker"] + args, capture_output=True, text=True, timeout=timeout, errors='replace')
 
 
 # -------------------------------------------------------------------
@@ -103,7 +103,7 @@ def docker_sandbox_create(args: Dict[str, Any]) -> Dict[str, Any]:
     cmd.append(image)
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, errors='replace')
     except subprocess.TimeoutExpired:
         _release_port(port)
         return {"success": False, "error": "docker run timed out"}
