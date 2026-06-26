@@ -220,13 +220,16 @@ class UnifiedLLMClient:
         messages: List[Dict],
         resource_config: Dict[str, Any],
         model_override: Optional[str] = None,
-    ) -> AsyncIterator[str]:
+        tools: Optional[List[Dict]] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
         """
-        Async streaming LLM call. Yields text chunks as they arrive.
+        Async streaming LLM call. Yields event dicts as they arrive.
 
-        Only supports text generation (no tool calls — use call_async for those).
-        Uses OpenAI-compatible SSE format: data: {...}\n\n lines.
-        Yields decoded content strings only; caller receives plain text chunks.
+        Yields events of two types:
+        - {"type": "content", "text": "..."} — text chunk
+        - {"type": "tool_calls", "tool_calls": [...]} — accumulated tool calls (yielded once at end)
+
+        Pass `tools` to enable function calling in the stream.
         """
         base_url = resource_config.get("base_url", "").rstrip("/")
         message_format = resource_config.get("message_format", "openai")
@@ -234,7 +237,7 @@ class UnifiedLLMClient:
         model = model_override or resource_config.get("model", "")
         headers = self._build_headers(resource_config)
 
-        payload = self._build_payload(messages, model, output_limit, message_format, tools=None)
+        payload = self._build_payload(messages, model, output_limit, message_format, tools=tools)
         payload["stream"] = True
 
         if message_format == "anthropic":
@@ -242,7 +245,10 @@ class UnifiedLLMClient:
         else:
             url = f"{base_url}/chat/completions"
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        # Accumulate tool calls across chunks
+        tool_call_acc: Dict[int, Dict] = {}
+
+        async with httpx.AsyncClient(timeout=300.0, connect=10.0) as client:
             async with client.stream("POST", url, json=payload, headers=headers) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
@@ -257,19 +263,39 @@ class UnifiedLLMClient:
                         continue
 
                     if message_format == "anthropic":
-                        # Anthropic stream: content_block_delta events
                         delta = chunk.get("delta", {})
                         text = delta.get("text", "")
+                        if text:
+                            yield {"type": "content", "text": text}
                     else:
-                        # OpenAI stream: choices[0].delta.content
                         choices = chunk.get("choices", [])
                         if not choices:
                             continue
                         delta = choices[0].get("delta", {})
+                        # Stream content tokens
                         text = delta.get("content") or ""
+                        if text:
+                            yield {"type": "content", "text": text}
+                        # Accumulate tool calls
+                        for tc in delta.get("tool_calls") or []:
+                            idx = tc.get("index", 0)
+                            if idx not in tool_call_acc:
+                                tool_call_acc[idx] = {
+                                    "id": tc.get("id", ""),
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+                            if tc.get("id"):
+                                tool_call_acc[idx]["id"] = tc["id"]
+                            fn = tc.get("function") or {}
+                            if fn.get("name"):
+                                tool_call_acc[idx]["function"]["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                tool_call_acc[idx]["function"]["arguments"] += fn["arguments"]
 
-                    if text:
-                        yield text
+                # After stream ends, yield accumulated tool calls if any
+                if tool_call_acc:
+                    yield {"type": "tool_calls", "tool_calls": [tool_call_acc[i] for i in sorted(tool_call_acc)]}
 
     def call_sync(
         self,

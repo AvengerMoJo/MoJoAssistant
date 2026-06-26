@@ -1028,25 +1028,70 @@ class RoleChatSession:
                 for chunk in _split_chunks(response_text):
                     yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
             else:
-                # --- Tool-call iterations (non-streaming) ---
-                msg: Dict[str, Any] = {}
-                ready_to_stream = False
-                for _iteration in range(MAX_CHAT_ITERATIONS):
-                    data = await self._call_raw(
-                        messages, resource_manager,
-                        tools=chat_tools if chat_tools else None,
-                    )
-                    msg = (data.get("choices") or [{}])[0].get("message") or {}
-                    tool_calls = msg.get("tool_calls")
+                # --- Streaming tool-call loop ---
+                from app.llm.unified_client import UnifiedLLMClient
+                client = UnifiedLLMClient()
 
-                    if not tool_calls:
-                        # No more tool calls — stream this response
-                        ready_to_stream = True
+                for _iteration in range(MAX_CHAT_ITERATIONS):
+                    resource = resource_manager.acquire()
+                    if resource is None:
+                        err = "(No LLM resource available)"
+                        yield f'data: {json.dumps({"type": "token", "text": err})}\n\n'
+                        response_text = err
                         break
 
-                    # Execute tools, yield status events so the UI shows progress
+                    model = resource.model or ""
+                    resource_config = {
+                        "base_url": resource.base_url,
+                        "model": model,
+                        "api_key": resource.api_key,
+                        "output_limit": min(resource.output_limit or 8192, 8192),
+                        "message_format": "openai",
+                        "provider": resource.provider,
+                    }
+
+                    # Stream content tokens immediately; accumulate tool calls
+                    content_buf = ""
+                    tool_calls_received = None
+                    try:
+                        async for event in client.call_stream_async(
+                            messages, resource_config,
+                            model_override=model,
+                            tools=chat_tools if chat_tools else None,
+                        ):
+                            if event["type"] == "content":
+                                text = event["text"]
+                                # Strip <think> prefix before streaming
+                                if not content_buf and text.startswith("<think>"):
+                                    continue
+                                content_buf += text
+                                yield f'data: {json.dumps({"type": "token", "text": text})}\n\n'
+                            elif event["type"] == "tool_calls":
+                                tool_calls_received = event["tool_calls"]
+                    except Exception as stream_err:
+                        logger.warning(f"[role_chat] stream failed: {stream_err}")
+                        # Fallback to blocking call
+                        fallback_data = await self._call_raw(messages, resource_manager, tools=chat_tools)
+                        fallback_msg = (fallback_data.get("choices") or [{}])[0].get("message") or {}
+                        tool_calls_received = fallback_msg.get("tool_calls")
+                        if not tool_calls_received:
+                            content_buf = fallback_msg.get("content") or ""
+                            for chunk in _split_chunks(content_buf):
+                                yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+
+                    # If no tool calls, we're done
+                    if not tool_calls_received:
+                        response_text = content_buf
+                        break
+
+                    # Execute tool calls
+                    msg = {
+                        "role": "assistant",
+                        "content": content_buf or None,
+                        "tool_calls": tool_calls_received,
+                    }
                     messages.append(msg)
-                    for tc in tool_calls:
+                    for tc in tool_calls_received:
                         fn = tc.get("function") or {}
                         tool_name = fn.get("name", "")
                         yield f'data: {json.dumps({"type": "tool", "name": tool_name})}\n\n'
@@ -1077,27 +1122,10 @@ class RoleChatSession:
                         })
                         total_tool_calls += 1
                 else:
-                    # Budget exhausted — force a final text-only call, then stream it
+                    # Budget exhausted — force a final text-only call
                     messages.append({"role": "system", "content": _FINAL_TOOL_LOOP_PROMPT})
-                    ready_to_stream = True
-
-                # --- Stream the final text response ---
-                if ready_to_stream and msg.get("tool_calls") is None and msg.get("content"):
-                    # Non-streaming final response already in `msg` (no tool calls, got text)
-                    content = msg.get("content") or ""
-                    if "<think>" in content and "</think>" in content:
-                        content = content.split("</think>", 1)[-1].strip() or content
-                    response_text = content
-                    for chunk in _split_chunks(response_text):
-                        yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
-                else:
-                    # Use streaming for the final LLM call
                     resource = resource_manager.acquire()
-                    if resource is None:
-                        err = "(No LLM resource available for streaming)"
-                        yield f'data: {json.dumps({"type": "token", "text": err})}\n\n'
-                        response_text = err
-                    else:
+                    if resource:
                         model = resource.model or ""
                         resource_config = {
                             "base_url": resource.base_url,
@@ -1107,31 +1135,15 @@ class RoleChatSession:
                             "message_format": "openai",
                             "provider": resource.provider,
                         }
-                        from app.llm.unified_client import UnifiedLLMClient
-                        client = UnifiedLLMClient()
-                        try:
-                            async for chunk in client.call_stream_async(
-                                messages, resource_config, model_override=model
-                            ):
-                                # Strip <think> prefix before streaming
-                                if not response_text and chunk.startswith("<think>"):
+                        async for event in client.call_stream_async(
+                            messages, resource_config, model_override=model
+                        ):
+                            if event["type"] == "content":
+                                text = event["text"]
+                                if not response_text and text.startswith("<think>"):
                                     continue
-                                response_text += chunk
-                                yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
-                            # Post-process: strip any <think>...</think> block
-                            if "<think>" in response_text and "</think>" in response_text:
-                                response_text = response_text.split("</think>", 1)[-1].strip()
-                        except Exception as stream_err:
-                            logger.warning(f"[role_chat] stream failed, falling back: {stream_err}")
-                            # Fallback to blocking call
-                            fallback_data = await self._call_raw(messages, resource_manager, tools=None)
-                            fallback_msg = (fallback_data.get("choices") or [{}])[0].get("message") or {}
-                            content = fallback_msg.get("content") or ""
-                            if "<think>" in content and "</think>" in content:
-                                content = content.split("</think>", 1)[-1].strip() or content
-                            response_text = content
-                            for chunk in _split_chunks(response_text):
-                                yield f'data: {json.dumps({"type": "token", "text": chunk})}\n\n'
+                                response_text += text
+                                yield f'data: {json.dumps({"type": "token", "text": text})}\n\n'
 
         except Exception as exc:
             err_msg = str(exc)
