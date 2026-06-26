@@ -1,0 +1,41 @@
+{
+  "_comment": "Embedding pool configuration example. Copy to ~/.memory/config/embedding_pool.json to apply. Lower priority number = higher priority (selected first). Failover tries backends in priority order.",
+  "embedding_models": {
+    "default": {
+      "backend": "huggingface",
+      "model_name": "BAAI/bge-m3",
+      "embedding_dim": 1024,
+      "device": "cpu",
+      "priority": 10,
+      "enabled": true
+    },
+    "fast": {
+      "backend": "huggingface",
+      "model_name": "BAAI/bge-small-en-v1.5",
+      "embedding_dim": 384,
+      "device": "cpu",
+      "priority": 20,
+      "enabled": true
+    },
+    "openai-small": {
+      "backend": "api",
+      "model_name": "text-embedding-3-small",
+      "api_key": "$OPENAI_API_KEY",
+      "embedding_dim": 1536,
+      "priority": 30,
+      "enabled": false
+    },
+    "local-server": {
+      "backend": "local",
+      "server_url": "http://localhost:8080/embed",
+      "priority": 40,
+      "enabled": false
+    },
+    "fallback": {
+      "backend": "random",
+      "embedding_dim": 768,
+      "priority": 99,
+      "enabled": true
+    }
+  }
+}
