@@ -203,6 +203,17 @@ class CodingAgentExecutor:
                 success=False, error_message=f"Failed to get/create agent session: {e}"
             )
 
+        # Probe liveness — replace stale session transparently if container restarted.
+        try:
+            agent_session_id = await self._ensure_session_alive(
+                backend, agent_session_id, role_id, server_id
+            )
+        except Exception as e:
+            return TaskResult(
+                success=False,
+                error_message=f"Session recovery failed for {role_id}::{server_id}: {e}",
+            )
+
         self._log(f"Task {task.id}: using agent session {agent_session_id}")
 
         # Permission resume — state lives in SessionStore, not TaskConfig.
@@ -745,6 +756,54 @@ class CodingAgentExecutor:
         except Exception as e:
             self._log(f"Failed to load coding agent backend (server_id={server_id}): {e}", "warning")
             return None
+
+    async def _ensure_session_alive(
+        self,
+        backend: Any,
+        session_id: str,
+        role_id: str,
+        server_id: str,
+    ) -> str:
+        """Verify the session still exists on the backend. If dead, create a new one.
+
+        OpenCode sessions are lost whenever the container or server restarts.
+        The registry's SessionStore holds stale IDs indefinitely, causing every
+        subsequent task to burn iterations on HTTP 404s before hitting HITL.
+        This probe catches the dead session at execute() time and transparently
+        replaces it so the task can start cleanly.
+        """
+        try:
+            await backend.get_session(session_id)
+            return session_id  # alive — nothing to do
+        except Exception as probe_err:
+            self._log(
+                f"Session {session_id} is dead ({probe_err}); creating new session "
+                f"for {role_id}::{server_id}",
+                "warning",
+            )
+
+        # Clear the stale entry so get_or_create_session won't return it again.
+        try:
+            self._registry._sessions.delete_session(role_id, server_id)
+        except Exception:
+            pass  # SessionStore API may vary; best-effort
+
+        # Create a replacement and register it.
+        session_data = await backend.create_session()
+        new_id = session_data.get("id") or session_data.get("sessionID")
+        if not new_id:
+            raise ValueError(
+                f"create_session returned no ID after stale-session recovery: {session_data}"
+            )
+        try:
+            self._registry._sessions.put_session(
+                role_id, server_id, new_id, backend_type=backend.backend_type
+            )
+        except Exception:
+            pass  # best-effort registration
+
+        self._log(f"Recovered: new session {new_id} for {role_id}::{server_id}")
+        return new_id
 
     def _build_system_prompt(self, role: dict, backend: Any, session_id: str) -> str:
         persona = role.get("system_prompt", "You are a coding assistant.")
