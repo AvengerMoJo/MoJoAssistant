@@ -126,15 +126,20 @@ async def lifespan(app: FastAPI):
     try:
         # Load configuration
         embedding_config = load_embedding_config()
-        
+
         # Initialize memory service
         embed_config = embedding_config["embedding_models"]["default"]
+        # Forward all extra backend-specific fields (server_url, api_key,
+        # request_format, dimensions, embedding_dim, ...) through **kwargs.
+        _known = {"model_name", "backend", "device"}
+        embed_extras = {k: v for k, v in embed_config.items() if k not in _known}
         memory_service = create_memory_service(
             data_dir=embedding_config.get("memory_settings", {}).get("data_directory") or get_memory_path(),
             embedding_model=embed_config.get("model_name", "BAAI/bge-m3"),
             embedding_backend=embed_config.get("backend", "huggingface"),
             embedding_device=embed_config.get("device"),
-            config=embedding_config.get("memory_settings", {})
+            config=embedding_config.get("memory_settings", {}),
+            **embed_extras,
         )
         
         if logger is not None:

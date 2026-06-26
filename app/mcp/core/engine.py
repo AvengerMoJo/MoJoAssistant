@@ -35,18 +35,52 @@ class MCPEngine:
 
         if not self.memory_service:
             from app.services.memory_backend import create_hybrid_memory_service
+            from app.config.config_loader import load_embedding_config
 
-            # Extract embedding config from engine config
-            embedding_model = self.config.get("embedding_model", "BAAI/bge-m3")
-            embedding_backend = self.config.get("embedding_backend", "huggingface")
-            embedding_device = self.config.get("embedding_device")
+            # Pull the merged embedding config (system + ~/.memory overlay).
+            # The file-based config is the source of truth for backend-specific
+            # fields (server_url, api_key, request_format, dimensions, ...).
+            try:
+                merged = load_embedding_config()
+                embed_default = dict(merged.get("embedding_models", {}).get("default", {}))
+            except Exception as e:
+                self.logger.warning("Failed to load embedding_config.json, falling back to env: %s", e)
+                merged, embed_default = None, {}
+
+            # Layered: env-driven app_config values win over file-based values
+            # for the 3 known fields, so EMBEDDING_MODEL / EMBEDDING_BACKEND
+            # env vars still take precedence when explicitly set.
+            env_model = self.config.get("embedding_model", "BAAI/bge-m3")
+            env_backend = self.config.get("embedding_backend", "huggingface")
+            env_device = self.config.get("embedding_device")
+
+            embedding_model = env_model or embed_default.get("model_name", "BAAI/bge-m3")
+            embedding_backend = env_backend or embed_default.get("backend", "huggingface")
+            embedding_device = env_device or embed_default.get("device")
+
+            # Forward the rest of the file-based config as backend kwargs.
+            extras: Dict[str, Any] = {}
+            for k, v in embed_default.items():
+                if k not in {"model_name", "backend", "device"}:
+                    extras[k] = v
+            # Merge memory_settings (working_memory_max_tokens, data_directory, ...)
+            # into the config dict so MemoryService picks it up.
+            effective_config = dict(self.config) if isinstance(self.config, dict) else self.config
+            if merged and "memory_settings" in merged:
+                if isinstance(effective_config, dict):
+                    effective_config = {**effective_config, **merged["memory_settings"]}
+                else:
+                    # effective_config is an AppConfig dataclass; fall back to
+                    # leaving it untouched if we can't merge cleanly.
+                    pass
 
             self.memory_service = create_hybrid_memory_service(
                 data_dir=get_memory_path(),
-                config=self.config,
+                config=effective_config,
                 embedding_model=embedding_model,
                 embedding_backend=embedding_backend,
                 embedding_device=embedding_device,
+                **extras,
             )
             self.logger.info(f"Memory service initialized with embedding: {embedding_backend}/{embedding_model}")
 
