@@ -154,6 +154,30 @@ class EmbeddingPool:
                 if r.backend == "api" and "openai" in r.id.lower() and not r.api_key:
                     r.api_key = openai_key
 
+    def _available_candidates(self, min_dim: Optional[int] = None) -> List[EmbeddingResource]:
+        """
+        Return all healthy resources sorted by priority (caller must hold self._lock).
+
+        Auto-recovers failed resources whose recovery_ttl has elapsed.
+        Filters out disabled resources and those below min_dim.
+        """
+        now = time.time()
+        candidates = []
+        for res in self._resources.values():
+            if not res.enabled:
+                continue
+            if res.status == "failed":
+                if now - res.failed_at < self._recovery_ttl:
+                    continue
+                res.status = "available"
+                res.last_error = None
+                res.failed_at = 0.0
+            if min_dim is not None and (res.embedding_dim or 0) < min_dim:
+                continue
+            candidates.append(res)
+        candidates.sort(key=lambda x: x.priority)
+        return candidates
+
     def acquire(
         self,
         preferred_id: Optional[str] = None,
@@ -171,37 +195,17 @@ class EmbeddingPool:
         """
         with self._lock:
             self._maybe_reload()
-
-            now = time.time()
-            candidates = []
-            for r in self._resources.values():
-                if not r.enabled:
-                    continue
-                # Auto-recover failed resources after TTL
-                if r.status == "failed":
-                    if now - r.failed_at < self._recovery_ttl:
-                        continue
-                    r.status = "available"
-                    r.last_error = None
-                    r.failed_at = 0.0
-                if min_dim is not None and (r.embedding_dim or 0) < min_dim:
-                    continue
-                candidates.append(r)
+            candidates = self._available_candidates(min_dim)
 
             if not candidates:
                 return None
 
-            # Sort by priority (lower = higher priority)
-            candidates.sort(key=lambda r: r.priority)
-
-            # If preferred_id specified and available, use it
             if preferred_id:
-                for r in candidates:
-                    if r.id == preferred_id:
-                        r.last_used = time.time()
-                        return r
+                for res in candidates:
+                    if res.id == preferred_id:
+                        res.last_used = time.time()
+                        return res
 
-            # Otherwise use highest priority
             resource = candidates[0]
             resource.last_used = time.time()
             return resource
@@ -216,39 +220,22 @@ class EmbeddingPool:
         Acquire primary + fallback resources ordered by priority.
 
         Args:
-            preferred_id: Specific resource ID to prefer
+            preferred_id: Specific resource ID to prefer (floated to front)
             min_dim: Minimum embedding dimension required
             strict_dim: If True, only return resources matching primary's dim
 
         Returns:
-            List of resources to try in order.
+            List of resources to try in order (empty if none available).
         """
         with self._lock:
             self._maybe_reload()
-
-            now = time.time()
-            candidates = []
-            for r in self._resources.values():
-                if not r.enabled:
-                    continue
-                if r.status == "failed":
-                    if now - r.failed_at < self._recovery_ttl:
-                        continue
-                    r.status = "available"
-                    r.last_error = None
-                    r.failed_at = 0.0
-                if min_dim is not None and (r.embedding_dim or 0) < min_dim:
-                    continue
-                candidates.append(r)
-
-            candidates.sort(key=lambda r: r.priority)
+            candidates = self._available_candidates(min_dim)
 
             if preferred_id:
                 preferred = [r for r in candidates if r.id == preferred_id]
                 others = [r for r in candidates if r.id != preferred_id]
                 candidates = preferred + others
 
-            # Strict dim: filter fallbacks to match primary's dimension
             if strict_dim and candidates:
                 primary_dim = candidates[0].embedding_dim
                 candidates = [r for r in candidates if r.embedding_dim == primary_dim]

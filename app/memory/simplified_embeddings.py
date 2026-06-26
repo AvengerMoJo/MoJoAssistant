@@ -42,7 +42,7 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
         # Try to use pool for initialization
         if self._pool:
             resources = self._pool.acquire_with_fallback(
-                preferred_id=preferred_model or "default",
+                preferred_id=preferred_model,
                 min_dim=embedding_dim,
             )
             if resources:
@@ -70,23 +70,18 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
     def get_text_embedding(self, text: str, prompt_name: str = "passage") -> List[float]:
         """Get embedding with automatic failover on error."""
         last_error = None
+        t0 = time.monotonic()
 
-        # Try current backend first
         try:
-            t0 = time.monotonic()
             result = super().get_text_embedding(text, prompt_name)
             if result:
                 if self._pool and self._current_resource:
-                    self._pool.record_call(
-                        self._current_resource.id,
-                        (time.monotonic() - t0) * 1000,
-                    )
+                    self._pool.record_call(self._current_resource.id, (time.monotonic() - t0) * 1000)
                 return result
         except Exception as e:
             last_error = e
             self.logger.warning(f"Primary embedding failed: {e}")
 
-        # Try fallback resources
         for resource in self._fallback_resources:
             if resource == self._current_resource:
                 continue
@@ -106,7 +101,6 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
                 if self._pool:
                     self._pool.mark_failed(resource.id, str(e))
 
-        # All backends failed
         if last_error:
             raise last_error
         return []
@@ -114,16 +108,13 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
     def get_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Get batch embeddings with automatic failover on error."""
         last_error = None
+        t0 = time.monotonic()
 
         try:
-            t0 = time.monotonic()
             result = super().get_batch_embeddings(texts)
             if result:
                 if self._pool and self._current_resource:
-                    self._pool.record_call(
-                        self._current_resource.id,
-                        (time.monotonic() - t0) * 1000,
-                    )
+                    self._pool.record_call(self._current_resource.id, (time.monotonic() - t0) * 1000)
                 return result
         except Exception as e:
             last_error = e
