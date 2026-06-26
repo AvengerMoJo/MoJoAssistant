@@ -182,30 +182,64 @@ def resolve_llm_resource(resource_id: str) -> Dict[str, Any]:
 
 def load_embedding_config(config_file: str = "config/embedding_config.json") -> Dict[str, Any]:
     """
-    Load embedding model configuration with environment variable support
-    
-    Environment variables take precedence over config file values:
-    - OPENAI_API_KEY: OpenAI API key
-    - COHERE_API_KEY: Cohere API key  
-    - EMBEDDING_MODEL: Default embedding model name
-    - EMBEDDING_BACKEND: Default embedding backend
-    - EMBEDDING_DEVICE: Default device (cpu/cuda)
+    Load embedding model configuration with environment variable support.
+
+    Layered loading (later wins):
+      1. <config_file>              — codebase defaults
+      2. ~/.memory/config/embedding_config.json — personal overrides
+      3. Environment variables      — OPENAI_API_KEY, COHERE_API_KEY,
+                                      EMBEDDING_MODEL, EMBEDDING_BACKEND,
+                                      EMBEDDING_DEVICE, MEMORY_DATA_DIR
+      4. api_key_env per model      — explicit secret reference
     """
     try:
-        # Load base configuration from file
+        # Layer 1: codebase defaults
         config = _load_base_config(config_file)
-        
-        # Override with environment variables
+
+        # Layer 2: personal runtime overrides
+        config = _apply_personal_overlay(config, "embedding_config.json")
+
+        # Layer 3+4: env-var resolution (api_key_env, legacy vars, defaults)
         config = _apply_env_overrides(config)
-        
+
         # Validate configuration
         _validate_config(config)
-        
+
         return config
-        
+
     except Exception as e:
         logger.error(f"Failed to load embedding configuration: {e}")
         return _get_fallback_config()
+
+
+def _apply_personal_overlay(config: Dict[str, Any], filename: str) -> Dict[str, Any]:
+    """Deep-merge a personal override JSON over a base config.
+
+    Personal file path: ~/.memory/config/<filename>
+    If absent, returns config unchanged.
+    """
+    personal_path = Path.home() / ".memory" / "config" / filename
+    if not personal_path.exists():
+        return config
+    try:
+        with open(personal_path, "r") as f:
+            overlay = json.load(f)
+        logger.info("Applying personal config overlay from %s", personal_path)
+        return _deep_merge(config, overlay)
+    except Exception as e:
+        logger.warning("Failed to read personal config %s: %s", personal_path, e)
+        return config
+
+
+def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursive dict merge: overlay values win; lists/scalars are replaced."""
+    merged = dict(base)
+    for k, v in overlay.items():
+        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+            merged[k] = _deep_merge(merged[k], v)
+        else:
+            merged[k] = v
+    return merged
 
 def _load_base_config(config_file: str) -> Dict[str, Any]:
     """Load base configuration from JSON file"""
@@ -221,21 +255,54 @@ def _load_base_config(config_file: str) -> Dict[str, Any]:
         logger.info(f"Created default configuration at {config_file}")
         return default_config
 
+def _resolve_api_key(model_config: Dict[str, Any]) -> Optional[str]:
+    """Resolve an API key from api_key_env > api_key (non-placeholder).
+
+    Returns the resolved key string, or None if no usable key is found.
+    """
+    # 1. Explicit env-var reference (preferred — keeps secrets out of config)
+    env_var = model_config.get("api_key_env")
+    if env_var:
+        val = os.environ.get(env_var)
+        if val:
+            return val
+        logger.warning(
+            "api_key_env=%s set on model but env var is empty/missing", env_var
+        )
+    # 2. Literal api_key (reject obvious placeholders)
+    literal = model_config.get("api_key")
+    if literal and not literal.startswith("YOUR_"):
+        return literal
+    return None
+
+
 def _apply_env_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Apply environment variable overrides to configuration"""
-    
-    # Override API keys from environment variables
-    if "openai" in config.get("embedding_models", {}):
-        openai_key = os.getenv("OPENAI_API_KEY")
-        if openai_key:
-            config["embedding_models"]["openai"]["api_key"] = openai_key
-            logger.info("Using OpenAI API key from environment variable")
-    
-    if "cohere" in config.get("embedding_models", {}):
-        cohere_key = os.getenv("COHERE_API_KEY")
-        if cohere_key:
-            config["embedding_models"]["cohere"]["api_key"] = cohere_key
-            logger.info("Using Cohere API key from environment variable")
+    """Apply environment variable overrides to configuration.
+
+    For every model entry, resolve the API key using:
+        api_key_env  -> $ENV_VAR  (preferred, secret-free)
+        api_key      -> literal   (fallback)
+    """
+    models = config.get("embedding_models", {})
+    for name, model_cfg in models.items():
+        resolved = _resolve_api_key(model_cfg)
+        if resolved:
+            model_cfg["api_key"] = resolved
+            if model_cfg.get("api_key_env"):
+                logger.info(
+                    "Model '%s' api_key resolved from env var %s",
+                    name, model_cfg["api_key_env"],
+                )
+
+    # Legacy auto-injection for entry literally named "openai" / "cohere"
+    if "openai" in models and "api_key" not in models["openai"]:
+        k = os.getenv("OPENAI_API_KEY")
+        if k:
+            models["openai"]["api_key"] = k
+    if "cohere" in models and "api_key" not in models["cohere"]:
+        k = os.getenv("COHERE_API_KEY")
+        if k:
+            models["cohere"]["api_key"] = k
     
     # Override default model settings
     embedding_model = os.getenv("EMBEDDING_MODEL")
@@ -314,17 +381,23 @@ def _validate_embedding_model(model_name: str, model_config: Dict[str, Any]) -> 
         elif backend == "api":
             if "model_name" not in model_config:
                 errors.append(f"API model '{model_name}' missing 'model_name' field")
-            
-            # Check for API key (either in config or environment)
+
+            # Check for API key: api_key_env > api_key > environment variable
+            api_key_env = model_config.get("api_key_env")
             api_key = model_config.get("api_key")
             model_name_val = model_config.get("model_name", "")
-            
-            if not api_key or api_key.startswith("YOUR_"):
-                # Check environment variables
+
+            env_key_available = bool(
+                api_key_env and os.getenv(api_key_env)
+            )
+            literal_key_available = bool(api_key and not api_key.startswith("YOUR_"))
+
+            if not (env_key_available or literal_key_available):
+                # Fallback legacy env var lookup
                 if "openai" in model_name_val.lower() and not os.getenv("OPENAI_API_KEY"):
-                    errors.append(f"API model '{model_name}' missing OpenAI API key (set OPENAI_API_KEY or api_key in config)")
+                    errors.append(f"API model '{model_name}' missing OpenAI API key (set api_key_env, api_key, or OPENAI_API_KEY)")
                 elif "cohere" in model_name_val.lower() and not os.getenv("COHERE_API_KEY"):
-                    errors.append(f"API model '{model_name}' missing Cohere API key (set COHERE_API_KEY or api_key in config)")
+                    errors.append(f"API model '{model_name}' missing Cohere API key (set api_key_env, api_key, or COHERE_API_KEY)")
         
         elif backend == "local":
             if "server_url" not in model_config:
@@ -345,10 +418,19 @@ def _validate_embedding_model(model_name: str, model_config: Dict[str, Any]) -> 
         elif backend == "openai_api":
             if "model_name" not in model_config:
                 errors.append(f"OpenAI API model '{model_name}' missing 'model_name' field")
+            # Acceptable key sources: api_key_env, literal api_key, OPENAI_API_KEY
+            api_key_env = model_config.get("api_key_env")
             api_key = model_config.get("api_key", "")
-            if not api_key or api_key.startswith("YOUR_"):
-                if not os.getenv("OPENAI_API_KEY"):
-                    errors.append(f"OpenAI API model '{model_name}' missing api_key (set api_key in config or OPENAI_API_KEY env var)")
+            has_key = (
+                (api_key_env and os.getenv(api_key_env))
+                or (api_key and not api_key.startswith("YOUR_"))
+                or os.getenv("OPENAI_API_KEY")
+            )
+            if not has_key:
+                errors.append(
+                    f"OpenAI API model '{model_name}' missing api_key "
+                    f"(set api_key_env, api_key, or OPENAI_API_KEY env var)"
+                )
         
         elif backend not in ["huggingface", "api", "local", "random", "openai_api"]:
             errors.append(f"Model '{model_name}' has unsupported backend '{backend}'")
@@ -421,7 +503,8 @@ Embedding Model Fields:
 - model_name: string (required for huggingface/api)
 - embedding_dim: positive integer (required for random)
 - device: "cpu" | "cuda" | "auto" (optional, for huggingface)
-- api_key: string (required for api models)
+- api_key: string (required for api models unless api_key_env is set)
+- api_key_env: env-var NAME that holds the API key (preferred for secrets)
 - server_url: valid URL (required for local)
 
 Memory Settings Fields:
