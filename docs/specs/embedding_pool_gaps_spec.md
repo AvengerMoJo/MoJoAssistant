@@ -42,6 +42,8 @@
 
 **Fix:** Add `_check_embedding_pool()` to `ConfigDoctor` class. Check: each enabled resource's backend is importable, api_key resolves, server_url is reachable (for local/api backends).
 
+**Status:** ✅ Done — `app/config/doctor.py` `_check_embedding_pool()`
+
 **Files:** `app/config/doctor.py`
 
 ---
@@ -74,6 +76,8 @@
 - `config(action="get", module="embedding_pool")` → list resources, status, priorities
 - `config(action="set", module="embedding_pool", path="resources.<id>.priority", value=N)` → reprioritize
 
+**Status:** ✅ Done — `config(action="embedding_pool_status")` returns pool state
+
 **Files:** `app/mcp/core/tools.py` (add embedding_pool module to config tool)
 
 ---
@@ -104,21 +108,23 @@
 
 **Fix:** Add `_stats: Dict[str, Dict]` to `EmbeddingPool` tracking `calls`, `failures`, `last_latency_ms` per resource_id. Log on each `acquire()` and `mark_failed()`. Expose via `list_resources()`.
 
+**Status:** ✅ Done — `record_call()` in pool, `list_resources()` includes metrics
+
 **Files:** `app/memory/embedding_pool.py`
 
 ---
 
 ## Execution Order
 
-1. Gap 3 (request_format fields) — unblocks Leon's OpenAI backend
-2. Gap 1 (auto-recovery) — prevents permanent failures
-3. Gap 2 (dimension mismatch) — prevents vector corruption
-4. Gap 5 (auto-reload) — config changes take effect
-5. Gap 8 (cache key) — prevents cache waste on failover
+1. ✅ Gap 3 (request_format fields) — unblocks Leon's OpenAI backend
+2. ✅ Gap 1 (auto-recovery) — prevents permanent failures
+3. ✅ Gap 2 (dimension mismatch) — prevents vector corruption
+4. ✅ Gap 5 (auto-reload) — config changes take effect
+5. ✅ Gap 8 (cache key) — prevents cache waste on failover
 6. Gap 6 (HybridMemoryService) — wires pool into actual memory
-7. Gap 10 (metrics) — observability
-8. Gap 4 (config doctor) — diagnostics
-9. Gap 7 (MCP tool) — user-facing status
+7. ✅ Gap 10 (metrics) — observability
+8. ✅ Gap 4 (config doctor) — diagnostics
+9. ✅ Gap 7 (MCP tool) — user-facing status
 10. Gap 9 (migration CLI) — user-facing migration
 
 ---
