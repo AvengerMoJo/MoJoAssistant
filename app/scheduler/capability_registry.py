@@ -534,6 +534,45 @@ class CapabilityRegistry:
                     },
                 }, "required": ["url"]},
             ),
+            CapabilityDefinition(
+                name="reason_tree_audit",
+                description=(
+                    "Audit multiple reviewer reports for conflicts before synthesizing.\n\n"
+                    "WHEN TO USE: After dispatching 2 or more roles (e.g. carl + rebecca) to review\n"
+                    "the same artifact. Call this tool with all final_answers BEFORE writing your\n"
+                    "own synthesis. It will:\n"
+                    "  1. Split each report into individual claims\n"
+                    "  2. Group claims by subject across all reports\n"
+                    "  3. Detect Conflict/Divergence Points (CDPs) — where reviewers contradict each other\n"
+                    "  4. Return a structured summary: AGREEMENTS (safe to include) + CDPs (resolve first)\n\n"
+                    "WHY: Majority vote silently buries minority-correct findings. If Carl and Popo say\n"
+                    "'looks fine' but Rebecca found a line-level bug, naive synthesis sides with the\n"
+                    "majority. This tool surfaces the conflict so you can apply the resolution rule:\n"
+                    "specific line-number evidence beats generic 'looks fine' responses.\n\n"
+                    "ALWAYS call this when you have 2+ reviewer reports. Never skip it to save time —\n"
+                    "a buried CDP will cause the same bug to re-surface later."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "reports": {
+                        "type": "array",
+                        "description": (
+                            "List of reviewer reports to audit. Each entry must have:\n"
+                            "  role_id: the reviewer's role name (e.g. 'carl', 'rebecca')\n"
+                            "  final_answer: the full text of their report/final answer"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role_id":      {"type": "string", "description": "Reviewer role id"},
+                                "final_answer": {"type": "string", "description": "Full report text"},
+                            },
+                            "required": ["role_id", "final_answer"],
+                        },
+                    },
+                }, "required": ["reports"]},
+            ),
         ]
         for tool in builtins:
             # Always overwrite builtins — code definition (including parameters schema)
@@ -635,6 +674,8 @@ class CapabilityRegistry:
                     return await self._list_roles(args)
                 elif name == "dispatch_subtask":
                     return await self._dispatch_subtask(args)
+                elif name == "reason_tree_audit":
+                    return self._reason_tree_audit(args)
                 elif name == "add_conversation":
                     return await self._add_conversation(args)
                 elif name == "memory_search":
@@ -972,6 +1013,47 @@ class CapabilityRegistry:
             "tip": (
                 "Use dispatch_subtask(role_id=...) with any role where valid=True. "
                 "If none match your need, use ask_user to request a new role."
+            ),
+        }
+
+    def _reason_tree_audit(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Audit multiple reviewer reports for Conflict/Divergence Points.
+
+        HOW IT WORKS
+        ─────────────
+        1. ATOMIZE — each final_answer is split into individual claim sentences/bullets.
+        2. GROUP — claims are clustered by their subject (file, function, concept).
+        3. DETECT CDPs — where one role says "positive/ok" and another says
+           "negative/broken" about the same subject, that's a CDP.
+        4. SUMMARIZE — returns AGREEMENTS (safe to use) + CDPs (must resolve first)
+           with a resolution guide: specific line-number evidence wins over generic
+           "looks fine" or "blocked by env" responses.
+
+        WHY NOT MAJORITY VOTE
+        ──────────────────────
+        If 2 roles say "ok" and 1 says "bug on line 29", majority vote silently
+        drops the correct finding. CDP detection surfaces it so the LLM can apply
+        the resolution guide and side with the specific evidence.
+        """
+        from app.scheduler.evals.reasoning_tree import reason_tree_audit
+
+        reports = args.get("reports", [])
+        if not reports:
+            return {"success": False, "error": "No reports provided"}
+
+        result = reason_tree_audit(reports)
+        return {
+            "success": True,
+            "reports_audited": len(reports),
+            "cdps_found": len(result.cdps),
+            "agreements_found": len(result.convergences),
+            "token_savings_estimate": result.token_savings_estimate,
+            "audit_summary": result.summary_text,
+            "next_step": (
+                "Read the AGREEMENTS and CDPs above carefully. "
+                "For each CDP, apply the resolution guide (specific evidence beats generic). "
+                "Then write your synthesis using confirmed + resolved findings."
             ),
         }
 
