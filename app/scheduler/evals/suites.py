@@ -101,6 +101,18 @@ CHARACTERIZATION_COMPLEXITY_LADDER = EvalSuite(
 )
 
 
+CHARACTERIZATION_PROTOCOL = EvalSuite(
+    id="characterization_protocol",
+    display_name="Protocol Compliance",
+    category=EvalCategory.CHARACTERIZATION,
+    default_scenarios=[
+        "characterization.protocol.long_write_then_answer",
+    ],
+    gating_policy={},
+    summary_metrics=["success_rate", "avg_duration", "failing_checks"],
+)
+
+
 # ---------------------------------------------------------------------------
 # Suite registry
 # ---------------------------------------------------------------------------
@@ -112,6 +124,7 @@ ALL_SUITES: Dict[str, EvalSuite] = {
         QUALIFICATION_REASONING,
         CHARACTERIZATION_TOOL_SCHEMA,
         CHARACTERIZATION_COMPLEXITY_LADDER,
+        CHARACTERIZATION_PROTOCOL,
     ]
 }
 

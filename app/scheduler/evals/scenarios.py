@@ -333,6 +333,54 @@ LONG_HORIZON_MULTI_LOOKUP = EvalScenario(
 
 
 # ---------------------------------------------------------------------------
+# Protocol compliance — verifies the model wraps up correctly after tool use
+# ---------------------------------------------------------------------------
+
+LONG_WRITE_THEN_ANSWER = EvalScenario(
+    id="characterization.protocol.long_write_then_answer",
+    suite="characterization_protocol",
+    category=EvalCategory.CHARACTERIZATION,
+    task_family="protocol_compliance",
+    complexity_level=ComplexityLevel.L3_CONSTRAINED,
+    goal_template=(
+        "Write a technical summary (at least 5 sentences) covering three points:\n"
+        "1. Why shared state is risky in multi-agent AI systems\n"
+        "2. How context window limits affect long-running agents\n"
+        "3. How external memory addresses both problems\n\n"
+        "Use write_file to save your summary to '{write_path}'.\n"
+        "Immediately after write_file returns, provide a <FINAL_ANSWER> confirming "
+        "the file was written and stating the three topics you covered."
+    ),
+    available_tools=["write_file"],
+    checks=[
+        EvalCheck(
+            id="write_called",
+            kind=CheckKind.TOOL_CALLED,
+            required=True,
+            failure_class=FailureClass.TOOL_NOT_CALLED,
+            params={"tool_name": "write_file"},
+        ),
+        EvalCheck(
+            id="final_answer",
+            kind=CheckKind.FINAL_ANSWER_PRESENT,
+            required=True,
+            failure_class=FailureClass.FINAL_ANSWER_MISSING,
+        ),
+        EvalCheck(
+            id="final_answer_efficiency",
+            kind=CheckKind.FINAL_ANSWER_EFFICIENCY,
+            required=True,
+            failure_class=FailureClass.FINAL_ANSWER_SLOW,
+            params={"max_iterations_after_last_tool": 1},
+        ),
+    ],
+    max_iterations=6,
+    max_duration_seconds=300,
+    tags=["characterization", "protocol", "long_write", "final_answer_efficiency"],
+)
+
+
+# ---------------------------------------------------------------------------
 # Integration — real backend checks
 # ---------------------------------------------------------------------------
 
@@ -412,6 +460,7 @@ for _s in [
     LOOKUP_THEN_WRITE, RETRY_ONCE,
     CONSTRAINT_PLAN_CHOICE,
     NOISY_CONTEXT_LOOKUP, LONG_HORIZON_MULTI_LOOKUP,
+    LONG_WRITE_THEN_ANSWER,
     INTEGRATION_BASH_EXEC, INTEGRATION_MEMORY_SEARCH,
 ]:
     ALL_SCENARIOS[_s.id] = _s

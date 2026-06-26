@@ -251,6 +251,7 @@ Supported kinds in phase 1:
 - `tool_called`
 - `final_answer_present`
 - `final_answer_contains`
+- `final_answer_efficiency` — passes if FINAL_ANSWER appeared within N iterations of the last tool call; param `max_iterations_after_last_tool` (default 1). Skipped if no tool calls. Targets the post-write wrap-up failure mode where models require extra rounds after a long `write_file` call.
 - `file_written_exact`
 - `min_tool_call_count`
 - `retry_after_failure`
@@ -342,6 +343,18 @@ Complexity bands:
 - `L5 Long-horizon`
 
 This is the suite the product actually needs for routing decisions.
+
+### Suite 6: `characterization_protocol`
+
+Purpose:
+
+- verify the model wraps up correctly after long tool calls
+
+Scenarios:
+
+- `characterization.protocol.long_write_then_answer` — asks the model to compose a multi-sentence technical document, write it via `write_file`, then produce `<FINAL_ANSWER>` in the very next iteration. Uses the `final_answer_efficiency` check with `max_iterations_after_last_tool=1`.
+
+This suite was added to benchmark the specific failure mode where a model times out or requires multiple extra iterations to emit `<FINAL_ANSWER>` after a long-form `write_file` call (observed with Rebecca on the AgentAuditor research task).
 
 ## SDK / MCP Surface
 
@@ -465,6 +478,7 @@ Recommended summary fields:
 - `retry_recovery_rate`
 - `constraint_accuracy`
 - `schema_sensitivity`
+- `post_write_wrap_up_rate` — fraction of `characterization_protocol` runs where FINAL_ANSWER appeared in ≤1 iteration after last tool call
 
 This should drive scheduler routing later, but in phase 1 it only needs to be
 visible through doctor/config.
