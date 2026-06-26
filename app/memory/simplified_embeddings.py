@@ -3,6 +3,7 @@
 Enhanced with EmbeddingPool integration for failover support.
 """
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -72,8 +73,14 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
 
         # Try current backend first
         try:
+            t0 = time.monotonic()
             result = super().get_text_embedding(text, prompt_name)
             if result:
+                if self._pool and self._current_resource:
+                    self._pool.record_call(
+                        self._current_resource.id,
+                        (time.monotonic() - t0) * 1000,
+                    )
                 return result
         except Exception as e:
             last_error = e
@@ -86,11 +93,13 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
             try:
                 self.logger.info(f"Falling back to embedding backend: {resource.id}")
                 self._switch_backend(resource)
+                t0 = time.monotonic()
                 result = super().get_text_embedding(text, prompt_name)
                 if result:
                     self._current_resource = resource
                     if self._pool:
                         self._pool.mark_available(resource.id)
+                        self._pool.record_call(resource.id, (time.monotonic() - t0) * 1000)
                     return result
             except Exception as e:
                 self.logger.warning(f"Fallback '{resource.id}' failed: {e}")
@@ -107,8 +116,14 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
         last_error = None
 
         try:
+            t0 = time.monotonic()
             result = super().get_batch_embeddings(texts)
             if result:
+                if self._pool and self._current_resource:
+                    self._pool.record_call(
+                        self._current_resource.id,
+                        (time.monotonic() - t0) * 1000,
+                    )
                 return result
         except Exception as e:
             last_error = e
@@ -120,11 +135,13 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
             try:
                 self.logger.info(f"Falling back to: {resource.id}")
                 self._switch_backend(resource)
+                t0 = time.monotonic()
                 result = super().get_batch_embeddings(texts)
                 if result:
                     self._current_resource = resource
                     if self._pool:
                         self._pool.mark_available(resource.id)
+                        self._pool.record_call(resource.id, (time.monotonic() - t0) * 1000)
                     return result
             except Exception as e:
                 self.logger.warning(f"Fallback '{resource.id}' failed: {e}")

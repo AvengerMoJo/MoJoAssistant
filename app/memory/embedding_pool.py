@@ -58,6 +58,8 @@ class EmbeddingPool:
         self._config_path = config_path
         self._recovery_ttl = recovery_ttl
         self._config_mtime: float = 0.0
+        # Metrics: resource_id -> {calls, failures, last_latency_ms}
+        self._stats: Dict[str, Dict[str, Any]] = {}
         self._load_config()
 
     def _load_config(self) -> None:
@@ -260,6 +262,7 @@ class EmbeddingPool:
                 self._resources[resource_id].status = "failed"
                 self._resources[resource_id].last_error = error
                 self._resources[resource_id].failed_at = time.time()
+                self._ensure_stats(resource_id)["failures"] += 1
                 logger.warning(f"EmbeddingPool: marked '{resource_id}' as failed: {error}")
 
     def mark_available(self, resource_id: str) -> None:
@@ -270,22 +273,51 @@ class EmbeddingPool:
                 self._resources[resource_id].last_error = None
                 self._resources[resource_id].failed_at = 0.0
 
-    def list_resources(self) -> List[Dict[str, Any]]:
-        """List all configured embedding resources."""
+    def _ensure_stats(self, resource_id: str) -> Dict[str, Any]:
+        """Get or create stats entry for a resource. Caller must hold self._lock."""
+        if resource_id not in self._stats:
+            self._stats[resource_id] = {
+                "calls": 0,
+                "failures": 0,
+                "total_latency_ms": 0.0,
+                "last_latency_ms": 0.0,
+            }
+        return self._stats[resource_id]
+
+    def record_call(self, resource_id: str, latency_ms: float) -> None:
+        """Record a successful embedding call for latency and throughput metrics."""
         with self._lock:
-            return [
-                {
-                    "id": r.id,
-                    "backend": r.backend,
-                    "model_name": r.model_name,
-                    "embedding_dim": r.embedding_dim,
-                    "priority": r.priority,
-                    "enabled": r.enabled,
-                    "status": r.status,
-                    "last_error": r.last_error,
-                }
-                for r in sorted(self._resources.values(), key=lambda r: r.priority)
-            ]
+            stats = self._ensure_stats(resource_id)
+            stats["calls"] += 1
+            stats["total_latency_ms"] += latency_ms
+            stats["last_latency_ms"] = round(latency_ms, 1)
+
+    def list_resources(self) -> List[Dict[str, Any]]:
+        """List all configured embedding resources with runtime metrics."""
+        with self._lock:
+            result = []
+            for res in sorted(self._resources.values(), key=lambda x: x.priority):
+                stats = self._stats.get(res.id, {
+                    "calls": 0, "failures": 0,
+                    "total_latency_ms": 0.0, "last_latency_ms": 0.0,
+                })
+                calls = stats["calls"]
+                avg_latency = round(stats["total_latency_ms"] / calls, 1) if calls else 0.0
+                result.append({
+                    "id": res.id,
+                    "backend": res.backend,
+                    "model_name": res.model_name,
+                    "embedding_dim": res.embedding_dim,
+                    "priority": res.priority,
+                    "enabled": res.enabled,
+                    "status": res.status,
+                    "last_error": res.last_error,
+                    "calls": calls,
+                    "failures": stats["failures"],
+                    "last_latency_ms": stats["last_latency_ms"],
+                    "avg_latency_ms": avg_latency,
+                })
+            return result
 
     def get_resource(self, resource_id: str) -> Optional[EmbeddingResource]:
         """Get a specific resource by ID."""
