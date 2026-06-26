@@ -58,8 +58,12 @@ def get_dream_provider(**kwargs: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 DEFAULT_MEMORY_SERVICE_CLASS = "mojo_memory.services.memory_service.MemoryService"
+# Points to the app-layer override which wires EmbeddingPool into both
+# _setup_embedding (primary model) and _setup_multi_model (additional models).
+# The submodule path mojo_memory.services.hybrid_memory_service.HybridMemoryService
+# bypasses the pool entirely — do not use that path directly.
 DEFAULT_HYBRID_MEMORY_SERVICE_CLASS = (
-    "mojo_memory.services.hybrid_memory_service.HybridMemoryService"
+    "app.services.hybrid_memory_service.HybridMemoryService"
 )
 
 
