@@ -1515,6 +1515,25 @@ class AgenticExecutor:
                     _loop_last_sig = None
                     _loop_consec = 0
 
+                # Post-write wrap-up nudge: if the last tool call wrote a file and
+                # we have no FINAL_ANSWER yet, prompt the model to wrap up now
+                # instead of starting another generation cycle.
+                _WRITE_TOOLS = {"write_file", "write_knowledge"}
+                _last_tool_names = {tc["function"]["name"] for tc in tool_calls}
+                if _last_tool_names & _WRITE_TOOLS and not final_answer:
+                    _write_result_ok = any(
+                        '"success": true' in r or "Wrote" in r
+                        for r in tool_results
+                    )
+                    if _write_result_ok and iteration < max_iterations - 1:
+                        _nudge = (
+                            "The file was written successfully. Your main work is complete.\n"
+                            "Emit <FINAL_ANSWER> now with a brief confirmation of what you "
+                            "wrote and where. Do not call any more tools."
+                        )
+                        messages.append({"role": "user", "content": _nudge})
+                        self._record(task.id, "user", _nudge, iteration=abs_iteration)
+
                 # If agent called ask_user, pause the loop here
                 if waiting:
                     self._log(
