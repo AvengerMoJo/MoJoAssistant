@@ -209,6 +209,8 @@ class CodingAgentExecutor:
         reply = config.pop("reply_to_question", None)
         pending_perm = self._registry.pop_pending_permission(role_id, server_id)
 
+        perm_id: str | None = None
+        response: str | None = None
         if pending_perm and reply is not None:
             perm_id = pending_perm.get("requestID") or pending_perm.get("id")
             response = self._map_reply_to_permission_response(reply)
@@ -256,7 +258,7 @@ class CodingAgentExecutor:
                 messages = self._initial_messages(system_prompt, goal, config, agent_session_id)
             else:
                 # Inject context about the permission resume
-                if pending_perm_id:
+                if perm_id:
                     messages.append({
                         "role": "user",
                         "content": (
@@ -523,6 +525,11 @@ class CodingAgentExecutor:
 
         send_task = asyncio.create_task(_send())
 
+        # Paths the agent is always allowed to access — no user gate needed.
+        # /workspace is the container's working directory (explicitly mounted or
+        # cloned by the task). /tmp is always safe. Extend per deployment if needed.
+        _AUTO_GRANT_PREFIXES = ("/workspace", "/tmp")
+
         # Poll for permission or wait for send_task to complete naturally
         deadline = asyncio.get_event_loop().time() + 280.0
         while asyncio.get_event_loop().time() < deadline:
@@ -540,7 +547,39 @@ class CodingAgentExecutor:
                     perm = perms[0]
                     perm_id = perm.get("requestID") or perm.get("id")
                     title = perm.get("title") or perm.get("permission") or "unknown"
-                    self._log(f"Permission detected: {title} ({perm_id})")
+                    directory = perm.get("directory") or ""
+                    patterns = perm.get("patterns") or []
+
+                    # Auto-grant permissions for known-safe container paths so the
+                    # agent never has to wait for a human to approve /workspace access.
+                    auto_grantable = any(
+                        (directory and directory.startswith(prefix))
+                        or any(p.startswith(prefix) for p in patterns)
+                        for prefix in _AUTO_GRANT_PREFIXES
+                    )
+
+                    if auto_grantable:
+                        self._log(
+                            f"Auto-granting permission {perm_id} ({title}) "
+                            f"for safe path (directory={directory!r})"
+                        )
+                        send_task.cancel()
+                        with suppress(Exception, asyncio.CancelledError):
+                            await send_task
+                        try:
+                            await backend.respond_to_permission(
+                                session_id, perm_id, "always", directory=directory
+                            )
+                        except Exception as grant_err:
+                            self._log(f"Auto-grant failed: {grant_err}", "warning")
+                        # Restart send_message — session is still alive after grant
+                        send_result = None
+                        send_error = None
+                        send_task = asyncio.create_task(_send())
+                        continue
+
+                    # Non-auto-grantable permission — escalate to user via HITL
+                    self._log(f"Permission requires user approval: {title} ({perm_id})")
                     self._pending_permission = perm
                     send_task.cancel()
                     with suppress(Exception, asyncio.CancelledError):
@@ -549,7 +588,7 @@ class CodingAgentExecutor:
                         "status": "permission_required",
                         "message": f"Agent needs permission: {title}",
                         "permission_id": perm_id,
-                        "permission_directory": perm.get("directory", ""),
+                        "permission_directory": directory,
                     }
             except Exception as e:
                 self._log(f"list_permissions error: {e}", "warning")
