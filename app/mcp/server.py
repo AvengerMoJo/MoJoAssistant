@@ -24,6 +24,7 @@ class UnifiedMCPServer:
             "log_level": self.app_config.logging.level,
             # Memory configuration
             "embedding_model": self.app_config.memory.embedding_model,
+            "embedding_backend": self.app_config.memory.embedding_backend,
             "multi_model_enabled": self.app_config.memory.multi_model_enabled,
             "vector_store": self.app_config.memory.vector_store,
             "max_context_items": self.app_config.memory.max_context_items,
