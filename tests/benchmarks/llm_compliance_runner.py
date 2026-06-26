@@ -315,6 +315,9 @@ class TestCase:
     available_tools: List[str]
     max_iterations: int
     description: str = ""
+    # When set, the check fails if FINAL_ANSWER required more than this many
+    # iterations after the last tool call.  None = no efficiency requirement.
+    max_iter_after_tool: Optional[int] = None
 
 
 _MINIMAL_SYSTEM = (
@@ -372,6 +375,26 @@ TEST_CASES = [
         system_prompt=_MINIMAL_SYSTEM,
         available_tools=[],
         max_iterations=2,
+    ),
+    TestCase(
+        name="write_large_then_answer",
+        description=(
+            "Generate substantial content, write via write_file, then FINAL_ANSWER "
+            "in the very next iteration — tests the post-write wrap-up failure mode"
+        ),
+        goal=(
+            "Write a technical summary (at least 5 sentences) covering:\n"
+            "1. Why shared state is risky in multi-agent AI systems\n"
+            "2. How context window limits affect long-running agents\n"
+            "3. How external memory addresses both problems\n\n"
+            "Use write_file to save your summary to /tmp/compliance_long_write_test.txt.\n"
+            "Immediately after write_file returns its result, provide a <FINAL_ANSWER> "
+            "confirming the file was written and listing the three topics you covered."
+        ),
+        system_prompt=_MINIMAL_SYSTEM,
+        available_tools=["write_file"],
+        max_iterations=4,
+        max_iter_after_tool=1,
     ),
 ]
 
@@ -477,6 +500,27 @@ class ComplianceRunner:
             self._print_session(case.name, session, metrics)
 
         if final_answer:
+            # Optionally verify FINAL_ANSWER came promptly after the last tool call.
+            if case.max_iter_after_tool is not None:
+                last_tool_idx = -1
+                for i, e in enumerate(iter_log):
+                    if e.get("tool_calls"):
+                        last_tool_idx = i
+                if last_tool_idx != -1:
+                    gap = iterations_used - last_tool_idx - 1
+                    if gap > case.max_iter_after_tool:
+                        return CheckResult(
+                            name=case.name,
+                            status="fail",
+                            failure_mode="FINAL_ANSWER_SLOW",
+                            failure_detail=(
+                                f"FINAL_ANSWER took {gap} iteration(s) after last tool call "
+                                f"(max={case.max_iter_after_tool})"
+                            ),
+                            iterations_used=iterations_used,
+                            duration_s=round(duration, 1),
+                            model=model,
+                        )
             return CheckResult(
                 name=case.name,
                 status="pass",

@@ -176,6 +176,35 @@ def _evaluate_single_check(
             message="Backend available" if available else "Backend unavailable",
         )
 
+    elif check.kind == CheckKind.FINAL_ANSWER_EFFICIENCY:
+        # Pass if FINAL_ANSWER appeared within N iterations of the last tool call.
+        # Models that need extra rounds to wrap up after a tool call fail this check.
+        max_after = params.get("max_iterations_after_last_tool", 1)
+        last_tool_idx = -1
+        for i, e in enumerate(iteration_log):
+            if e.get("tool_calls"):
+                last_tool_idx = i
+        if last_tool_idx == -1:
+            return CheckResult(
+                check_id=check.id,
+                kind=check.kind,
+                status="skip",
+                message="No tool calls in session — efficiency check not applicable",
+            )
+        iterations_after = len(iteration_log) - last_tool_idx - 1
+        ok = iterations_after <= max_after
+        return CheckResult(
+            check_id=check.id,
+            kind=check.kind,
+            status="pass" if ok else "fail",
+            failure_class=check.failure_class.value if check.failure_class and not ok else None,
+            message=(
+                f"FINAL_ANSWER in {iterations_after} iteration(s) after last tool call"
+                if ok else
+                f"FINAL_ANSWER took {iterations_after} iteration(s) after last tool call (max={max_after})"
+            ),
+        )
+
     elif check.kind == CheckKind.DURATION_UNDER:
         max_seconds = params.get("max_seconds", 90)
         ok = duration_seconds <= max_seconds
