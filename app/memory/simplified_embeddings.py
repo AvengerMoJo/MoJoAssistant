@@ -146,6 +146,8 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
             server_url=resource.server_url or "http://localhost:8080/embed",
             api_key=resource.api_key,
             device=resource.device,
+            request_format=resource.request_format,
+            api_key_env=resource.api_key_env or "",
         )
         self._sync_from_backend_info()
         self.model_version = f"{resource.backend}:{resource.model_name}:{resource.embedding_dim}"

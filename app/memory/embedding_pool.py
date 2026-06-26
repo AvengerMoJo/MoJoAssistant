@@ -30,13 +30,16 @@ class EmbeddingResource:
     priority: int = 10  # lower = higher priority
     enabled: bool = True
     api_key: Optional[str] = None
+    api_key_env: Optional[str] = None
     server_url: Optional[str] = None
     device: str = "cpu"
     matryoshka: bool = False
+    request_format: str = "legacy"  # "legacy" or "openai"
     # Runtime state
     status: str = "available"  # available, failed, disabled
     last_error: Optional[str] = None
     last_used: float = 0.0
+    failed_at: float = 0.0
 
 
 class EmbeddingPool:
@@ -49,27 +52,36 @@ class EmbeddingPool:
     3. Environment variables
     """
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, recovery_ttl: int = 300):
         self._lock = threading.Lock()
         self._resources: Dict[str, EmbeddingResource] = {}
         self._config_path = config_path
+        self._recovery_ttl = recovery_ttl
+        self._config_mtime: float = 0.0
         self._load_config()
 
     def _load_config(self) -> None:
         """Load embedding configuration from file and env vars."""
-        # Load from config file
         config = self._load_config_file()
 
-        # Parse embedding models
+        # Record config mtime for auto-reload
+        config_path = self._config_path or str(
+            Path(get_memory_path()) / "config" / "embedding_pool.json"
+        )
+        if not Path(config_path).exists():
+            config_path = "config/embedding_config.json"
+        try:
+            self._config_mtime = Path(config_path).stat().st_mtime
+        except OSError:
+            pass
+
         models = config.get("embedding_models", {})
         for model_id, model_cfg in models.items():
             resource = self._parse_resource(model_id, model_cfg)
             if resource:
                 self._resources[model_id] = resource
 
-        # Apply env var overrides
         self._apply_env_overrides()
-
         logger.info(f"EmbeddingPool: loaded {len(self._resources)} backends")
 
     def _load_config_file(self) -> Dict[str, Any]:
@@ -113,9 +125,11 @@ class EmbeddingPool:
                 priority=cfg.get("priority", 10),
                 enabled=cfg.get("enabled", True),
                 api_key=api_key,
+                api_key_env=cfg.get("api_key_env"),
                 server_url=cfg.get("server_url"),
                 device=cfg.get("device", "cpu"),
                 matryoshka=cfg.get("matryoshka", False),
+                request_format=cfg.get("request_format", "legacy"),
             )
         except Exception as e:
             logger.warning(f"Failed to parse embedding config '{model_id}': {e}")
@@ -154,11 +168,23 @@ class EmbeddingPool:
             EmbeddingResource or None if no suitable backend available
         """
         with self._lock:
-            candidates = [
-                r for r in self._resources.values()
-                if r.enabled and r.status != "failed"
-                and (min_dim is None or (r.embedding_dim or 0) >= min_dim)
-            ]
+            self._maybe_reload()
+
+            now = time.time()
+            candidates = []
+            for r in self._resources.values():
+                if not r.enabled:
+                    continue
+                # Auto-recover failed resources after TTL
+                if r.status == "failed":
+                    if now - r.failed_at < self._recovery_ttl:
+                        continue
+                    r.status = "available"
+                    r.last_error = None
+                    r.failed_at = 0.0
+                if min_dim is not None and (r.embedding_dim or 0) < min_dim:
+                    continue
+                candidates.append(r)
 
             if not candidates:
                 return None
@@ -182,33 +208,58 @@ class EmbeddingPool:
         self,
         preferred_id: Optional[str] = None,
         min_dim: Optional[int] = None,
+        strict_dim: bool = True,
     ) -> List[EmbeddingResource]:
         """
         Acquire primary + fallback resources ordered by priority.
 
-        Returns list of resources to try in order.
+        Args:
+            preferred_id: Specific resource ID to prefer
+            min_dim: Minimum embedding dimension required
+            strict_dim: If True, only return resources matching primary's dim
+
+        Returns:
+            List of resources to try in order.
         """
         with self._lock:
-            candidates = [
-                r for r in self._resources.values()
-                if r.enabled and r.status != "failed"
-                and (min_dim is None or (r.embedding_dim or 0) >= min_dim)
-            ]
+            self._maybe_reload()
+
+            now = time.time()
+            candidates = []
+            for r in self._resources.values():
+                if not r.enabled:
+                    continue
+                if r.status == "failed":
+                    if now - r.failed_at < self._recovery_ttl:
+                        continue
+                    r.status = "available"
+                    r.last_error = None
+                    r.failed_at = 0.0
+                if min_dim is not None and (r.embedding_dim or 0) < min_dim:
+                    continue
+                candidates.append(r)
+
             candidates.sort(key=lambda r: r.priority)
 
             if preferred_id:
                 preferred = [r for r in candidates if r.id == preferred_id]
                 others = [r for r in candidates if r.id != preferred_id]
-                return preferred + others
+                candidates = preferred + others
+
+            # Strict dim: filter fallbacks to match primary's dimension
+            if strict_dim and candidates:
+                primary_dim = candidates[0].embedding_dim
+                candidates = [r for r in candidates if r.embedding_dim == primary_dim]
 
             return candidates
 
     def mark_failed(self, resource_id: str, error: str) -> None:
-        """Mark a resource as failed."""
+        """Mark a resource as failed with timestamp for auto-recovery."""
         with self._lock:
             if resource_id in self._resources:
                 self._resources[resource_id].status = "failed"
                 self._resources[resource_id].last_error = error
+                self._resources[resource_id].failed_at = time.time()
                 logger.warning(f"EmbeddingPool: marked '{resource_id}' as failed: {error}")
 
     def mark_available(self, resource_id: str) -> None:
@@ -217,6 +268,7 @@ class EmbeddingPool:
             if resource_id in self._resources:
                 self._resources[resource_id].status = "available"
                 self._resources[resource_id].last_error = None
+                self._resources[resource_id].failed_at = 0.0
 
     def list_resources(self) -> List[Dict[str, Any]]:
         """List all configured embedding resources."""
@@ -238,6 +290,22 @@ class EmbeddingPool:
     def get_resource(self, resource_id: str) -> Optional[EmbeddingResource]:
         """Get a specific resource by ID."""
         return self._resources.get(resource_id)
+
+    def _maybe_reload(self) -> None:
+        """Auto-reload if config file changed (cheap stat check)."""
+        config_path = self._config_path or str(
+            Path(get_memory_path()) / "config" / "embedding_pool.json"
+        )
+        if not Path(config_path).exists():
+            config_path = "config/embedding_config.json"
+        try:
+            mtime = Path(config_path).stat().st_mtime
+            if mtime > self._config_mtime:
+                self._resources.clear()
+                self._load_config()
+                self._config_mtime = mtime
+        except OSError:
+            pass
 
     def reload(self) -> None:
         """Reload configuration from disk."""

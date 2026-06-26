@@ -95,10 +95,16 @@ class TestEmbeddingPool:
 
     def test_acquire_with_fallback(self, temp_config):
         pool = EmbeddingPool(config_path=temp_config)
-        resources = pool.acquire_with_fallback()
+        resources = pool.acquire_with_fallback(strict_dim=False)
         assert len(resources) == 4  # disabled excluded
         assert resources[0].id == "primary"
         assert resources[-1].id == "fallback"
+
+    def test_acquire_with_fallback_strict_dim(self, temp_config):
+        pool = EmbeddingPool(config_path=temp_config)
+        resources = pool.acquire_with_fallback(strict_dim=True)
+        # Only resources with dim matching primary (1024) are returned
+        assert all(r.embedding_dim == 1024 for r in resources)
 
     def test_mark_failed_and_recover(self, temp_config):
         pool = EmbeddingPool(config_path=temp_config)
@@ -106,11 +112,25 @@ class TestEmbeddingPool:
         r = pool.get_resource("primary")
         assert r.status == "failed"
         assert r.last_error == "test error"
+        assert r.failed_at > 0
 
         pool.mark_available("primary")
         r = pool.get_resource("primary")
         assert r.status == "available"
         assert r.last_error is None
+        assert r.failed_at == 0
+
+    def test_auto_recovery_after_ttl(self, temp_config):
+        pool = EmbeddingPool(config_path=temp_config, recovery_ttl=1)
+        pool.mark_failed("primary", "test error")
+        r = pool.acquire()
+        assert r.id != "primary"  # primary is failed, should skip
+
+        # Wait for TTL to expire
+        import time
+        time.sleep(1.1)
+        r = pool.acquire()
+        assert r.id == "primary"  # primary should be recovered
 
     def test_reload(self, temp_config):
         pool = EmbeddingPool(config_path=temp_config)
