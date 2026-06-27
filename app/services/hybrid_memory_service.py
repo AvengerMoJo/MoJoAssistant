@@ -168,3 +168,90 @@ class HybridMemoryService(_Base):
             except Exception:
                 scores.append(0.0)
         return sum(scores) / len(scores) if scores else 0.0
+
+    def execute_action(self, action: Any, role_id: str) -> dict:
+        """Execute a single typed MemoryAction.
+
+        Returns result dict with:
+        {"success": bool, "action_type": str, "affected_ids": List[str], "error": str}
+        """
+        from app.memory.memory_action import MemoryActionType
+
+        try:
+            action.validate()
+        except ValueError as e:
+            return {"success": False, "error": str(e), "action_type": action.action_type.value}
+
+        t = action.action_type
+        try:
+            if t == MemoryActionType.INSERT_UNIT:
+                self.add_to_knowledge_base(action.content, metadata={
+                    **action.metadata,
+                    "proposed_by": action.proposed_by,
+                    "action_reason": action.reason,
+                })
+                return {"success": True, "action_type": t.value, "affected_ids": []}
+
+            elif t == MemoryActionType.UPDATE_FACTS:
+                self._retire_unit(action.target_ids[0], role_id)
+                self.add_to_knowledge_base(action.content, metadata={
+                    **action.metadata,
+                    "replaces": action.target_ids[0],
+                    "proposed_by": action.proposed_by,
+                })
+                return {"success": True, "action_type": t.value, "affected_ids": action.target_ids}
+
+            elif t == MemoryActionType.MERGE_UNITS:
+                merged_text = action.content or self._merge_unit_texts(action.target_ids, role_id)
+                for uid in action.target_ids:
+                    self._retire_unit(uid, role_id)
+                self.add_to_knowledge_base(merged_text, metadata={
+                    **action.metadata,
+                    "merged_from": action.target_ids,
+                    "proposed_by": action.proposed_by,
+                })
+                return {"success": True, "action_type": t.value, "affected_ids": action.target_ids}
+
+            elif t == MemoryActionType.RETIRE_STALE:
+                for uid in action.target_ids:
+                    self._retire_unit(uid, role_id)
+                return {"success": True, "action_type": t.value, "affected_ids": action.target_ids}
+
+            return {"success": False, "error": f"Unknown action type: {t}"}
+        except Exception as e:
+            return {"success": False, "error": str(e), "action_type": action.action_type.value}
+
+    def execute_actions(self, actions: list, role_id: str) -> list:
+        """Execute a list of MemoryActions in order. Stops on first failure."""
+        results = []
+        for action in actions:
+            result = self.execute_action(action, role_id)
+            results.append(result)
+            if not result.get("success"):
+                break
+        return results
+
+    def _retire_unit(self, unit_id: str, role_id: str) -> None:
+        """Mark a knowledge unit as retired (soft-delete)."""
+        if not hasattr(self, "knowledge_manager") or not self.knowledge_manager:
+            return
+        for doc in self.knowledge_manager.documents:
+            if doc.get("id") == unit_id:
+                doc["metadata"] = doc.get("metadata", {})
+                doc["metadata"]["retired"] = True
+                doc["metadata"]["retired_at"] = __import__("datetime").datetime.now(
+                    __import__("datetime").timezone.utc
+                ).isoformat()
+                self.knowledge_manager._save_documents()
+                return
+        logger.warning(f"_retire_unit: unit {unit_id} not found")
+
+    def _merge_unit_texts(self, target_ids: list, role_id: str) -> str:
+        """Auto-generate merged text from two knowledge units."""
+        if not hasattr(self, "knowledge_manager") or not self.knowledge_manager:
+            return ""
+        texts = []
+        for doc in self.knowledge_manager.documents:
+            if doc.get("id") in target_ids:
+                texts.append(doc.get("text", ""))
+        return "\n\n---\n\n".join(texts)
