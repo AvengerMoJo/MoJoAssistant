@@ -157,6 +157,99 @@ class TestSetupMultiModelUsesPool:
         assert pool_cls.call_count > 0, "Pool-aware SimpleEmbedding was never called"
 
 
+class TestSilentFailureMarking:
+    """
+    pool.mark_failed must be called for ALL failure modes, not just exceptions.
+
+    Three cases that were broken before the fix:
+      1. Primary returns empty []  (no exception, silent failure)
+      2. Primary raises exception  (was missing mark_failed on primary)
+      3. Fallback returns empty [] (no exception, silent failure)
+    """
+
+    def _make_pool_and_resource(self):
+        pool = MagicMock()
+        resource = MagicMock()
+        resource.id = "primary_resource"
+        return pool, resource
+
+    def _make_shim(self, pool, resource, fallback_resources=None):
+        """Build a SimpleEmbedding shim with pool + current_resource wired up."""
+        from app.memory.simplified_embeddings import SimpleEmbedding
+
+        with patch("app.memory.simplified_embeddings.get_embedding_pool", return_value=None):
+            # Bypass __init__ pool lookup — set attributes directly
+            shim = object.__new__(SimpleEmbedding)
+            shim._pool = pool
+            shim._current_resource = resource
+            shim._fallback_resources = fallback_resources or [resource]
+            shim.logger = MagicMock()
+        return shim
+
+    def test_primary_empty_result_marks_failed(self):
+        """Primary returning [] must mark the primary resource as failed."""
+        pool, resource = self._make_pool_and_resource()
+        shim = self._make_shim(pool, resource)
+
+        with patch.object(shim.__class__.__bases__[0], "get_text_embedding", return_value=[]):
+            result = shim.get_text_embedding("test")
+
+        pool.mark_failed.assert_called_once_with(resource.id, "empty result")
+        assert result == []
+
+    def test_primary_exception_marks_failed(self):
+        """Primary raising an exception must mark the primary resource as failed
+        before re-raising (no successful fallback available)."""
+        pool, resource = self._make_pool_and_resource()
+        shim = self._make_shim(pool, resource)
+
+        with patch.object(shim.__class__.__bases__[0], "get_text_embedding", side_effect=RuntimeError("connection refused")):
+            with pytest.raises(RuntimeError, match="connection refused"):
+                shim.get_text_embedding("test")
+
+        pool.mark_failed.assert_called_with(resource.id, "connection refused")
+
+    def test_fallback_empty_result_marks_failed(self):
+        """Fallback returning [] must mark the fallback resource as failed."""
+        pool, resource = self._make_pool_and_resource()
+        fallback = MagicMock()
+        fallback.id = "fallback_resource"
+        shim = self._make_shim(pool, resource, fallback_resources=[resource, fallback])
+
+        call_count = 0
+        def _side_effect(text, prompt_name="passage"):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return []   # primary: silent failure
+            return []       # fallback: also silent failure
+
+        with patch.object(shim.__class__.__bases__[0], "get_text_embedding", side_effect=_side_effect):
+            with patch.object(shim, "_switch_backend"):
+                result = shim.get_text_embedding("test")
+
+        # primary marked failed (empty result)
+        assert any(
+            call.args[0] == resource.id for call in pool.mark_failed.call_args_list
+        ), "primary not marked failed"
+        # fallback also marked failed (empty result)
+        assert any(
+            call.args[0] == fallback.id for call in pool.mark_failed.call_args_list
+        ), "fallback not marked failed"
+        assert result == []
+
+    def test_batch_primary_empty_marks_failed(self):
+        """Same silent-failure contract for get_batch_embeddings."""
+        pool, resource = self._make_pool_and_resource()
+        shim = self._make_shim(pool, resource)
+
+        with patch.object(shim.__class__.__bases__[0], "get_batch_embeddings", return_value=[]):
+            result = shim.get_batch_embeddings(["a", "b"])
+
+        pool.mark_failed.assert_called_once_with(resource.id, "empty result")
+        assert result == []
+
+
 class TestGetHybridMemoryServiceClassDefault:
     """memory_backend.get_hybrid_memory_service_class must return the app-layer override."""
 

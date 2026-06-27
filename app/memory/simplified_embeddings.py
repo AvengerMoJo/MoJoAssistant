@@ -67,6 +67,11 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
             device=device,
         )
 
+    def _mark_current_failed(self, reason: str) -> None:
+        """Mark the current resource failed in the pool. No-op if no pool or resource."""
+        if self._pool and self._current_resource:
+            self._pool.mark_failed(self._current_resource.id, reason)
+
     def get_text_embedding(self, text: str, prompt_name: str = "passage") -> List[float]:
         """Get embedding with automatic failover on error."""
         last_error = None
@@ -78,9 +83,13 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
                 if self._pool and self._current_resource:
                     self._pool.record_call(self._current_resource.id, (time.monotonic() - t0) * 1000)
                 return result
+            # Backend returned empty without raising — treat as failure
+            self.logger.warning("Primary embedding returned empty result")
+            self._mark_current_failed("empty result")
         except Exception as e:
             last_error = e
             self.logger.warning(f"Primary embedding failed: {e}")
+            self._mark_current_failed(str(e))
 
         for resource in self._fallback_resources:
             if resource == self._current_resource:
@@ -96,6 +105,10 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
                         self._pool.mark_available(resource.id)
                         self._pool.record_call(resource.id, (time.monotonic() - t0) * 1000)
                     return result
+                # Fallback also returned empty
+                self.logger.warning(f"Fallback '{resource.id}' returned empty result")
+                if self._pool:
+                    self._pool.mark_failed(resource.id, "empty result")
             except Exception as e:
                 self.logger.warning(f"Fallback '{resource.id}' failed: {e}")
                 if self._pool:
@@ -116,9 +129,13 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
                 if self._pool and self._current_resource:
                     self._pool.record_call(self._current_resource.id, (time.monotonic() - t0) * 1000)
                 return result
+            # Backend returned empty without raising — treat as failure
+            self.logger.warning("Primary batch embedding returned empty result")
+            self._mark_current_failed("empty result")
         except Exception as e:
             last_error = e
             self.logger.warning(f"Primary batch embedding failed: {e}")
+            self._mark_current_failed(str(e))
 
         for resource in self._fallback_resources:
             if resource == self._current_resource:
@@ -134,6 +151,10 @@ class SimpleEmbedding(_BaseSimpleEmbedding):
                         self._pool.mark_available(resource.id)
                         self._pool.record_call(resource.id, (time.monotonic() - t0) * 1000)
                     return result
+                # Fallback also returned empty
+                self.logger.warning(f"Fallback '{resource.id}' returned empty result")
+                if self._pool:
+                    self._pool.mark_failed(resource.id, "empty result")
             except Exception as e:
                 self.logger.warning(f"Fallback '{resource.id}' failed: {e}")
                 if self._pool:
