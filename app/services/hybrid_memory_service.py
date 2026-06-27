@@ -143,3 +143,28 @@ class HybridMemoryService(_Base):
             self.logger.error(f"Multi-model setup failed: {e}")
             self.logger.error(traceback.format_exc())
             self.multi_model_enabled = False
+
+    def evaluate_consolidation(
+        self,
+        query_set: list[str],
+        role_id: str = "unknown",
+        top_k: int = 5,
+    ) -> float:
+        """Return mean top-k relevance score for query_set.
+
+        Used by ConsolidationEvaluator to measure retrieval quality
+        before and after dreaming consolidation.
+        """
+        scores = []
+        for q in query_set:
+            try:
+                results = self.get_context_for_query(q, max_results=top_k, role_id=role_id)
+                if results:
+                    scores.append(
+                        sum(r.get("relevance_score", 0.0) for r in results) / len(results)
+                    )
+                else:
+                    scores.append(0.0)
+            except Exception:
+                scores.append(0.0)
+        return sum(scores) / len(scores) if scores else 0.0

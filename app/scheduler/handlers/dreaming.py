@@ -136,11 +136,31 @@ class DreamingHandler(TaskHandler):
                         f"Could not set role-scoped storage for dreaming: {_e}", "warning"
                     )
 
-            results = await pipeline.process_conversation(
-                conversation_id=conversation_id,
-                conversation_text=conversation_text,
-                metadata=metadata,
+            # Wrap with eval-driven consolidation
+            from app.memory.eval_consolidation import ConsolidationEvaluator
+            evaluator = ConsolidationEvaluator(
+                memory_service=ctx._memory_service,
+                storage=getattr(pipeline, "storage", None),
+                role_id=conv_role_id or "unknown",
             )
+
+            with evaluator.guarded_consolidation() as eval_outcome:
+                results = await pipeline.process_conversation(
+                    conversation_id=conversation_id,
+                    conversation_text=conversation_text,
+                    metadata=metadata,
+                )
+
+            # Log eval metrics
+            if eval_outcome.pre:
+                metrics = metrics if 'metrics' in dir() else {}
+                metrics["eval_pre_score"] = eval_outcome.pre.mean_score
+                metrics["eval_post_score"] = eval_outcome.post.mean_score if eval_outcome.post else None
+                metrics["eval_delta"] = eval_outcome.delta
+                metrics["eval_committed"] = eval_outcome.committed
+                if not eval_outcome.committed:
+                    metrics["eval_rollback_reason"] = eval_outcome.rollback_reason
+                    ctx.log(f"Dreaming rolled back: {eval_outcome.rollback_reason}", "warning")
 
             if results.get("status") == "success":
                 archive = results["stages"]["D_archive"]
