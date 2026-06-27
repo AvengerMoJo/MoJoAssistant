@@ -151,7 +151,7 @@ class ConflictDiagnoser:
 
         try:
             results = self._memory_service.get_context_for_query(
-                query, max_results=self._top_k, role_id=self._role_id
+                query, max_results=self._top_k
             )
         except Exception as e:
             logger.warning(f"Diagnosis query failed for '{query}': {e}")
@@ -193,22 +193,24 @@ class ConflictDiagnoser:
         # Compute simple text similarity (word overlap)
         distance = self._compute_distance(text_a, text_b)
 
-        # Check for contradictions: high relevance, low similarity
-        # (same query returns different facts)
-        if score_a > 0.5 and score_b > 0.5 and distance > self._contradiction_threshold:
-            return ConflictReport(
-                unit_a_id=str(id_a),
-                unit_b_id=str(id_b),
-                unit_a_text=text_a,
-                unit_b_text=text_b,
-                query=query,
-                score_a=score_a,
-                score_b=score_b,
-                distance=distance,
-                conflict_type="contradiction",
-                reason=f"Both units have high relevance ({score_a:.2f}, {score_b:.2f}) but low similarity ({distance:.2f}) — likely contradictory facts about '{query}'",
-                severity="high",
-            )
+        # Check for contradictions: high semantic similarity but different content
+        # (same topic, conflicting facts)
+        if score_a > 0.5 and score_b > 0.5 and distance < self._contradiction_threshold:
+            # Additional check: content must actually differ
+            if text_a.strip() != text_b.strip():
+                return ConflictReport(
+                    unit_a_id=str(id_a),
+                    unit_b_id=str(id_b),
+                    unit_a_text=text_a,
+                    unit_b_text=text_b,
+                    query=query,
+                    score_a=score_a,
+                    score_b=score_b,
+                    distance=distance,
+                    conflict_type="contradiction",
+                    reason=f"High semantic similarity ({1.0 - distance:.2f}) but different content — likely contradictory facts about '{query}'",
+                    severity="high",
+                )
 
         # Check for redundancy: very high similarity
         if distance < (1.0 - self._redundancy_threshold):
@@ -257,9 +259,37 @@ class ConflictDiagnoser:
     def _compute_distance(self, text_a: str, text_b: str) -> float:
         """Compute semantic distance between two texts (0=identical, 1=unrelated).
 
-        Uses word overlap (Jaccard distance) as a fast proxy.
-        For production, replace with embedding cosine distance.
+        Uses embedding cosine similarity via the EmbeddingPool's primary resource.
+        Falls back to Jaccard word-overlap if embedding fails.
         """
+        try:
+            from app.memory.embedding_pool import get_embedding_pool
+            pool = get_embedding_pool()
+            resource = pool.acquire()
+            if resource:
+                from mojo_memory.embeddings.registry import create_backend
+                backend = create_backend(
+                    resource.backend,
+                    model_name=resource.model_name,
+                    embedding_dim=resource.embedding_dim,
+                    server_url=resource.server_url or "http://localhost:8080/embed",
+                    api_key=resource.api_key,
+                    device=resource.device,
+                )
+                emb_a = backend.get_text_embedding(text_a)
+                emb_b = backend.get_text_embedding(text_b)
+                if emb_a and emb_b:
+                    # Cosine similarity → distance
+                    dot = sum(x * y for x, y in zip(emb_a, emb_b))
+                    norm_a = sum(x * x for x in emb_a) ** 0.5
+                    norm_b = sum(x * x for x in emb_b) ** 0.5
+                    if norm_a > 0 and norm_b > 0:
+                        similarity = dot / (norm_a * norm_b)
+                        return 1.0 - similarity
+        except Exception as e:
+            logger.debug(f"Embedding distance failed, falling back to Jaccard: {e}")
+
+        # Fallback: Jaccard word-overlap distance
         words_a = set(text_a.lower().split())
         words_b = set(text_b.lower().split())
         if not words_a or not words_b:
