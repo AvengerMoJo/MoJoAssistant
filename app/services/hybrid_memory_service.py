@@ -69,7 +69,6 @@ class HybridMemoryService(_Base):
             model_name=model_name,
             device=device or "cpu",
             cache_dir=os.path.join(self.data_dir, "embedding_cache"),
-            preferred_model=model_name,
             **backend_kwargs,
         )
 
@@ -130,7 +129,6 @@ class HybridMemoryService(_Base):
                         model_name=model_name,
                         embedding_dim=embedding_dim,
                         cache_dir=cache_dir,
-                        preferred_model=model_name,
                     )
                     self.logger.info(f"Loaded additional model via pool: {model_key}")
 
