@@ -31,6 +31,11 @@ from app.scheduler.policy.base import PolicyChecker, PolicyDecision
 logger = logging.getLogger(__name__)
 
 _CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config")
+
+# Strip URL paths before credential scanning so that path segments like
+# "/karpathy/autoresearch/master/program" don't trigger 40-char base64 patterns.
+# Query strings are kept — a ?token=xxx is a real exfiltration risk.
+_URL_PATH_RE = re.compile(r'(https?://[^/\s"\']+)/[^\s"\'?#]*')
 _SYSTEM_PATTERNS_PATH = os.path.join(_CONFIG_DIR, "policy_patterns.json")
 _BEHAVIORAL_PATTERNS_PATH = os.path.join(_CONFIG_DIR, "behavioral_patterns.json")
 
@@ -93,11 +98,15 @@ class ContentAwarePolicyChecker(PolicyChecker):
         if not self._enabled or not self._compiled:
             return PolicyDecision.allow(checker=self.name)
 
-        # Flatten args to a single string for scanning
+        # Flatten args to a single string for scanning.
+        # Strip URL paths first — path segments (e.g. /user/repo/branch/file) are
+        # intentional inputs and must not trigger credential patterns like aws_secret_key.
+        # Query strings are intentionally kept (?token=xxx is a real leak risk).
         try:
             args_text = json.dumps(args, default=str)
         except Exception:
             args_text = str(args)
+        args_text = _URL_PATH_RE.sub(r'\1/', args_text)
 
         for pattern in self._compiled:
             regex = pattern.get("regex", "")
