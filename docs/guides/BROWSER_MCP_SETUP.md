@@ -6,17 +6,23 @@ MoJoAssistant supports browser automation through the `browser` tool category. Y
 
 ## Choose Your Browser Backend
 
-| | **Playwright MCP** | **Webwright** |
+| | **Webwright (Default)** | **Playwright MCP** |
 |---|---|---|
-| **Paradigm** | Step-by-step browser control (click, type, snapshot) | Code-as-action — agent writes Playwright scripts |
-| **Best for** | Interactive tasks, form filling, page inspection | Complex multi-step workflows, reusable automation scripts |
-| **State** | Browser session is the workspace | Local workspace (code, screenshots, logs) is the state |
-| **Install** | `npx @playwright/mcp@latest` | `pip install webwright` |
-| **Requires** | Node.js + npm | Python 3.10+ |
+| **Paradigm** | Code-as-action — agent writes Playwright scripts | Step-by-step browser control (click, type, snapshot) |
+| **Best for** | Complex multi-step workflows, reusable automation scripts | Interactive tasks, form filling, page inspection |
+| **State** | Local workspace (code, screenshots, logs) is the state | Browser session is the workspace |
+| **Install** | `pip install webwright && playwright install chromium` | `npm install -g @playwright/mcp && npx playwright install chromium` |
+| **Requires** | Python 3.10+ | Node.js + npm |
 | **Model cost** | Uses your MoJo LLM budget | Uses your MoJo LLM budget (no extra API key needed) |
-| **Origin** | [Playwright MCP](https://github.com/anthropics/anthropic-quickstarts/tree/main/mcp-server-playwright) by Microsoft/Anthropic | [Webwright](https://github.com/microsoft/Webwright) by Microsoft Research |
+| **Origin** | [Webwright](https://github.com/microsoft/Webwright) by Microsoft Research | [Playwright MCP](https://github.com/anthropics/anthropic-quickstarts/tree/main/mcp-server-playwright) by Microsoft/Anthropic |
 
-**You can install both** and enable whichever one you need per task. They share the `browser` category in the tool catalog — roles that grant `browser` access get tools from whichever backend is enabled.
+**Why Webwright is the default for agentic tasks:**
+- Agents write complete Playwright scripts and debug them iteratively
+- No need to maintain browser state across tool calls
+- Scripts are reusable and can be saved as artifacts
+- Python-native integration fits MoJoAssistant's stack
+
+**Both are enabled by default.** Tools get prefixed names (`webwright__*`, `playwright__*`). Roles that grant `browser` access get tools from both backends.
 
 ---
 

@@ -335,10 +335,10 @@ The preflight checker validates required binaries (`tmux`, `node`, `cargo`) befo
 
 | Backend | Style | Install |
 |---|---|---|
-| Playwright MCP (default) | Step-by-step browser control | `npx @playwright/mcp@latest` |
-| [Webwright](https://github.com/microsoft/Webwright) | Code-as-action (agent writes scripts) | `pip install webwright` |
+| [Webwright](https://github.com/microsoft/Webwright) (default) | Code-as-action (agent writes scripts) | `pip install webwright` |
+| Playwright MCP | Step-by-step browser control | `npx @playwright/mcp@latest` |
 
-Both share the `browser` tool category — enable one or both. See `docs/guides/BROWSER_MCP_SETUP.md`.
+Both are enabled by default. Webwright is preferred for agentic tasks. See `docs/guides/BROWSER_MCP_SETUP.md`.
 
 ---
 
@@ -462,7 +462,7 @@ and PII scanning are production-ready for personal use.
 
 **Requires additional setup:**
 - tmux terminal tools (requires tmux + `cargo install tmux-mcp-rs`) — see `docs/guides/TMUX_MCP_SETUP.md`
-- Browser tools — Playwright (`npx @playwright/mcp@latest`) or Webwright (`pip install webwright`) — see `docs/guides/BROWSER_MCP_SETUP.md`
+- Browser tools — Webwright (`pip install webwright`) or Playwright (`npx @playwright/mcp@latest`) — see `docs/guides/BROWSER_MCP_SETUP.md`
 - Discord community bot (requires `DISCORD_BOT_TOKEN`) — see `docs/integrations/DISCORD_COMMUNITY_ASSISTANT_SPEC.md`
 - Google Workspace (requires `gcloud` + `gws` CLI) — see `docs/guides/GOOGLE_WORKSPACE_SETUP.md`
 - ntfy push notifications (requires ntfy.sh or self-hosted instance) — see `docs/guides/NOTIFICATIONS_SETUP.md`

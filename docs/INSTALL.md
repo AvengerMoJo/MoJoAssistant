@@ -244,14 +244,14 @@ cargo install tmux-mcp-rs
 
 See `docs/guides/TMUX_MCP_SETUP.md`.
 
-### Browser MCP (Playwright or Webwright)
+### Browser MCP (Webwright default, Playwright available)
 
 | Backend | Style | Install |
 |---|---|---|
+| **Webwright** (default) | Code-as-action | `pip install webwright && playwright install chromium` |
 | **Playwright MCP** | Step-by-step | `npm install -g @playwright/mcp && npx playwright install chromium` |
-| **Webwright** | Code-as-action | `pip install webwright && playwright install chromium` |
 
-See `docs/guides/BROWSER_MCP_SETUP.md`.
+Both are enabled by default. Webwright is preferred for agentic tasks (agents write Playwright scripts). See `docs/guides/BROWSER_MCP_SETUP.md`.
 
 ### Google Workspace
 
@@ -278,7 +278,7 @@ See `docs/guides/NOTIFICATIONS_SETUP.md`.
 
 - Agent execution (requires LLM endpoint)
 - Terminal tools (requires tmux + tmux-mcp-rs)
-- Browser tools (requires Playwright or Webwright)
+- Browser tools (requires Webwright or Playwright)
 - Discord community bot (requires DISCORD_BOT_TOKEN)
 - Google Workspace (requires gcloud + gws)
 - CubeSandbox (requires E2B_API_URL + E2B_API_KEY)
