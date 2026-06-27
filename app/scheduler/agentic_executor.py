@@ -1911,6 +1911,26 @@ class AgenticExecutor:
         except Exception as sec_err:
             self._log(f"BehavioralMonitor session-end failed (non-fatal): {sec_err}", "debug")
 
+        # Parse SELF_TUNE directives from final answer
+        if final_answer and role_id:
+            try:
+                from app.scheduler.role_self_tuning import parse_self_tune_from_answer, propose_param_update
+                tune_directives = parse_self_tune_from_answer(final_answer)
+                for directive in tune_directives:
+                    result = propose_param_update(
+                        role_id=role_id,
+                        param=directive["param"],
+                        value=directive["value"],
+                        reason=directive.get("reason", f"SELF_TUNE from task {task.id}"),
+                    )
+                    if result.get("success"):
+                        self._log(f"SELF_TUNE: {directive['param']} → {directive['value']}")
+                        metrics.setdefault("self_tune", []).append(result)
+                    else:
+                        self._log(f"SELF_TUNE rejected: {result.get('error')}", "warning")
+            except Exception as tune_err:
+                self._log(f"SELF_TUNE parsing failed (non-fatal): {tune_err}", "debug")
+
         return TaskResult(
             success=True,
             output_file=session_file,
