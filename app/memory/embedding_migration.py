@@ -280,3 +280,75 @@ def migrate_embeddings(
         batch_size=batch_size,
         create_backup=create_backup,
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Migrate embeddings between models",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Migrate from bge-m3 to text-embedding-3-small
+  python -m app.memory.embedding_migration --from BAAI/bge-m3 --to text-embedding-3-small --source-backend huggingface --target-backend api
+
+  # Dry run (list collections only)
+  python -m app.memory.embedding_migration --from BAAI/bge-m3 --to text-embedding-3-small --dry-run
+
+  # Rollback last migration
+  python -m app.memory.embedding_migration --rollback
+        """,
+    )
+    parser.add_argument("--from", dest="source_model", help="Source embedding model name")
+    parser.add_argument("--to", dest="target_model", help="Target embedding model name")
+    parser.add_argument("--source-backend", default="huggingface", help="Source backend type (default: huggingface)")
+    parser.add_argument("--target-backend", default="huggingface", help="Target backend type (default: huggingface)")
+    parser.add_argument("--collections", nargs="*", help="Specific collections to migrate (default: all)")
+    parser.add_argument("--batch-size", type=int, default=100, help="Batch size for processing")
+    parser.add_argument("--no-backup", action="store_true", help="Skip backup before migration")
+    parser.add_argument("--rollback", action="store_true", help="Rollback last migration from backup")
+    parser.add_argument("--dry-run", action="store_true", help="List collections without migrating")
+    args = parser.parse_args()
+
+    migration = EmbeddingMigration(
+        source_model=args.source_model or "",
+        target_model=args.target_model or "",
+        source_backend=args.source_backend,
+        target_backend=args.target_backend,
+    )
+
+    if args.rollback:
+        results = migration.rollback(collections=args.collections)
+        print(f"Restored: {results['restored']}")
+        if results["errors"]:
+            print(f"Errors: {results['errors']}")
+        return
+
+    if args.dry_run:
+        collections = migration._discover_collections()
+        print(f"Collections found: {collections}")
+        for c in collections:
+            docs = migration._load_collection_documents(c)
+            print(f"  {c}: {len(docs)} documents")
+        return
+
+    if not args.source_model or not args.target_model:
+        parser.error("--from and --to are required for migration")
+
+    results = migration.migrate(
+        collections=args.collections,
+        batch_size=args.batch_size,
+        create_backup=not args.no_backup,
+    )
+    print(f"Migrated: {results['migrated']} documents across {len(results['collections_processed'])} collections")
+    if results["errors"]:
+        print(f"Errors: {results['errors']}")
+
+
+if __name__ == "__main__":
+    main()

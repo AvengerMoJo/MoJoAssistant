@@ -121,11 +121,11 @@
 3. ✅ Gap 2 (dimension mismatch) — prevents vector corruption
 4. ✅ Gap 5 (auto-reload) — config changes take effect
 5. ✅ Gap 8 (cache key) — prevents cache waste on failover
-6. Gap 6 (HybridMemoryService) — wires pool into actual memory
+6. ✅ Gap 6 (HybridMemoryService) — shim at app/services/hybrid_memory_service.py
 7. ✅ Gap 10 (metrics) — observability
 8. ✅ Gap 4 (config doctor) — diagnostics
 9. ✅ Gap 7 (MCP tool) — user-facing status
-10. Gap 9 (migration CLI) — user-facing migration
+10. ✅ Gap 9 (migration CLI) — `python -m app.memory.embedding_migration`
 
 ---
 
