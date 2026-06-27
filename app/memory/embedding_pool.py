@@ -332,6 +332,25 @@ class EmbeddingPool:
             self._resources.clear()
             self._load_config()
 
+    def diagnose_conflicts(
+        self,
+        memory_service: Any,
+        query_set: Optional[List[str]] = None,
+        role_id: str = "unknown",
+    ) -> Dict[str, Any]:
+        """Scan for semantic contradictions and stale knowledge.
+
+        Convenience method that delegates to ConflictDiagnoser.
+        Returns diagnosis summary as dict.
+        """
+        from app.memory.conflict_diagnosis import ConflictDiagnoser
+        diagnoser = ConflictDiagnoser(
+            memory_service=memory_service,
+            role_id=role_id,
+        )
+        summary = diagnoser.diagnose(query_set=query_set)
+        return summary.to_dict()
+
 
 # Singleton instance
 _pool: Optional[EmbeddingPool] = None

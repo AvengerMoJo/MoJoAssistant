@@ -144,23 +144,15 @@ class DreamingHandler(TaskHandler):
                 role_id=conv_role_id or "unknown",
             )
 
-            with evaluator.guarded_consolidation() as eval_outcome:
+            async with evaluator.guarded_consolidation() as eval_outcome:
                 results = await pipeline.process_conversation(
                     conversation_id=conversation_id,
                     conversation_text=conversation_text,
                     metadata=metadata,
                 )
 
-            # Log eval metrics
-            if eval_outcome.pre:
-                metrics = metrics if 'metrics' in dir() else {}
-                metrics["eval_pre_score"] = eval_outcome.pre.mean_score
-                metrics["eval_post_score"] = eval_outcome.post.mean_score if eval_outcome.post else None
-                metrics["eval_delta"] = eval_outcome.delta
-                metrics["eval_committed"] = eval_outcome.committed
-                if not eval_outcome.committed:
-                    metrics["eval_rollback_reason"] = eval_outcome.rollback_reason
-                    ctx.log(f"Dreaming rolled back: {eval_outcome.rollback_reason}", "warning")
+            if not eval_outcome.committed:
+                ctx.log(f"Dreaming rolled back: {eval_outcome.rollback_reason}", "warning")
 
             if results.get("status") == "success":
                 archive = results["stages"]["D_archive"]
@@ -172,6 +164,18 @@ class DreamingHandler(TaskHandler):
                     "archive_path": archive_path,
                     "automatic": automatic,
                 }
+
+                # Merge eval metrics into success metrics — must be AFTER the dict literal
+                # above so eval data is not overwritten
+                if eval_outcome.pre:
+                    metrics["eval_pre_score"] = eval_outcome.pre.mean_score
+                    metrics["eval_post_score"] = (
+                        eval_outcome.post.mean_score if eval_outcome.post else None
+                    )
+                    metrics["eval_delta"] = eval_outcome.delta
+                    metrics["eval_committed"] = eval_outcome.committed
+                    if not eval_outcome.committed:
+                        metrics["eval_rollback_reason"] = eval_outcome.rollback_reason
 
                 if ctx._memory_service:
                     indexed = self._index_clusters_to_knowledge_base(

@@ -14,10 +14,10 @@ import json
 import logging
 import shutil
 import tempfile
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +121,11 @@ class ConsolidationEvaluator:
         # 3. Built-in fallback
         return list(_DEFAULT_QUERIES)
 
-    def evaluate(self) -> EvalResult:
+    async def evaluate(self) -> EvalResult:
         """Standalone eval pass (for health checks / dashboards)."""
-        return self._evaluate_queries()
+        return await self._evaluate_queries()
 
-    def _evaluate_queries(self) -> EvalResult:
+    async def _evaluate_queries(self) -> EvalResult:
         """Run probe queries and compute mean relevance score."""
         if not self._memory_service:
             return EvalResult(mean_score=0.0, query_count=0, scores={})
@@ -133,12 +133,17 @@ class ConsolidationEvaluator:
         scores: Dict[str, float] = {}
         for query in self._query_set:
             try:
-                results = self._memory_service.get_context_for_query(
-                    query, max_results=5, role_id=self._role_id
+                # Must use async version — it accepts role_id for role-scoped search.
+                # Sync get_context_for_query() does not accept role_id and searches
+                # the shared user KB instead of the role-private KB.
+                results = await self._memory_service.get_context_for_query_async(
+                    query, max_items=5, role_id=self._role_id
                 )
                 if results:
                     query_score = sum(
-                        r.get("relevance_score", 0.0) for r in results
+                        # Dual key fallback: HybridMemoryService returns "relevance_score"
+                        # but base MemoryService._get_context_sequential returns "relevance"
+                        r.get("relevance_score", r.get("relevance", 0.0)) for r in results
                     ) / len(results)
                 else:
                     query_score = 0.0
@@ -160,11 +165,17 @@ class ConsolidationEvaluator:
             logger.warning("No storage provided — snapshot disabled")
             return None
 
-        # LocalFileStorageBackend has .base_path
-        base_path = getattr(self._storage, "base_path", None)
-        if not base_path or not isinstance(base_path, Path):
-            logger.warning("Storage has no .base_path — snapshot not supported")
+        # LocalFileStorageBackend (mojo_memory) uses .base_path
+        # JsonFileBackend (dreaming pipeline) uses .storage_path
+        base_path = getattr(self._storage, "base_path", None) \
+            or getattr(self._storage, "storage_path", None)
+        if not base_path:
+            logger.warning(
+                "Storage backend %s has no .base_path or .storage_path — snapshot not supported",
+                type(self._storage).__name__,
+            )
             return None
+        base_path = Path(base_path)
 
         if not base_path.exists():
             return None
@@ -183,9 +194,11 @@ class ConsolidationEvaluator:
         if not self._storage or not snapshot_path:
             return False
 
-        base_path = getattr(self._storage, "base_path", None)
+        base_path = getattr(self._storage, "base_path", None) \
+            or getattr(self._storage, "storage_path", None)
         if not base_path:
             return False
+        base_path = Path(base_path)
 
         snapshot_data = snapshot_path / "snapshot"
         if not snapshot_data.exists():
@@ -211,12 +224,12 @@ class ConsolidationEvaluator:
             except Exception as e:
                 logger.warning(f"Snapshot cleanup failed: {e}")
 
-    @contextmanager
-    def guarded_consolidation(self) -> Generator[ConsolidationOutcome, None, None]:
+    @asynccontextmanager
+    async def guarded_consolidation(self) -> AsyncGenerator[ConsolidationOutcome, None]:
         """Snapshot → yield → eval → commit or rollback.
 
         Usage:
-            with evaluator.guarded_consolidation() as outcome:
+            async with evaluator.guarded_consolidation() as outcome:
                 await pipeline.process_conversation(...)
 
             if not outcome.committed:
@@ -232,7 +245,7 @@ class ConsolidationEvaluator:
 
         # Pre-eval
         try:
-            outcome.pre = self._evaluate_queries()
+            outcome.pre = await self._evaluate_queries()
             logger.info(f"Pre-consolidation score: {outcome.pre.mean_score}")
         except Exception as e:
             logger.warning(f"Pre-eval failed: {e}")
@@ -248,7 +261,7 @@ class ConsolidationEvaluator:
 
             # Post-eval
             try:
-                outcome.post = self._evaluate_queries()
+                outcome.post = await self._evaluate_queries()
                 logger.info(f"Post-consolidation score: {outcome.post.mean_score}")
             except Exception as e:
                 logger.warning(f"Post-eval failed: {e}")
