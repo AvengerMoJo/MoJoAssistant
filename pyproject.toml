@@ -92,6 +92,14 @@ Issues = "https://github.com/AvengerMoJo/MoJoAssistant/issues"
 [project.scripts]
 mojoassistant = "unified_mcp_server:main"
 
+# Community messenger plugins register here so MessengerManager auto-discovers them.
+# In your plugin's pyproject.toml:
+#   [project.entry-points."mojoassistant.messenger"]
+#   my_platform = "my_package.module:MyAdapter"
+[project.entry-points."mojoassistant.messenger"]
+discord  = "app.mcp.adapters.messenger.discord:DiscordMessengerAdapter"
+telegram = "app.mcp.adapters.messenger.telegram:TelegramMessengerAdapter"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [

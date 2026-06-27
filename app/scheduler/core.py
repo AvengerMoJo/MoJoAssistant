@@ -34,7 +34,7 @@ class Scheduler:
     def __init__(self, storage_path: str = None, tick_interval: int = 60,
                  max_concurrent: int = 3, logger=None, memory_service=None,
                  sse_notifier=None, mcp_client_manager=None, push_manager=None,
-                 event_log=None):
+                 event_log=None, messenger_manager=None):
         """
         Initialize scheduler
 
@@ -59,6 +59,7 @@ class Scheduler:
         self._sse_notifier = sse_notifier
         self._push_manager = push_manager
         self._event_log = event_log
+        self._messenger_manager = messenger_manager
 
         # State
         self.running = False
@@ -368,10 +369,12 @@ class Scheduler:
         return out
 
     async def _broadcast(self, event: dict):
-        """Broadcast an event to SSE clients and the persistent event log (push adapters).
+        """Broadcast an event to SSE clients, the persistent event log, and messenger adapters.
 
         SSENotifier.broadcast() already writes to the EventLog when one is wired.
         The fallback path (no SSE notifier) writes directly so events are never lost.
+        MessengerManager delivers user-facing events (notify_user=True) to all
+        configured adapters (Discord, Telegram, etc.) without polling delay.
         """
         if self._sse_notifier:
             try:
@@ -382,6 +385,13 @@ class Scheduler:
             # No SSE notifier — write directly so push adapters still receive the event
             try:
                 await self._event_log.append(event)
+            except Exception:
+                pass  # non-critical
+
+        # Messenger adapters (Discord, Telegram, …) — direct delivery, no polling lag
+        if self._messenger_manager:
+            try:
+                await self._messenger_manager.dispatch(event)
             except Exception:
                 pass  # non-critical
 
@@ -450,7 +460,10 @@ class Scheduler:
                 if result.waiting_for_input_choices:
                     task.config["pending_options"] = result.waiting_for_input_choices
                 self.queue.update(task)
-                notify = self._should_notify_completion(task)
+                # Always notify for waiting_for_input — a stuck task needs human
+                # attention regardless of who created it (user, agent, or cron).
+                # _should_notify_completion() returns False for agent-spawned sub-tasks,
+                # which would silently drop the Discord/Telegram message.
                 await self._broadcast({
                     "event_type": "task_waiting_for_input",
                     "task_id": task.id,
@@ -459,7 +472,7 @@ class Scheduler:
                     "choices": result.waiting_for_input_choices,
                     "severity": "warning",
                     "title": f"Agent is waiting for your input on task {task.id}",
-                    "notify_user": notify,
+                    "notify_user": True,
                     "data": {
                         "task_id": task.id,
                         "question": result.waiting_for_input,

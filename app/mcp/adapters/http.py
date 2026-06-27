@@ -130,15 +130,16 @@ class HTTPAdapter(ProtocolAdapter):
             oauth_middleware = OAuthMiddleware(self.oauth_config)
             app.middleware("http")(oauth_middleware)
 
-        # Discord bot task handle + HITL manager — kept so shutdown_event can clean up
+        # Discord bot task handle, HITL manager, and Messenger manager — kept so shutdown can clean up
         _discord_task: asyncio.Task = None
         _hitl_manager = None
+        _messenger_manager = None
 
         # Add startup and shutdown event handlers
         @app.on_event("startup")
         async def startup_event():
             """Application startup event handler"""
-            nonlocal _discord_task, _hitl_manager
+            nonlocal _discord_task, _hitl_manager, _messenger_manager
             if self.logger:
                 self.logger.info("MCP Server startup initiated")
 
@@ -170,11 +171,12 @@ class HTTPAdapter(ProtocolAdapter):
                 except Exception as e:
                     self.logger.error(f"Error during startup initialization: {e}")
 
-            # Start HITL adapters (must happen before Discord bot so adapter
-            # registers itself with discord_gateway before on_ready fires)
             _sched = getattr(
                 getattr(self.engine, "tool_registry", None), "scheduler", None
             )
+
+            # Start legacy HITL adapters (must happen before Discord bot so the
+            # DiscordHITLAdapter registers itself with discord_gateway before on_ready fires)
             try:
                 from app.mcp.adapters.hitl.manager import HITLManager, init_shared_manager
                 _hitl_manager = HITLManager.load_from_config()
@@ -189,6 +191,29 @@ class HTTPAdapter(ProtocolAdapter):
             except Exception as exc:
                 if self.logger:
                     self.logger.warning("[hitl] manager startup failed: %s", exc)
+
+            # Start MessengerManager (unified SDK: Discord, Telegram, community plugins)
+            try:
+                from app.mcp.adapters.messenger.manager import (
+                    MessengerManager,
+                    init_shared_manager as init_messenger,
+                )
+                _messenger_manager = MessengerManager()
+                _messenger_manager.load_from_config()
+                if _sched is not None:
+                    _messenger_manager.set_scheduler(_sched)
+                await _messenger_manager.start()
+                init_messenger(_messenger_manager)
+                # Wire into scheduler so _broadcast() reaches all adapters
+                if _sched is not None:
+                    _sched._messenger_manager = _messenger_manager
+                if self.logger:
+                    self.logger.info(
+                        "[messenger] started %d adapter(s)", len(_messenger_manager)
+                    )
+            except Exception as exc:
+                if self.logger:
+                    self.logger.warning("[messenger] manager startup failed: %s", exc)
 
             # Start Discord community bot if enabled
             if os.getenv("ENABLE_DISCORD_BOT", "false").lower() in ("true", "1", "yes"):
@@ -219,7 +244,7 @@ class HTTPAdapter(ProtocolAdapter):
         @app.on_event("shutdown")
         async def shutdown_event():
             """Application shutdown event handler"""
-            nonlocal _discord_task, _hitl_manager
+            nonlocal _discord_task, _hitl_manager, _messenger_manager
             if _discord_task and not _discord_task.done():
                 _discord_task.cancel()
                 try:
@@ -231,6 +256,9 @@ class HTTPAdapter(ProtocolAdapter):
 
             if _hitl_manager is not None:
                 await _hitl_manager.stop()
+
+            if _messenger_manager is not None:
+                await _messenger_manager.stop()
 
             if self.logger:
                 self.logger.info("MCP Server shutdown initiated")
