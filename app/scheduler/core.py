@@ -464,6 +464,11 @@ class Scheduler:
                 # attention regardless of who created it (user, agent, or cron).
                 # _should_notify_completion() returns False for agent-spawned sub-tasks,
                 # which would silently drop the Discord/Telegram message.
+                cfg = task.config or {}
+                role_id = cfg.get("role_id", "")
+                goal_preview = str(cfg.get("goal", task.description or ""))[:300]
+                base_url = __import__("os").getenv("MOJO_BASE_URL", "").rstrip("/")
+                dashboard_url = f"{base_url}/dashboard/tasks/{task.id}" if base_url else ""
                 await self._broadcast({
                     "event_type": "task_waiting_for_input",
                     "task_id": task.id,
@@ -473,6 +478,12 @@ class Scheduler:
                     "severity": "warning",
                     "title": f"Agent is waiting for your input on task {task.id}",
                     "notify_user": True,
+                    "context": {
+                        "role_id": role_id,
+                        "goal_preview": goal_preview,
+                        "dashboard_url": dashboard_url,
+                        "description": task.description or "",
+                    },
                     "data": {
                         "task_id": task.id,
                         "question": result.waiting_for_input,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional  # noqa: F401 (Optional used in send_hitl signature)
 
 logger = logging.getLogger("mojo_assistant.messenger")
 
@@ -68,7 +68,11 @@ class MessengerAdapter(ABC):
 
     @abstractmethod
     async def send_hitl(
-        self, task_id: str, question: str, choices: List[str]
+        self,
+        task_id: str,
+        question: str,
+        choices: List[str],
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Send an interactive question to the owner.
@@ -76,6 +80,14 @@ class MessengerAdapter(ABC):
         Present choices as buttons / quick-replies / numbered options.
         When the owner picks one, call:
             self.handle_response(task_id, chosen_option)
+
+        context (optional) — extra info to show alongside the question:
+          {
+            "role_id":       "popo",
+            "goal_preview":  "Fix the smoke-test CI workflow…",
+            "dashboard_url": "https://ai.example.com/dashboard/tasks/abc123",
+            "description":   "human-readable task name",
+          }
         """
 
     # ------------------------------------------------------------------

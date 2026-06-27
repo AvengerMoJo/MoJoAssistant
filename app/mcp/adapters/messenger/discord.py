@@ -21,7 +21,7 @@ Requires:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.mcp.adapters.messenger.base import MessengerAdapter
 from app.mcp.adapters.messenger.registry import register
@@ -54,6 +54,10 @@ class DiscordMessengerAdapter(MessengerAdapter):
         await self._impl.send_notification(title, body, severity)
 
     async def send_hitl(
-        self, task_id: str, question: str, choices: List[str]
+        self,
+        task_id: str,
+        question: str,
+        choices: List[str],
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        await self._impl.send_hitl(task_id, question, choices)
+        await self._impl.send_hitl(task_id, question, choices, context=context)

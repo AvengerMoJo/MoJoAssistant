@@ -146,6 +146,7 @@ class MessengerManager:
                             or "Owner input required"
                         ),
                         choices=event.get("choices") or [],
+                        context=event.get("context"),
                     )
                 else:
                     await adapter.send_notification(

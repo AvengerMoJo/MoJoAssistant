@@ -99,15 +99,34 @@ class TelegramMessengerAdapter(MessengerAdapter):
         })
 
     async def send_hitl(
-        self, task_id: str, question: str, choices: List[str]
+        self,
+        task_id: str,
+        question: str,
+        choices: List[str],
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not self._ready():
             return
 
+        ctx = context or {}
+        role_id = ctx.get("role_id", "")
+        goal_preview = ctx.get("goal_preview", "") or ctx.get("description", "")
+        dashboard_url = ctx.get("dashboard_url", "")
+
+        context_lines = []
+        if role_id:
+            context_lines.append(f"*Role:* {role_id}")
+        if goal_preview:
+            context_lines.append(f"*Goal:* {goal_preview[:300]}")
+        if dashboard_url:
+            context_lines.append(f"*Dashboard:* {dashboard_url}")
+        context_block = "\n".join(context_lines)
+
         text = (
             f"\U0001f514 *Agent needs your input*\n\n"
-            f"*Task:* `{task_id}`\n\n"
-            f"{question}"
+            f"*Task:* `{task_id}`\n"
+            + (f"{context_block}\n" if context_block else "")
+            + f"\n{question}"
         )[:_MAX_TEXT]
 
         payload: Dict[str, Any] = {

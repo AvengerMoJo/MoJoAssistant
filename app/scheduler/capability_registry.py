@@ -481,16 +481,20 @@ class CapabilityRegistry:
                     "Pause the task and ask the user a question. "
                     "Use when you need information only the user can provide. "
                     "The task will wait in WAITING_FOR_INPUT state until the user replies. "
-                    "Do not use this for information you can gather with other tools."
+                    "Do not use this for information you can gather with other tools.\n\n"
+                    "IMPORTANT: If the user must pick from a fixed set of options, pass them "
+                    "as the 'choices' list — do NOT embed numbered options in the question text. "
+                    "Choices render as clickable buttons in Discord/Telegram; text-embedded "
+                    "options do not."
                 ),
                 danger_level="low",
                 category="comms",
                 parameters={"type": "object", "properties": {
-                    "question": {"type": "string", "description": "The question to ask the user"},
+                    "question": {"type": "string", "description": "The question to ask the user. Do not embed options as numbered text — use the 'choices' parameter instead."},
                     "choices": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional list of suggested answer choices to present to the user",
+                        "description": "List of answer options to present as buttons (e.g. ['Option A', 'Option B', 'Cancel']). Always use this instead of listing options in the question text.",
                     },
                 }, "required": ["question"]},
             ),

@@ -383,14 +383,23 @@ BUILTIN_TOOLS = {
                 "Pause the task and surface a blocker to the owner (user). "
                 "Use this when you cannot proceed without human help: a required tool is unavailable, "
                 "you need information only the owner has, or a decision requires human judgment. "
-                "Do NOT use this to report progress or status — only when genuinely blocked."
+                "Do NOT use this to report progress or status — only when genuinely blocked.\n\n"
+                "IMPORTANT: If the owner must choose from specific options, pass them as the "
+                "'choices' list — do NOT embed numbered options inside the question text. "
+                "The choices list renders as clickable buttons in Discord/Telegram; "
+                "text-embedded options do not."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "question": {
                         "type": "string",
-                        "description": "The specific question or blocker to surface to the owner",
+                        "description": "The specific question or blocker to surface to the owner. Do not embed choice options as numbered text here — use the 'choices' parameter instead.",
+                    },
+                    "choices": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of answer options to present as buttons (e.g. ['Option A', 'Option B', 'Cancel']). Always use this instead of listing options inside the question text.",
                     },
                 },
                 "required": ["question"],

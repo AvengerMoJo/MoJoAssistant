@@ -104,19 +104,38 @@ class DiscordHITLAdapter(HITLAdapter):
     # Outbound
     # ------------------------------------------------------------------
 
-    async def send_hitl(self, task_id: str, question: str, choices: List[str]) -> None:
+    async def send_hitl(
+        self,
+        task_id: str,
+        question: str,
+        choices: List[str],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
         ch = await self._get_channel()
         if ch is None:
             logger.warning("[hitl/discord] owner channel not available — cannot send HITL")
             return
         try:
             import discord  # type: ignore
+            ctx = context or {}
+            role_id = ctx.get("role_id", "")
+            goal_preview = ctx.get("goal_preview", "") or ctx.get("description", "")
+            dashboard_url = ctx.get("dashboard_url", "")
+
             embed = discord.Embed(
                 title="Owner Action Required",
                 description=question[:4096],
                 color=discord.Color.orange(),
             )
-            embed.set_footer(text=f"task: {task_id}")
+            if role_id:
+                embed.add_field(name="Role", value=role_id, inline=True)
+            if goal_preview:
+                embed.add_field(name="Goal", value=goal_preview[:512], inline=False)
+            footer_text = f"task: {task_id}"
+            if dashboard_url:
+                embed.add_field(name="Dashboard", value=dashboard_url, inline=False)
+            embed.set_footer(text=footer_text)
+
             view = _HITLView(task_id=task_id, choices=choices, adapter=self)
             msg = await ch.send(embed=embed, view=view)
             self._pending[msg.id] = (task_id, choices)
