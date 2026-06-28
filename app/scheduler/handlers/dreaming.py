@@ -187,6 +187,23 @@ class DreamingHandler(TaskHandler):
                     )
                     metrics["clusters_indexed"] = indexed
 
+                # Post-consolidation conflict diagnosis (Rec 3).
+                # Only runs when dreaming committed — no point diagnosing a rolled-back KB.
+                if eval_outcome.committed and ctx._memory_service:
+                    try:
+                        from app.memory.embedding_pool import get_embedding_pool
+                        pool = get_embedding_pool()
+                        diag = pool.diagnose_conflicts(
+                            memory_service=ctx._memory_service,
+                            role_id=conv_role_id or "unknown",
+                        )
+                        metrics["diagnosis_conflicts"] = diag.total_conflicts
+                        metrics["diagnosis_gaps"] = len(diag.gaps)
+                        if not diag.healthy:
+                            ctx.log(f"KB diagnosis: {diag.summary()}", "warning")
+                    except Exception as _diag_err:
+                        ctx.log(f"KB diagnosis failed (non-fatal): {_diag_err}", "debug")
+
                 if task.config.get("distill_inbox", False):
                     try:
                         from datetime import date, timedelta

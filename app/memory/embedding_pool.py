@@ -337,19 +337,18 @@ class EmbeddingPool:
         memory_service: Any,
         query_set: Optional[List[str]] = None,
         role_id: str = "unknown",
-    ) -> Dict[str, Any]:
-        """Scan for semantic contradictions and stale knowledge.
+    ) -> "DiagnosisSummary":
+        """Scan for semantic contradictions, staleness, and knowledge gaps.
 
-        Convenience method that delegates to ConflictDiagnoser.
-        Returns diagnosis summary as dict.
+        Delegates to ConflictDiagnoser. Returns a typed DiagnosisSummary
+        so callers can use .healthy, .summary(), and .gaps directly.
         """
-        from app.memory.conflict_diagnosis import ConflictDiagnoser
+        from app.memory.conflict_diagnosis import ConflictDiagnoser, DiagnosisSummary
         diagnoser = ConflictDiagnoser(
             memory_service=memory_service,
             role_id=role_id,
         )
-        summary = diagnoser.diagnose(query_set=query_set)
-        return summary.to_dict()
+        return diagnoser.diagnose(query_set=query_set)
 
 
 # Singleton instance

@@ -18,11 +18,15 @@ Neither call goes through app.memory.embedding_pool, so:
 This subclass overrides both methods to use the pool-aware SimpleEmbedding
 from app.memory.simplified_embeddings. Everything else is inherited unchanged.
 """
+import logging
 import os
 import sys
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 _submodule_src = str(Path(__file__).resolve().parents[2] / "submodules" / "dreaming-memory-pipeline" / "src")
 if _submodule_src not in sys.path:
@@ -174,6 +178,17 @@ class HybridMemoryService(_Base):
                 scores.append(0.0)
         return sum(scores) / len(scores) if scores else 0.0
 
+    def add_to_knowledge_base(
+        self, document: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Override to inject action metadata defaults into every new unit."""
+        if metadata is None:
+            metadata = {}
+        metadata.setdefault("action_history", [])
+        metadata.setdefault("confidence_score", 1.0)
+        metadata.setdefault("last_validated", datetime.now(timezone.utc).isoformat())
+        super().add_to_knowledge_base(document, metadata)
+
     def execute_action(self, action: Any, role_id: str) -> dict:
         """Execute a single typed MemoryAction.
 
@@ -237,19 +252,30 @@ class HybridMemoryService(_Base):
         return results
 
     def _retire_unit(self, unit_id: str, role_id: str) -> None:
-        """Mark a knowledge unit as retired (soft-delete)."""
+        """Remove a knowledge unit and its chunk embeddings (hard-delete from search index).
+
+        The submodule's query() returns (text, score) tuples with no metadata
+        filtering, so metadata-only soft-delete leaves the unit searchable.
+        We must remove both the document and its chunk embeddings so it no longer
+        appears in results. The action_history on the caller's MemoryAction provides
+        the audit trail.
+        """
         if not hasattr(self, "knowledge_manager") or not self.knowledge_manager:
             return
-        for doc in self.knowledge_manager.documents:
-            if doc.get("id") == unit_id:
-                doc["metadata"] = doc.get("metadata", {})
-                doc["metadata"]["retired"] = True
-                doc["metadata"]["retired_at"] = __import__("datetime").datetime.now(
-                    __import__("datetime").timezone.utc
-                ).isoformat()
-                self.knowledge_manager._save_documents()
-                return
-        logger.warning(f"_retire_unit: unit {unit_id} not found")
+
+        before = len(self.knowledge_manager.documents)
+        self.knowledge_manager.documents = [
+            d for d in self.knowledge_manager.documents if d.get("id") != unit_id
+        ]
+        if len(self.knowledge_manager.documents) == before:
+            logger.warning("_retire_unit: unit %s not found", unit_id)
+            return
+
+        self.knowledge_manager.chunk_embeddings = [
+            e for e in self.knowledge_manager.chunk_embeddings
+            if e.get("doc_id") != unit_id
+        ]
+        self.knowledge_manager._save_data()
 
     def _merge_unit_texts(self, target_ids: list, role_id: str) -> str:
         """Auto-generate merged text from two knowledge units."""
