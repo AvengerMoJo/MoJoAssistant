@@ -1,0 +1,8 @@
+{
+  "context_depth": 5,
+  "pre_granted_tools": ["read_file", "memory_search"],
+  "goal_phrasing": "concrete",
+  "few_shot_examples": 0,
+  "memory_injection": true,
+  "max_context_tokens": 2000
+}
