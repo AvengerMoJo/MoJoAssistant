@@ -50,7 +50,14 @@ def load_resource(resource_id: str) -> Optional[Dict[str, Any]]:
     if not pool_path.exists():
         return None
     pool = json.loads(pool_path.read_text())
-    return pool.get("resources", {}).get(resource_id)
+    resource = pool.get("resources", {}).get(resource_id)
+    # Handle case where resource is stored as JSON string
+    if isinstance(resource, str):
+        try:
+            resource = json.loads(resource)
+        except json.JSONDecodeError:
+            return None
+    return resource
 
 
 async def run_task_with_model(
