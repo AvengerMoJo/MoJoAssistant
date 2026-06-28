@@ -227,7 +227,7 @@ async def run_profiler(
 
 def main():
     parser = argparse.ArgumentParser(description="Run routing profiler")
-    parser.add_argument("--models", default="lmstudio_gemma4_12b,lmstudio_qwen36_27b_mtp,lmstudio_qwen36_mtp",
+    parser.add_argument("--models", default="lmstudio_gemma4_12b,lmstudio__google_gemma_4_26b_a4b,lmstudio_qwen36_27b_mtp,lmstudio_qwen36_mtp",
                        help="Comma-separated model IDs")
     parser.add_argument("--cell", help="Run specific cell only")
     parser.add_argument("--tasks-per-cell", type=int, default=5)

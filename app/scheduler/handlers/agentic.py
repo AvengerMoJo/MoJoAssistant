@@ -34,6 +34,21 @@ class AgenticHandler(TaskHandler):
                     f"Coding agent routing check failed for role '{role_id}': {e}", "warning"
                 )
 
+        # Task routing — select minimum viable model before acquiring a resource
+        try:
+            from app.scheduler.task_router import TaskRouter
+            router = TaskRouter.load()
+            routing = router.classify_and_route(
+                goal=cfg.get("goal", ""),
+                role_id=role_id or "",
+                declared_tools=cfg.get("available_tools", []),
+            )
+            cfg["_routing"] = routing
+            ctx.log(f"Task routed to cell={routing['cell']} model={routing['model_id']} "
+                    f"confidence={routing['confidence']:.2f}")
+        except Exception as e:
+            ctx.log(f"TaskRouter failed (non-fatal, proceeding without routing): {e}", "warning")
+
         executor = None
         try:
             executor = ctx.get_agentic_executor()
