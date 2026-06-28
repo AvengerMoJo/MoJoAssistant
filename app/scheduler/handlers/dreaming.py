@@ -136,23 +136,11 @@ class DreamingHandler(TaskHandler):
                         f"Could not set role-scoped storage for dreaming: {_e}", "warning"
                     )
 
-            # Wrap with eval-driven consolidation
-            from app.memory.eval_consolidation import ConsolidationEvaluator
-            evaluator = ConsolidationEvaluator(
-                memory_service=ctx._memory_service,
-                storage=getattr(pipeline, "storage", None),
-                role_id=conv_role_id or "unknown",
+            results = await pipeline.process_conversation(
+                conversation_id=conversation_id,
+                conversation_text=conversation_text,
+                metadata=metadata,
             )
-
-            async with evaluator.guarded_consolidation() as eval_outcome:
-                results = await pipeline.process_conversation(
-                    conversation_id=conversation_id,
-                    conversation_text=conversation_text,
-                    metadata=metadata,
-                )
-
-            if not eval_outcome.committed:
-                ctx.log(f"Dreaming rolled back: {eval_outcome.rollback_reason}", "warning")
 
             if results.get("status") == "success":
                 archive = results["stages"]["D_archive"]
@@ -165,18 +153,6 @@ class DreamingHandler(TaskHandler):
                     "automatic": automatic,
                 }
 
-                # Merge eval metrics into success metrics — must be AFTER the dict literal
-                # above so eval data is not overwritten
-                if eval_outcome.pre:
-                    metrics["eval_pre_score"] = eval_outcome.pre.mean_score
-                    metrics["eval_post_score"] = (
-                        eval_outcome.post.mean_score if eval_outcome.post else None
-                    )
-                    metrics["eval_delta"] = eval_outcome.delta
-                    metrics["eval_committed"] = eval_outcome.committed
-                    if not eval_outcome.committed:
-                        metrics["eval_rollback_reason"] = eval_outcome.rollback_reason
-
                 if ctx._memory_service:
                     indexed = self._index_clusters_to_knowledge_base(
                         ctx=ctx,
@@ -186,23 +162,6 @@ class DreamingHandler(TaskHandler):
                         source=task.config.get("metadata", {}).get("source", "dreaming"),
                     )
                     metrics["clusters_indexed"] = indexed
-
-                # Post-consolidation conflict diagnosis (Rec 3).
-                # Only runs when dreaming committed — no point diagnosing a rolled-back KB.
-                if eval_outcome.committed and ctx._memory_service:
-                    try:
-                        from app.memory.embedding_pool import get_embedding_pool
-                        pool = get_embedding_pool()
-                        diag = pool.diagnose_conflicts(
-                            memory_service=ctx._memory_service,
-                            role_id=conv_role_id or "unknown",
-                        )
-                        metrics["diagnosis_conflicts"] = diag.total_conflicts
-                        metrics["diagnosis_gaps"] = len(diag.gaps)
-                        if not diag.healthy:
-                            ctx.log(f"KB diagnosis: {diag.summary()}", "warning")
-                    except Exception as _diag_err:
-                        ctx.log(f"KB diagnosis failed (non-fatal): {_diag_err}", "debug")
 
                 if task.config.get("distill_inbox", False):
                     try:

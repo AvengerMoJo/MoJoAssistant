@@ -332,24 +332,6 @@ class EmbeddingPool:
             self._resources.clear()
             self._load_config()
 
-    def diagnose_conflicts(
-        self,
-        memory_service: Any,
-        query_set: Optional[List[str]] = None,
-        role_id: str = "unknown",
-    ) -> "DiagnosisSummary":
-        """Scan for semantic contradictions, staleness, and knowledge gaps.
-
-        Delegates to ConflictDiagnoser. Returns a typed DiagnosisSummary
-        so callers can use .healthy, .summary(), and .gaps directly.
-        """
-        from app.memory.conflict_diagnosis import ConflictDiagnoser, DiagnosisSummary
-        diagnoser = ConflictDiagnoser(
-            memory_service=memory_service,
-            role_id=role_id,
-        )
-        return diagnoser.diagnose(query_set=query_set)
-
 
 # Singleton instance
 _pool: Optional[EmbeddingPool] = None

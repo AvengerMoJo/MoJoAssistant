@@ -24,7 +24,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -148,141 +148,13 @@ class HybridMemoryService(_Base):
             self.logger.error(traceback.format_exc())
             self.multi_model_enabled = False
 
-    async def evaluate_consolidation(
-        self,
-        query_set: list[str],
-        role_id: str = "unknown",
-        top_k: int = 5,
-    ) -> float:
-        """Return mean top-k relevance score for query_set.
-
-        Used by ConsolidationEvaluator to measure retrieval quality
-        before and after dreaming consolidation.
-        """
-        scores = []
-        for q in query_set:
-            try:
-                results = await self.get_context_for_query_async(
-                    q, max_items=top_k, role_id=role_id
-                )
-                if results:
-                    scores.append(
-                        sum(
-                            r.get("relevance_score", r.get("relevance", 0.0))
-                            for r in results
-                        ) / len(results)
-                    )
-                else:
-                    scores.append(0.0)
-            except Exception:
-                scores.append(0.0)
-        return sum(scores) / len(scores) if scores else 0.0
-
     def add_to_knowledge_base(
         self, document: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Override to inject action metadata defaults into every new unit."""
+        """Override to inject provenance defaults into every new unit."""
         if metadata is None:
             metadata = {}
         metadata.setdefault("action_history", [])
         metadata.setdefault("confidence_score", 1.0)
         metadata.setdefault("last_validated", datetime.now(timezone.utc).isoformat())
         super().add_to_knowledge_base(document, metadata)
-
-    def execute_action(self, action: Any, role_id: str) -> dict:
-        """Execute a single typed MemoryAction.
-
-        Returns result dict with:
-        {"success": bool, "action_type": str, "affected_ids": List[str], "error": str}
-        """
-        from app.memory.memory_action import MemoryActionType
-
-        try:
-            action.validate()
-        except ValueError as e:
-            return {"success": False, "error": str(e), "action_type": action.action_type.value}
-
-        t = action.action_type
-        try:
-            if t == MemoryActionType.INSERT_UNIT:
-                self.add_to_knowledge_base(action.content, metadata={
-                    **action.metadata,
-                    "proposed_by": action.proposed_by,
-                    "action_reason": action.reason,
-                })
-                return {"success": True, "action_type": t.value, "affected_ids": []}
-
-            elif t == MemoryActionType.UPDATE_FACTS:
-                self._retire_unit(action.target_ids[0], role_id)
-                self.add_to_knowledge_base(action.content, metadata={
-                    **action.metadata,
-                    "replaces": action.target_ids[0],
-                    "proposed_by": action.proposed_by,
-                })
-                return {"success": True, "action_type": t.value, "affected_ids": action.target_ids}
-
-            elif t == MemoryActionType.MERGE_UNITS:
-                merged_text = action.content or self._merge_unit_texts(action.target_ids, role_id)
-                for uid in action.target_ids:
-                    self._retire_unit(uid, role_id)
-                self.add_to_knowledge_base(merged_text, metadata={
-                    **action.metadata,
-                    "merged_from": action.target_ids,
-                    "proposed_by": action.proposed_by,
-                })
-                return {"success": True, "action_type": t.value, "affected_ids": action.target_ids}
-
-            elif t == MemoryActionType.RETIRE_STALE:
-                for uid in action.target_ids:
-                    self._retire_unit(uid, role_id)
-                return {"success": True, "action_type": t.value, "affected_ids": action.target_ids}
-
-            return {"success": False, "error": f"Unknown action type: {t}"}
-        except Exception as e:
-            return {"success": False, "error": str(e), "action_type": action.action_type.value}
-
-    def execute_actions(self, actions: list, role_id: str) -> list:
-        """Execute a list of MemoryActions in order. Stops on first failure."""
-        results = []
-        for action in actions:
-            result = self.execute_action(action, role_id)
-            results.append(result)
-            if not result.get("success"):
-                break
-        return results
-
-    def _retire_unit(self, unit_id: str, role_id: str) -> None:
-        """Remove a knowledge unit and its chunk embeddings (hard-delete from search index).
-
-        The submodule's query() returns (text, score) tuples with no metadata
-        filtering, so metadata-only soft-delete leaves the unit searchable.
-        We must remove both the document and its chunk embeddings so it no longer
-        appears in results. The action_history on the caller's MemoryAction provides
-        the audit trail.
-        """
-        if not hasattr(self, "knowledge_manager") or not self.knowledge_manager:
-            return
-
-        before = len(self.knowledge_manager.documents)
-        self.knowledge_manager.documents = [
-            d for d in self.knowledge_manager.documents if d.get("id") != unit_id
-        ]
-        if len(self.knowledge_manager.documents) == before:
-            logger.warning("_retire_unit: unit %s not found", unit_id)
-            return
-
-        self.knowledge_manager.chunk_embeddings = [
-            e for e in self.knowledge_manager.chunk_embeddings
-            if e.get("doc_id") != unit_id
-        ]
-        self.knowledge_manager._save_data()
-
-    def _merge_unit_texts(self, target_ids: list, role_id: str) -> str:
-        """Auto-generate merged text from two knowledge units."""
-        if not hasattr(self, "knowledge_manager") or not self.knowledge_manager:
-            return ""
-        texts = []
-        for doc in self.knowledge_manager.documents:
-            if doc.get("id") in target_ids:
-                texts.append(doc.get("text", ""))
-        return "\n\n---\n\n".join(texts)
