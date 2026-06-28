@@ -83,15 +83,16 @@ def check_answer(task: Dict[str, Any], response: str) -> bool:
 
 
 def run_task(task: Dict[str, Any], config: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
-    """Run a single benchmark task."""
+    """Run a single benchmark task by calling the local LLM."""
+    import asyncio
     task_id = task["id"]
     goal = task["goal"]
+    tier = task.get("tier", 0)
     
-    # Simulate task execution (in real implementation, this would call the agentic executor)
-    # For now, return a placeholder result
+    start = time.time()
     result = {
         "task_id": task_id,
-        "tier": task.get("tier", 0),
+        "tier": tier,
         "goal": goal,
         "iterations": 1,
         "success": False,
@@ -100,7 +101,103 @@ def run_task(task: Dict[str, Any], config: Dict[str, Any], run_dir: Path) -> Dic
         "error": None,
     }
     
-    # Save task result to run directory
+    try:
+        # Load resource pool to get local model
+        from app.scheduler.resource_pool import ResourceManager
+        pool = ResourceManager()
+        resource = pool.acquire()
+        
+        if not resource:
+            result["error"] = "No LLM resource available"
+            return result
+        
+        # Build messages with context injection
+        system_prompt = "You are a helpful assistant. Answer the question concisely and accurately."
+        
+        # Inject context based on task.setup
+        setup = task.get("setup", "")
+        context = ""
+        if setup.startswith("role="):
+            role_id = setup.split("=")[1]
+            role_path = Path.home() / ".memory" / "roles" / f"{role_id}.json"
+            if role_path.exists():
+                context = f"Role config for {role_id}:\n{role_path.read_text()[:2000]}"
+        elif setup.startswith("file="):
+            file_path = PROJECT_ROOT / setup.split("=", 1)[1]
+            if file_path.exists():
+                context = f"File {file_path.name}:\n{file_path.read_text()[:2000]}"
+        elif setup == "roles":
+            roles_dir = Path.home() / ".memory" / "roles"
+            role_summaries = []
+            for f in sorted(roles_dir.glob("*.json"))[:20]:
+                try:
+                    r = json.loads(f.read_text())
+                    role_summaries.append(f"{r.get('id','?')}: {r.get('name','')} - capabilities: {r.get('capabilities',[])}")
+                except:
+                    pass
+            context = "Roles:\n" + "\n".join(role_summaries)
+        elif setup == "resource_pool":
+            pool_path = Path.home() / ".memory" / "config" / "resource_pool.json"
+            if pool_path.exists():
+                context = f"Resource pool config:\n{pool_path.read_text()[:2000]}"
+        elif setup == "embedding_pool":
+            pool_path = Path.home() / ".memory" / "config" / "embedding_pool.json"
+            if pool_path.exists():
+                context = f"Embedding pool config:\n{pool_path.read_text()[:2000]}"
+        
+        if context:
+            system_prompt += f"\n\nRelevant context:\n{context}"
+        
+        if config.get("memory_injection"):
+            system_prompt += "\nYou have access to MoJoAssistant's memory and tools."
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": goal},
+        ]
+        
+        # Call LLM with max_iterations=1 for 1-shot measurement
+        from app.llm.unified_client import UnifiedLLMClient
+        client = UnifiedLLMClient()
+        
+        resource_config = {
+            "base_url": resource.base_url,
+            "model": resource.model,
+            "api_key": resource.api_key,
+            "output_limit": min(resource.output_limit or 8192, 8192),
+            "message_format": "openai",
+            "provider": resource.provider,
+        }
+        
+        # Use call_async for single LLM call
+        loop = asyncio.new_event_loop()
+        try:
+            data = loop.run_until_complete(
+                client.call_async(
+                    messages=messages,
+                    resource_config=resource_config,
+                    model_override=resource.model,
+                )
+            )
+        finally:
+            loop.close()
+        
+        # Extract response
+        choices = data.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+            response_text = message.get("content", "")
+            result["response"] = response_text
+            
+            # Check if answer matches
+            result["success"] = check_answer(task, response_text)
+        
+    except Exception as e:
+        result["error"] = str(e)
+    
+    result["elapsed_s"] = round(time.time() - start, 1)
+    
+    # Save task result
     result_path = run_dir / f"{task_id}.json"
     result_path.write_text(json.dumps(result, indent=2))
     
