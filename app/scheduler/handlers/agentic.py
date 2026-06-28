@@ -19,7 +19,12 @@ class AgenticHandler(TaskHandler):
             try:
                 from app.roles.role_manager import RoleManager
                 role = RoleManager().get(role_id)
-                if role and role.get("executor") == "coding_agent":
+                # Task-level executor override takes precedence over role default
+                task_executor = cfg.get("executor")
+                if task_executor == "agentic":
+                    # Force agentic executor regardless of role's executor setting
+                    ctx.log(f"Task {task.id}: using agentic executor (task override)")
+                elif role and role.get("executor") == "coding_agent":
                     ctx.log(
                         f"Task {task.id}: routing to CodingAgentExecutor (role={role_id})"
                     )
