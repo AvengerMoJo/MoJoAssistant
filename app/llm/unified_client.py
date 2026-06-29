@@ -201,12 +201,15 @@ class UnifiedLLMClient:
 
         payload = self._build_payload(messages, model, output_limit, message_format, tools)
 
-        # 300s read timeout: local LLMs (Qwen 35B, Gemma 27B) can take >120s
-        # on a large context. Connect timeout stays short (10s) to fail fast if
-        # the server is down. The task-level wall-clock cap (core.py) is the
-        # ultimate safety net.
+        # Read timeout from resource_config; 0 means no timeout (for thinking models)
+        config_timeout = resource_config.get("timeout", 300)
+        if config_timeout and config_timeout > 0:
+            read_timeout = float(config_timeout)
+        else:
+            read_timeout = 3600.0  # 1 hour — let thinking models run as long as needed
+
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=10.0)
+            timeout=httpx.Timeout(read_timeout, connect=10.0)
         ) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()

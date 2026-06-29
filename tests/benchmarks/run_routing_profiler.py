@@ -128,6 +128,7 @@ async def run_task_with_model(
             "output_limit": min(resource.get("output_limit", 8192), 8192),
             "message_format": "openai",
             "provider": resource.get("provider", ""),
+            "timeout": 0,  # No timeout — let thinking models run as long as needed
         }
 
         data = await client.call_async(
