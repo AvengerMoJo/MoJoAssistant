@@ -648,11 +648,12 @@ class OpenCodeSessionHandler(TaskHandler):
                 )
                 cfg["_sandbox_handle"] = handle
                 url = handle.url or ""
+                _password = handle.password or cfg.get("opencode_password") or ""
                 logger.info(
                     "SandboxManager.acquire: %s sandbox for %s (id=%s url=%s role=%s)",
                     handle.backend, task.id, handle.sandbox_id, url, handle.role_id,
                 )
-                client = OpenCodeClient(base_url=url)
+                client = OpenCodeClient(base_url=url, password=_password)
                 cfg["_opencode_client"] = client
                 return client
             except Exception as e:

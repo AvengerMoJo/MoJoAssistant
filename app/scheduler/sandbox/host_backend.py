@@ -92,6 +92,7 @@ class HostOpenCodeBackend(SandboxBackend):
             state="running",
             working_dir=working_dir,
             log_path=inst.log_path,
+            password=inst.password,
             role_id=role_id,
             parent_task_id=parent_task_id,
             environment=environment,

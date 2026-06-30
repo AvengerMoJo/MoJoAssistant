@@ -50,6 +50,7 @@ class SandboxHandle:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     log_path: Optional[str] = None  # for debug/learn — points at the backend's log file
+    password: Optional[str] = None  # auth token for the OpenCode HTTP API
     # Provenance — set at sandbox creation, immutable afterwards.
     role_id: Optional[str] = None
     parent_task_id: Optional[str] = None
