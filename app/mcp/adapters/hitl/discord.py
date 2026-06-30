@@ -131,13 +131,19 @@ class DiscordHITLAdapter(HITLAdapter):
                 embed.add_field(name="Role", value=role_id, inline=True)
             if goal_preview:
                 embed.add_field(name="Goal", value=goal_preview[:512], inline=False)
-            footer_text = f"task: {task_id}"
+            if not choices:
+                embed.add_field(
+                    name="How to reply",
+                    value="Type your response in this channel — no buttons needed.",
+                    inline=False,
+                )
             if dashboard_url:
                 embed.add_field(name="Dashboard", value=dashboard_url, inline=False)
+            footer_text = f"task: {task_id}"
             embed.set_footer(text=footer_text)
 
             view = _HITLView(task_id=task_id, choices=choices, adapter=self)
-            msg = await ch.send(embed=embed, view=view)
+            msg = await ch.send(embed=embed, view=view if choices else None)
             self._pending[msg.id] = (task_id, choices)
             logger.info("[hitl/discord] HITL posted (task=%s, msg=%s)", task_id, msg.id)
         except Exception as exc:

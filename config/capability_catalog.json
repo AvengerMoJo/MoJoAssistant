@@ -87,7 +87,7 @@
       "category": "exec",
       "danger_level": "high",
       "requires_auth": true,
-      "description": "Run one shell command or a short list of shell commands sequentially. Restricted by a destructive-command blocklist and explicit authorization. Use for builds, scripts, or system queries that cannot be done with other tools. Implies 'terminal' capability \u2014 no need to also list 'terminal' in available_tools."
+      "description": "Run one shell command or a short list of shell commands sequentially. Restricted by a destructive-command blocklist and explicit authorization. Use for builds, scripts, or system queries that cannot be done with other tools. Implies 'terminal' capability \u2014 no need to also list 'terminal' in available_tools. When a sandbox container is active (auto-provisioned when the task has a git_url or sandbox_required=true), commands run inside the container \u2014 no blocklist applies."
     },
     "tmux": {
       "category": "terminal",
@@ -103,12 +103,12 @@
     "scheduler_add_task": {
       "category": "orchestration",
       "danger_level": "medium",
-      "description": "Schedule a new task for another agent role. Use to hand off work after completing your own step \u2014 e.g. a provisioner queuing a reviewer. The new task runs asynchronously; this tool returns immediately without waiting for the result."
+      "description": "Schedule a new task for another agent role. Use to hand off work after completing your own step \u2014 e.g. a provisioner queuing a reviewer. The new task runs asynchronously; this tool returns immediately without waiting for the result. To give the subtask a sandbox, set config.git_url (auto-provisions on any GitHub/GitLab/Bitbucket URL) or config.sandbox_required=true; the subtask's bash_exec calls will then run inside an isolated container."
     },
     "dispatch_subtask": {
       "category": "orchestration",
       "danger_level": "medium",
-      "description": "Dispatch a task to another agent role and WAIT for the result before continuing. Use when you need a specialist's output inline \u2014 e.g. a researcher dispatching to a provisioner, then using the provisioner's output to continue. Max depth: 2. Blocked when local_only is set."
+      "description": "Dispatch a task to another agent role and WAIT for the result before continuing. Use when you need a specialist's output inline \u2014 e.g. a researcher dispatching to a provisioner, then using the provisioner's output to continue. Max depth: 2. Blocked when local_only is set. Supports the same sandbox config keys as scheduler_add_task (git_url, sandbox_required)."
     },
     "agent": {
       "category": "orchestration",

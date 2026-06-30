@@ -56,10 +56,12 @@ class DiscordOwnerAdapter(PushAdapter):
             if not task_id:
                 logger.warning("[push/discord_owner] task_waiting_for_input with no task_id")
                 return
+            context = event.get("context") or {}
             await adapter.send_hitl(
                 task_id=task_id,
                 question=question,
                 choices=choices,
+                context=context,
             )
         else:
             await adapter.send_notification(
