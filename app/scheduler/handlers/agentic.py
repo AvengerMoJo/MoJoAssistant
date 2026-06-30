@@ -61,9 +61,20 @@ class AgenticHandler(TaskHandler):
             _mgr = SandboxManager.load()
             if _mgr.should_provision(task):
                 _cfg_pre = task.config or {}
+                _git_url = _cfg_pre.get("git_url")
+                # Also extract from goal text when not explicit in config
+                if not _git_url:
+                    import re as _re
+                    _goal_text = _cfg_pre.get("goal", "")
+                    _m = _re.search(
+                        r"(git@\S+\.git|https?://(?:github|gitlab|bitbucket)\.com/\S+(?:\.git)?)",
+                        _goal_text,
+                    )
+                    if _m:
+                        _git_url = _m.group(0).rstrip(".,)")
                 _sandbox_handle = await _mgr.acquire(
                     task_id=task.id,
-                    git_url=_cfg_pre.get("git_url"),
+                    git_url=_git_url,
                     working_dir=_cfg_pre.get("working_dir"),
                     role_id=role_id,
                     backend_override=_cfg_pre.get("sandbox_backend"),
@@ -73,6 +84,15 @@ class AgenticHandler(TaskHandler):
                     f"Sandbox provisioned: backend={_sandbox_handle.backend} "
                     f"id={_sandbox_handle.sandbox_id} workdir={_sandbox_handle.working_dir}"
                 )
+                # Auto-grant shell/file tools for this task — the sandbox IS
+                # the isolation layer so these are safe inside the container.
+                _shell_tools = ["bash_exec", "read_file", "write_file", "list_files"]
+                _existing = list(_cfg_pre.get("available_tools") or [])
+                for _t in _shell_tools:
+                    if _t not in _existing:
+                        _existing.append(_t)
+                _cfg_pre["available_tools"] = _existing
+                task.config = _cfg_pre
         except Exception as _se:
             ctx.log(f"Sandbox provisioning failed: {_se}", "warning")
             if (task.config or {}).get("sandbox_required"):
