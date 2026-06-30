@@ -13,8 +13,9 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import subprocess
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.scheduler.sandbox.base import (
     SandboxBackend,
@@ -161,6 +162,49 @@ class HostOpenCodeBackend(SandboxBackend):
 
     def get_log_path(self, handle: SandboxHandle) -> Optional[Path]:
         return Path(handle.log_path) if handle.log_path else None
+
+
+    # ------------------------------------------------------------------
+    #  Shell / filesystem access (used by SandboxManager tool routing)  #
+    # ------------------------------------------------------------------
+
+    def exec(
+        self,
+        handle: SandboxHandle,
+        command: str,
+        timeout: int = 60,
+        workdir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        cwd = workdir or handle.working_dir or str(Path.home() / ".memory" / "sandboxes")
+        try:
+            result = subprocess.run(
+                command, shell=True, capture_output=True, text=True,
+                timeout=timeout, cwd=cwd, errors="replace",
+            )
+            return {
+                "success": result.returncode == 0,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "stdout": "", "stderr": f"Command timed out ({timeout}s)", "returncode": -1}
+        except Exception as e:
+            return {"success": False, "stdout": "", "stderr": str(e), "returncode": -1}
+
+    def read_file(self, handle: SandboxHandle, path: str) -> str:
+        return Path(path).read_text()
+
+    def write_file(self, handle: SandboxHandle, path: str, content: str) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+
+    def list_files(self, handle: SandboxHandle, path: str) -> list:
+        p = Path(path)
+        if not p.is_dir():
+            return []
+        return [entry.name for entry in sorted(p.iterdir())]
 
 
 def _pid_alive(pid: int) -> bool:

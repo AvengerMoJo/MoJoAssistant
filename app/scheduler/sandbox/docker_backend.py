@@ -241,6 +241,68 @@ class DockerSandboxBackend(SandboxBackend):
         return Path(handle.log_path) if handle.log_path else None
 
     # ------------------------------------------------------------------
+    #  Shell / filesystem access (used by SandboxManager tool routing)  #
+    # ------------------------------------------------------------------
+
+    def exec(
+        self,
+        handle: SandboxHandle,
+        command: str,
+        timeout: int = 60,
+        workdir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not handle.sandbox_id:
+            return {"success": False, "stdout": "", "stderr": "No container id", "returncode": -1}
+        cmd = ["docker", "exec"]
+        effective_workdir = workdir or handle.working_dir
+        if effective_workdir:
+            cmd += ["-w", effective_workdir]
+        cmd += [handle.sandbox_id, "sh", "-c", command]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, errors="replace")
+            return {
+                "success": result.returncode == 0,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "stdout": "", "stderr": f"Command timed out ({timeout}s)", "returncode": -1}
+        except Exception as e:
+            return {"success": False, "stdout": "", "stderr": str(e), "returncode": -1}
+
+    def read_file(self, handle: SandboxHandle, path: str) -> str:
+        result = self.exec(handle, f"cat {path}", timeout=30)
+        if not result["success"]:
+            raise FileNotFoundError(f"Cannot read {path} from container: {result['stderr']}")
+        return result["stdout"]
+
+    def write_file(self, handle: SandboxHandle, path: str, content: str) -> None:
+        if not handle.sandbox_id:
+            raise RuntimeError("No container id")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".tmp", delete=False) as f:
+            f.write(content)
+            tmp_path = f.name
+        try:
+            # Ensure parent directory exists inside container
+            parent = str(Path(path).parent)
+            self.exec(handle, f"mkdir -p {parent}", timeout=10)
+            result = subprocess.run(
+                ["docker", "cp", tmp_path, f"{handle.sandbox_id}:{path}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"docker cp failed: {result.stderr.strip()}")
+        finally:
+            os.unlink(tmp_path)
+
+    def list_files(self, handle: SandboxHandle, path: str) -> list:
+        result = self.exec(handle, f"ls -1a {path}", timeout=15)
+        if not result["success"]:
+            return []
+        return [line for line in result["stdout"].splitlines() if line]
+
+    # ------------------------------------------------------------------
     #  debug helpers                                                    #
     # ------------------------------------------------------------------
 

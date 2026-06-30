@@ -211,13 +211,19 @@ class CapabilityRegistry:
             print(f"Failed to seed tool registry from template: {e}")
 
     def _load_registry(self):
-        """Load tools from system layer then personal layer (personal wins on conflict)."""
+        """Load tools from system layer then personal layer (personal wins on conflict).
+
+        Tools with enabled=false are skipped — they remain in the file for
+        documentation and can be re-enabled by setting enabled=true.
+        """
         # Layer 1: system defaults
         if os.path.exists(self.registry_path):
             try:
                 with open(self.registry_path, "r") as f:
                     data = json.load(f)
                     for tool_data in data.get("tools", []):
+                        if tool_data.get("enabled", True) is False:
+                            continue
                         tool = CapabilityDefinition.from_dict(tool_data)
                         self._tools[tool.name] = tool
             except Exception as e:
@@ -229,6 +235,8 @@ class CapabilityRegistry:
                 with open(self.personal_registry_path, "r") as f:
                     data = json.load(f)
                     for tool_data in data.get("tools", []):
+                        if tool_data.get("enabled", True) is False:
+                            continue
                         tool = CapabilityDefinition.from_dict(tool_data)
                         tool.created_by = tool_data.get("created_by", "user")
                         self._tools[tool.name] = tool  # overrides system if same name
@@ -702,6 +710,29 @@ class CapabilityRegistry:
         if not path:
             return {"success": False, "error": "Missing 'path' parameter"}
 
+        # Route through sandbox container when active
+        try:
+            from app.scheduler.sandbox.context import _cv_sandbox_handle
+            sandbox_handle = _cv_sandbox_handle.get()
+        except Exception:
+            sandbox_handle = None
+
+        if sandbox_handle is not None:
+            try:
+                from app.scheduler.sandbox.manager import SandboxManager
+                content = await SandboxManager.load().read_file(sandbox_handle, path)
+                lines = content.splitlines(keepends=True)
+                return {
+                    "success": True,
+                    "content": content,
+                    "line_count": len(lines),
+                    "size_bytes": len(content.encode()),
+                }
+            except FileNotFoundError as e:
+                return {"success": False, "error": str(e)}
+            except Exception as e:
+                return {"success": False, "error": f"sandbox read_file: {e}"}
+
         if not self.sandbox.is_path_allowed(path):
             return {"success": False, "error": f"Path '{path}' not in sandbox"}
 
@@ -729,6 +760,21 @@ class CapabilityRegistry:
         if not path or content is None:
             return {"success": False, "error": "Missing 'path' or 'content' parameter"}
 
+        # Route through sandbox container when active
+        try:
+            from app.scheduler.sandbox.context import _cv_sandbox_handle
+            sandbox_handle = _cv_sandbox_handle.get()
+        except Exception:
+            sandbox_handle = None
+
+        if sandbox_handle is not None:
+            try:
+                from app.scheduler.sandbox.manager import SandboxManager
+                await SandboxManager.load().write_file(sandbox_handle, path, content)
+                return {"success": True, "message": f"Wrote {len(content)} bytes to {path}"}
+            except Exception as e:
+                return {"success": False, "error": f"sandbox write_file: {e}"}
+
         if not self.sandbox.is_write_allowed(path):
             return {"success": False, "error": f"Path '{path}' not in write sandbox (only ~/.memory/ allowed)"}
 
@@ -754,6 +800,22 @@ class CapabilityRegistry:
     async def _list_files(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List files and directories."""
         path = args.get("path", ".")
+
+        # Route through sandbox container when active
+        try:
+            from app.scheduler.sandbox.context import _cv_sandbox_handle
+            sandbox_handle = _cv_sandbox_handle.get()
+        except Exception:
+            sandbox_handle = None
+
+        if sandbox_handle is not None:
+            try:
+                from app.scheduler.sandbox.manager import SandboxManager
+                entries = await SandboxManager.load().list_files(sandbox_handle, path)
+                return {"success": True, "path": path, "entries": entries, "count": len(entries)}
+            except Exception as e:
+                return {"success": False, "error": f"sandbox list_files: {e}"}
+
         if not self.sandbox.is_path_allowed(path):
             return {"success": False, "error": f"Path '{path}' not in sandbox"}
 
@@ -1227,6 +1289,44 @@ class CapabilityRegistry:
         if not commands:
             return {"success": False, "error": "No shell commands provided"}
 
+        # Route through sandbox container when one is active for this task.
+        # Inside a container the environment is isolated so the host blocklist
+        # does not apply — the container is the sandbox.
+        try:
+            from app.scheduler.sandbox.context import _cv_sandbox_handle
+            sandbox_handle = _cv_sandbox_handle.get()
+        except Exception:
+            sandbox_handle = None
+
+        if sandbox_handle is not None:
+            from app.scheduler.sandbox.manager import SandboxManager
+            mgr = SandboxManager.load()
+            results = []
+            for command in commands:
+                result = await mgr.exec(sandbox_handle, command, timeout=60)
+                result["command"] = command
+                results.append(result)
+                if not result["success"]:
+                    return {
+                        "success": False,
+                        "results": results,
+                        "stdout": result.get("stdout", ""),
+                        "stderr": result.get("stderr", ""),
+                        "returncode": result.get("returncode", -1),
+                        "error": f"Command failed: {command}",
+                    }
+            combined_stdout = "".join(r.get("stdout", "") for r in results)
+            combined_stderr = "".join(r.get("stderr", "") for r in results)
+            return {
+                "success": True,
+                "results": results,
+                "stdout": combined_stdout,
+                "stderr": combined_stderr,
+                "returncode": 0,
+                "executed": len(results),
+            }
+
+        # No active sandbox — run on host with blocklist protection.
         # Block destructive commands — everything else is allowed.
         # Rule: read/observe/query = OK; modify/delete/overwrite = blocked.
         BLOCKED_COMMANDS = {

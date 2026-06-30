@@ -17,6 +17,32 @@ class AgentHandler(TaskHandler):
                 ctx.log(f"Agent task {task.id}: ext_agent_hitl stub — no-op")
                 return TaskResult(success=True, metrics={"note": "ext_agent_hitl stub"})
 
+            # Sandbox provisioning for external agents — provision a container
+            # so OpenCode / Claude Code run in isolation instead of on the host.
+            _sandbox_handle = None
+            git_url = config.get("git_url") or config.get("identifier")
+            if git_url and git_url.startswith(("git@", "https://", "http://")):
+                try:
+                    from app.scheduler.sandbox.manager import SandboxManager
+                    _mgr = SandboxManager.load()
+                    _sandbox_handle = await _mgr.acquire(
+                        task_id=task.id,
+                        git_url=git_url,
+                        working_dir=config.get("working_dir"),
+                        role_id=config.get("role_id"),
+                        backend_override=config.get("sandbox_backend"),
+                    )
+                    # Pass working_dir and container URL into agent config so the
+                    # external agent manager can find the right environment.
+                    config["working_dir"] = _sandbox_handle.working_dir or config.get("working_dir")
+                    config["_sandbox_handle"] = _sandbox_handle
+                    ctx.log(
+                        f"Agent task {task.id}: sandbox provisioned "
+                        f"backend={_sandbox_handle.backend} id={_sandbox_handle.sandbox_id}"
+                    )
+                except Exception as _se:
+                    ctx.log(f"Agent task {task.id}: sandbox provisioning failed (non-fatal): {_se}", "warning")
+
             agent_type = config.get("agent_type", "opencode")
             operation = config.get("operation")
             identifier = (
@@ -102,3 +128,11 @@ class AgentHandler(TaskHandler):
         except Exception as e:
             ctx.log(f"Error executing agent task {task.id}: {e}", "error")
             return TaskResult(success=False, error_message=str(e))
+        finally:
+            if _sandbox_handle is not None:
+                try:
+                    from app.scheduler.sandbox.manager import SandboxManager
+                    teardown = config.get("sandbox_teardown", "pause")
+                    await SandboxManager.load().release(_sandbox_handle, mode=teardown)
+                except Exception as _re:
+                    ctx.log(f"Agent sandbox release failed (non-fatal): {_re}", "warning")

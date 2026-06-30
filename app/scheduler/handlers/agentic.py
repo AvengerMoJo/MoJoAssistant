@@ -49,6 +49,35 @@ class AgenticHandler(TaskHandler):
         except Exception as e:
             ctx.log(f"TaskRouter failed (non-fatal, proceeding without routing): {e}", "warning")
 
+        # Sandbox provisioning — same lifecycle pattern as ResourcePool for LLMs.
+        # If the task needs a container (git_url present, sandbox_required, or
+        # task_type matches auto_provision rules), acquire one before the loop.
+        # All bash_exec / read_file / write_file calls then route through it.
+        _sandbox_handle = None
+        _sandbox_token = None
+        try:
+            from app.scheduler.sandbox.manager import SandboxManager
+            from app.scheduler.sandbox.context import _cv_sandbox_handle
+            _mgr = SandboxManager.load()
+            if _mgr.should_provision(task):
+                _cfg_pre = task.config or {}
+                _sandbox_handle = await _mgr.acquire(
+                    task_id=task.id,
+                    git_url=_cfg_pre.get("git_url"),
+                    working_dir=_cfg_pre.get("working_dir"),
+                    role_id=role_id,
+                    backend_override=_cfg_pre.get("sandbox_backend"),
+                )
+                _sandbox_token = _cv_sandbox_handle.set(_sandbox_handle)
+                ctx.log(
+                    f"Sandbox provisioned: backend={_sandbox_handle.backend} "
+                    f"id={_sandbox_handle.sandbox_id} workdir={_sandbox_handle.working_dir}"
+                )
+        except Exception as _se:
+            ctx.log(f"Sandbox provisioning failed: {_se}", "warning")
+            if (task.config or {}).get("sandbox_required"):
+                return TaskResult(success=False, error_message=f"Sandbox required but failed: {_se}")
+
         executor = None
         try:
             executor = ctx.get_agentic_executor()
@@ -92,6 +121,18 @@ class AgenticHandler(TaskHandler):
                 metrics={"session_file": session_file},
                 error_message=f"Agentic execution error: {e}",
             )
+        finally:
+            # Sandbox teardown — always runs whether task succeeded or failed.
+            if _sandbox_token is not None:
+                from app.scheduler.sandbox.context import _cv_sandbox_handle
+                _cv_sandbox_handle.reset(_sandbox_token)
+            if _sandbox_handle is not None:
+                try:
+                    from app.scheduler.sandbox.manager import SandboxManager
+                    teardown = (task.config or {}).get("sandbox_teardown", "pause")
+                    await SandboxManager.load().release(_sandbox_handle, mode=teardown)
+                except Exception as _re:
+                    ctx.log(f"Sandbox release failed (non-fatal): {_re}", "warning")
 
     # ------------------------------------------------------------------
     # Parallel fan-out

@@ -110,6 +110,31 @@ class SandboxBackend(abc.ABC):
         microVM's session JSON. For host: points at the agent.log file.
         """
 
+    # ------------------------------------------------------------------
+    # Shell / filesystem access — used by SandboxManager to route
+    # bash_exec / read_file / write_file / list_files through the sandbox.
+    # Backends that only host OpenCode (not general shells) raise
+    # NotImplementedError; SandboxManager will fall back to host execution.
+    # ------------------------------------------------------------------
+
+    def exec(
+        self,
+        handle: SandboxHandle,
+        command: str,
+        timeout: int = 60,
+        workdir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError(f"{self.__class__.__name__} does not support exec()")
+
+    def read_file(self, handle: SandboxHandle, path: str) -> str:
+        raise NotImplementedError(f"{self.__class__.__name__} does not support read_file()")
+
+    def write_file(self, handle: SandboxHandle, path: str, content: str) -> None:
+        raise NotImplementedError(f"{self.__class__.__name__} does not support write_file()")
+
+    def list_files(self, handle: SandboxHandle, path: str) -> List[str]:
+        raise NotImplementedError(f"{self.__class__.__name__} does not support list_files()")
+
 
 # ----------------------------------------------------------------------
 # Session store (persistence across handler invocations)
