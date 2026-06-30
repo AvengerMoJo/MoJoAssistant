@@ -1,23 +1,42 @@
 {
-  "comment": "System tool catalog — maps tool names to categories and metadata. User custom tools live in ~/.memory/config/tool_catalog.json. Roles declare tool_access by category.",
+  "comment": "System tool catalog \u2014 maps tool names to categories and metadata. User custom tools live in ~/.memory/config/tool_catalog.json. Roles declare tool_access by category.",
   "categories": {
-    "memory":       { "description": "Reserved — user's personal memory is populated by the dreaming pipeline or explicit user action, not by agents directly." },
-    "knowledge":    { "description": "Role-private historical knowledge — the agent's own accumulated task reports, session logs, and research findings. Isolated per role; never crosses into user memory." },
-    "file":         { "description": "File read, write, and search operations" },
-    "web":          { "description": "Web search and HTTP requests" },
-    "exec":         { "description": "Shell commands and code execution via bash_exec. Also auto-implies terminal for gap-checking purposes." },
-    "comms":        { "description": "Communication with the user (HITL)" },
-    "browser":      { "description": "Headless browser — render pages, interact, screenshot (via Playwright MCP server — config/mcp_servers.json)" },
-    "terminal":     { "description": "Persistent tmux sessions — create windows, send keys, capture output (via tmux-mcp-rs — config/mcp_servers.json). Distinct from exec: use when the task needs persistent session state across commands." },
-    "orchestration":{ "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" },
-    "google":       { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (requires Google Workspace MCP server configured in ~/.memory/config/mcp_servers.json)" },
-    "cubesandbox":  { "description": "KVM microVM isolation via CubeSandbox — full isolated execution environment with no path restrictions. Use for coding tasks that need git clone, pip install, pytest, and arbitrary shell commands." }
+    "memory": {
+      "description": "Reserved \u2014 user's personal memory is populated by the dreaming pipeline or explicit user action, not by agents directly."
+    },
+    "knowledge": {
+      "description": "Role-private historical knowledge \u2014 the agent's own accumulated task reports, session logs, and research findings. Isolated per role; never crosses into user memory."
+    },
+    "file": {
+      "description": "File read, write, and search operations"
+    },
+    "web": {
+      "description": "Web search and HTTP requests"
+    },
+    "exec": {
+      "description": "Shell commands and code execution via bash_exec. Also auto-implies terminal for gap-checking purposes."
+    },
+    "comms": {
+      "description": "Communication with the user (HITL)"
+    },
+    "browser": {
+      "description": "Headless browser \u2014 render pages, interact, screenshot (via Playwright MCP server \u2014 config/mcp_servers.json)"
+    },
+    "terminal": {
+      "description": "Persistent tmux sessions \u2014 create windows, send keys, capture output (via tmux-mcp-rs \u2014 config/mcp_servers.json). Distinct from exec: use when the task needs persistent session state across commands."
+    },
+    "orchestration": {
+      "description": "Agent-to-agent coordination \u2014 schedule tasks, hand off work between roles"
+    },
+    "google": {
+      "description": "Google Workspace \u2014 Calendar, Gmail, Drive, Contacts (requires Google Workspace MCP server configured in ~/.memory/config/mcp_servers.json)"
+    }
   },
   "tools": {
-    "memory_search":   {
+    "memory_search": {
       "category": "knowledge",
       "danger_level": "low",
-      "description": "Search this role's own private knowledge base — past task reflections, procedures, accumulated findings. Role-scoped: you only see your own history, never another role's or the user's personal memory."
+      "description": "Search this role's own private knowledge base \u2014 past task reflections, procedures, accumulated findings. Role-scoped: you only see your own history, never another role's or the user's personal memory."
     },
     "task_report_read": {
       "category": "knowledge",
@@ -27,24 +46,24 @@
     "task_session_read": {
       "category": "knowledge",
       "danger_level": "low",
-      "description": "Read the full iteration log for a past task by task_id — every tool call, model response, and intermediate result. Use when you need to understand exactly what happened, not just the final answer."
+      "description": "Read the full iteration log for a past task by task_id \u2014 every tool call, model response, and intermediate result. Use when you need to understand exactly what happened, not just the final answer."
     },
     "add_conversation": {
       "category": "knowledge",
       "danger_level": "low",
-      "description": "Save a dialog exchange or finding to the knowledge store. scope='role' (default) writes to your private store — only you retrieve it. scope='framework' writes to the shared framework store — all agents see it at task start. Use 'framework' only for tool bugs, workflow failures, or patterns every agent should know."
+      "description": "Save a dialog exchange or finding to the knowledge store. scope='role' (default) writes to your private store \u2014 only you retrieve it. scope='framework' writes to the shared framework store \u2014 all agents see it at task start. Use 'framework' only for tool bugs, workflow failures, or patterns every agent should know."
     },
-    "read_file":       {
+    "read_file": {
       "category": "file",
       "danger_level": "low",
       "description": "Read the full contents of a file. Returns raw text plus line_count and size_bytes. Always read a file before modifying it."
     },
-    "write_file":      {
+    "write_file": {
       "category": "file",
       "danger_level": "medium",
-      "description": "Write or overwrite a file. Only paths inside ~/.memory/ are permitted — sandbox policy blocks all other writes. Creates parent directories automatically."
+      "description": "Write or overwrite a file. Only paths inside ~/.memory/ are permitted \u2014 sandbox policy blocks all other writes. Creates parent directories automatically."
     },
-    "list_files":      {
+    "list_files": {
       "category": "file",
       "danger_level": "low",
       "description": "List files and directories at a given path. Use to explore project structure before reading or writing."
@@ -54,121 +73,327 @@
       "danger_level": "low",
       "description": "Search for text patterns across multiple files using grep/ripgrep. Use to locate function definitions, variable references, or specific strings across a codebase."
     },
-    "web_search":      {
+    "web_search": {
       "category": "web",
       "danger_level": "low",
       "description": "Search the web for current information, documentation, or external context. Use when the task requires up-to-date knowledge not available in memory or local files. Requires GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID."
     },
-    "fetch_url":       {
+    "fetch_url": {
       "category": "web",
       "danger_level": "low",
-      "description": "Fetch and read the full plain-text content of a web page. Use after web_search to read a specific result in depth. Strips HTML — returns readable text."
+      "description": "Fetch and read the full plain-text content of a web page. Use after web_search to read a specific result in depth. Strips HTML \u2014 returns readable text."
     },
-    "bash_exec":       {
+    "bash_exec": {
       "category": "exec",
       "danger_level": "high",
       "requires_auth": true,
-      "description": "Run one shell command or a short list of shell commands sequentially. Restricted by a destructive-command blocklist and explicit authorization. Use for builds, scripts, or system queries that cannot be done with other tools. Implies 'terminal' capability — no need to also list 'terminal' in available_tools."
+      "description": "Run one shell command or a short list of shell commands sequentially. Restricted by a destructive-command blocklist and explicit authorization. Use for builds, scripts, or system queries that cannot be done with other tools. Implies 'terminal' capability \u2014 no need to also list 'terminal' in available_tools."
     },
-    "tmux":            {
+    "tmux": {
       "category": "terminal",
       "danger_level": "medium",
       "requires_mcp_server": true,
-      "description": "Shorthand that grants the 'terminal' capability category — covers all tmux__ MCP tools (create-session, execute-command, capture-pane, etc.). Use this short name in available_tools instead of listing every tmux__ tool individually. Requires tmux MCP server in ~/.memory/config/mcp_servers.json."
+      "description": "Shorthand that grants the 'terminal' capability category \u2014 covers all tmux__ MCP tools (create-session, execute-command, capture-pane, etc.). Use this short name in available_tools instead of listing every tmux__ tool individually. Requires tmux MCP server in ~/.memory/config/mcp_servers.json."
     },
     "list_roles": {
       "category": "orchestration",
       "danger_level": "low",
-      "description": "List all valid agent roles available for dispatch_subtask or scheduler_add_task. Returns role IDs, names, capabilities, and validity. Always call this before dispatching to verify the target role exists — if none match, use ask_user."
+      "description": "List all valid agent roles available for dispatch_subtask or scheduler_add_task. Returns role IDs, names, capabilities, and validity. Always call this before dispatching to verify the target role exists \u2014 if none match, use ask_user."
     },
     "scheduler_add_task": {
       "category": "orchestration",
       "danger_level": "medium",
-      "description": "Schedule a new task for another agent role. Use to hand off work after completing your own step — e.g. a provisioner queuing a reviewer. The new task runs asynchronously; this tool returns immediately without waiting for the result."
+      "description": "Schedule a new task for another agent role. Use to hand off work after completing your own step \u2014 e.g. a provisioner queuing a reviewer. The new task runs asynchronously; this tool returns immediately without waiting for the result."
     },
     "dispatch_subtask": {
       "category": "orchestration",
       "danger_level": "medium",
-      "description": "Dispatch a task to another agent role and WAIT for the result before continuing. Use when you need a specialist's output inline — e.g. a researcher dispatching to a provisioner, then using the provisioner's output to continue. Max depth: 2. Blocked when local_only is set."
+      "description": "Dispatch a task to another agent role and WAIT for the result before continuing. Use when you need a specialist's output inline \u2014 e.g. a researcher dispatching to a provisioner, then using the provisioner's output to continue. Max depth: 2. Blocked when local_only is set."
     },
     "agent": {
       "category": "orchestration",
       "danger_level": "medium",
-      "description": "External agent lifecycle — start, stop, status, action for OpenCode/Claude Code servers. Use agent(action='start', type='opencode', identifier='git_url') to launch an OpenCode server for a project."
+      "description": "External agent lifecycle \u2014 start, stop, status, action for OpenCode/Claude Code servers. Use agent(action='start', type='opencode', identifier='git_url') to launch an OpenCode server for a project."
     },
     "external_agent": {
       "category": "orchestration",
       "danger_level": "medium",
-      "description": "External services — Google Workspace, coding agent HITL bridge. Use for Calendar, Gmail, Drive operations and HITL communication with coding agents."
+      "description": "External services \u2014 Google Workspace, coding agent HITL bridge. Use for Calendar, Gmail, Drive operations and HITL communication with coding agents."
     },
-    "ask_user":        {
+    "ask_user": {
       "category": "comms",
       "danger_level": "low",
       "always_injected": true,
-      "description": "Pause the task and ask the user a question. Use when you are blocked and only the user can unblock you — missing credentials, ambiguous requirements, or a decision that requires human judgment. The task waits in HITL state until the user replies. Do not use this when another tool can answer the question."
+      "description": "Pause the task and ask the user a question. Use when you are blocked and only the user can unblock you \u2014 missing credentials, ambiguous requirements, or a decision that requires human judgment. The task waits in HITL state until the user replies. Do not use this when another tool can answer the question."
     },
-
-    "tmux__list-sessions":      { "category": "terminal", "danger_level": "low",    "description": "List all active tmux sessions." },
-    "tmux__find-session":       { "category": "terminal", "danger_level": "low",    "description": "Find a tmux session by name." },
-    "tmux__get-current-session":{ "category": "terminal", "danger_level": "low",    "description": "Get the tmux session this server is running in." },
-    "tmux__list-windows":       { "category": "terminal", "danger_level": "low",    "description": "List windows in a tmux session." },
-    "tmux__list-panes":         { "category": "terminal", "danger_level": "low",    "description": "List panes in a tmux window." },
-    "tmux__capture-pane":       { "category": "terminal", "danger_level": "low",    "description": "Capture content from a tmux pane with configurable line count." },
-    "tmux__create-session":     { "category": "terminal", "danger_level": "medium", "description": "Create a new tmux session." },
-    "tmux__create-window":      { "category": "terminal", "danger_level": "medium", "description": "Create a new window in a tmux session." },
-    "tmux__kill-session":       { "category": "terminal", "danger_level": "high",   "description": "Kill a tmux session by ID." },
-    "tmux__kill-window":        { "category": "terminal", "danger_level": "high",   "description": "Kill a tmux window by ID." },
-    "tmux__kill-pane":          { "category": "terminal", "danger_level": "high",   "description": "Kill a tmux pane by ID." },
-    "tmux__split-pane":         { "category": "terminal", "danger_level": "medium", "description": "Split a tmux pane horizontally or vertically." },
-    "tmux__execute-command":    { "category": "terminal", "danger_level": "high",   "requires_auth": true, "description": "Execute a command in a tmux pane and get results." },
-    "tmux__get-command-result": { "category": "terminal", "danger_level": "low",    "description": "Get the result of a previously executed tmux command." },
-    "tmux__send-keys":          { "category": "terminal", "danger_level": "medium", "description": "Send keystrokes to a tmux pane." },
-    "tmux__send-enter":         { "category": "terminal", "danger_level": "low",    "description": "Send Enter key to a pane." },
-    "tmux__send-cancel":        { "category": "terminal", "danger_level": "low",    "description": "Send Ctrl+C to interrupt a process." },
-    "tmux__send-escape":        { "category": "terminal", "danger_level": "low",    "description": "Send Escape key to a pane." },
-    "tmux__search-buffer":      { "category": "terminal", "danger_level": "low",    "description": "Search tmux buffer contents." },
-    "tmux__show-buffer":        { "category": "terminal", "danger_level": "low",    "description": "Show a tmux paste buffer." },
-    "tmux__set-buffer":         { "category": "terminal", "danger_level": "low",    "description": "Set a tmux paste buffer." },
-    "tmux__rename-session":     { "category": "terminal", "danger_level": "low",    "description": "Rename a tmux session." },
-    "tmux__rename-window":      { "category": "terminal", "danger_level": "low",    "description": "Rename a tmux window." },
-    "tmux__select-window":      { "category": "terminal", "danger_level": "low",    "description": "Select a tmux window." },
-    "tmux__select-pane":        { "category": "terminal", "danger_level": "low",    "description": "Select a tmux pane." },
-    "tmux__zoom-pane":          { "category": "terminal", "danger_level": "low",    "description": "Toggle zoom for a tmux pane." },
-    "tmux__resize-pane":        { "category": "terminal", "danger_level": "low",    "description": "Resize a tmux pane." },
-
-    "playwright__browser_navigate":        { "category": "browser", "danger_level": "low",    "description": "Navigate to a URL." },
-    "playwright__browser_navigate_back":   { "category": "browser", "danger_level": "low",    "description": "Go back to the previous page." },
-    "playwright__browser_click":           { "category": "browser", "danger_level": "medium", "description": "Click an element." },
-    "playwright__browser_hover":           { "category": "browser", "danger_level": "low",    "description": "Hover over an element." },
-    "playwright__browser_type":            { "category": "browser", "danger_level": "medium", "description": "Type text into an element." },
-    "playwright__browser_fill_form":       { "category": "browser", "danger_level": "medium", "description": "Fill multiple form fields." },
-    "playwright__browser_select_option":   { "category": "browser", "danger_level": "medium", "description": "Select a dropdown option." },
-    "playwright__browser_press_key":       { "category": "browser", "danger_level": "low",    "description": "Press a keyboard key." },
-    "playwright__browser_drag":            { "category": "browser", "danger_level": "medium", "description": "Drag and drop between elements." },
-    "playwright__browser_snapshot":        { "category": "browser", "danger_level": "low",    "description": "Accessibility snapshot — best for acting on page state." },
-    "playwright__browser_take_screenshot": { "category": "browser", "danger_level": "low",    "description": "Visual screenshot." },
-    "playwright__browser_evaluate":        { "category": "browser", "danger_level": "high",   "description": "Evaluate JavaScript on the page." },
-    "playwright__browser_run_code":        { "category": "browser", "danger_level": "high",   "description": "Run a Playwright code snippet." },
-    "playwright__browser_file_upload":     { "category": "browser", "danger_level": "medium", "description": "Upload files via a file input." },
-    "playwright__browser_handle_dialog":   { "category": "browser", "danger_level": "medium", "description": "Accept or dismiss a browser dialog." },
-    "playwright__browser_wait_for":        { "category": "browser", "danger_level": "low",    "description": "Wait for text or a timeout." },
-    "playwright__browser_tabs":            { "category": "browser", "danger_level": "low",    "description": "Manage browser tabs." },
-    "playwright__browser_resize":          { "category": "browser", "danger_level": "low",    "description": "Resize the browser window." },
-    "playwright__browser_console_messages":{ "category": "browser", "danger_level": "low",    "description": "Return browser console messages." },
-    "playwright__browser_network_requests":{ "category": "browser", "danger_level": "low",    "description": "Return network requests since page load." },
-    "playwright__browser_close":           { "category": "browser", "danger_level": "low",    "description": "Close the current browser page." },
-
-    "container_create":  { "category": "exec", "danger_level": "medium", "description": "Create a Docker container sandbox for isolated code execution. Returns artifact path for file staging." },
-    "container_exec":    { "category": "exec", "danger_level": "high", "requires_auth": true, "description": "Execute a command inside a running Docker container. Full filesystem access within the container." },
-    "container_destroy": { "category": "exec", "danger_level": "medium", "description": "Stop and remove a Docker container sandbox." },
-
-    "cubesandbox_create":  { "category": "cubesandbox", "danger_level": "medium", "description": "Create a CubeSandbox KVM microVM session. Optionally clones a repo inside the VM. Returns session_id, sandbox_path, status." },
-    "cubesandbox_exec":    { "category": "cubesandbox", "danger_level": "high",   "requires_auth": true, "description": "Execute a command inside a running CubeSandbox session. No path restrictions — full VM isolation. Returns stdout, stderr, exit_code." },
-    "cubesandbox_list":    { "category": "cubesandbox", "danger_level": "low",    "description": "List all active CubeSandbox sessions." },
-    "cubesandbox_destroy": { "category": "cubesandbox", "danger_level": "medium", "description": "Destroy a CubeSandbox KVM microVM session and clean up resources." },
-    "cubesandbox_upload":  { "category": "cubesandbox", "danger_level": "medium", "description": "Upload a file into a running CubeSandbox session." },
-
-    "google_calendar_list":   { "category": "google", "danger_level": "low",    "mcp_external": true, "description": "List events from Google Calendar for a date range. Provided by the Google Workspace MCP server (gws CLI)." },
-    "google_calendar_create": { "category": "google", "danger_level": "medium", "mcp_external": true, "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary. Provided by the Google Workspace MCP server (gws CLI)." }
+    "tmux__list-sessions": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "List all active tmux sessions."
+    },
+    "tmux__find-session": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Find a tmux session by name."
+    },
+    "tmux__get-current-session": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Get the tmux session this server is running in."
+    },
+    "tmux__list-windows": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "List windows in a tmux session."
+    },
+    "tmux__list-panes": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "List panes in a tmux window."
+    },
+    "tmux__capture-pane": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Capture content from a tmux pane with configurable line count."
+    },
+    "tmux__create-session": {
+      "category": "terminal",
+      "danger_level": "medium",
+      "description": "Create a new tmux session."
+    },
+    "tmux__create-window": {
+      "category": "terminal",
+      "danger_level": "medium",
+      "description": "Create a new window in a tmux session."
+    },
+    "tmux__kill-session": {
+      "category": "terminal",
+      "danger_level": "high",
+      "description": "Kill a tmux session by ID."
+    },
+    "tmux__kill-window": {
+      "category": "terminal",
+      "danger_level": "high",
+      "description": "Kill a tmux window by ID."
+    },
+    "tmux__kill-pane": {
+      "category": "terminal",
+      "danger_level": "high",
+      "description": "Kill a tmux pane by ID."
+    },
+    "tmux__split-pane": {
+      "category": "terminal",
+      "danger_level": "medium",
+      "description": "Split a tmux pane horizontally or vertically."
+    },
+    "tmux__execute-command": {
+      "category": "terminal",
+      "danger_level": "high",
+      "requires_auth": true,
+      "description": "Execute a command in a tmux pane and get results."
+    },
+    "tmux__get-command-result": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Get the result of a previously executed tmux command."
+    },
+    "tmux__send-keys": {
+      "category": "terminal",
+      "danger_level": "medium",
+      "description": "Send keystrokes to a tmux pane."
+    },
+    "tmux__send-enter": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Send Enter key to a pane."
+    },
+    "tmux__send-cancel": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Send Ctrl+C to interrupt a process."
+    },
+    "tmux__send-escape": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Send Escape key to a pane."
+    },
+    "tmux__search-buffer": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Search tmux buffer contents."
+    },
+    "tmux__show-buffer": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Show a tmux paste buffer."
+    },
+    "tmux__set-buffer": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Set a tmux paste buffer."
+    },
+    "tmux__rename-session": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Rename a tmux session."
+    },
+    "tmux__rename-window": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Rename a tmux window."
+    },
+    "tmux__select-window": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Select a tmux window."
+    },
+    "tmux__select-pane": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Select a tmux pane."
+    },
+    "tmux__zoom-pane": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Toggle zoom for a tmux pane."
+    },
+    "tmux__resize-pane": {
+      "category": "terminal",
+      "danger_level": "low",
+      "description": "Resize a tmux pane."
+    },
+    "playwright__browser_navigate": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Navigate to a URL."
+    },
+    "playwright__browser_navigate_back": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Go back to the previous page."
+    },
+    "playwright__browser_click": {
+      "category": "browser",
+      "danger_level": "medium",
+      "description": "Click an element."
+    },
+    "playwright__browser_hover": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Hover over an element."
+    },
+    "playwright__browser_type": {
+      "category": "browser",
+      "danger_level": "medium",
+      "description": "Type text into an element."
+    },
+    "playwright__browser_fill_form": {
+      "category": "browser",
+      "danger_level": "medium",
+      "description": "Fill multiple form fields."
+    },
+    "playwright__browser_select_option": {
+      "category": "browser",
+      "danger_level": "medium",
+      "description": "Select a dropdown option."
+    },
+    "playwright__browser_press_key": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Press a keyboard key."
+    },
+    "playwright__browser_drag": {
+      "category": "browser",
+      "danger_level": "medium",
+      "description": "Drag and drop between elements."
+    },
+    "playwright__browser_snapshot": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Accessibility snapshot \u2014 best for acting on page state."
+    },
+    "playwright__browser_take_screenshot": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Visual screenshot."
+    },
+    "playwright__browser_evaluate": {
+      "category": "browser",
+      "danger_level": "high",
+      "description": "Evaluate JavaScript on the page."
+    },
+    "playwright__browser_run_code": {
+      "category": "browser",
+      "danger_level": "high",
+      "description": "Run a Playwright code snippet."
+    },
+    "playwright__browser_file_upload": {
+      "category": "browser",
+      "danger_level": "medium",
+      "description": "Upload files via a file input."
+    },
+    "playwright__browser_handle_dialog": {
+      "category": "browser",
+      "danger_level": "medium",
+      "description": "Accept or dismiss a browser dialog."
+    },
+    "playwright__browser_wait_for": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Wait for text or a timeout."
+    },
+    "playwright__browser_tabs": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Manage browser tabs."
+    },
+    "playwright__browser_resize": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Resize the browser window."
+    },
+    "playwright__browser_console_messages": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Return browser console messages."
+    },
+    "playwright__browser_network_requests": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Return network requests since page load."
+    },
+    "playwright__browser_close": {
+      "category": "browser",
+      "danger_level": "low",
+      "description": "Close the current browser page."
+    },
+    "container_create": {
+      "category": "exec",
+      "danger_level": "medium",
+      "description": "Create a Docker container sandbox for isolated code execution. Returns artifact path for file staging."
+    },
+    "container_exec": {
+      "category": "exec",
+      "danger_level": "high",
+      "requires_auth": true,
+      "description": "Execute a command inside a running Docker container. Full filesystem access within the container."
+    },
+    "container_destroy": {
+      "category": "exec",
+      "danger_level": "medium",
+      "description": "Stop and remove a Docker container sandbox."
+    },
+    "google_calendar_list": {
+      "category": "google",
+      "danger_level": "low",
+      "mcp_external": true,
+      "description": "List events from Google Calendar for a date range. Provided by the Google Workspace MCP server (gws CLI)."
+    },
+    "google_calendar_create": {
+      "category": "google",
+      "danger_level": "medium",
+      "mcp_external": true,
+      "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary. Provided by the Google Workspace MCP server (gws CLI)."
+    }
   }
 }

@@ -110,14 +110,20 @@ class SandboxManager:
 
     def should_provision(self, task: Any) -> bool:
         """Return True if this task should automatically get a sandbox."""
+        import re
         rules = self._config.get("auto_provision", {})
         cfg = getattr(task, "config", None) or {}
 
         if rules.get("on_explicit_flag") and cfg.get("sandbox_required"):
             return True
 
-        if rules.get("on_git_url") and cfg.get("git_url"):
-            return True
+        if rules.get("on_git_url"):
+            # Check config key first, then scan goal text for git URLs
+            if cfg.get("git_url"):
+                return True
+            goal = cfg.get("goal", "") or getattr(task, "description", "") or ""
+            if re.search(r"(git@|https?://github\.com|https?://gitlab\.com|https?://bitbucket\.org)\S+", goal):
+                return True
 
         task_type = getattr(task, "type", None) or cfg.get("type", "")
         if task_type in (rules.get("on_task_type") or []):
