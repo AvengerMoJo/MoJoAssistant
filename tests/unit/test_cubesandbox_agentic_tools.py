@@ -1,327 +1,154 @@
-"""Unit tests for the cubesandbox_* agentic tools.
+"""Unit tests for SandboxManager.
 
-These tools are exposed to agentic LLMs (Popo, Rebecca, etc.) via
-config/agentic_tools.json with ``executor.type = "python"``. Each tool
-delegates to ``app.scheduler.agentic.cubesandbox_tools`` which wraps
-``CubeSandboxClient``. We mock the e2b SDK to avoid touching the real
-cluster.
+Replaces the old cubesandbox_tools.py tests. Verifies the unified
+SandboxManager: config loading, should_provision(), acquire() resume
+path, and release() modes.
 """
-
 from __future__ import annotations
 
+import asyncio
 import json
-import os
-import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-
-# ----------------------------------------------------------------------
-# Fixtures
-# ----------------------------------------------------------------------
+from app.scheduler.sandbox.base import SandboxHandle
+from app.scheduler.sandbox.manager import SandboxManager
 
 
 @pytest.fixture(autouse=True)
-def _isolate_module_state(monkeypatch):
-    """Each test sees a fresh _CLIENT_CACHE and clean module import.
-
-    Also sets inert E2B env vars so CubeSandboxClient.start() passes
-    its preflight check (we mock Sandbox.create() anyway, but the
-    env check fires first).
-    """
-    monkeypatch.setenv("E2B_API_URL", "http://test-host.invalid")
-    monkeypatch.setenv("E2B_API_KEY", "test-key-not-used")
-    monkeypatch.setenv("CUBE_TEMPLATE_ID", "tpl-test")
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    if "app.scheduler.agentic.cubesandbox_tools" in sys.modules:
-        del sys.modules["app.scheduler.agentic.cubesandbox_tools"]
+def _reset_singleton():
+    SandboxManager.reset()
     yield
-    # Cleanup: drop the module after each test to avoid cache leakage
-    sys.modules.pop("app.scheduler.agentic.cubesandbox_tools", None)
+    SandboxManager.reset()
 
 
-# ----------------------------------------------------------------------
-# cubesandbox_create
-# ----------------------------------------------------------------------
+class TestSandboxManagerLoad:
+    def test_loads_defaults_when_no_config_file(self):
+        with patch.object(Path, "exists", return_value=False):
+            mgr = SandboxManager.load()
+        assert mgr._config["default_backend"] == "docker"
+        assert mgr._config["auto_provision"]["on_git_url"] is True
+
+    def test_merges_user_config(self):
+        user_cfg = {"default_backend": "host", "backends": {"host": {"workdir": "/tmp/sandboxes"}}}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(user_cfg, f)
+            tmp = Path(f.name)
+        try:
+            with patch("app.scheduler.sandbox.manager._CONFIG_PATH", tmp):
+                mgr = SandboxManager.load()
+            assert mgr._config["default_backend"] == "host"
+            assert mgr._config["backends"]["host"]["workdir"] == "/tmp/sandboxes"
+            # Docker backend still present from defaults
+            assert "docker" in mgr._config["backends"]
+        finally:
+            tmp.unlink()
+
+    def test_returns_singleton(self):
+        mgr1 = SandboxManager.load()
+        mgr2 = SandboxManager.load()
+        assert mgr1 is mgr2
 
 
-class TestCubesandboxCreate:
-    def test_create_returns_sandbox_id_and_url(self):
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_create
+class TestShouldProvision:
+    def _task(self, **cfg):
+        t = MagicMock()
+        t.config = cfg
+        t.type = cfg.get("type", "agentic")
+        return t
 
-        fake_sandbox = MagicMock()
-        fake_sandbox.sandbox_id = "fake-vm-001"
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.return_value = fake_sandbox
-            result = cubesandbox_create({"name": "popo-build-1"})
-        assert result["success"] is True
-        assert result["name"] == "popo-build-1"
-        assert result["sandbox_id"] == "fake-vm-001"
-        assert "url" in result
-        assert "template_id" in result
+    def test_true_when_git_url(self):
+        mgr = SandboxManager.load()
+        assert mgr.should_provision(self._task(git_url="git@github.com:foo/bar.git"))
 
-    def test_create_requires_name(self):
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_create
+    def test_true_when_sandbox_required(self):
+        mgr = SandboxManager.load()
+        assert mgr.should_provision(self._task(sandbox_required=True))
 
-        result = cubesandbox_create({})
-        assert result["success"] is False
-        assert "name" in result["error"]
+    def test_false_for_plain_research_task(self):
+        mgr = SandboxManager.load()
+        assert not mgr.should_provision(self._task(goal="summarise this doc"))
 
-    def test_create_is_idempotent(self):
-        """Calling create twice with the same name reuses the existing VM."""
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_create
-
-        fake_sandbox = MagicMock()
-        fake_sandbox.sandbox_id = "fake-vm-002"
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.return_value = fake_sandbox
-            r1 = cubesandbox_create({"name": "popo-build-2"})
-            r2 = cubesandbox_create({"name": "popo-build-2"})
-        assert r1["success"] and r2["success"]
-        assert r1["sandbox_id"] == r2["sandbox_id"]
-        # Idempotent return flags the reuse
-        assert r2.get("reused") is True
-        # Sandbox.create should only be called once
-        assert MockSandbox.create.call_count == 1
-
-    def test_create_handles_sdk_exception(self):
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_create
-
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.side_effect = RuntimeError("cluster unreachable")
-            result = cubesandbox_create({"name": "popo-build-3"})
-        assert result["success"] is False
-        # cubesandbox_client.start() wraps the original in CubeSandboxError
-        assert "cluster unreachable" in result["error"]
-        assert "CubeSandboxError" in result["error"]
-
-    def test_create_uploads_dir_when_provided(self):
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_create
-
-        fake_sandbox = MagicMock()
-        fake_sandbox.sandbox_id = "fake-vm-004"
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.return_value = fake_sandbox
-            with patch("pathlib.Path.is_dir", return_value=True):
-                result = cubesandbox_create({
-                    "name": "popo-build-4",
-                    "upload_dir": "/tmp/fake-repo",
-                })
-        assert result["success"] is True
+    def test_false_when_git_url_rule_disabled(self):
+        mgr = SandboxManager.load()
+        mgr._config["auto_provision"]["on_git_url"] = False
+        assert not mgr.should_provision(self._task(git_url="git@github.com:foo/bar.git"))
 
 
-# ----------------------------------------------------------------------
-# cubesandbox_exec
-# ----------------------------------------------------------------------
+class TestSandboxManagerAcquire:
+    def test_resumes_existing_paused_handle(self):
+        async def _run():
+            mgr = SandboxManager.load()
+            existing = SandboxHandle(
+                task_id="task-xyz",
+                backend="docker",
+                sandbox_id="old-container",
+                state="paused",
+            )
+            mock_backend = MagicMock()
+            mock_backend.health_check.return_value = {"status": "ok"}
+            mock_backend.resume.return_value = existing
+
+            with patch("app.scheduler.sandbox.manager.load_handle", return_value=existing), \
+                 patch.object(mgr, "_get_backend", return_value=mock_backend):
+                handle = await mgr.acquire(task_id="task-xyz")
+
+            mock_backend.resume.assert_called_once_with(existing)
+            assert handle is existing
+
+        asyncio.run(_run())
+
+    def test_starts_fresh_when_no_existing(self):
+        async def _run():
+            mgr = SandboxManager.load()
+            new_handle = SandboxHandle(
+                task_id="new-task",
+                backend="docker",
+                sandbox_id="new-container",
+                state="running",
+            )
+            mock_backend = MagicMock()
+            mock_backend.start.return_value = new_handle
+            mock_backend.health_check.return_value = {"status": "stopped"}
+
+            with patch("app.scheduler.sandbox.manager.load_handle", return_value=None), \
+                 patch.object(mgr, "_get_backend", return_value=mock_backend):
+                handle = await mgr.acquire(task_id="new-task")
+
+            mock_backend.start.assert_called_once()
+            assert handle is new_handle
+
+        asyncio.run(_run())
 
 
-class TestCubesandboxExec:
-    def test_exec_requires_existing_vm(self):
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_exec
+class TestSandboxManagerRelease:
+    def test_pause_mode(self):
+        async def _run():
+            mgr = SandboxManager.load()
+            handle = SandboxHandle(task_id="t1", backend="docker", sandbox_id="cid", state="running")
+            mock_backend = MagicMock()
 
-        result = cubesandbox_exec({"name": "nonexistent", "command": "ls"})
-        assert result["success"] is False
-        assert "no running cubesandbox" in result["error"].lower()
+            with patch.object(mgr, "_get_backend", return_value=mock_backend):
+                await mgr.release(handle, mode="pause")
 
-    def test_exec_runs_command_and_returns_output(self):
-        from app.scheduler.agentic.cubesandbox_tools import (
-            cubesandbox_create, cubesandbox_exec,
-        )
+            mock_backend.pause.assert_called_once_with(handle)
+            mock_backend.kill.assert_not_called()
 
-        # e2b SDK 2.x: client.commands.run(cmd) returns a CommandResult
-        # synchronously. Set up the mock to return one.
-        fake_sandbox = MagicMock()
-        fake_sandbox.sandbox_id = "fake-vm-exec"
-        fake_result = MagicMock(stdout="hello\n", stderr="", exit_code=0)
-        fake_sandbox.commands.run.return_value = fake_result
+        asyncio.run(_run())
 
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.return_value = fake_sandbox
-            cr = cubesandbox_create({"name": "exec-test"})
-            er = cubesandbox_exec({"name": "exec-test", "command": "echo hello"})
-        assert cr["success"]
-        assert er["success"]
-        assert er["stdout"] == "hello\n"
-        assert er["exit_code"] == 0
-        fake_sandbox.commands.run.assert_called_once()
+    def test_kill_mode(self):
+        async def _run():
+            mgr = SandboxManager.load()
+            handle = SandboxHandle(task_id="t1", backend="docker", sandbox_id="cid", state="running")
+            mock_backend = MagicMock()
 
-    def test_exec_captures_nonzero_exit_code(self):
-        from app.scheduler.agentic.cubesandbox_tools import (
-            cubesandbox_create, cubesandbox_exec,
-        )
+            with patch.object(mgr, "_get_backend", return_value=mock_backend):
+                await mgr.release(handle, mode="kill")
 
-        fake_sandbox = MagicMock()
-        fake_sandbox.sandbox_id = "fake-vm-fail"
-        fake_result = MagicMock(stdout="partial output", stderr="oops", exit_code=2)
-        fake_sandbox.commands.run.return_value = fake_result
+            mock_backend.kill.assert_called_once_with(handle)
+            mock_backend.pause.assert_not_called()
 
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.return_value = fake_sandbox
-            cubesandbox_create({"name": "fail-test"})
-            er = cubesandbox_exec({"name": "fail-test", "command": "false"})
-        assert er["success"] is True  # success = tool ran, not exit code
-        assert er["exit_code"] == 2
-        assert "oops" in er["stderr"]
-
-    def test_exec_requires_command(self):
-        from app.scheduler.agentic.cubesandbox_tools import (
-            cubesandbox_create, cubesandbox_exec,
-        )
-
-        fake_sandbox = MagicMock()
-        fake_sandbox.sandbox_id = "fake-vm-nocmd"
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.return_value = fake_sandbox
-            cubesandbox_create({"name": "nocmd-test"})
-            er = cubesandbox_exec({"name": "nocmd-test"})
-        assert er["success"] is False
-        assert "command" in er["error"]
-
-
-# ----------------------------------------------------------------------
-# cubesandbox_list
-# ----------------------------------------------------------------------
-
-
-class TestCubesandboxList:
-    def test_list_empty_initially(self):
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_list
-
-        result = cubesandbox_list({})
-        assert result["success"] is True
-        assert result["count"] == 0
-        assert result["sandboxes"] == []
-
-    def test_list_after_creates(self):
-        from app.scheduler.agentic.cubesandbox_tools import (
-            cubesandbox_create, cubesandbox_list,
-        )
-
-        fake_sandbox = MagicMock()
-        fake_sandbox.sandbox_id = "fake-vm-list"
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.return_value = fake_sandbox
-            cubesandbox_create({"name": "list-1"})
-            cubesandbox_create({"name": "list-2"})
-            result = cubesandbox_list({})
-        assert result["count"] == 2
-        names = {s["name"] for s in result["sandboxes"]}
-        assert names == {"list-1", "list-2"}
-
-
-# ----------------------------------------------------------------------
-# cubesandbox_destroy
-# ----------------------------------------------------------------------
-
-
-class TestCubesandboxDestroy:
-    def test_destroy_known_vm(self):
-        from app.scheduler.agentic.cubesandbox_tools import (
-            cubesandbox_create, cubesandbox_destroy, cubesandbox_list,
-        )
-
-        fake_sandbox = MagicMock()
-        fake_sandbox.sandbox_id = "fake-vm-destroy"
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.return_value = fake_sandbox
-            cubesandbox_create({"name": "destroy-1"})
-            r = cubesandbox_destroy({"name": "destroy-1"})
-            listing = cubesandbox_list({})
-        assert r["success"] is True
-        assert r["destroyed"] is True
-        assert listing["count"] == 0
-
-    def test_destroy_unknown_vm_is_idempotent(self):
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_destroy
-
-        r = cubesandbox_destroy({"name": "never-existed"})
-        assert r["success"] is True
-        assert r.get("already_destroyed") is True
-
-    def test_destroy_requires_name(self):
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_destroy
-
-        r = cubesandbox_destroy({})
-        assert r["success"] is False
-        assert "name" in r["error"]
-
-
-# ----------------------------------------------------------------------
-# cubesandbox_upload
-# ----------------------------------------------------------------------
-
-
-class TestCubesandboxUpload:
-    def test_upload_requires_existing_vm(self):
-        from app.scheduler.agentic.cubesandbox_tools import cubesandbox_upload
-
-        r = cubesandbox_upload({"name": "missing", "local_path": "/tmp/x"})
-        assert r["success"] is False
-
-    def test_upload_rejects_nonexistent_path(self):
-        from app.scheduler.agentic.cubesandbox_tools import (
-            cubesandbox_create, cubesandbox_upload,
-        )
-
-        fake_sandbox = MagicMock()
-        fake_sandbox.sandbox_id = "fake-vm-upload"
-        with patch("e2b.Sandbox") as MockSandbox:
-            MockSandbox.create.return_value = fake_sandbox
-            cubesandbox_create({"name": "upload-1"})
-            r = cubesandbox_upload({
-                "name": "upload-1",
-                "local_path": "/no/such/dir/anywhere",
-            })
-        assert r["success"] is False
-        assert "not a directory" in r["error"].lower()
-
-
-# ----------------------------------------------------------------------
-# Integration with CapabilityRegistry's python executor path
-# ----------------------------------------------------------------------
-
-
-class TestExecutorWiring:
-    """Verify the agentic_tools.json entries resolve through the
-    CapabilityRegistry python executor path correctly."""
-
-    def test_all_5_tools_have_python_executor(self):
-        cfg = json.load(open("config/agentic_tools.json"))
-        cubesandbox = [t for t in cfg["tools"] if t["name"].startswith("cubesandbox_")]
-        assert len(cubesandbox) == 5
-        for t in cubesandbox:
-            assert t["executor"]["type"] == "python"
-            assert t["executor"]["module"] == "app.scheduler.agentic.cubesandbox_tools"
-            assert t["executor"]["function"] in {
-                "cubesandbox_create",
-                "cubesandbox_exec",
-                "cubesandbox_list",
-                "cubesandbox_destroy",
-                "cubesandbox_upload",
-            }
-
-    def test_all_5_have_required_parameters(self):
-        cfg = json.load(open("config/agentic_tools.json"))
-        cubesandbox = {t["name"]: t for t in cfg["tools"] if t["name"].startswith("cubesandbox_")}
-        # create requires name
-        assert "name" in cubesandbox["cubesandbox_create"]["parameters"]["required"]
-        # exec requires name and command
-        assert set(cubesandbox["cubesandbox_exec"]["parameters"]["required"]) == {"name", "command"}
-        # destroy requires name
-        assert "name" in cubesandbox["cubesandbox_destroy"]["parameters"]["required"]
-        # upload requires name and local_path
-        assert set(cubesandbox["cubesandbox_upload"]["parameters"]["required"]) == {"name", "local_path"}
-        # list has no required args
-        assert cubesandbox["cubesandbox_list"]["parameters"]["required"] == []
-
-    def test_module_imports_cleanly(self):
-        """The python module path must resolve to a real importable module."""
-        import importlib
-        mod = importlib.import_module("app.scheduler.agentic.cubesandbox_tools")
-        assert hasattr(mod, "cubesandbox_create")
-        assert hasattr(mod, "cubesandbox_exec")
-        assert hasattr(mod, "cubesandbox_list")
-        assert hasattr(mod, "cubesandbox_destroy")
-        assert hasattr(mod, "cubesandbox_upload")
+        asyncio.run(_run())

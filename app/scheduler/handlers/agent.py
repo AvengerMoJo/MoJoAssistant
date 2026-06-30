@@ -10,6 +10,7 @@ class AgentHandler(TaskHandler):
     async def execute(self, task: Task, ctx: ExecutorContext) -> TaskResult:
         ctx.log(f"Executing agent task {task.id}: {task.description}")
 
+        _sandbox_handle = None
         try:
             config = task.config or {}
 
@@ -19,7 +20,6 @@ class AgentHandler(TaskHandler):
 
             # Sandbox provisioning for external agents — provision a container
             # so OpenCode / Claude Code run in isolation instead of on the host.
-            _sandbox_handle = None
             git_url = config.get("git_url") or config.get("identifier")
             if git_url and git_url.startswith(("git@", "https://", "http://")):
                 try:
