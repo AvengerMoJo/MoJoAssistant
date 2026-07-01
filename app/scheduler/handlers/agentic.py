@@ -34,20 +34,29 @@ class AgenticHandler(TaskHandler):
                     f"Coding agent routing check failed for role '{role_id}': {e}", "warning"
                 )
 
-        # Task routing — select minimum viable model before acquiring a resource
+        # Task routing — optional plugin, off by default.
+        # Enable via scheduler_config.json: {"task_routing": {"enabled": true}}
+        _routing_enabled = False
         try:
-            from app.scheduler.task_router import TaskRouter
-            router = TaskRouter.load()
-            routing = router.classify_and_route(
-                goal=cfg.get("goal", ""),
-                role_id=role_id or "",
-                declared_tools=cfg.get("available_tools", []),
-            )
-            cfg["_routing"] = routing
-            ctx.log(f"Task routed to cell={routing['cell']} model={routing['model_id']} "
-                    f"confidence={routing['confidence']:.2f}")
-        except Exception as e:
-            ctx.log(f"TaskRouter failed (non-fatal, proceeding without routing): {e}", "warning")
+            from app.config.paths import load_layered_json_config
+            _sched_cfg = load_layered_json_config("config/scheduler_config.json")
+            _routing_enabled = bool((_sched_cfg.get("task_routing") or {}).get("enabled", False))
+        except Exception:
+            pass
+        if _routing_enabled:
+            try:
+                from app.scheduler.task_router import TaskRouter
+                router = TaskRouter.load()
+                routing = router.classify_and_route(
+                    goal=cfg.get("goal", ""),
+                    role_id=role_id or "",
+                    declared_tools=cfg.get("available_tools", []),
+                )
+                cfg["_routing"] = routing
+                ctx.log(f"Task routed to cell={routing['cell']} model={routing['model_id']} "
+                        f"confidence={routing['confidence']:.2f}")
+            except Exception as e:
+                ctx.log(f"TaskRouter failed: {e}", "warning")
 
         # Sandbox provisioning — same lifecycle pattern as ResourcePool for LLMs.
         # If the task needs a container (git_url present, sandbox_required, or
