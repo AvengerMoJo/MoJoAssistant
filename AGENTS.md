@@ -32,5 +32,24 @@ MoJoAssistant follows a Linux-style layered config convention. Agents must respe
 5. The user is accountable for committed code shared with community/company.
 6. Do NOT include `Co-Authored-By` lines in commit messages. The user is the sole author.
 
+## BRIDLE Validation Workflow (Core Principle)
+
+Every state-changing action must prove it worked before moving on:
+
+```
+Act → Validate → Log → Dream → Learn → Correct
+```
+
+Three failure modes to never repeat:
+1. **Fail without log** — silent failure, same wall next run
+2. **Log without learning** — dreaming never ingests it, mistake repeats
+3. **Mistake without correction** — agent self-corrects silently, human never knows
+
+Every state-changing MCP call: **PRE** (check preconditions) → **ACT** → **POST** (read back, verify, escalate on failure).
+
+Incremental by design: process one unit per run, never batch blast. Track progress in a state file. Make the system move at the pace a human can absorb and correct.
+
+Full policy in `Coding Agents Rules.md` § BRIDLE Validation Workflow. Full design doc at `~/.memory/research/bridle_validation_workflow.md`.
+
 ## Scope
 - This `AGENTS.md` governs all folders under this repository unless a deeper `AGENTS.md` overrides specific subtrees.

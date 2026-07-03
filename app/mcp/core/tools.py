@@ -1257,6 +1257,63 @@ class ToolRegistry:
                 },
             },
             {
+                "name": "sandbox_create",
+                "description": (
+                    "Create a named, persistent sandbox that multiple tasks can reuse. "
+                    "Named sandboxes survive task completion — they are long-lived "
+                    "environments (like a warm dev container) that different tasks can "
+                    "attach to and git-checkout different repos into, without reprovisioning. "
+                    "Pass sandbox_name in a task's config to claim this sandbox instead of "
+                    "spinning up a fresh one. If the named sandbox already exists and is "
+                    "healthy, returns the existing handle. Use sandbox_list_sessions to see "
+                    "all named sandboxes. Use sandbox_prune_stale to remove anonymous orphans."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Stable name for this sandbox (e.g. 'opencode-base', 'popo-build'). Must be unique.",
+                        },
+                        "backend": {
+                            "type": "string",
+                            "enum": ["host", "docker", "cube"],
+                            "description": "Backend to use. Defaults to sandbox.json default_backend.",
+                        },
+                        "git_url": {
+                            "type": "string",
+                            "description": "Optional: clone this repo into /workspace/<name> on creation.",
+                        },
+                        "working_dir": {
+                            "type": "string",
+                            "description": "Optional: initial working directory inside the sandbox.",
+                        },
+                    },
+                    "required": ["name"],
+                },
+            },
+            {
+                "name": "sandbox_prune_stale",
+                "description": (
+                    "Remove stale anonymous sandbox handles from the session store. "
+                    "Named sandboxes are never pruned. Anonymous handles in completed/"
+                    "failed/killed state are always removed. Anonymous paused/pending "
+                    "handles older than max_age_hours (default 48) are removed. "
+                    "Run this to keep the sandbox store clean. Returns list of pruned task_ids."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "max_age_hours": {
+                            "type": "number",
+                            "default": 48,
+                            "description": "Prune anonymous paused/pending handles older than this many hours (default 48)",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+            {
                 "name": "sandbox_purge_orphans",
                 "description": (
                     "Reconcile CubeMaster-resident microVMs against MoJo's "
@@ -1878,6 +1935,10 @@ Agent resumes within seconds.
         # Task Session Tools
         elif name == "task_session_read":
             return await self._execute_task_session_read(args)
+        elif name == "sandbox_create":
+            return await self._execute_sandbox_create(args)
+        elif name == "sandbox_prune_stale":
+            return await self._execute_sandbox_prune_stale(args)
         elif name == "sandbox_list_sessions":
             return await self._execute_sandbox_list_sessions(args)
         elif name == "sandbox_attach_session":
@@ -2984,6 +3045,23 @@ Agent resumes within seconds.
                         "violations": violations,
                     }
 
+            # Spec quality gate — applies to assistant and internal_assignment tasks with a goal
+            goal = config.get("goal") if isinstance(config, dict) else None
+            if goal and task_type_str in ("assistant", "internal_assignment") and not (
+                config.get("force") if isinstance(config, dict) else False
+            ):
+                from app.scheduler.spec_qualifier import classify_goal
+                spec_result = classify_goal(goal)
+                if not spec_result.passed:
+                    return {
+                        "status": "error",
+                        "message": "spec_quality_gate",
+                        "quality": spec_result.quality,
+                        "score": spec_result.score,
+                        "missing": spec_result.missing,
+                        "feedback": spec_result.feedback,
+                    }
+
             # Create task
             # max_iterations can come from config (hub shorthand) or resources dict
             if isinstance(config, dict) and "max_iterations" in config:
@@ -3878,8 +3956,58 @@ Agent resumes within seconds.
             }
 
     # ------------------------------------------------------------------
-    # Sandbox session tools — list / attach / kill
+    # Sandbox session tools — create / prune / list / attach / kill
     # ------------------------------------------------------------------
+
+    async def _execute_sandbox_create(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or resume a named persistent sandbox."""
+        name = args.get("name", "").strip()
+        if not name:
+            return {"status": "error", "message": "name is required"}
+        try:
+            import uuid
+            from app.scheduler.sandbox.manager import SandboxManager
+            mgr = SandboxManager.load()
+            task_id = f"named-{name}-{uuid.uuid4().hex[:8]}"
+            handle = await mgr.acquire_by_name(
+                name=name,
+                task_id=task_id,
+                git_url=args.get("git_url"),
+                working_dir=args.get("working_dir"),
+                backend_override=args.get("backend"),
+            )
+            return {
+                "status": "success",
+                "name": handle.name,
+                "task_id": handle.task_id,
+                "sandbox_id": handle.sandbox_id,
+                "backend": handle.backend,
+                "state": handle.state,
+                "working_dir": handle.working_dir,
+                "url": handle.url,
+                "hint": f"Pass sandbox_name='{name}' in task config to reuse this sandbox.",
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    async def _execute_sandbox_prune_stale(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove stale anonymous sandbox handles from the session store."""
+        try:
+            from app.scheduler.sandbox.manager import SandboxManager
+            mgr = SandboxManager.load()
+            max_age = float(args.get("max_age_hours", 48))
+            pruned = mgr.prune_stale(max_age_hours=max_age)
+            return {
+                "status": "success",
+                "pruned_count": len(pruned),
+                "pruned": pruned,
+                "message": (
+                    f"Pruned {len(pruned)} stale anonymous handle(s)."
+                    if pruned else "No stale handles found."
+                ),
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     async def _execute_sandbox_list_sessions(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List live/paused sandbox handles from the session registry."""

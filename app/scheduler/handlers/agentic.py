@@ -81,13 +81,24 @@ class AgenticHandler(TaskHandler):
                     )
                     if _m:
                         _git_url = _m.group(0).rstrip(".,)")
-                _sandbox_handle = await _mgr.acquire(
-                    task_id=task.id,
-                    git_url=_git_url,
-                    working_dir=_cfg_pre.get("working_dir"),
-                    role_id=role_id,
-                    backend_override=_cfg_pre.get("sandbox_backend"),
-                )
+                _sandbox_name = _cfg_pre.get("sandbox_name")
+                if _sandbox_name:
+                    _sandbox_handle = await _mgr.acquire_by_name(
+                        name=_sandbox_name,
+                        task_id=task.id,
+                        git_url=_git_url,
+                        working_dir=_cfg_pre.get("working_dir"),
+                        role_id=role_id,
+                        backend_override=_cfg_pre.get("sandbox_backend"),
+                    )
+                else:
+                    _sandbox_handle = await _mgr.acquire(
+                        task_id=task.id,
+                        git_url=_git_url,
+                        working_dir=_cfg_pre.get("working_dir"),
+                        role_id=role_id,
+                        backend_override=_cfg_pre.get("sandbox_backend"),
+                    )
                 _sandbox_token = _cv_sandbox_handle.set(_sandbox_handle)
                 ctx.log(
                     f"Sandbox provisioned: backend={_sandbox_handle.backend} "

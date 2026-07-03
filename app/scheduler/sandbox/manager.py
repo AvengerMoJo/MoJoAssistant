@@ -35,7 +35,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from app.scheduler.sandbox.base import SandboxHandle, delete_handle, load_handle, store_handle
+from app.scheduler.sandbox.base import (
+    SandboxHandle, delete_handle, load_handle, store_handle,
+    find_by_name, prune_stale_handles,
+)
 from app.scheduler.sandbox.context import _cv_sandbox_handle
 
 logger = logging.getLogger(__name__)
@@ -242,6 +245,81 @@ class SandboxManager:
         handle = load_handle(task_id)
         if handle:
             await self.release(handle, mode="kill")
+
+    async def acquire_by_name(
+        self,
+        name: str,
+        task_id: str,
+        git_url: Optional[str] = None,
+        working_dir: Optional[str] = None,
+        role_id: Optional[str] = None,
+        backend_override: Optional[str] = None,
+    ) -> SandboxHandle:
+        """Acquire a named sandbox — resume if it exists, provision fresh if not.
+
+        Named sandboxes are long-lived pools keyed by a human name rather than
+        task_id. Multiple tasks share the same environment; each task just
+        git-checkouts a different repo or works in a different directory.
+
+        The handle is stored under the original task_id that created it, but
+        the name field is set so find_by_name() can locate it in future calls.
+        """
+        existing = find_by_name(name)
+        if existing and existing.sandbox_id:
+            backend = self._get_backend(existing.backend)
+            health = backend.health_check(existing)
+            if health.get("status") == "ok":
+                if existing.state == "paused":
+                    handle = backend.resume(existing)
+                    logger.info("SandboxManager.acquire_by_name: resumed named sandbox '%s' (task=%s)",
+                                name, existing.task_id)
+                else:
+                    handle = existing
+                    logger.info("SandboxManager.acquire_by_name: reusing running named sandbox '%s'",
+                                name)
+                if git_url:
+                    clone_dir = f"/workspace/{name}"
+                    try:
+                        await self.exec(handle, f"git clone {git_url} {clone_dir}", timeout=180)
+                        handle.working_dir = clone_dir
+                        store_handle(handle)
+                    except Exception as e:
+                        logger.warning("acquire_by_name: git clone failed: %s", e)
+                return handle
+            else:
+                logger.info("SandboxManager.acquire_by_name: stale named sandbox '%s', reprovisioning", name)
+                try:
+                    backend.kill(existing)
+                except Exception:
+                    pass
+                delete_handle(existing.task_id)
+
+        # Provision fresh — use task_id as the store key, set name for future lookups
+        handle = await self.acquire(
+            task_id=task_id,
+            git_url=git_url,
+            working_dir=working_dir,
+            role_id=role_id,
+            backend_override=backend_override,
+        )
+        handle.name = name
+        store_handle(handle)
+        logger.info("SandboxManager.acquire_by_name: created named sandbox '%s' (task=%s id=%s)",
+                    name, task_id, handle.sandbox_id)
+        return handle
+
+    def prune_stale(self, max_age_hours: float = 48.0) -> List[str]:
+        """Remove stale anonymous handles from the session store.
+
+        Named sandboxes are never pruned automatically. Unnamed handles in
+        completed/failed/killed state are always removed. Unnamed paused/pending
+        handles older than max_age_hours are removed.
+        Returns list of pruned task_ids.
+        """
+        pruned = prune_stale_handles(max_age_hours=max_age_hours)
+        if pruned:
+            logger.info("SandboxManager.prune_stale: pruned %d handle(s)", len(pruned))
+        return pruned
 
     # ------------------------------------------------------------------
     # Tool routing — called by capability_registry when handle is active

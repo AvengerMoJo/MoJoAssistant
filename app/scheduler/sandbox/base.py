@@ -55,6 +55,9 @@ class SandboxHandle:
     role_id: Optional[str] = None
     parent_task_id: Optional[str] = None
     environment: Optional[str] = None
+    # Stable user-defined name — lets multiple tasks reuse the same sandbox
+    # by passing sandbox_name in their config instead of provisioning fresh.
+    name: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -231,3 +234,46 @@ def list_handles(backend: Optional[str] = None) -> List[SandboxHandle]:
         if backend is None or h.backend == backend:
             out.append(h)
     return out
+
+
+def find_by_name(name: str) -> Optional[SandboxHandle]:
+    """Look up a handle by its user-defined name. Linear scan — store is small."""
+    if not name:
+        return None
+    for d in _load_store().values():
+        if d.get("name") == name:
+            try:
+                return SandboxHandle.from_dict(d)
+            except Exception as e:
+                logger.warning("find_by_name(%s): corrupt entry: %s", name, e)
+    return None
+
+
+def prune_stale_handles(max_age_hours: float = 48.0) -> List[str]:
+    """Remove handles that are safe to discard.
+
+    Pruned when ALL of these are true:
+      - state is completed / failed / killed  (task is done)
+      - OR state is paused/pending AND handle has no name AND older than max_age_hours
+    Named handles are kept indefinitely — they are intentional persistent pools.
+    Returns list of pruned task_ids.
+    """
+    store = _load_store()
+    cutoff = time.time() - max_age_hours * 3600
+    to_prune: List[str] = []
+    for task_id, d in store.items():
+        state = d.get("state", "")
+        named = bool(d.get("name"))
+        age = d.get("updated_at", d.get("created_at", 0))
+        if state in ("completed", "failed", "killed"):
+            to_prune.append(task_id)
+        elif not named and age < cutoff:
+            # Unnamed handles in any non-running state, or running handles that
+            # predate the cutoff (process crashed without a clean release).
+            to_prune.append(task_id)
+    if to_prune:
+        for task_id in to_prune:
+            del store[task_id]
+        _save_store(store)
+        logger.info("prune_stale_handles: removed %d stale handle(s): %s", len(to_prune), to_prune)
+    return to_prune

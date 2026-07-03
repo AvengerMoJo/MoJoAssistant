@@ -408,6 +408,7 @@ class CapabilityRegistry:
                     },
                     "max_iterations":  {"type": "integer", "description": "Max iterations for sub-task (default 10)"},
                     "timeout_s":       {"type": "integer", "description": "Seconds to wait for result (default 300)"},
+                    "force":           {"type": "boolean", "description": "Bypass spec quality gate. Only use when the calling AI has already validated the spec with the user."},
                 }, "required": ["role_id", "goal"]},
             ),
             CapabilityDefinition(
@@ -1161,6 +1162,20 @@ class CapabilityRegistry:
         goal = args.get("goal")
         if not role_id or not goal:
             return {"success": False, "error": "role_id and goal are required"}
+
+        # Spec quality gate — reject vague or incomplete goals at the dispatch boundary
+        if not args.get("force"):
+            from app.scheduler.spec_qualifier import classify_goal
+            spec_result = classify_goal(goal)
+            if not spec_result.passed:
+                return {
+                    "success": False,
+                    "error": "spec_quality_gate",
+                    "quality": spec_result.quality,
+                    "score": spec_result.score,
+                    "missing": spec_result.missing,
+                    "feedback": spec_result.feedback,
+                }
 
         # Gate tasks that touch protected infrastructure paths
         matched_paths = self._check_protected_paths(goal)

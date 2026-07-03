@@ -152,6 +152,54 @@ Building images that are fast, reproducible, and correct on the developer's own 
 If you find yourself adding a named provider block just to set a URL or model name —
 stop. Put that in config instead.
 
+### BRIDLE Validation Workflow — The Core Loop
+
+> This is the reason MoJoAssistant exists. Without this loop, we are just a task runner.
+
+Every action that changes state must prove it worked before moving on:
+
+```
+Act → Validate → Log → Dream → Learn → Correct
+```
+
+**The three failure modes we never repeat:**
+
+1. **Fail without log** — something breaks, nothing is recorded, next run hits the same wall.
+2. **Log without learning** — something breaks, it's logged, dreaming never picks it up, the agent repeats the mistake.
+3. **Mistake without correction** — something is wrong, the agent corrects silently, the human never knows, never approves, never learns.
+
+**Every state-changing MCP call has three phases:**
+
+```
+PRE:  Declare intent. Check preconditions. Confirm scope is bounded.
+ACT:  Execute the change.
+POST: Read back and verify the change took effect. Log result.
+      On failure → escalate (HITL or explicit error). Never silently continue.
+```
+
+**Specific patterns:**
+
+- **Config write**: Read current value → write → read back → parse JSON → confirm key/type. If parse fails: revert, log, ask_user.
+- **Task schedule**: Estimate resource consumption before scheduling. Resource-intensive tasks must be incremental (chunked), never batch blast. State file tracks progress across runs.
+- **Any write_file of structured data**: Agent must read back and confirm it parses after writing.
+- **Tool errors**: Every failed tool call must be logged via add_conversation so dreaming can ingest it as a negative example.
+
+**Incremental by design — never batch blast:**
+
+For any task that improves quality over time (benchmarks, memory ingestion, eval):
+- Process ONE unit per run, not ALL units.
+- Track progress in a state file (`~/.memory/state/<task>_progress.json`).
+- One night's failure must not erase all prior progress.
+- The human must be able to see steady forward motion, not all-or-nothing bets.
+
+**The design intent:**
+
+Make the system solve problems at the pace a human can absorb and correct — not the pace the GPU can execute. Small batches. Observable progress. HITL at decision points. Errors that surface immediately, not six months later.
+
+The framework's job is to be a collaborator that improves predictably, not a tool that does a lot of things and occasionally destroys its own state.
+
+Full design document: `~/.memory/research/bridle_validation_workflow.md`
+
 ## Definition of Done
 1. Code changes implemented.
 2. Relevant tests/checks pass (or failures documented).

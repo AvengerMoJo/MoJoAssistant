@@ -2873,7 +2873,10 @@ class AgenticExecutor:
             # Any other failure is a real error — return it to the LLM.
             err = result.get("error", "")
             if not (err.endswith("not found") or "not found" in err):
-                return {"error": err or f"Tool '{name}' failed"}
+                # Pass the full result dict so structured errors (e.g. spec_quality_gate)
+                # include all fields (missing, feedback) — not just the error string.
+                result.pop("success", None)
+                return result if len(result) > 1 else {"error": err or f"Tool '{name}' failed"}
         except Exception as e:
             self._log(f"Dynamic tool {name} failed: {e}", "error")
 
