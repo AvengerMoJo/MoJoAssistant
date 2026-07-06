@@ -27,7 +27,7 @@ LOOKUP_BASIC = EvalScenario(
     suite="qualification_fast",
     category=EvalCategory.QUALIFICATION,
     task_family="lookup",
-    complexity_level=ComplexityLevel.L1_BASIC,
+    complexity_level=ComplexityLevel.L1_SINGLE_CALL,
     goal_template=(
         "Use the smoke_lookup tool with query '{key}'. "
         "Then provide a <FINAL_ANSWER> with the exact token value you received."
@@ -58,7 +58,7 @@ WRITE_BASIC = EvalScenario(
     suite="qualification_fast",
     category=EvalCategory.QUALIFICATION,
     task_family="write",
-    complexity_level=ComplexityLevel.L1_BASIC,
+    complexity_level=ComplexityLevel.L1_SINGLE_CALL,
     goal_template=(
         "Call write_file to write 'smoke_test_ok' to '{write_path}'. "
         "Then provide a <FINAL_ANSWER> confirming the write succeeded."
@@ -101,7 +101,7 @@ LOOKUP_THEN_WRITE = EvalScenario(
     suite="qualification_standard",
     category=EvalCategory.QUALIFICATION,
     task_family="workflow",
-    complexity_level=ComplexityLevel.L2_WORKFLOW,
+    complexity_level=ComplexityLevel.L2_MULTI_STEP,
     goal_template=(
         "You need to find the token for the project that satisfies ALL of these constraints: "
         "contains the letter 'g', has a token ending in '6'. "
@@ -150,7 +150,7 @@ RETRY_ONCE = EvalScenario(
     suite="qualification_standard",
     category=EvalCategory.QUALIFICATION,
     task_family="retry",
-    complexity_level=ComplexityLevel.L2_WORKFLOW,
+    complexity_level=ComplexityLevel.L3_FEEDBACK,
     goal_template=(
         "Call the smoke_fail_once tool with key 'test'. "
         "If it returns an error with retryable=true, call it again with the same key. "
@@ -189,7 +189,7 @@ CONSTRAINT_PLAN_CHOICE = EvalScenario(
     suite="qualification_reasoning",
     category=EvalCategory.QUALIFICATION,
     task_family="constraint_solving",
-    complexity_level=ComplexityLevel.L3_CONSTRAINED,
+    complexity_level=ComplexityLevel.L3_FEEDBACK,
     goal_template=(
         "You have four project options with different properties:\n"
         "- Project A: cost=low, speed=fast, reliability=medium\n"
@@ -240,7 +240,7 @@ NOISY_CONTEXT_LOOKUP = EvalScenario(
     suite="characterization_complexity_ladder",
     category=EvalCategory.CHARACTERIZATION,
     task_family="noisy_context",
-    complexity_level=ComplexityLevel.L4_NOISY,
+    complexity_level=ComplexityLevel.L2_MULTI_STEP,
     goal_template=(
         "You have been given several irrelevant notes about project budgets and timelines.\n"
         "Ignore all of them. Focus only on the task:\n\n"
@@ -273,7 +273,7 @@ NOISY_CONTEXT_LOOKUP = EvalScenario(
     ],
     max_iterations=6,
     max_duration_seconds=90,
-    tags=["characterization", "noisy", "ladder"],
+    tags=["characterization", "noise", "ladder"],
 )
 
 
@@ -286,7 +286,7 @@ LONG_HORIZON_MULTI_LOOKUP = EvalScenario(
     suite="characterization_complexity_ladder",
     category=EvalCategory.CHARACTERIZATION,
     task_family="long_horizon",
-    complexity_level=ComplexityLevel.L5_LONG_HORIZON,
+    complexity_level=ComplexityLevel.L2_MULTI_STEP,
     goal_template=(
         "You need to gather tokens from multiple sources and combine them.\n\n"
         "Steps:\n"
@@ -341,7 +341,7 @@ LONG_WRITE_THEN_ANSWER = EvalScenario(
     suite="characterization_protocol",
     category=EvalCategory.CHARACTERIZATION,
     task_family="protocol_compliance",
-    complexity_level=ComplexityLevel.L3_CONSTRAINED,
+    complexity_level=ComplexityLevel.L2_MULTI_STEP,
     goal_template=(
         "Write a technical summary (at least 5 sentences) covering three points:\n"
         "1. Why shared state is risky in multi-agent AI systems\n"
@@ -389,7 +389,7 @@ INTEGRATION_BASH_EXEC = EvalScenario(
     suite="qualification_fast",
     category=EvalCategory.QUALIFICATION,
     task_family="bash_exec",
-    complexity_level=ComplexityLevel.L1_BASIC,
+    complexity_level=ComplexityLevel.L1_SINGLE_CALL,
     goal_template=(
         "Use bash_exec to run: echo 'smoke_integration_ok'. "
         "Then provide a <FINAL_ANSWER> with the exact output."
@@ -422,7 +422,7 @@ INTEGRATION_MEMORY_SEARCH = EvalScenario(
     suite="qualification_fast",
     category=EvalCategory.QUALIFICATION,
     task_family="memory_search",
-    complexity_level=ComplexityLevel.L1_BASIC,
+    complexity_level=ComplexityLevel.L1_SINGLE_CALL,
     goal_template=(
         "Use memory_search with query 'test' to search the knowledge base. "
         "Provide a <FINAL_ANSWER> summarizing what you found, or saying 'no results' if empty."

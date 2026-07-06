@@ -259,13 +259,18 @@ def _median(values: List[float]) -> Optional[float]:
 
 
 def _compute_max_complexity(records: List[EvalRecord]) -> Optional[str]:
-    """Determine the highest complexity level where all runs succeeded."""
+    """Determine the highest complexity level where all runs succeeded.
+
+    Iterates the v2 ladder in order; returns the highest rung whose
+    records all succeeded. Both v1 legacy labels (via EvalRecord.from_dict)
+    and v2 canonical labels land on the same enum values, so this works
+    for either input mix.
+    """
     complexity_order = [
-        ComplexityLevel.L1_BASIC,
-        ComplexityLevel.L2_WORKFLOW,
-        ComplexityLevel.L3_CONSTRAINED,
-        ComplexityLevel.L4_NOISY,
-        ComplexityLevel.L5_LONG_HORIZON,
+        ComplexityLevel.L1_SINGLE_CALL,
+        ComplexityLevel.L2_MULTI_STEP,
+        ComplexityLevel.L3_FEEDBACK,
+        ComplexityLevel.L4_ORCHESTRATION,
     ]
     highest = None
     for level in complexity_order:

@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.scheduler.evals.models import (
     EvalCheck, EvalScenario, EvalSuite, EvalRecord, CheckResult,
     EvalCategory, CheckKind, FailureClass, ComplexityLevel, ToolSchemaMode,
-    CapabilitySummary,
+    CapabilitySummary, translate_legacy_level,
 )
 from app.scheduler.evals.scenarios import (
     ALL_SCENARIOS, get_scenario, list_scenarios,
@@ -107,6 +107,51 @@ class TestScenarioContracts(unittest.TestCase):
         for s in fast:
             self.assertEqual(s.suite, "qualification_fast")
 
+    def test_scenario_relabel_matches_v2_table(self):
+        """Each scenario must carry the v2 unified-ladder label per design doc.
+
+        Locks the v2 mapping table so future drift is caught immediately.
+        Per ``llm_routing_benchmark_design.md`` v2 §"Level relabeling of
+        existing eval scenarios".
+        """
+        expected = {
+            # L1 — single call
+            "qualification.fast.lookup_basic":        ComplexityLevel.L1_SINGLE_CALL,
+            "qualification.fast.write_basic":         ComplexityLevel.L1_SINGLE_CALL,
+            "qualification.integration.bash_exec":    ComplexityLevel.L1_SINGLE_CALL,
+            "qualification.integration.memory_search":ComplexityLevel.L1_SINGLE_CALL,
+            # L2 — planned multi-step (no feedback loop)
+            "qualification.standard.lookup_then_write":   ComplexityLevel.L2_MULTI_STEP,
+            "characterization.ladder.long_horizon_multi_lookup": ComplexityLevel.L2_MULTI_STEP,
+            "characterization.ladder.noisy_context_lookup":      ComplexityLevel.L2_MULTI_STEP,
+            "characterization.protocol.long_write_then_answer":  ComplexityLevel.L2_MULTI_STEP,
+            # L3 — feedback loop / constraint reasoning
+            "qualification.standard.retry_once":           ComplexityLevel.L3_FEEDBACK,
+            "qualification.reasoning.constraint_plan_choice": ComplexityLevel.L3_FEEDBACK,
+        }
+        for sid, expected_level in expected.items():
+            s = get_scenario(sid)
+            self.assertEqual(
+                s.complexity_level, expected_level,
+                f"{sid} expected {expected_level.value}, got {s.complexity_level.value}",
+            )
+
+    def test_v1_complexity_members_are_abolished(self):
+        """No scenario may carry a v1 label — that drift is the bug A2 fixes."""
+        v1_values = {"L1_basic", "L2_workflow", "L3_constrained", "L4_noisy", "L5_long_horizon"}
+        for sid, scenario in ALL_SCENARIOS.items():
+            self.assertNotIn(
+                scenario.complexity_level.value, v1_values,
+                f"{sid} still carries v1 label {scenario.complexity_level.value}",
+            )
+
+    def test_complexity_enum_has_exactly_four_members(self):
+        """v2 ladder is L1/L2/L3/L4 — no more, no less."""
+        self.assertEqual(
+            {m.value for m in ComplexityLevel},
+            {"L1_single_call", "L2_multi_step", "L3_feedback", "L4_orchestration"},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Suite tests
@@ -155,9 +200,8 @@ class TestSuites(unittest.TestCase):
         for scenario_id in ladder.default_scenarios:
             s = get_scenario(scenario_id)
             levels.add(s.complexity_level)
-        self.assertIn(ComplexityLevel.L1_BASIC, levels)
-        self.assertIn(ComplexityLevel.L2_WORKFLOW, levels)
-        self.assertIn(ComplexityLevel.L3_CONSTRAINED, levels)
+        self.assertIn(ComplexityLevel.L1_SINGLE_CALL, levels)
+        self.assertIn(ComplexityLevel.L2_MULTI_STEP, levels)
 
     def test_get_suite_raises_on_unknown(self):
         with self.assertRaises(ValueError):
@@ -240,6 +284,94 @@ class TestModelSerialization(unittest.TestCase):
         self.assertEqual(d["resource_id"], "test")
         self.assertTrue(d["qualified_for_basic_agentic"])
         self.assertEqual(d["max_reliable_complexity"], "L2_workflow")
+
+    def test_translate_legacy_level_v1_to_v2(self):
+        """v1 labels in persisted records must map to the v2 ladder."""
+        self.assertEqual(translate_legacy_level("L1_basic"),        "L1_single_call")
+        self.assertEqual(translate_legacy_level("L2_workflow"),     "L2_multi_step")
+        self.assertEqual(translate_legacy_level("L3_constrained"),  "L3_feedback")
+        # Noise is a model trait, not a rung — collapses to L2.
+        self.assertEqual(translate_legacy_level("L4_noisy"),        "L2_multi_step")
+        # L5 abolished; long_horizon planned multi-step → L2.
+        self.assertEqual(translate_legacy_level("L5_long_horizon"), "L2_multi_step")
+        # Already-canonical v2 labels pass through unchanged.
+        self.assertEqual(translate_legacy_level("L1_single_call"),  "L1_single_call")
+        self.assertEqual(translate_legacy_level("L4_orchestration"), "L4_orchestration")
+        # Unknown values pass through (forward-compatible).
+        self.assertEqual(translate_legacy_level("experimental_X"),  "experimental_X")
+
+    def test_eval_record_roundtrip_legacy_label(self):
+        """EvalRecord.from_dict must accept v1 labels and normalize to v2.
+
+        Note: ``translate_legacy_level`` works at the *label* level, not
+        the scenario level. A v1 record carrying ``L2_workflow`` means the
+        task was self-classified at L2 difficulty — the v2 ladder collapses
+        that to ``L2_multi_step``. The semantic promotion of retry_once
+        (a particular *scenario*) from L2 to L3 lives in the scenario's
+        declared label, not in the legacy translator.
+        """
+        legacy_record = {
+            "ts": "2026-06-15T10:00:00",
+            "resource_id": "lmstudio_ornith_35b_mtp_apex",
+            "model": "ornith-1.0-35b-mtp-apex",
+            "suite": "qualification_standard",
+            "scenario_id": "qualification.standard.lookup_then_write",
+            "category": "qualification",
+            "task_family": "workflow",
+            "complexity_level": "L2_workflow",  # v1 L2 label
+            "tool_schema_mode": "either",
+            "success": True,
+            "checks": [],
+            "iterations_used": 4,
+            "duration_seconds": 12.5,
+        }
+        record = EvalRecord.from_dict(legacy_record)
+        # v1 "L2_workflow" collapses to L2_multi_step (no semantic change for L2).
+        self.assertEqual(record.complexity_level, "L2_multi_step")
+
+        # v1 "L3_constrained" → L3_feedback.
+        record2 = EvalRecord.from_dict({**legacy_record, "complexity_level": "L3_constrained"})
+        self.assertEqual(record2.complexity_level, "L3_feedback")
+
+    def test_eval_record_roundtrip_legacy_noisy_collapses(self):
+        """The v1 'L4_noisy' label must not crash and must collapse to L2_multi_step."""
+        legacy_record = {
+            "ts": "2026-06-15T10:00:00",
+            "resource_id": "x",
+            "model": "m",
+            "suite": "characterization_complexity_ladder",
+            "scenario_id": "characterization.ladder.noisy_context_lookup",
+            "category": "characterization",
+            "task_family": "noisy_context",
+            "complexity_level": "L4_noisy",  # v1 label — now a tag, not a rung
+            "tool_schema_mode": "either",
+            "success": True,
+            "checks": [],
+            "iterations_used": 3,
+            "duration_seconds": 8.0,
+        }
+        record = EvalRecord.from_dict(legacy_record)
+        self.assertEqual(record.complexity_level, "L2_multi_step")
+
+    def test_eval_record_roundtrip_canonical_label_passes_through(self):
+        """Records written under v2 must round-trip unchanged."""
+        v2_record = {
+            "ts": "2026-07-03T00:00:00",
+            "resource_id": "x",
+            "model": "m",
+            "suite": "qualification_fast",
+            "scenario_id": "qualification.fast.lookup_basic",
+            "category": "qualification",
+            "task_family": "lookup",
+            "complexity_level": "L1_single_call",
+            "tool_schema_mode": "either",
+            "success": True,
+            "checks": [],
+            "iterations_used": 1,
+            "duration_seconds": 2.0,
+        }
+        record = EvalRecord.from_dict(v2_record)
+        self.assertEqual(record.complexity_level, "L1_single_call")
 
 
 # ---------------------------------------------------------------------------

@@ -58,12 +58,40 @@ class FailureClass(str, Enum):
 
 
 class ComplexityLevel(str, Enum):
-    """Task complexity bands for routing decisions."""
-    L1_BASIC = "L1_basic"
-    L2_WORKFLOW = "L2_workflow"
-    L3_CONSTRAINED = "L3_constrained"
-    L4_NOISY = "L4_noisy"
-    L5_LONG_HORIZON = "L5_long_horizon"
+    """Task complexity bands for routing decisions (v2 unified ladder).
+
+    Ordered from simplest to most demanding. The order is used by
+    ``_compute_max_complexity`` to report the highest rung a resource
+    has cleared all runs on.
+    """
+    L1_SINGLE_CALL = "L1_single_call"
+    L2_MULTI_STEP = "L2_multi_step"
+    L3_FEEDBACK = "L3_feedback"
+    L4_ORCHESTRATION = "L4_orchestration"
+
+
+# Maps the v1 (drifted) 5-level labels used in persisted eval records
+# to the v2 unified 4-level ladder. Applied on read so old eval_log.jsonl
+# files round-trip without crashing. See llm_routing_benchmark_design.md v2.
+_LEGACY_LEVEL_MAP: Dict[str, ComplexityLevel] = {
+    "L1_basic":          ComplexityLevel.L1_SINGLE_CALL,
+    "L2_workflow":       ComplexityLevel.L2_MULTI_STEP,
+    "L3_constrained":    ComplexityLevel.L3_FEEDBACK,
+    "L4_noisy":          ComplexityLevel.L2_MULTI_STEP,   # noise is a trait, not a rung (now a tag)
+    "L5_long_horizon":   ComplexityLevel.L2_MULTI_STEP,   # L5 abolished; planned multi-step → L2
+}
+
+
+def translate_legacy_level(value: str) -> str:
+    """Translate a legacy v1 complexity label to the v2 ladder.
+
+    Returns the v2 enum value. Unknown values pass through unchanged so
+    new (already-canonical) strings round-trip cleanly.
+    """
+    if value in ComplexityLevel.__members__.values():
+        return value
+    mapped = _LEGACY_LEVEL_MAP.get(value)
+    return mapped.value if mapped is not None else value
 
 
 class ToolSchemaMode(str, Enum):
@@ -289,7 +317,16 @@ class EvalRecord:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "EvalRecord":
-        return cls(**{k: d.get(k) for k in cls.__dataclass_fields__ if k in d})
+        """Build an EvalRecord, translating any v1 complexity label to v2.
+
+        Persisted eval_log.jsonl records from before the v2 ladder rewrite
+        may carry labels like ``L2_workflow`` or ``L5_long_horizon``. We
+        accept those and normalize them on read rather than crash.
+        """
+        kwargs = {k: d.get(k) for k in cls.__dataclass_fields__ if k in d}
+        if "complexity_level" in kwargs and kwargs["complexity_level"] is not None:
+            kwargs["complexity_level"] = translate_legacy_level(kwargs["complexity_level"])
+        return cls(**kwargs)
 
 
 # ---------------------------------------------------------------------------
