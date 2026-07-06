@@ -292,16 +292,61 @@ class TestAgenticSmokeProfiles(unittest.IsolatedAsyncioTestCase):
     def test_smoke_tools_are_smoke_only_and_resolver_requires_opt_in(self):
         self.assertIn("smoke_lookup", SMOKE_ONLY_TOOLS)
         self.assertIn("smoke_fail_once", SMOKE_ONLY_TOOLS)
+        self.assertIn("smoke_dispatch", SMOKE_ONLY_TOOLS)
         self.assertNotIn("smoke_lookup", BUILTIN_TOOLS)
         self.assertNotIn("smoke_fail_once", BUILTIN_TOOLS)
+        self.assertNotIn("smoke_dispatch", BUILTIN_TOOLS)
 
         resolver = CapabilityResolver()
         tool_registry = SimpleNamespace(_tools={}, get_tool=lambda name: None)
         self.assertEqual(resolver._expand(["smoke_lookup"], tool_registry), [])
         self.assertCountEqual(
-            resolver._expand(["smoke_lookup", "smoke_fail_once"], tool_registry, allow_smoke_tools=True),
-            ["smoke_lookup", "smoke_fail_once"],
+            resolver._expand(
+                ["smoke_lookup", "smoke_fail_once", "smoke_dispatch"],
+                tool_registry, allow_smoke_tools=True,
+            ),
+            ["smoke_lookup", "smoke_fail_once", "smoke_dispatch"],
         )
+
+    # --- smoke_dispatch spec-gate behavior (A5) ---
+
+    def test_smoke_dispatch_gate_accepts_spec_compliant_goal(self):
+        exec_ = AgenticExecutor.__new__(AgenticExecutor)
+        result = exec_._execute_smoke_dispatch({
+            "role_id": "researcher",
+            "goal": "Find the research token. Done when: token returned. Verify by: reading it back.",
+        })
+        self.assertEqual(result.get("final_answer"), "sub_token_x9k2")
+        self.assertEqual(result.get("status"), "complete")
+
+    def test_smoke_dispatch_gate_rejects_missing_done_when(self):
+        exec_ = AgenticExecutor.__new__(AgenticExecutor)
+        result = exec_._execute_smoke_dispatch({
+            "goal": "Find the token. Verify by: reading it back.",
+        })
+        self.assertEqual(result.get("error"), "spec_quality_gate")
+        self.assertIn("success_criterion", " ".join(result.get("missing", [])))
+
+    def test_smoke_dispatch_gate_rejects_missing_verify(self):
+        exec_ = AgenticExecutor.__new__(AgenticExecutor)
+        result = exec_._execute_smoke_dispatch({
+            "goal": "Find the token. Done when: token returned.",
+        })
+        self.assertEqual(result.get("error"), "spec_quality_gate")
+        self.assertIn("acceptance_check", " ".join(result.get("missing", [])))
+
+    def test_smoke_dispatch_gate_rejects_empty_goal(self):
+        exec_ = AgenticExecutor.__new__(AgenticExecutor)
+        result = exec_._execute_smoke_dispatch({"goal": ""})
+        self.assertEqual(result.get("error"), "spec_quality_gate")
+        self.assertEqual(result.get("missing"), ["goal"])
+
+    def test_smoke_dispatch_gate_is_case_insensitive(self):
+        exec_ = AgenticExecutor.__new__(AgenticExecutor)
+        result = exec_._execute_smoke_dispatch({
+            "goal": "Find the token. DONE WHEN: returned. VERIFY by: check.",
+        })
+        self.assertEqual(result.get("final_answer"), "sub_token_x9k2")
 
 
 if __name__ == "__main__":

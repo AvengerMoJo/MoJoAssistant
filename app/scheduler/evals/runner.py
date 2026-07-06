@@ -213,7 +213,71 @@ def _evaluate_single_check(
             kind=check.kind,
             status="pass" if ok else "fail",
             failure_class=FailureClass.DURATION_EXCEEDED.value if not ok else None,
-            message=f"Duration {duration_seconds:.1f}s <= {max_seconds}s" if ok else f"Duration {duration_seconds:.1f}s > {max_seconds}s",
+        message=f"Duration {duration_seconds:.1f}s <= {max_seconds}s" if ok else f"Duration {duration_seconds:.1f}s > {max_seconds}s",
+    )
+
+    elif check.kind == CheckKind.TOOL_ARG_CONTAINS:
+        tool_name = params.get("tool_name", "")
+        arg_name = params.get("arg_name", "")
+        expected = params.get("expected_substrings", []) or []
+        found = False
+        for e in iteration_log:
+            for detail in e.get("tool_call_details") or []:
+                if detail.get("name") != tool_name:
+                    continue
+                args = detail.get("arguments")
+                if not isinstance(args, dict):
+                    continue
+                value = args.get(arg_name)
+                if value is None:
+                    continue
+                value_str = str(value).lower()
+                if all(str(s).lower() in value_str for s in expected):
+                    found = True
+                    break
+            if found:
+                break
+        return CheckResult(
+            check_id=check.id,
+            kind=check.kind,
+            status="pass" if found else "fail",
+            failure_class=check.failure_class.value if check.failure_class and not found else None,
+            message=(
+                f"{tool_name} call had {arg_name} containing {expected}"
+                if found else
+                f"No {tool_name} call had {arg_name} containing all of {expected}"
+            ),
+        )
+
+    elif check.kind == CheckKind.TOOL_ORDER:
+        first_tool = params.get("first_tool", "")
+        then_tool = params.get("then_tool", "")
+        flat: List[str] = []
+        for e in iteration_log:
+            flat.extend(e.get("tool_calls") or [])
+        try:
+            first_idx = flat.index(first_tool)
+        except ValueError:
+            first_idx = -1
+        try:
+            then_idx = flat.index(then_tool)
+        except ValueError:
+            then_idx = -1
+        ok = first_idx != -1 and then_idx != -1 and first_idx < then_idx
+        if first_idx == -1:
+            msg = f"'{first_tool}' was never called"
+        elif then_idx == -1:
+            msg = f"'{then_tool}' was never called after '{first_tool}' (idx {first_idx})"
+        elif first_idx < then_idx:
+            msg = f"'{first_tool}' (idx {first_idx}) before '{then_tool}' (idx {then_idx})"
+        else:
+            msg = f"'{then_tool}' (idx {then_idx}) before '{first_tool}' (idx {first_idx}) \u2014 wrong order"
+        return CheckResult(
+            check_id=check.id,
+            kind=check.kind,
+            status="pass" if ok else "fail",
+            failure_class=check.failure_class.value if check.failure_class and not ok else None,
+            message=msg,
         )
 
     else:

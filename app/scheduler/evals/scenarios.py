@@ -451,6 +451,81 @@ INTEGRATION_MEMORY_SEARCH = EvalScenario(
 
 
 # ---------------------------------------------------------------------------
+# L4 Orchestration — dispatch a sub-task and synthesize the result.
+# Requires the L4_ORCHESTRATION complexity level (A2). Staged inert behind a
+# guard so this module imports cleanly until A2 lands; it auto-registers then.
+# ---------------------------------------------------------------------------
+
+try:
+    _L4_ORCH = ComplexityLevel.L4_ORCHESTRATION
+except AttributeError:
+    _L4_ORCH = None
+
+if _L4_ORCH is not None:
+    DISPATCH_AND_SYNTHESIZE = EvalScenario(
+        id="qualification.orchestration.dispatch_and_synthesize",
+        suite="qualification_orchestration",
+        category=EvalCategory.QUALIFICATION,
+        task_family="orchestration",
+        complexity_level=_L4_ORCH,
+        goal_template=(
+            "You are coordinating a small research task.\n"
+            "1. Dispatch a research sub-task to role 'researcher' using the smoke_dispatch tool. "
+            "Write a well-specified goal that MUST include a 'Done when:' clause (what completion "
+            "looks like) and a 'Verify by:' clause (how to confirm the result). Ask the researcher "
+            "to find and return the research token.\n"
+            "2. After smoke_dispatch returns its sub-result, use write_file to write a one-line "
+            "summary to '{write_path}' combining the sub-result token with the note 'orchestration complete'.\n"
+            "3. Provide a <FINAL_ANSWER> containing the sub-result token returned by smoke_dispatch."
+        ),
+        available_tools=["smoke_dispatch", "write_file"],
+        checks=[
+            EvalCheck(
+                id="dispatch_goal_spec_quality",
+                kind=CheckKind.TOOL_ARG_CONTAINS,
+                required=True,
+                failure_class=FailureClass.WRONG_TOOL_ARGS,
+                params={
+                    "tool_name": "smoke_dispatch",
+                    "arg_name": "goal",
+                    "expected_substrings": ["done when", "verify by"],
+                },
+            ),
+            EvalCheck(
+                id="dispatch_before_write",
+                kind=CheckKind.TOOL_ORDER,
+                required=True,
+                failure_class=FailureClass.WRONG_ORDER,
+                params={"first_tool": "smoke_dispatch", "then_tool": "write_file"},
+            ),
+            EvalCheck(
+                id="final_answer_has_subtoken",
+                kind=CheckKind.FINAL_ANSWER_CONTAINS,
+                required=True,
+                failure_class=FailureClass.VERIFICATION_MISMATCH,
+                params={"expected": "sub_token_x9k2"},
+            ),
+            # Informational: a capable model may write a gate-compliant goal on
+            # the first try (no retry) OR get gated once and self-correct. Both
+            # are acceptable L4 behavior. NOTE: the runner's success gate does
+            # not yet honor required=False — resolve before the live run (A5).
+            EvalCheck(
+                id="retried_after_gate_reject",
+                kind=CheckKind.RETRY_AFTER_FAILURE,
+                required=False,
+                failure_class=FailureClass.TOOL_NOT_CALLED,
+                params={"tool_name": "smoke_dispatch", "min_calls": 2},
+            ),
+        ],
+        max_iterations=25,
+        max_duration_seconds=300,
+        tags=["orchestration", "L4", "dispatch", "synthesize"],
+    )
+else:
+    DISPATCH_AND_SYNTHESIZE = None
+
+
+# ---------------------------------------------------------------------------
 # Scenario registry
 # ---------------------------------------------------------------------------
 
@@ -462,8 +537,10 @@ for _s in [
     NOISY_CONTEXT_LOOKUP, LONG_HORIZON_MULTI_LOOKUP,
     LONG_WRITE_THEN_ANSWER,
     INTEGRATION_BASH_EXEC, INTEGRATION_MEMORY_SEARCH,
+    DISPATCH_AND_SYNTHESIZE,
 ]:
-    ALL_SCENARIOS[_s.id] = _s
+    if _s is not None:
+        ALL_SCENARIOS[_s.id] = _s
 
 
 def get_scenario(scenario_id: str) -> EvalScenario:

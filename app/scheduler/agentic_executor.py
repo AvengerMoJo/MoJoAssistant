@@ -122,6 +122,35 @@ SMOKE_ONLY_TOOLS = {
             },
         },
     },
+    "smoke_dispatch": {
+        "type": "function",
+        "function": {
+            "name": "smoke_dispatch",
+            "description": (
+                "Dispatch a sub-task to a sub-role and return its result. "
+                "Mirrors the production dispatch_subtask tool but returns a deterministic "
+                "canned result for smoke testing. The goal MUST include a 'Done when:' "
+                "clause and a 'Verify by:' clause or it is rejected by the spec quality gate."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {
+                        "type": "string",
+                        "description": "Sub-role to dispatch to, e.g. 'researcher'.",
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": (
+                            "The sub-task goal. Must be spec-gate-compliant: include a "
+                            "'Done when:' completion clause and a 'Verify by:' acceptance clause."
+                        ),
+                    },
+                },
+                "required": ["goal"],
+            },
+        },
+    },
 }
 
 
@@ -1474,6 +1503,18 @@ class AgenticExecutor:
                         tool_name=tc["function"]["name"],
                     )
 
+                _tool_call_details = []
+                for _tc in tool_calls:
+                    _tc_args = _tc["function"].get("arguments", {})
+                    if isinstance(_tc_args, str):
+                        try:
+                            _tc_args = json.loads(_tc_args)
+                        except Exception:
+                            _tc_args = {"_raw": _tc_args}
+                    _tool_call_details.append({
+                        "name": _tc["function"]["name"],
+                        "arguments": _tc_args,
+                    })
                 _tool_iter_entry: Dict[str, Any] = {
                     "iteration": iteration,
                     "resource": resource.id,
@@ -1482,6 +1523,7 @@ class AgenticExecutor:
                     "selection_reason": selection_reason,
                     "status": "tool_use",
                     "tool_calls": [tc["function"]["name"] for tc in tool_calls],
+                    "tool_call_details": _tool_call_details,
                     "estimated_input_tokens": _estimated_tokens,
                     "elapsed_s": round(time.time() - iter_start, 1),
                 }
@@ -2895,6 +2937,8 @@ class AgenticExecutor:
             return self._execute_smoke_compare(args)
         if name == "smoke_fail_once":
             return self._execute_smoke_fail_once(args)
+        if name == "smoke_dispatch":
+            return self._execute_smoke_dispatch(args)
 
         if name.startswith("browser_") or name == "browser":
             return await self._execute_browser_facade(name, args)
@@ -3005,6 +3049,42 @@ class AgenticExecutor:
             "key": key,
             "result": f"smoke_retry_ok:{key}",
             "message": "Retry succeeded.",
+        }
+
+    def _execute_smoke_dispatch(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Deterministic stand-in for dispatch_subtask.
+
+        Mirrors the production spec quality gate: a goal missing the 'done when'
+        completion clause or the 'verify' acceptance clause is rejected with a
+        structured spec_quality_gate error so the caller can self-correct and
+        retry (the L4 orchestration skill under test). A compliant goal returns
+        a canned, deterministic sub-result — no real dispatch occurs.
+        """
+        role_id = (args.get("role_id") or "").strip()
+        goal = (args.get("goal") or "").strip()
+        if not goal:
+            return {"error": "spec_quality_gate", "missing": ["goal"]}
+
+        goal_lower = goal.lower()
+        missing = []
+        if "done when" not in goal_lower:
+            missing.append("success_criterion ('Done when: ...')")
+        if "verify" not in goal_lower:
+            missing.append("acceptance_check ('Verify by: ...')")
+        if missing:
+            return {
+                "error": "spec_quality_gate",
+                "missing": missing,
+                "feedback": (
+                    "Dispatched goal is not spec-gate-compliant. Add a 'Done when:' "
+                    "clause and a 'Verify by:' clause, then retry the dispatch."
+                ),
+            }
+
+        return {
+            "role_id": role_id or "researcher",
+            "final_answer": "sub_token_x9k2",
+            "status": "complete",
         }
 
     # --- browser facade ---------------------------------------------------------

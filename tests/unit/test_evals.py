@@ -485,6 +485,81 @@ class TestCheckEvaluation(unittest.TestCase):
         self.assertEqual(results[0].status, "skip")
         self.assertEqual(results[0].failure_class, "tool_backend_unavailable")
 
+    # --- TOOL_ARG_CONTAINS ---
+
+    def test_tool_arg_contains_pass(self):
+        from app.scheduler.evals.runner import evaluate_checks
+        check = EvalCheck(id="tac", kind=CheckKind.TOOL_ARG_CONTAINS, required=True,
+                          failure_class=FailureClass.WRONG_TOOL_ARGS,
+                          params={"tool_name": "smoke_dispatch", "arg_name": "goal",
+                                  "expected_substrings": ["done when", "verify by"]})
+        log = [{"status": "tool_use", "tool_calls": ["smoke_dispatch"],
+                "tool_call_details": [{"name": "smoke_dispatch",
+                                       "arguments": {"goal": "Research X. Done when: report written. Verify by: reading it."}}]}]
+        results = evaluate_checks([check], log, "answer", 5.0, {})
+        self.assertEqual(results[0].status, "pass")
+
+    def test_tool_arg_contains_fail_missing_substring(self):
+        from app.scheduler.evals.runner import evaluate_checks
+        check = EvalCheck(id="tac", kind=CheckKind.TOOL_ARG_CONTAINS, required=True,
+                          failure_class=FailureClass.WRONG_TOOL_ARGS,
+                          params={"tool_name": "smoke_dispatch", "arg_name": "goal",
+                                  "expected_substrings": ["done when", "verify by"]})
+        log = [{"status": "tool_use", "tool_calls": ["smoke_dispatch"],
+                "tool_call_details": [{"name": "smoke_dispatch",
+                                       "arguments": {"goal": "Research X. Done when: report written."}}]}]
+        results = evaluate_checks([check], log, "answer", 5.0, {})
+        self.assertEqual(results[0].status, "fail")
+        self.assertEqual(results[0].failure_class, "wrong_tool_args")
+
+    def test_tool_arg_contains_fail_no_details(self):
+        from app.scheduler.evals.runner import evaluate_checks
+        check = EvalCheck(id="tac", kind=CheckKind.TOOL_ARG_CONTAINS, required=True,
+                          failure_class=FailureClass.WRONG_TOOL_ARGS,
+                          params={"tool_name": "smoke_dispatch", "arg_name": "goal",
+                                  "expected_substrings": ["done when"]})
+        # Old-style log without tool_call_details -> cannot verify -> fail.
+        log = [{"status": "tool_use", "tool_calls": ["smoke_dispatch"]}]
+        results = evaluate_checks([check], log, "answer", 5.0, {})
+        self.assertEqual(results[0].status, "fail")
+
+    # --- TOOL_ORDER ---
+
+    def test_tool_order_pass(self):
+        from app.scheduler.evals.runner import evaluate_checks
+        check = EvalCheck(id="to", kind=CheckKind.TOOL_ORDER, required=True,
+                          failure_class=FailureClass.WRONG_ORDER,
+                          params={"first_tool": "smoke_dispatch", "then_tool": "write_file"})
+        log = [
+            {"status": "tool_use", "tool_calls": ["smoke_dispatch"]},
+            {"status": "tool_use", "tool_calls": ["write_file"]},
+        ]
+        results = evaluate_checks([check], log, "answer", 5.0, {})
+        self.assertEqual(results[0].status, "pass")
+
+    def test_tool_order_fail_wrong_order(self):
+        from app.scheduler.evals.runner import evaluate_checks
+        check = EvalCheck(id="to", kind=CheckKind.TOOL_ORDER, required=True,
+                          failure_class=FailureClass.WRONG_ORDER,
+                          params={"first_tool": "smoke_dispatch", "then_tool": "write_file"})
+        log = [
+            {"status": "tool_use", "tool_calls": ["write_file"]},
+            {"status": "tool_use", "tool_calls": ["smoke_dispatch"]},
+        ]
+        results = evaluate_checks([check], log, "answer", 5.0, {})
+        self.assertEqual(results[0].status, "fail")
+        self.assertEqual(results[0].failure_class, "wrong_order")
+
+    def test_tool_order_fail_first_missing(self):
+        from app.scheduler.evals.runner import evaluate_checks
+        check = EvalCheck(id="to", kind=CheckKind.TOOL_ORDER, required=True,
+                          failure_class=FailureClass.WRONG_ORDER,
+                          params={"first_tool": "smoke_dispatch", "then_tool": "write_file"})
+        log = [{"status": "tool_use", "tool_calls": ["write_file"]}]
+        results = evaluate_checks([check], log, "answer", 5.0, {})
+        self.assertEqual(results[0].status, "fail")
+        self.assertEqual(results[0].failure_class, "wrong_order")
+
 
 if __name__ == "__main__":
     unittest.main()

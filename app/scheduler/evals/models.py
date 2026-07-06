@@ -35,6 +35,8 @@ class CheckKind(str, Enum):
     RETRY_AFTER_FAILURE = "retry_after_failure"
     BACKEND_AVAILABLE = "backend_available"
     DURATION_UNDER = "duration_under"
+    TOOL_ARG_CONTAINS = "tool_arg_contains"
+    TOOL_ORDER = "tool_order"
 
 
 class FailureClass(str, Enum):
@@ -51,6 +53,8 @@ class FailureClass(str, Enum):
     XML_TOOL_LEAKAGE = "xml_tool_leakage"
     VERIFICATION_MISMATCH = "verification_mismatch"
     DURATION_EXCEEDED = "duration_exceeded"
+    WRONG_TOOL_ARGS = "wrong_tool_args"
+    WRONG_ORDER = "wrong_order"
 
 
 class ComplexityLevel(str, Enum):
