@@ -353,6 +353,20 @@ class TestModelSerialization(unittest.TestCase):
         record = EvalRecord.from_dict(legacy_record)
         self.assertEqual(record.complexity_level, "L2_multi_step")
 
+    def test_complexity_level_enum_tolerates_legacy_values(self):
+        """Direct ComplexityLevel(old) must not crash on v1 labels (spec A2:
+        'ComplexityLevel(...) must not crash on old values'). Backed by the
+        _missing_ hook so EvalScenario.from_dict and ad-hoc lookups work too."""
+        self.assertEqual(ComplexityLevel("L1_basic"), ComplexityLevel.L1_SINGLE_CALL)
+        self.assertEqual(ComplexityLevel("L2_workflow"), ComplexityLevel.L2_MULTI_STEP)
+        self.assertEqual(ComplexityLevel("L3_constrained"), ComplexityLevel.L3_FEEDBACK)
+        self.assertEqual(ComplexityLevel("L4_noisy"), ComplexityLevel.L2_MULTI_STEP)
+        self.assertEqual(ComplexityLevel("L5_long_horizon"), ComplexityLevel.L2_MULTI_STEP)
+        # canonical v2 values still resolve; unknown values still raise
+        self.assertEqual(ComplexityLevel("L4_orchestration"), ComplexityLevel.L4_ORCHESTRATION)
+        with self.assertRaises(ValueError):
+            ComplexityLevel("not_a_real_level")
+
     def test_eval_record_roundtrip_canonical_label_passes_through(self):
         """Records written under v2 must round-trip unchanged."""
         v2_record = {

@@ -69,6 +69,17 @@ class ComplexityLevel(str, Enum):
     L3_FEEDBACK = "L3_feedback"
     L4_ORCHESTRATION = "L4_orchestration"
 
+    @classmethod
+    def _missing_(cls, value):
+        # Tolerate legacy v1 labels (e.g. persisted scenario dicts) by mapping
+        # them through the v1->v2 table. Keeps direct ComplexityLevel(old)
+        # calls and EvalScenario.from_dict from crashing on old data.
+        if isinstance(value, str):
+            mapped = _LEGACY_LEVEL_MAP.get(value)
+            if mapped is not None:
+                return mapped
+        return None
+
 
 # Maps the v1 (drifted) 5-level labels used in persisted eval records
 # to the v2 unified 4-level ladder. Applied on read so old eval_log.jsonl
