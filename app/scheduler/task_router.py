@@ -111,8 +111,8 @@ class TaskRouter:
             routing_table = {
                 "A": "lmstudio_gemma4_12b",
                 "B": "lmstudio_qwen36_27b_mtp",
-                "C": "lmstudio__google_gemma_4_26b_a4b",
-                "D": "lmstudio_qwen36_mtp",
+                "C": "lmstudio_google_gemma_4_26b_a4b",
+                "D": "lmstudio_ornith_35b_mtp_apex",
             }
 
         # Load capability profile
