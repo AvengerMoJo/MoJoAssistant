@@ -364,3 +364,78 @@ class CapabilitySummary:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Failure classification (A7)
+# ---------------------------------------------------------------------------
+#
+# A pure classifier used by the routing profiler and (in principle) by any
+# downstream tool that needs to bucket a per-task result into a FailureClass.
+# Kept side-effect-free and import-light so the profiler can call it without
+# pulling the scheduler into the test path.
+
+# Cheap heuristic cutoffs. Tuned against observed LM Studio + Qwen/Ornith runs;
+# the same constants appear in the A7 unit tests so a flip forces a test flip.
+SLOW_DURATION_S = 30.0      # > this on a successful task -> final_answer_slow
+TIMEOUT_DURATION_S = 120.0  # > this on any task -> timeout (assumed iteration cap hit)
+
+
+def classify_failure(
+    *,
+    success: bool,
+    elapsed_s: float,
+    error: Optional[str] = None,
+    response: str = "",
+    iterations: int = 1,
+) -> FailureClass:
+    """Classify a single profiling-task result into a FailureClass.
+
+    Pure function — no I/O, no logging. Returns ``FailureClass.*``.
+
+    The classifier expresses the routing-relevant question: "what was the
+    *kind* of failure (or near-failure)?" so the router can decide between
+    route-up (verification mismatch), raise-budget (slow/timeout), or
+    hard-disqualify (leakage/malformed).
+
+    For successful tasks the function still returns a class because routing
+    needs to know whether a model is *capable but slow* (a budget-hint
+    signal) versus capable and clean. Returns ``None`` only when the run is
+    successful *and* fast *and* clean — i.e. nothing to signal.
+    """
+    # Error path — backend / executor surfaced an exception.
+    if error:
+        e = error.lower()
+        if "timeout" in e or "timed out" in e:
+            return FailureClass.TIMEOUT
+        if "backend" in e or "unavailable" in e or "connection" in e:
+            return FailureClass.TOOL_BACKEND_UNAVAILABLE
+        if "xml" in e or "<functioncall" in response.lower() or "<|tool_call" in response.lower():
+            return FailureClass.XML_TOOL_LEAKAGE
+        if "malformed" in e or "invalid arguments" in e:
+            return FailureClass.MALFORMED_ARGUMENTS
+        return FailureClass.EXECUTOR_EXCEPTION
+
+    # Raw response signals — checked even on success because leakage in the
+    # body of an otherwise-correct answer is still a disqualifier.
+    resp_lower = (response or "").lower()
+    if "<functioncall" in resp_lower or "<|tool_call" in resp_lower:
+        return FailureClass.XML_TOOL_LEAKAGE
+    if response and not success and ("{" in response and "}" in response and '"' in response):
+        # Heuristic: a JSON-ish blob in a failed task hints at malformed tool args.
+        if "arguments" in resp_lower or "args" in resp_lower:
+            return FailureClass.MALFORMED_ARGUMENTS
+
+    # Duration signals — applies regardless of success.
+    if elapsed_s >= TIMEOUT_DURATION_S:
+        return FailureClass.TIMEOUT
+    if elapsed_s >= SLOW_DURATION_S and success:
+        return FailureClass.FINAL_ANSWER_SLOW
+
+    # Success / failure branch.
+    if success:
+        # Clean pass — no failure class to signal.
+        return None  # type: ignore[return-value]
+    # Failed but no error string and no signal above -> the verification itself
+    # rejected the answer. That's a capability ceiling -> route up.
+    return FailureClass.VERIFICATION_MISMATCH

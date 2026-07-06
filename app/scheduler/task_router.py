@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config.paths import get_memory_path
+from app.scheduler.evals.models import ComplexityLevel
+from app.scheduler.routing_profile import (
+    DISQUALIFY_FAILURE_RATE, PASS_RATE_THRESHOLD,
+    SLOW_DOMINANT_RATE, derive_routing_table, load_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +78,16 @@ def compute_cell(goal_text: str, declared_tools: list[str]) -> str:
     return "A"
 
 
+# Cell → demanded capability level (v2 ladder).
+# dispatch_subtask in declared_tools overrides to L4_orchestration regardless of cell.
+_CELL_TO_LEVEL = {
+    "A": ComplexityLevel.L1_SINGLE_CALL,
+    "B": ComplexityLevel.L2_MULTI_STEP,
+    "C": ComplexityLevel.L2_MULTI_STEP,
+    "D": ComplexityLevel.L3_FEEDBACK,
+}
+
+
 @dataclass
 class RoutingResult:
     """Result of task routing."""
@@ -115,11 +130,9 @@ class TaskRouter:
                 "D": "lmstudio_ornith_35b_mtp_apex",
             }
 
-        # Load capability profile
+        # Load capability profile (handles both v2 and pre-A7 schemas).
         profile_path = base / "capability_profile.json"
-        capability_profile = {}
-        if profile_path.exists():
-            capability_profile = json.loads(profile_path.read_text())
+        capability_profile = load_profile(profile_path)
 
         return cls(routing_table=routing_table, capability_profile=capability_profile)
 
@@ -131,26 +144,148 @@ class TaskRouter:
     ) -> Dict[str, Any]:
         """Classify task and select minimum viable model.
 
-        Returns dict with: cell, model_id, confidence, explain
+        Returns dict with: cell, level, model_id, confidence, explain,
+        and (when the v2 profile is in play) budget_hint, disqualified.
+
+        Level is the demanded capability rung (L1–L4); dispatch_subtask in
+        declared_tools forces L4_orchestration regardless of cell.
+
+        A7 failure-mode-aware rules (from the design doc §"Capability
+        profile (v2 — failure-mode aware)"):
+          - xml_tool_leakage / malformed_arguments rate >= 0.20 at the
+            selected cell → hard-disqualify that model, walk the cost
+            ordering to the next qualified model.
+          - final_answer_slow / timeout rate dominant (>= 0.50) and the
+            model still clears pass_rate >= 0.80 → keep the model but
+            attach budget_hint="raise" so the executor can extend
+            max_iterations (Bonsai signal — out of scope here to apply).
+          - Otherwise route on pass_rate >= PASS_RATE_THRESHOLD.
         """
         cell = compute_cell(goal, declared_tools)
-        model_id = self._routing_table.get(cell, self._routing_table.get("A", ""))
+        level = _CELL_TO_LEVEL.get(cell, ComplexityLevel.L1_SINGLE_CALL)
 
-        # Confidence based on profile data availability
+        # L4 override: any task that dispatches subtasks demands orchestration.
+        l4_override = "dispatch_subtask" in declared_tools
+        if l4_override:
+            level = ComplexityLevel.L4_ORCHESTRATION
+
+        # Routing lookup: prefer a level-keyed "levels" sub-table (new format);
+        # fall back to the cell-keyed table (old/default format).
+        levels_table = self._routing_table.get("levels")
+        if isinstance(levels_table, dict) and level.value in levels_table:
+            model_id = levels_table[level.value]
+        else:
+            model_id = self._routing_table.get(cell, self._routing_table.get("A", ""))
+
+        disqualified: List[str] = []
+        budget_hint: Optional[str] = None
         confidence = 0.5  # default: hypothesis only
-        if self._capability_profile:
-            cell_profile = self._capability_profile.get(cell, {})
-            if cell_profile.get(model_id, {}).get("success_rate"):
-                confidence = cell_profile[model_id]["success_rate"]
+        explain_parts: List[str] = []
 
-        explain = f"Cell {cell}: {self._cell_description(cell)} → {model_id}"
+        # Apply A7 rules if we have a v2 profile that includes failure_modes
+        # for the selected model at this cell.
+        cell_profile = (
+            self._capability_profile.get(model_id, {}).get(cell)
+            if model_id else None
+        )
+        if cell_profile and "failure_modes" in cell_profile:
+            fm = cell_profile.get("failure_modes", {}) or {}
+            pass_rate = float(cell_profile.get("pass", cell_profile.get("success_rate", 0.0)) or 0.0)
 
-        return {
+            # Hard-disqualify check.
+            leakage_rate = fm.get("xml_tool_leakage", 0.0)
+            malformed_rate = fm.get("malformed_arguments", 0.0)
+            if leakage_rate >= DISQUALIFY_FAILURE_RATE or malformed_rate >= DISQUALIFY_FAILURE_RATE:
+                disqualified.append(model_id)
+                explain_parts.append(
+                    f"disqualified ({model_id}: leakage={leakage_rate:.2f}, "
+                    f"malformed={malformed_rate:.2f})"
+                )
+                # Walk candidate ordering — any model listed in routing_table
+                # at this cell is a candidate; we try the cheapest next.
+                model_id = self._find_qualified_fallback(cell, level, declared_tools)
+                cell_profile = (
+                    self._capability_profile.get(model_id, {}).get(cell)
+                    if model_id else None
+                )
+                if cell_profile:
+                    pass_rate = float(cell_profile.get("pass", 0.0) or 0.0)
+
+            # Budget hint: passes threshold but slow/timeout dominates.
+            if cell_profile:
+                slow = fm.get("final_answer_slow", 0.0)
+                timeout = fm.get("timeout", 0.0)
+                if (slow + timeout) >= SLOW_DOMINANT_RATE and pass_rate >= PASS_RATE_THRESHOLD:
+                    budget_hint = "raise"
+                    explain_parts.append("budget_hint=raise (slow/timeout dominant)")
+
+            confidence = pass_rate
+        elif cell_profile:
+            # Legacy schema (success_rate) — no failure modes, no disqualify.
+            confidence = float(cell_profile.get("success_rate", cell_profile.get("pass", 0.0)) or 0.0)
+
+        explain = (
+            f"Cell {cell} → level {level.value}"
+            + (" [L4 override: dispatch_subtask]" if l4_override else "")
+            + f": {self._cell_description(cell)} → {model_id or '(no qualified model)'}"
+            + (f" [{'; '.join(explain_parts)}]" if explain_parts else "")
+        )
+
+        result: Dict[str, Any] = {
             "cell": cell,
+            "level": level.value,
             "model_id": model_id,
-            "confidence": confidence,
+            "confidence": round(confidence, 3),
             "explain": explain,
         }
+        if budget_hint:
+            result["budget_hint"] = budget_hint
+        if disqualified:
+            result["disqualified"] = disqualified
+        return result
+
+    def _find_qualified_fallback(
+        self,
+        cell: str,
+        level: ComplexityLevel,
+        declared_tools: list[str],
+    ) -> str:
+        """Find the next-cheapest model that passes the A7 rules at this cell.
+
+        Walks the routing_table's cell-keyed entries (and the levels table)
+        in priority order. Returns "" if nothing qualifies — the caller
+        surfaces that as ``model_id == ''`` so the executor falls back to
+        default resource selection.
+        """
+        # Build a cost-ordered candidate list: levels table first (if present),
+        # then cell table, then any cell that appears in either.
+        candidates: List[str] = []
+        levels_table = self._routing_table.get("levels")
+        if isinstance(levels_table, dict):
+            for v in levels_table.values():
+                if v and v not in candidates:
+                    candidates.append(v)
+        for c, v in self._routing_table.items():
+            if c.startswith("_") or not isinstance(v, str):
+                continue
+            if v and v not in candidates:
+                candidates.append(v)
+
+        for cand in candidates:
+            cell_profile = self._capability_profile.get(cand, {}).get(cell)
+            if not cell_profile or "failure_modes" not in cell_profile:
+                # No profile data: assume clean (caller's call).
+                return cand
+            fm = cell_profile.get("failure_modes", {}) or {}
+            leakage_rate = fm.get("xml_tool_leakage", 0.0)
+            malformed_rate = fm.get("malformed_arguments", 0.0)
+            if leakage_rate >= DISQUALIFY_FAILURE_RATE or malformed_rate >= DISQUALIFY_FAILURE_RATE:
+                continue
+            pass_rate = float(cell_profile.get("pass", 0.0) or 0.0)
+            if pass_rate < PASS_RATE_THRESHOLD:
+                continue
+            return cand
+        return ""
 
     def _cell_description(self, cell: str) -> str:
         descriptions = {

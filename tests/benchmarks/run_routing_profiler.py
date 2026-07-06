@@ -23,6 +23,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.scheduler.task_router import compute_cell
+from app.scheduler.routing_profile import (
+    TaskRecord, aggregate_profile, derive_routing_table,
+)
 
 
 def load_tasks(cell: Optional[str] = None, max_per_cell: int = 15) -> List[Dict[str, Any]]:
@@ -79,6 +82,7 @@ async def run_task_with_model(
         "iterations": 1,
         "elapsed_s": 0,
         "error": None,
+        "failure_class": None,  # filled below; None means "clean pass"
     }
 
     try:
@@ -159,6 +163,18 @@ async def run_task_with_model(
         result["error"] = str(e)
 
     result["elapsed_s"] = round(time.time() - start, 1)
+    # A7 — classify the failure (or clean-pass signal) so the profile can
+    # carry failure_modes per cell. classify_failure is pure and lives in
+    # evals.models; we re-import locally to keep this runner self-contained.
+    from app.scheduler.evals.models import classify_failure
+    fc = classify_failure(
+        success=result["success"],
+        elapsed_s=result["elapsed_s"],
+        error=result["error"],
+        response=result["response"],
+        iterations=result["iterations"],
+    )
+    result["failure_class"] = fc.value if fc is not None else None
     return result
 
 
@@ -183,11 +199,10 @@ async def run_profiler(
     print()
 
     all_results = []
-    profile = {}
+    raw_records: List[TaskRecord] = []
 
     for model_id in models:
         print(f"=== {model_id} ===")
-        cell_results = {}
 
         for task in tasks:
             cell = task.get("cell", "?")
@@ -195,40 +210,65 @@ async def run_profiler(
 
             result = await run_task_with_model(task, model_id, {})
             all_results.append(result)
-
-            if cell not in cell_results:
-                cell_results[cell] = {"total": 0, "success": 0}
-            cell_results[cell]["total"] += 1
-            if result["success"]:
-                cell_results[cell]["success"] += 1
+            raw_records.append(TaskRecord(
+                task_id=result["task_id"],
+                cell=result["cell"],
+                resource_id=result["resource_id"],
+                success=result["success"],
+                elapsed_s=result["elapsed_s"],
+                iterations=result["iterations"],
+                error=result["error"],
+                response=result["response"],
+                failure_class=result["failure_class"],
+            ))
 
             status = "✓" if result["success"] else "✗"
-            print(f"{status} ({result['elapsed_s']:.1f}s)")
+            fc = result["failure_class"] or "clean"
+            print(f"{status} ({result['elapsed_s']:.1f}s, {fc})")
 
-        # Build profile for this model
-        profile[model_id] = {}
-        for cell, stats in cell_results.items():
-            sr = stats["success"] / stats["total"] if stats["total"] > 0 else 0
-            profile[model_id][cell] = {
-                "success_rate": round(sr, 3),
-                "total": stats["total"],
-                "success": stats["success"],
-            }
-            print(f"  Cell {cell}: {sr:.3f} ({stats['success']}/{stats['total']})")
+    # Aggregate into v2 profile schema (pass, failure_modes, avg_duration, ...).
+    profile = aggregate_profile(raw_records)
+    for model_id, by_cell in profile.items():
+        for cell, stats in sorted(by_cell.items()):
+            fm = stats.get("failure_modes") or {}
+            fm_str = ",".join(f"{k}={v}" for k, v in sorted(fm.items())) or "-"
+            print(f"  {model_id} Cell {cell}: pass={stats['pass']:.3f} "
+                  f"({stats['success']}/{stats['total']}) modes=[{fm_str}] "
+                  f"avg_dur={stats['avg_duration']:.1f}s")
 
-    # Save results
+    # Derive routing_table.json from the profile. Cheapest-first ordering is
+    # the order the caller passed in (matches priority in the resource pool).
+    routing_table = derive_routing_table(profile, candidate_order=list(models))
+    print("\nDerived routing table:")
+    for cell, model_id in routing_table.items():
+        if cell.startswith("_"):
+            continue
+        print(f"  {cell} -> {model_id or '(none qualified)'}")
+
+    # Save summary (includes both per-task records and aggregated profile).
     summary = {
         "run_id": run_id,
         "models": models,
         "tasks_per_cell": tasks_per_cell,
         "profile": profile,
+        "per_task": all_results,
+        "routing_table": {k: v for k, v in routing_table.items() if not k.startswith("_")},
+        "cell_decisions": routing_table.get("_cell_decisions", {}),
+        "thresholds": routing_table.get("_thresholds", {}),
         "timestamp": datetime.now().isoformat(),
     }
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
-    # Save capability profile
+    # Persist derived routing_table.json (live, at ~/.memory/benchmarks/routing/).
+    routing_path = Path.home() / ".memory" / "benchmarks" / "routing" / "routing_table.json"
+    routing_table_persisted = {k: v for k, v in routing_table.items() if not k.startswith("_")}
+    routing_path.write_text(json.dumps(routing_table_persisted, indent=2))
+    print(f"\nWrote routing_table.json -> {routing_path}")
+
+    # Save capability profile (v2 schema — pass, failure_modes, avg_duration).
     profile_path = Path.home() / ".memory" / "benchmarks" / "routing" / "capability_profile.json"
     profile_path.write_text(json.dumps(profile, indent=2))
+    print(f"Wrote capability_profile.json -> {profile_path}")
 
     return summary
 
