@@ -39,6 +39,9 @@ DEPENDENCY_KEYWORDS = [
 ]
 
 
+# S_f (spec fuzziness) is NOT measured here: goals are pre-validated by the spec
+# quality gate (app/scheduler/spec_qualifier.py) at the dispatch boundary, so this
+# router assumes gate-ready goals. S_s (state space) is folded into the depth score.
 def compute_cell(goal_text: str, declared_tools: list[str]) -> str:
     """Classify task complexity into cell A/B/C/D.
 
