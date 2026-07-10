@@ -121,6 +121,136 @@ class TestAggregateProfile:
 
 
 # ---------------------------------------------------------------------------
+# A11.3 — tool-execution aggregates
+# ---------------------------------------------------------------------------
+
+def _record_with_tools(cell, model, success, tool_calls=0, tool_errors=0):
+    """Variant of _record that lets us set tool_call_count / tool_error_count."""
+    return TaskRecord(
+        task_id=f"{cell}_{model}", cell=cell, resource_id=model,
+        success=success, elapsed_s=5.0,
+        tool_call_count=tool_calls, tool_error_count=tool_errors,
+    )
+
+
+class TestToolExecutionAggregates:
+    """A11.3 — tool-execution aggregates in the profile schema."""
+
+    def test_no_tool_calls_default_to_zero(self):
+        # Cell A tasks: no tools. Should still produce a valid profile.
+        records = [_record("A", "m1", success=True) for _ in range(3)]
+        prof = aggregate_profile(records)
+        cell_stats = prof["m1"]["A"]
+        assert cell_stats["avg_tool_calls"] == 0.0
+        assert cell_stats["tool_error_rate"] == 0.0
+        assert cell_stats["tasks_using_tools"] == 0
+
+    def test_avg_tool_calls_across_tasks(self):
+        # 3 tasks, 0+2+4 = 6 tool calls total → avg = 2.0
+        records = [
+            _record_with_tools("B", "m", success=True, tool_calls=0),
+            _record_with_tools("B", "m", success=True, tool_calls=2),
+            _record_with_tools("B", "m", success=False, tool_calls=4),
+        ]
+        prof = aggregate_profile(records)
+        assert prof["m"]["B"]["avg_tool_calls"] == 2.0
+
+    def test_tool_error_rate_over_call_population(self):
+        # 10 total tool calls across 2 tasks; 3 had errors.
+        records = [
+            _record_with_tools("B", "m", success=True, tool_calls=4, tool_errors=1),
+            _record_with_tools("B", "m", success=False, tool_calls=6, tool_errors=2),
+        ]
+        prof = aggregate_profile(records)
+        assert prof["m"]["B"]["tool_error_rate"] == 0.3  # 3/10
+
+    def test_tasks_using_tools_count(self):
+        # 5 tasks: 2 used tools, 3 didn't.
+        records = [
+            _record_with_tools("B", "m", success=True, tool_calls=3),
+            _record_with_tools("B", "m", success=True, tool_calls=0),
+            _record_with_tools("B", "m", success=True, tool_calls=0),
+            _record_with_tools("B", "m", success=False, tool_calls=5),
+            _record_with_tools("B", "m", success=True, tool_calls=0),
+        ]
+        prof = aggregate_profile(records)
+        assert prof["m"]["B"]["tasks_using_tools"] == 2
+        assert prof["m"]["B"]["avg_tool_calls"] == 1.6  # 8/5
+
+    def test_legacy_records_load_with_zero_tool_aggregates(self):
+        """Records without tool fields (pre-A11.2) should default to 0."""
+        from dataclasses import dataclass
+        @dataclass
+        class LegacyRecord:
+            task_id: str
+            cell: str
+            resource_id: str
+            success: bool
+            elapsed_s: float = 5.0
+        # aggregate_profile expects TaskRecord; verify the default
+        # values exist in the dataclass itself.
+        from app.scheduler.routing_profile import TaskRecord
+        r = TaskRecord(task_id="x", cell="A", resource_id="m", success=True)
+        assert r.tool_call_count == 0
+        assert r.tool_error_count == 0
+        assert r.tool_calls_log is None
+        # And the aggregation handles defaults cleanly.
+        prof = aggregate_profile([r])
+        assert prof["m"]["A"]["avg_tool_calls"] == 0.0
+        assert prof["m"]["A"]["tool_error_rate"] == 0.0
+
+
+class TestLegacyMigrationWithNewFields:
+    """from_legacy_summary must emit the new fields with safe defaults."""
+
+    def test_legacy_migrated_entries_have_new_fields(self):
+        from app.scheduler.routing_profile import from_legacy_summary
+        legacy = {"profile": {
+            "m1": {"A": {"success_rate": 0.8, "total": 5, "success": 4}},
+        }}
+        migrated = from_legacy_summary(legacy)
+        entry = migrated["m1"]["A"]
+        assert entry["avg_tool_calls"] == 0.0
+        assert entry["tool_error_rate"] == 0.0
+        assert entry["tasks_using_tools"] == 0
+        assert entry["_legacy_migrated"] is True
+
+    def test_derive_routing_table_ignores_tool_aggregates(self):
+        """The new fields must not affect routing decisions — only
+        pass + failure_modes + disqualify thresholds do."""
+        from app.scheduler.routing_profile import derive_routing_table
+        # Same pass rate, different tool-error rates — routing outcome identical.
+        for tool_err in (0.0, 0.5, 1.0):
+            profile = {
+                "m1": {"A": {"pass": 0.85, "total": 10, "success": 8,
+                              "failure_modes": {}, "avg_duration": 5.0,
+                              "avg_iterations": 1.0,
+                              "avg_tool_calls": 3.0, "tool_error_rate": tool_err,
+                              "tasks_using_tools": 10}},
+            }
+            out = derive_routing_table(profile, candidate_order=["m1"])
+            assert out["A"] == "m1"  # qualified regardless of tool errors
+
+    def test_legacy_profile_loads_via_load_profile(self):
+        """End-to-end: an old summary.json loads with the new fields defaulted."""
+        import json
+        import tempfile
+        from pathlib import Path
+        from app.scheduler.routing_profile import load_profile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "cap.json"
+            p.write_text(json.dumps({
+                "profile": {
+                    "m1": {"A": {"success_rate": 0.7, "total": 10, "success": 7}}
+                }
+            }))
+            loaded = load_profile(p)
+            assert "avg_tool_calls" in loaded["m1"]["A"]
+            assert "tool_error_rate" in loaded["m1"]["A"]
+            assert loaded["m1"]["A"]["_legacy_migrated"] is True
+
+
+# ---------------------------------------------------------------------------
 # Routing table derivation (A7)
 # ---------------------------------------------------------------------------
 

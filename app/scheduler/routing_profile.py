@@ -53,6 +53,14 @@ class TaskRecord:
     response: str = ""
     # If the profiler already classified the failure, prefer that.
     failure_class: Optional[str] = None
+    # A11.3 — tool-execution telemetry from the A11.2 loop. Optional
+    # so legacy records (pre-A11.2) and the legacy-migrated
+    # {success_rate} summary shape still load without error.
+    tool_call_count: int = 0
+    tool_error_count: int = 0
+    # Per-call log: list of {tool, args, ok, error, elapsed_s}. Kept
+    # here for completeness; aggregate_profile summarizes it.
+    tool_calls_log: Optional[List[Dict[str, Any]]] = None
 
     def resolved_failure_class(self) -> Optional[FailureClass]:
         """Return the failure class for this record, classifying if needed.
@@ -81,12 +89,18 @@ def aggregate_profile(records: Iterable[TaskRecord]) -> Dict[str, Dict[str, Dict
     Returns a dict of the form::
 
         {model_id: {cell: {
-            "pass": float,          # success rate 0..1
+            "pass": float,                          # success rate 0..1
             "total": int,
             "success": int,
-            "failure_modes": {FailureClass.value: float, ...},  # rates, not counts
+            "failure_modes": {FailureClass.value: float, ...},
             "avg_duration": float,
             "avg_iterations": float,
+            # A11.3 — tool-execution aggregates (only populated for
+            # cells B/C/D tasks that use tools; cell A tasks have
+            # tool_call_count=0 by default).
+            "avg_tool_calls": float,                # mean tool calls per task
+            "tool_error_rate": float,               # errors / calls, over cells that used tools
+            "tasks_using_tools": int,               # how many of the N tasks actually called a tool
         }}}
 
     Failure-mode rates are computed over the *failed* population only (a
@@ -94,6 +108,13 @@ def aggregate_profile(records: Iterable[TaskRecord]) -> Dict[str, Dict[str, Dict
     "no leakage observed"). This matches the design doc's intent: the
     router uses the distribution of *how* a model fails, not its
     absolute success rate.
+
+    The new tool_execution aggregates are diagnostic — they don't
+    affect ``derive_routing_table``'s pass-rate threshold logic, but
+    they reveal *how* a model uses tools (does it know which tool to
+    call? does it get the args right? does it call out-of-scope
+    paths?) which the v2 router can use in future revisions for
+    finer-grained tool-aware routing.
     """
     bucket: Dict[str, Dict[str, List[TaskRecord]]] = {}
     for r in records:
@@ -120,6 +141,23 @@ def aggregate_profile(records: Iterable[TaskRecord]) -> Dict[str, Dict[str, Dict
             }
             avg_duration = round(sum(r.elapsed_s for r in rs) / total, 2) if total else 0.0
             avg_iterations = round(sum(r.iterations for r in rs) / total, 2) if total else 0.0
+
+            # A11.3 — tool-execution aggregates. Backwards compatible:
+            # legacy records (pre-A11.2) have tool_call_count=0, so
+            # avg_tool_calls is 0 and tool_error_rate is 0.
+            total_tool_calls = sum(r.tool_call_count for r in rs)
+            total_tool_errors = sum(r.tool_error_count for r in rs)
+            tasks_using_tools = sum(1 for r in rs if r.tool_call_count > 0)
+            avg_tool_calls = round(total_tool_calls / total, 2) if total else 0.0
+            # Tool error rate is over the population of tool calls,
+            # not over tasks. A model that makes 1 bad call out of
+            # 10 total has tool_error_rate=0.1, regardless of how
+            # many tasks it ran.
+            tool_error_rate = (
+                round(total_tool_errors / total_tool_calls, 3)
+                if total_tool_calls else 0.0
+            )
+
             profile[model_id][cell] = {
                 "pass": round(pass_rate, 3),
                 "total": total,
@@ -127,6 +165,9 @@ def aggregate_profile(records: Iterable[TaskRecord]) -> Dict[str, Dict[str, Dict
                 "failure_modes": failure_modes,
                 "avg_duration": avg_duration,
                 "avg_iterations": avg_iterations,
+                "avg_tool_calls": avg_tool_calls,
+                "tool_error_rate": tool_error_rate,
+                "tasks_using_tools": tasks_using_tools,
             }
     return profile
 
@@ -278,11 +319,14 @@ def from_legacy_summary(summary: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str
 
         {model_id: {cell: {"pass": 0.8, "total": 5, "success": 4,
                            "failure_modes": {}, "avg_duration": 0.0,
-                           "avg_iterations": 0.0}}}
+                           "avg_iterations": 0.0, "avg_tool_calls": 0.0,
+                           "tool_error_rate": 0.0, "tasks_using_tools": 0,
+                           "_legacy_migrated": True}}}
 
-    Failure-mode information is lost in the legacy summary (it was never
-    recorded); the migrated profile will disqualify nothing and trigger no
-    budget hints. Re-profiling is required for full A7 behaviour.
+    Failure-mode and tool-execution information is lost in the legacy
+    summary (it was never recorded); the migrated profile will disqualify
+    nothing and trigger no budget hints. Re-profiling is required for
+    full A7/A11.3 behaviour.
     """
     out: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for model_id, by_cell in summary.get("profile", {}).items():
@@ -295,6 +339,9 @@ def from_legacy_summary(summary: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str
                 "failure_modes": {},
                 "avg_duration": 0.0,
                 "avg_iterations": 0.0,
+                "avg_tool_calls": 0.0,
+                "tool_error_rate": 0.0,
+                "tasks_using_tools": 0,
                 "_legacy_migrated": True,
             }
     return out
