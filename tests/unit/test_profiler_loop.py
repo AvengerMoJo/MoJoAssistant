@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "tests" / "benchmarks"))
 
-from run_routing_profiler import run_task_with_model  # noqa: E402
+from run_routing_profiler import run_task_with_model, PER_CALL_TIMEOUT_S  # noqa: E402
 
 
 def _make_response(content=None, tool_calls=None, finish_reason="stop"):
@@ -233,6 +233,47 @@ class TestToolCallLoop(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["iterations"], 1)
         self.assertEqual(result["tool_call_count"], 0)
+
+    async def test_token_usage_sums_across_iterations(self):
+        # Regression: tokens must SUM across iterations (real billed cost for
+        # Bonsai budget calibration), not max(). Each scripted response carries
+        # usage {prompt:10, completion:5, total:15}; over 3 iterations the
+        # accumulated totals must be 30/15/45, not 10/5/15.
+        responses = [
+            _make_response(tool_calls=[_tool_call("c1", "bash_exec", {"command": "echo a"})]),
+            _make_response(tool_calls=[_tool_call("c2", "write_file",
+                {"path": str(self.scratch / "cellB_002.txt"), "content": "36"})]),
+            _make_response(content="I counted 36 files and wrote the result to scratch."),
+        ]
+        self._drive(responses)
+        result = await run_task_with_model(self.task, "test_resource", budget=8, max_duration_s=60)
+
+        self.assertEqual(result["iterations"], 3)
+        self.assertEqual(result["tokens_prompt"], 30)      # 3 x 10
+        self.assertEqual(result["tokens_completion"], 15)   # 3 x 5
+        self.assertEqual(result["tokens_total"], 45)        # 3 x 15
+
+    async def test_per_call_timeout_is_enforced_not_zero(self):
+        # Regression: resource_config["timeout"] must be a real per-call cap
+        # (PER_CALL_TIMEOUT_S), not 0. timeout:0 made UnifiedLLMClient fall back
+        # to a 3600s read timeout, so a hung backend stalled the run for an hour.
+        seen = []
+        iter_responses = iter([_make_response(content="42")])
+
+        async def fake_call(messages, resource_config, model_override=None, tools=None):
+            seen.append(resource_config.get("timeout"))
+            return next(iter_responses)
+
+        patcher = patch("app.llm.unified_client.UnifiedLLMClient.call_async",
+                        new=AsyncMock(side_effect=fake_call))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        task = {"id": "cellA_001", "cell": "A", "goal": "answer?",
+                "correct_answer": "42", "match_type": "contains", "declared_tools": []}
+        await run_task_with_model(task, "test_resource", budget=4, max_duration_s=60)
+        self.assertTrue(seen, "no LLM call was made")
+        self.assertNotEqual(seen[0], 0)
+        self.assertEqual(seen[0], PER_CALL_TIMEOUT_S)
 
 
 def _init_test_ctx(ctx, task, scratch_dir):

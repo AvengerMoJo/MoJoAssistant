@@ -57,6 +57,14 @@ from app.scheduler.routing_profile import (
 # Cells map to levels: A->L1, B->L2, C->L2, D->L3, dispatch_subtask->L4.
 CELL_BUDGETS = {"A": 4, "B": 8, "C": 8, "D": 12}
 
+# Per-call LLM timeout. The previous value 0 made UnifiedLLMClient fall back to
+# a 3600s read timeout, so a hung backend (e.g. LMStudio stalling on a tool-
+# schema request — the default path since every calibration task declares tools)
+# blocked the whole sequential run for up to an hour with zero output. 180s
+# catches true hangs fast while leaving room for slow thinking models; a timeout
+# surfaces as a failure_class (timeout), not a silent stall.
+PER_CALL_TIMEOUT_S = 180
+
 # Default scratch dir for tasks that write outputs (cells B/D).
 SCRATCH_DIR = Path.home() / ".memory" / "benchmarks" / "routing" / "scratch"
 
@@ -244,7 +252,7 @@ async def preload_model(resource_id: str) -> Dict[str, Any]:
         "output_limit": 256,
         "message_format": "openai",
         "provider": resource.get("provider", ""),
-        "timeout": 0,
+        "timeout": PER_CALL_TIMEOUT_S,
     }
 
     start = time.time()
@@ -369,7 +377,7 @@ async def run_task_with_model(
             "output_limit": min(resource.get("output_limit", 8192), 8192),
             "message_format": "openai",
             "provider": resource.get("provider", ""),
-            "timeout": 0,  # No timeout — let thinking models run as long as needed
+            "timeout": PER_CALL_TIMEOUT_S,  # real per-call cap — see PER_CALL_TIMEOUT_S
         }
 
         # Sandboxed tool dispatcher (A11.1).
@@ -403,9 +411,12 @@ async def run_task_with_model(
 
             result["iterations"] = it
             usage = data.get("usage", {}) or {}
-            result["tokens_prompt"] = max(result["tokens_prompt"], usage.get("prompt_tokens", 0))
-            result["tokens_completion"] = max(result["tokens_completion"], usage.get("completion_tokens", 0))
-            result["tokens_total"] = max(result["tokens_total"], usage.get("total_tokens", 0))
+            # Sum across iterations: each call is billed for its full (growing)
+            # prompt, so the total reflects real task cost — what Bonsai budget
+            # calibration needs. max() would understate multi-retry tasks.
+            result["tokens_prompt"] += usage.get("prompt_tokens", 0)
+            result["tokens_completion"] += usage.get("completion_tokens", 0)
+            result["tokens_total"] += usage.get("total_tokens", 0)
 
             choices = data.get("choices", [])
             if not choices:
