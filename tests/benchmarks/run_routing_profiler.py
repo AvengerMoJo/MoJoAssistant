@@ -217,6 +217,72 @@ def check_answer(response_text: str, task: Dict[str, Any]) -> bool:
     return False
 
 
+async def preload_model(resource_id: str) -> Dict[str, Any]:
+    """Send a tiny chat-completion ping to force LMStudio to load the model.
+
+    LMStudio loads models lazily on first request after a restart, which
+    can take 30s+ on cold disk. Worse, cold-loaded "thinking" models
+    burn their entire output budget on reasoning before producing content,
+    poisoning the first real task. A10 runs many requests per model;
+    preloading avoids that outlier.
+
+    The ping uses a small output_limit (256 tokens) — large enough that
+    reasoning doesn't eat everything, small enough to be cheap.
+    """
+    resource = load_resource(resource_id)
+    if not resource:
+        return {"resource_id": resource_id, "ok": False,
+                "error": f"Resource '{resource_id}' not found", "elapsed_s": 0.0}
+
+    from app.llm.unified_client import UnifiedLLMClient
+    client = UnifiedLLMClient()
+
+    resource_config = {
+        "base_url": resource.get("base_url", ""),
+        "model": resource.get("model", ""),
+        "api_key": resource.get("api_key", ""),
+        "output_limit": 256,
+        "message_format": "openai",
+        "provider": resource.get("provider", ""),
+        "timeout": 0,
+    }
+
+    start = time.time()
+    result = {
+        "resource_id": resource_id,
+        "model": resource.get("model", ""),
+        "ok": False,
+        "elapsed_s": 0.0,
+        "error": None,
+        "response": "",
+    }
+    try:
+        data = await client.call_async(
+            messages=[
+                {"role": "system", "content": "You must answer the user. Be concise."},
+                {"role": "user", "content": "Reply with a single word: ready."},
+            ],
+            resource_config=resource_config,
+            model_override=resource.get("model"),
+        )
+        choices = data.get("choices", [])
+        if choices:
+            content = choices[0].get("message", {}).get("content", "") or ""
+            result["response"] = content
+            # An empty content + length-stop is the cold-load signature.
+            finish = choices[0].get("finish_reason", "")
+            if not content and finish == "length":
+                result["error"] = "hit output_limit on reasoning — likely cold-loaded"
+            else:
+                result["ok"] = True
+        else:
+            result["error"] = "no choices in response"
+    except Exception as e:
+        result["error"] = str(e)
+    result["elapsed_s"] = round(time.time() - start, 2)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Per-task execution with budget-aware iteration
 # ---------------------------------------------------------------------------
@@ -229,19 +295,34 @@ async def run_task_with_model(
 ) -> Dict[str, Any]:
     """Run a single task against a specific model under the cell's budget.
 
-    The budget is the maximum number of LLM calls. If the first call's
-    response doesn't match the verification pattern, the call is repeated
-    with the previous answer included as feedback — giving the model a
-    chance to self-correct within the budget.
+    Loop shape (A11.2 — replaces the A9 single-shot shape):
+
+        for it in range(budget):
+            call LLM with current messages + tool schema
+            if response.tool_calls:
+                execute each call via ProfilerExecutionContext
+                append assistant msg + tool-result msgs to messages
+                continue  # re-prompt with tool results
+            else:
+                # No tool calls — model gave a final answer
+                check_answer(response.content, task)
+                break
+
+    Budget is consumed by every LLM call (not by tool calls). The loop
+    exits when: the model gives a final answer (pass or fail); the
+    budget runs out; the wall-clock cap fires; or an unrecoverable
+    error occurs.
 
     Deviation from spec: spec says "dispatch through agentic_executor".
     Real agentic execution drags memory/lessons/policy into the loop.
     For cell calibration (which measures model capability, not
-    orchestration), a budgeted retry-with-feedback loop is the right
-    abstraction. See module docstring.
+    orchestration), a budgeted tool-call loop is the right
+    abstraction. See module docstring. A11.1 added the sandboxed
+    tool executor; A11.2 wires the loop.
     """
     from app.llm.unified_client import UnifiedLLMClient
     from app.scheduler.evals.models import classify_failure
+    from profiler_tool_executor import ProfilerExecutionContext
 
     task_id = task["id"]
     cell = task.get("cell", "?")
@@ -264,6 +345,10 @@ async def run_task_with_model(
         "failure_class": None,
         "declared_tools": declared_tools,
         "budget": budget,
+        # A11.3 hooks — these feed the new profile schema.
+        "tool_call_count": 0,
+        "tool_error_count": 0,
+        "tool_calls_log": [],
     }
 
     try:
@@ -287,26 +372,23 @@ async def run_task_with_model(
             "timeout": 0,  # No timeout — let thinking models run as long as needed
         }
 
-        # Iteration loop: up to ``budget`` LLM calls. Each subsequent call
-        # gets the previous answer as feedback so the model can self-correct.
-        previous_answer = ""
-        feedback = ""
+        # Sandboxed tool dispatcher (A11.1).
+        tool_ctx = ProfilerExecutionContext(task=task)
+
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": goal},
+        ]
+
         last_error: Optional[str] = None
         timed_out = False
+        response_text = ""
+
         for it in range(1, budget + 1):
             if time.time() - start > max_duration_s:
                 timed_out = True
                 last_error = f"max_duration_s exceeded ({max_duration_s}s)"
                 break
-
-            user_content = goal
-            if feedback:
-                user_content = f"{goal}\n\n[Retry {it}/{budget}] Your previous answer was:\n{previous_answer[:1000]}\n\nFeedback: {feedback}\n\nPlease try again."
-
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ]
 
             try:
                 data = await client.call_async(
@@ -329,16 +411,75 @@ async def run_task_with_model(
             if not choices:
                 last_error = "no choices in response"
                 break
-            response_text = choices[0].get("message", {}).get("content", "") or ""
+
+            choice = choices[0]
+            assistant_msg = choice.get("message", {}) or {}
+            response_text = assistant_msg.get("content", "") or ""
+            tool_calls = assistant_msg.get("tool_calls") or []
             previous_answer = response_text
             result["response"] = response_text
 
-            # Check pass; if passed, exit early.
+            # ---- Tool-call branch: execute, append, continue ----
+            if tool_calls:
+                # Record this assistant turn (carries the tool_calls).
+                # Some providers require content=null when tool_calls present;
+                # we preserve whatever the provider returned.
+                messages.append(assistant_msg)
+
+                # Execute each tool call serially. The dispatcher is sync,
+                # so wrap in to_thread — file I/O is small but bash_exec
+                # can take up to 10s and we don't want to block the loop.
+                for tc in tool_calls:
+                    tc_id = tc.get("id", "")
+                    fn = tc.get("function", {}) or {}
+                    fn_name = fn.get("name", "")
+                    fn_args = fn.get("arguments", "")
+                    try:
+                        tool_result = await asyncio.to_thread(
+                            tool_ctx.execute, fn_name, fn_args
+                        )
+                    except Exception as e:
+                        # The dispatcher shouldn't raise, but guard anyway.
+                        from profiler_tool_executor import ToolResult
+                        tool_result = ToolResult(
+                            tool=fn_name, args={}, ok=False,
+                            error=f"dispatcher exception: {e}",
+                        )
+
+                    result["tool_call_count"] += 1
+                    if not tool_result.ok:
+                        result["tool_error_count"] += 1
+                    result["tool_calls_log"].append({
+                        "iteration": it,
+                        "tool": tool_result.tool,
+                        "args": tool_result.args,
+                        "ok": tool_result.ok,
+                        "error": tool_result.error,
+                        "elapsed_s": tool_result.elapsed_s,
+                    })
+
+                    # OpenAI tool result message — the model's next call
+                    # will see this. Embed the full payload (ok/error/content)
+                    # so the model can react if a tool failed.
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": json.dumps(tool_result.to_message()),
+                    })
+
+                # Loop continues — next iteration sees the tool results.
+                continue
+
+            # ---- Final-answer branch: no tool_calls, check and exit ----
             if check_answer(response_text, task):
                 result["success"] = True
                 break
 
-            # Otherwise craft feedback for next iteration.
+            # ---- Verification-mismatch: craft retry feedback ----
+            # This is the same retry-with-feedback pattern from A9,
+            # preserved for tasks that don't use tools. The model got
+            # the goal, produced prose, and the prose doesn't verify —
+            # give it a hint and let it try again within the budget.
             match_type = task.get("match_type", "contains")
             correct = task.get("correct_answer", "")
             if match_type == "exact" and correct:
@@ -349,6 +490,7 @@ async def run_task_with_model(
                 feedback = "Provide a substantive answer (at least a few words) addressing the question."
             else:
                 feedback = "Re-examine the source and answer the question directly."
+            messages.append({"role": "user", "content": feedback})
 
     except Exception as e:
         last_error = f"runner exception: {e}"
@@ -360,7 +502,6 @@ async def run_task_with_model(
             result["success"] = True
 
     # Only surface an error string if we have no usable response.
-    # (Timed-out-with-response is a budget signal, not an error.)
     if last_error and not result["response"]:
         result["error"] = last_error
 
@@ -726,9 +867,25 @@ def main():
                         help="Per-task wall-clock cap (default 300s).")
     parser.add_argument("--resume", default=None,
                         help="Resume a specific run_id (default: auto-detect latest incomplete matching run).")
+    parser.add_argument("--preload", action="store_true",
+                        help="Send a tiny ping to each model before the run, "
+                             "so LMStudio has time to load weights off disk "
+                             "after a restart. Reports cold/warm timing. "
+                             "Use before A10 to avoid poisoning the first "
+                             "task's profile slice with a 30s+ outlier.")
+    parser.add_argument("--preload-only", action="store_true",
+                        help="Just preload, don't run the profiler. "
+                             "Useful as a stand-alone 'warm the cache' step.")
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
+    models = filter_models(models, args.model)
+
+    if args.preload or args.preload_only:
+        asyncio.run(_preload_all(models))
+        if args.preload_only:
+            return
+
     asyncio.run(run_profiler(
         models=models,
         cell=args.cell,
@@ -737,6 +894,36 @@ def main():
         max_duration_s=args.max_duration_s,
         resume_run_id=args.resume,
     ))
+
+
+async def _preload_all(models: List[str]) -> None:
+    """Run preload ping against each model, sequentially, with timing.
+
+    Designed for the "just restarted LMStudio" workflow. The first ping
+    forces weight load from disk (cold); subsequent pings to the same
+    model hit the warm cache. Per the A10 spec we never parallel-blast
+    the GPU, so this is one model at a time.
+    """
+    print(f"Preloading {len(models)} model(s) — sequential, one at a time.")
+    print(f"(Use --preload-only to skip the actual profiler run.)")
+    print()
+    results = []
+    for m in models:
+        print(f"  → {m} ...", end=" ", flush=True)
+        r = await preload_model(m)
+        results.append(r)
+        status = "OK" if r["ok"] else f"FAIL ({r.get('error')})"
+        print(f"{r['elapsed_s']:.1f}s — {status} — {r.get('response','')[:40]!r}")
+    print()
+    print("Preload summary:")
+    for r in results:
+        marker = "✓" if r["ok"] else "✗"
+        print(f"  {marker} {r['resource_id']:50} {r['elapsed_s']:>7.1f}s   model={r['model']}")
+    cold = [r for r in results if r["ok"] and r["elapsed_s"] > 30]
+    if cold:
+        print(f"\n{len(cold)} model(s) took >30s — likely cold-loaded from disk.")
+        print("Consider running --preload a second time before A10 so the profile")
+        print("doesn't record cold-load latency as model slowness.")
 
 
 if __name__ == "__main__":
