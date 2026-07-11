@@ -386,6 +386,143 @@ class TestTaskRouterA7:
         assert res["model_id"] == "clean"
         assert "leaky" in res.get("disqualified", [])
 
+    # ---- A11.7 — cost-order in the routing table ----
+
+    def test_disqualify_walks_cost_order_when_present(self):
+        """_cost_order in the routing table is the single source of truth
+        for fallback ordering. The cell-keyed table picks the initial
+        winner; the cost-order list dictates who comes next.
+        """
+        profile = {
+            "qwen31b": {"A": {"pass": 0.9, "total": 10, "success": 9,
+                                "failure_modes": {"xml_tool_leakage": 0.5},
+                                "avg_duration": 5.0, "avg_iterations": 2.0,
+                                "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                                "tasks_using_tools": 0}},
+            "gemma12b": {"A": {"pass": 0.95, "total": 10, "success": 9,
+                                 "failure_modes": {}, "avg_duration": 5.0,
+                                 "avg_iterations": 1.0,
+                                 "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                                 "tasks_using_tools": 0}},
+            "ornith":   {"A": {"pass": 1.0, "total": 10, "success": 10,
+                                "failure_modes": {}, "avg_duration": 5.0,
+                                "avg_iterations": 1.0,
+                                "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                                "tasks_using_tools": 0}},
+        }
+        router = TaskRouter(
+            routing_table={
+                "A": "qwen31b",  # table pick
+                "_cost_order": ["gemma12b", "qwen31b", "ornith"],  # explicit cost order
+            },
+            capability_profile=profile,
+        )
+        res = router.classify_and_route("Lookup", "role", ["read_file"])
+        # qwen31b was the cell-A pick but DQ'd for leakage.
+        assert "qwen31b" in res.get("disqualified", [])
+        # Fallback walks _cost_order: gemma12b (cheaper) qualifies → wins.
+        # Without _cost_order, the cell-keyed walk might land on a more
+        # expensive model.
+        assert res["model_id"] == "gemma12b"
+
+    def test_disqualify_cost_order_prefers_cheapest_over_expensive(self):
+        """Cost order beats cell-table insertion order on fallback."""
+        profile = {
+            "expensive_but_qualified": {
+                "A": {"pass": 1.0, "total": 10, "success": 10,
+                      "failure_modes": {}, "avg_duration": 5.0,
+                      "avg_iterations": 1.0,
+                      "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                      "tasks_using_tools": 0}
+            },
+            "cheap_qualified": {
+                "A": {"pass": 0.85, "total": 10, "success": 9,
+                      "failure_modes": {}, "avg_duration": 5.0,
+                      "avg_iterations": 1.0,
+                      "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                      "tasks_using_tools": 0}
+            },
+            "table_pick_dq": {
+                "A": {"pass": 0.9, "total": 10, "success": 9,
+                      "failure_modes": {"malformed_arguments": 0.5},
+                      "avg_duration": 5.0, "avg_iterations": 2.0,
+                      "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                      "tasks_using_tools": 0}
+            },
+        }
+        router = TaskRouter(
+            routing_table={
+                "A": "table_pick_dq",  # would be picked if not DQ'd
+                "B": "expensive_but_qualified",  # inserted first → would win naive walk
+                "_cost_order": ["cheap_qualified", "table_pick_dq", "expensive_but_qualified"],
+            },
+            capability_profile=profile,
+        )
+        res = router.classify_and_route("Lookup", "role", ["read_file"])
+        # table_pick_dq is DQ'd. _cost_order says cheap_qualified first →
+        # that wins, not the cell-B entry.
+        assert res["model_id"] == "cheap_qualified"
+
+    def test_no_cost_order_falls_back_to_cell_table(self):
+        """Old routing tables (no _cost_order) still work via legacy walk."""
+        profile = {
+            "m1": {"A": {"pass": 0.9, "total": 10, "success": 9,
+                          "failure_modes": {"xml_tool_leakage": 0.5},
+                          "avg_duration": 5.0, "avg_iterations": 2.0,
+                          "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                          "tasks_using_tools": 0}},
+            "m2": {"A": {"pass": 0.95, "total": 10, "success": 9,
+                          "failure_modes": {}, "avg_duration": 5.0,
+                          "avg_iterations": 1.0,
+                          "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                          "tasks_using_tools": 0}},
+        }
+        router = TaskRouter(
+            routing_table={"A": "m1", "B": "m2"},  # no _cost_order
+            capability_profile=profile,
+        )
+        res = router.classify_and_route("Lookup", "role", ["read_file"])
+        # m1 DQ'd, m2 in cell-B entry → fallback finds it via legacy walk.
+        assert res["model_id"] == "m2"
+
+
+# ---------------------------------------------------------------------------
+# A11.7 — cost-order in derive_routing_table output
+# ---------------------------------------------------------------------------
+
+class TestDeriveRoutingTableEmitsCostOrder:
+    def test_cost_order_emitted_when_provided(self):
+        from app.scheduler.routing_profile import derive_routing_table
+        profile = {
+            "small":  {"A": {"pass": 0.9, "total": 10, "success": 9,
+                              "failure_modes": {}, "avg_duration": 5.0,
+                              "avg_iterations": 1.0,
+                              "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                              "tasks_using_tools": 0}},
+            "medium": {"A": {"pass": 1.0, "total": 10, "success": 10,
+                              "failure_modes": {}, "avg_duration": 4.0,
+                              "avg_iterations": 1.0,
+                              "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                              "tasks_using_tools": 0}},
+        }
+        out = derive_routing_table(profile, candidate_order=["small", "medium"])
+        assert out["_cost_order"] == ["small", "medium"]
+
+    def test_no_cost_order_falls_back_to_sorted_keys(self):
+        from app.scheduler.routing_profile import derive_routing_table
+        profile = {
+            "m1": {"A": {"pass": 0.9, "total": 10, "success": 9,
+                          "failure_modes": {}, "avg_duration": 5.0,
+                          "avg_iterations": 1.0,
+                          "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                          "tasks_using_tools": 0}},
+        }
+        # candidate_order=None → defaults to sorted(profile.keys()).
+        out = derive_routing_table(profile, candidate_order=None)
+        # _cost_order is always emitted; without an explicit list it
+        # falls back to the deterministic sorted-keys default.
+        assert out["_cost_order"] == ["m1"]
+
 
 # ---------------------------------------------------------------------------
 # Backwards compat — old scalar schema still loads

@@ -252,14 +252,23 @@ class TaskRouter:
     ) -> str:
         """Find the next-cheapest model that passes the A7 rules at this cell.
 
-        Walks the routing_table's cell-keyed entries (and the levels table)
-        in priority order. Returns "" if nothing qualifies — the caller
-        surfaces that as ``model_id == ''`` so the executor falls back to
-        default resource selection.
+        Walks the cost ordering in priority order. Returns "" if nothing
+        qualifies — the caller surfaces that as ``model_id == ''`` so the
+        executor falls back to default resource selection.
+
+        Cost-order source (A11.7): the runner's ``derive_routing_table``
+        writes ``_cost_order`` into the live routing table. When present
+        it is the single source of truth for model ordering. We fall back
+        to the cell/levels table order (which is lossy but always
+        present) when ``_cost_order`` is missing — for routing tables
+        authored by hand or by older runs.
         """
-        # Build a cost-ordered candidate list: levels table first (if present),
-        # then cell table, then any cell that appears in either.
         candidates: List[str] = []
+        cost_order = self._routing_table.get("_cost_order")
+        if isinstance(cost_order, list) and cost_order:
+            for v in cost_order:
+                if v and v not in candidates:
+                    candidates.append(v)
         levels_table = self._routing_table.get("levels")
         if isinstance(levels_table, dict):
             for v in levels_table.values():

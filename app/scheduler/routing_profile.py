@@ -299,6 +299,16 @@ def derive_routing_table(
         "disqualify_failure_rate": DISQUALIFY_FAILURE_RATE,
         "slow_dominant_rate": SLOW_DOMINANT_RATE,
     }
+
+    # A11.7 — emit an explicit cost order alongside the cell-keyed
+    # mapping. The runner passed ``candidate_order``; we preserve it so
+    # the live routing table carries the ordering the router should
+    # walk when looking for fallbacks. The cell-keyed mapping alone
+    # is one model per cell, so it can't represent order; the levels
+    # table also drops order. This list is the single source of truth.
+    if candidate_order:
+        out["_cost_order"] = list(candidate_order)
+
     return out
 
 
