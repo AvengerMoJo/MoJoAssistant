@@ -47,30 +47,37 @@ BASH_TIMEOUT_S = 10.0
 
 
 def _resolve(path_str: str, allowed_roots: List[Path]) -> Path:
-    """Resolve a path string against the working directory; do NOT enforce
-    the allow-list (caller decides what to do with the result).
+    """Resolve a path string against the working directory to its REAL target,
+    collapsing ``..`` and following symlinks. Does NOT enforce the allow-list
+    (caller decides via _is_under).
 
-    Symlinks are NOT followed by default — Path.resolve() does follow
-    them, which can be a sandbox-escape vector. We use expanduser +
-    absolute() instead so a symlink at ``~/.memory/foo -> /etc/passwd``
-    returns the symlink path, not the target. The allow-list check then
-    catches the symlink if its prefix is outside the allow-list.
+    ``.resolve()`` is essential for sandbox safety: without it a path like
+    ``<root>/../../etc/passwd`` lexically appears "under" root (relative_to
+    matches the prefix) but resolves outside it — a path-traversal escape
+    affecting read_file/write_file/list_files. Symlink resolution likewise
+    blocks ``<root>/link -> /etc``. The prior code avoided resolve() fearing
+    symlink escapes, but that reasoning was inverted: resolve() is what
+    PREVENTS them. strict=False (the default) so not-yet-existing write
+    targets still normalize.
     """
     if not path_str:
         raise ValueError("empty path")
     p = Path(os.path.expanduser(path_str))
     if not p.is_absolute():
         p = Path.cwd() / p
-    return p
+    return p.resolve()
 
 
 def _is_under(path: Path, root: Path) -> bool:
-    """True if path is the same as or strictly inside root. Both must be
-    absolute and resolved. Symlink target is the path itself, not the
-    follow target (see _resolve docstring).
+    """True if path is the same as or strictly inside root.
+
+    Both sides are resolved first so ``..`` components and symlinks can't
+    make an outside path appear inside (defense-in-depth alongside _resolve,
+    which already resolves the path; resolving again here is idempotent and
+    keeps direct callers of _is_under safe).
     """
     try:
-        path.relative_to(root)
+        path.resolve().relative_to(root.resolve())
         return True
     except ValueError:
         return False
@@ -267,10 +274,12 @@ class ProfilerExecutionContext:
         if not cmd.strip():
             return ToolResult(tool="bash_exec", args=args, ok=False,
                               error="command is required")
-        # Sandbox: no cd above scratch, no absolute cd to system paths.
-        # These are simple regex checks; we run subprocess with cwd=scratch
-        # anyway, so a malicious command can't escape via path manipulation.
-        if re.search(r"\bcd\s+\.\.", cmd) or re.search(r"\bcd\s+/", cmd):
+        # Sandbox: forbid `cd` entirely. cwd is locked to scratch and the model
+        # has read_file/list_files for paths outside scratch, so cd is never
+        # needed — and it's an escape vector: "cd ~", "cd $HOME", and "cd ./.."
+        # (the "./" prefix bypasses a narrower "cd .." regex) all climb out.
+        # Forbidding any cd keeps relative commands rooted in scratch.
+        if re.search(r"\bcd\b", cmd):
             return ToolResult(tool="bash_exec", args=args, ok=False,
                               error="bash_exec denied: cd above scratch not allowed")
         if cmd.strip().startswith("/"):

@@ -79,6 +79,18 @@ class TestReadFile(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertIn("path is required", r.error)
 
+    def test_denies_dotdot_traversal_read(self):
+        # <allowed_root>/../<outside> must NOT pass the allow-list just because
+        # it lexically starts with the root prefix. Without resolve() the
+        # relative_to check matches the prefix and the read escapes.
+        outside = self.tmpdir / "outside.txt"
+        outside.write_text("secret")
+        traversal = str(self.readable) + "/../outside.txt"
+        r = self.ctx.execute("read_file", {"path": traversal})
+        self.assertFalse(r.ok, r.error)
+        self.assertIn("allow-list", r.error)
+        self.assertNotIn("secret", r.content)
+
 
 class TestWriteFile(unittest.TestCase):
     def setUp(self):
@@ -121,6 +133,17 @@ class TestWriteFile(unittest.TestCase):
                             {"path": "~/.memory/evil.txt", "content": "x"})
         self.assertFalse(r.ok)
         self.assertIn("scratch dir", r.error)
+
+    def test_denies_dotdot_write_traversal(self):
+        # scratch/../<outside> must not write outside scratch. This is the
+        # dangerous direction — without resolve() a model could write
+        # anywhere by climbing out of scratch lexically.
+        target = str(self.scratch) + "/../evil.txt"
+        r = self.ctx.execute("write_file", {"path": target, "content": "x"})
+        self.assertFalse(r.ok, r.error)
+        self.assertIn("scratch dir", r.error)
+        # Confirm nothing was written just outside scratch.
+        self.assertFalse((self.scratch.parent / "evil.txt").exists())
 
 
 class TestListFiles(unittest.TestCase):
@@ -216,6 +239,25 @@ class TestBashExec(unittest.TestCase):
         self.assertTrue(r.ok)  # tool worked
         self.assertIn("returncode=", r.content)
         self.assertNotEqual("returncode=0", r.content.split("\n")[0])
+
+    def test_denies_cd_home(self):
+        # "cd ~" was not caught by the old "\bcd\s+\.\." / "\bcd\s+/" regex.
+        r = self.ctx.execute("bash_exec", {"command": "cd ~ && ls"})
+        self.assertFalse(r.ok)
+        self.assertIn("cd above scratch", r.error)
+
+    def test_denies_cd_dot_slash_dotdot(self):
+        # "cd ./.." bypassed the old "\bcd\s+\.\." regex via the "./" prefix.
+        r = self.ctx.execute("bash_exec", {"command": "cd ./.. && ls"})
+        self.assertFalse(r.ok)
+        self.assertIn("cd above scratch", r.error)
+
+    def test_denies_any_cd(self):
+        # cd is forbidden entirely — cwd is scratch and the model has other
+        # tools for paths outside it. Even cd into a subdir is rejected.
+        r = self.ctx.execute("bash_exec", {"command": "cd subdir && ls"})
+        self.assertFalse(r.ok)
+        self.assertIn("cd above scratch", r.error)
 
 
 class TestUnknownTool(unittest.TestCase):
