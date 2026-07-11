@@ -53,6 +53,21 @@ class AgenticHandler(TaskHandler):
                     declared_tools=cfg.get("available_tools", []),
                 )
                 cfg["_routing"] = routing
+                # Consume the v2 router's budget_hint signal. When a
+                # model is slow/timeout-dominant but otherwise qualified
+                # the router tags the routing with budget_hint="raise";
+                # we extend max_iterations + max_duration_seconds in the
+                # task config so the executor picks them up. See
+                # task_router.apply_budget_hint for the per-level priors.
+                from app.scheduler.task_router import apply_budget_hint
+                apply_budget_hint(routing, cfg)
+                if routing.get("budget_hint") == "raise":
+                    _src = cfg.get("_budget_hint_source", {})
+                    ctx.log(
+                        f"Task {task.id}: budget_hint=raise (level={_src.get('level')}, "
+                        f"prior_iters={_src.get('prior_iterations')}, "
+                        f"model={_src.get('model_id')})"
+                    )
                 ctx.log(f"Task routed to cell={routing['cell']} model={routing['model_id']} "
                         f"confidence={routing['confidence']:.2f}")
             except Exception as e:
@@ -71,6 +86,24 @@ class AgenticHandler(TaskHandler):
             if _mgr.should_provision(task):
                 _cfg_pre = task.config or {}
                 _git_url = _cfg_pre.get("git_url")
+                _prepare_hook = _cfg_pre.get("prepare_hook")
+                _hook_params = _cfg_pre.get("hook_params")
+                # project_label resolves git_url + prepare_hook from the registry —
+                # see sandbox/project_registry.py. Explicit git_url/prepare_hook
+                # in config still win if both are somehow present.
+                _project_label = _cfg_pre.get("project_label") or _cfg_pre.get("repo")
+                if _project_label:
+                    try:
+                        from app.scheduler.sandbox.project_registry import parse_label, resolve as _resolve_project
+                        if "+" in _project_label:
+                            _p_agent, _p_stack, _p_repo = parse_label(_project_label)
+                        else:
+                            _p_agent, _p_stack, _p_repo = "loop", "", _project_label
+                        _spec = _resolve_project(repo=_p_repo, git_url=_git_url, stack=_p_stack, agent=_p_agent)
+                        _git_url = _git_url or _spec.git_url
+                        _prepare_hook = _prepare_hook or _spec.prepare_hook
+                    except Exception as _ple:
+                        ctx.log(f"project_label resolution failed: {_ple}", "warning")
                 # Also extract from goal text when not explicit in config
                 if not _git_url:
                     import re as _re
@@ -90,6 +123,8 @@ class AgenticHandler(TaskHandler):
                         working_dir=_cfg_pre.get("working_dir"),
                         role_id=role_id,
                         backend_override=_cfg_pre.get("sandbox_backend"),
+                        prepare_hook=_prepare_hook,
+                        hook_params=_hook_params,
                     )
                 else:
                     _sandbox_handle = await _mgr.acquire(
@@ -98,6 +133,8 @@ class AgenticHandler(TaskHandler):
                         working_dir=_cfg_pre.get("working_dir"),
                         role_id=role_id,
                         backend_override=_cfg_pre.get("sandbox_backend"),
+                        prepare_hook=_prepare_hook,
+                        hook_params=_hook_params,
                     )
                 _sandbox_token = _cv_sandbox_handle.set(_sandbox_handle)
                 ctx.log(
@@ -169,8 +206,13 @@ class AgenticHandler(TaskHandler):
             if _sandbox_handle is not None:
                 try:
                     from app.scheduler.sandbox.manager import SandboxManager
-                    teardown = (task.config or {}).get("sandbox_teardown", "pause")
-                    await SandboxManager.load().release(_sandbox_handle, mode=teardown)
+                    _cfg_post = task.config or {}
+                    teardown = _cfg_post.get("sandbox_teardown", "pause")
+                    await SandboxManager.load().release(
+                        _sandbox_handle, mode=teardown,
+                        post_task_hook=_cfg_post.get("post_task_hook"),
+                        hook_params=_cfg_post.get("post_task_hook_params"),
+                    )
                 except Exception as _re:
                     ctx.log(f"Sandbox release failed (non-fatal): {_re}", "warning")
 

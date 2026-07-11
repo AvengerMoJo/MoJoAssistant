@@ -1,7 +1,10 @@
 """Tests for task router."""
 
 import pytest
-from app.scheduler.task_router import compute_cell, TaskRouter, RoutingResult
+from app.scheduler.task_router import (
+    compute_cell, TaskRouter, RoutingResult,
+    apply_budget_hint, LEVEL_ITERATION_PRIORS,
+)
 from app.scheduler.evals.models import (
     FailureClass, classify_failure, SLOW_DURATION_S, TIMEOUT_DURATION_S,
 )
@@ -522,6 +525,194 @@ class TestDeriveRoutingTableEmitsCostOrder:
         # _cost_order is always emitted; without an explicit list it
         # falls back to the deterministic sorted-keys default.
         assert out["_cost_order"] == ["m1"]
+
+
+# ---------------------------------------------------------------------------
+# Post-A10 follow-up: budget_hint consumption
+# ---------------------------------------------------------------------------
+
+class TestApplyBudgetHint:
+    """The v2 router's budget_hint="raise" signal bumps max_iterations.
+
+    Per the design doc, slow-but-capable models get more rope (not
+    disqualification). apply_budget_hint writes the per-level iteration
+    prior into the task config so the executor picks it up.
+    """
+
+    def test_no_hint_is_noop(self):
+        cfg = {"max_iterations": 6, "max_duration_seconds": 300}
+        original = dict(cfg)
+        routing = {"cell": "B", "level": "L2_multi_step", "model_id": "m1"}
+        # No budget_hint key — apply_budget_hint must not touch the config.
+        assert apply_budget_hint(routing, cfg) is cfg
+        assert cfg == original
+
+    def test_hint_raise_writes_per_level_prior(self):
+        cfg = {}
+        routing = {
+            "cell": "B", "level": "L2_multi_step", "model_id": "m1",
+            "budget_hint": "raise",
+        }
+        apply_budget_hint(routing, cfg)
+        assert cfg["max_iterations"] == LEVEL_ITERATION_PRIORS["L2_multi_step"]
+        assert cfg["max_iterations"] == 8
+        # Wall-clock floor: prior * 30s.
+        assert cfg["max_duration_seconds"] == 8 * 30
+        # Provenance recorded.
+        assert cfg["_budget_hint_source"]["level"] == "L2_multi_step"
+        assert cfg["_budget_hint_source"]["prior_iterations"] == 8
+        assert cfg["_budget_hint_source"]["model_id"] == "m1"
+
+    def test_each_level_has_correct_prior(self):
+        # Locks the design-doc ladder.
+        cases = [
+            ("L1_single_call", 4),
+            ("L2_multi_step", 8),
+            ("L3_feedback", 12),
+            ("L4_orchestration", 25),
+        ]
+        for level, expected_prior in cases:
+            cfg = {}
+            routing = {"level": level, "model_id": "m", "budget_hint": "raise"}
+            apply_budget_hint(routing, cfg)
+            assert cfg["max_iterations"] == expected_prior, (
+                f"level={level}: expected {expected_prior}, got {cfg.get('max_iterations')}"
+            )
+
+    def test_does_not_lower_existing_max_iterations(self):
+        # Operator override: max_iterations=50 must win over the L2 prior of 8.
+        cfg = {"max_iterations": 50, "max_duration_seconds": 1000}
+        routing = {
+            "level": "L2_multi_step", "model_id": "m",
+            "budget_hint": "raise",
+        }
+        apply_budget_hint(routing, cfg)
+        assert cfg["max_iterations"] == 50  # not lowered to 8
+        assert cfg["max_duration_seconds"] == 1000  # not lowered to 240
+
+    def test_only_raises_never_lowers(self):
+        cfg = {"max_iterations": 4, "max_duration_seconds": 600}
+        # L3 prior is 12. Existing iters=4 (lower) → bump to 12.
+        # Existing dur=600 (higher than 12*30=360) → keep 600.
+        routing = {
+            "level": "L3_feedback", "model_id": "m",
+            "budget_hint": "raise",
+        }
+        apply_budget_hint(routing, cfg)
+        assert cfg["max_iterations"] == 12
+        assert cfg["max_duration_seconds"] == 600
+
+    def test_unknown_level_is_noop(self):
+        # Defensive: if the level isn't in the priors table, do nothing.
+        cfg = {"max_iterations": 4}
+        routing = {"level": "L99_future", "model_id": "m", "budget_hint": "raise"}
+        apply_budget_hint(routing, cfg)
+        assert cfg == {"max_iterations": 4}
+        assert "_budget_hint_source" not in cfg
+
+    def test_hint_value_other_than_raise_is_noop(self):
+        # The contract is "raise" → bump. Any other value (or absent)
+        # is a no-op. Future signal values would be a separate addition.
+        cfg = {}
+        for hint_value in (None, "", "lower", "extend_wall_only", "unknown"):
+            routing = {"level": "L1_single_call", "model_id": "m", "budget_hint": hint_value}
+            apply_budget_hint(routing, cfg)
+            assert "max_iterations" not in cfg, f"hint={hint_value!r} should be no-op"
+
+    def test_idempotent(self):
+        # Re-applying the same hint is a no-op (config already has the prior).
+        cfg = {}
+        routing = {"level": "L2_multi_step", "model_id": "m", "budget_hint": "raise"}
+        apply_budget_hint(routing, cfg)
+        first = dict(cfg)
+        apply_budget_hint(routing, cfg)
+        assert cfg == first
+
+    def test_empty_routing_dict_is_noop(self):
+        # Defensive: classify_and_route may have failed silently. The
+        # handler's cfg still has the routing dict (possibly empty).
+        cfg = {"max_iterations": 6}
+        original = dict(cfg)
+        assert apply_budget_hint({}, cfg) is cfg
+        assert cfg == original
+
+
+class TestClassifyAndRouteEmitsBudgetHint:
+    """End-to-end: classify_and_route emits budget_hint when the model
+    is slow/timeout-dominant but otherwise qualified, and the
+    downstream handler can consume it via apply_budget_hint."""
+
+    def test_budget_hint_attached_for_slow_qualified_model(self):
+        # Synthetic profile: model passes threshold (0.9) but
+        # failure_modes is dominated by final_answer_slow (0.6) and
+        # timeout (0.4) — sum=1.0 >= SLOW_DOMINANT_RATE (0.5), pass
+        # clears 0.80. This is the textbook budget_hint case.
+        router = TaskRouter(
+            routing_table={"A": "slow_model"},
+            capability_profile={
+                "slow_model": {"A": {
+                    "pass": 0.9, "total": 10, "success": 9,
+                    "failure_modes": {
+                        "final_answer_slow": 0.6, "timeout": 0.4,
+                    },
+                    "avg_duration": 60.0, "avg_iterations": 5.0,
+                    "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                    "tasks_using_tools": 0,
+                }},
+            },
+        )
+        res = router.classify_and_route("simple task", "role", ["read_file"])
+        self._check_budget_hint_attached(res, expected_level="L1_single_call")
+
+    def _check_budget_hint_attached(self, res, expected_level):
+        assert res["budget_hint"] == "raise"
+        assert res["level"] == expected_level
+        assert "model_id" in res
+
+        # The handler consumes via apply_budget_hint. Verify the
+        # round-trip: routing → config with the per-level prior.
+        cfg = {}
+        apply_budget_hint(res, cfg)
+        assert cfg["max_iterations"] == LEVEL_ITERATION_PRIORS[expected_level]
+
+    def test_no_budget_hint_for_clean_model(self):
+        # Same pass rate, but failure_modes is empty. No slow/timeout
+        # dominance → no budget_hint.
+        router = TaskRouter(
+            routing_table={"A": "clean_model"},
+            capability_profile={
+                "clean_model": {"A": {
+                    "pass": 0.9, "total": 10, "success": 9,
+                    "failure_modes": {},
+                    "avg_duration": 5.0, "avg_iterations": 1.0,
+                    "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                    "tasks_using_tools": 0,
+                }},
+            },
+        )
+        res = router.classify_and_route("simple task", "role", ["read_file"])
+        assert "budget_hint" not in res
+
+    def test_no_budget_hint_when_disqualified(self):
+        # High failure_modes rate → DQ, no hint. (Disqualified means
+        # the model shouldn't be picked at all; the hint would
+        # contradict that.)
+        router = TaskRouter(
+            routing_table={"A": "leaky"},
+            capability_profile={
+                "leaky": {"A": {
+                    "pass": 0.9, "total": 10, "success": 9,
+                    "failure_modes": {"xml_tool_leakage": 0.5},
+                    "avg_duration": 5.0, "avg_iterations": 1.0,
+                    "avg_tool_calls": 0.0, "tool_error_rate": 0.0,
+                    "tasks_using_tools": 0,
+                }},
+            },
+        )
+        res = router.classify_and_route("simple task", "role", ["read_file"])
+        assert "leaky" in res.get("disqualified", [])
+        # budget_hint shouldn't be attached to a DQ'd model.
+        assert "budget_hint" not in res
 
 
 # ---------------------------------------------------------------------------

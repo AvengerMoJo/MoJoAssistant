@@ -88,6 +88,95 @@ _CELL_TO_LEVEL = {
 }
 
 
+# Per-level iteration budgets. Mirrors the design-doc per-level priors
+# (llm_routing_benchmark_design.md §"How the Router Uses This"):
+#
+#   L1=4, L2=8, L3=12, L4=25
+#
+# These are the values the A7 budget_hint="raise" signal promotes to
+# when a model is slow/timeout-dominant but otherwise clears the
+# pass-rate threshold. The executor's max_iterations comes from
+# config (with a fallback to task.resources.max_iterations); when
+# budget_hint fires, we write the per-level prior into config so the
+# executor picks it up.
+#
+# L4 has a higher prior because orchestration (dispatch_subtask +
+# wait + evaluate + synthesize) is structurally multi-step.
+LEVEL_ITERATION_PRIORS: Dict[str, int] = {
+    ComplexityLevel.L1_SINGLE_CALL.value: 4,
+    ComplexityLevel.L2_MULTI_STEP.value: 8,
+    ComplexityLevel.L3_FEEDBACK.value: 12,
+    ComplexityLevel.L4_ORCHESTRATION.value: 25,
+}
+
+
+def apply_budget_hint(
+    routing: Dict[str, Any],
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Consume the v2 router's budget_hint signal and bump max_iterations.
+
+    Per A7: when the router flags a model as ``budget_hint="raise"`` it
+    means the model passes the threshold but its failures are
+    dominated by ``final_answer_slow`` / ``timeout`` — the model is
+    *capable but under-budgeted*. The right action is to extend
+    ``max_iterations`` (and proportionally the wall-clock cap) so the
+    model has the time to do the work, not disqualify it.
+
+    The function writes:
+      - config["max_iterations"] = LEVEL_ITERATION_PRIORS[level]
+        (only if the routing's level is mapped; never lowers an
+        existing higher value — operators can override explicitly).
+      - config["max_duration_seconds"] = max(existing, prior * 30)
+        — 30s per iteration is the rough A10 budget average, used as
+        a safety floor. Operators can still raise it explicitly.
+      - config["_budget_hint_source"] = {level, prior, source_routing}
+        so the downstream executor can log why the budget was raised.
+
+    Returns the mutated config (same object, in-place + returned for
+    convenience). Idempotent: re-applying the same hint is a no-op.
+
+    Out of scope (per the A7 spec):
+      - Auto-disqualifying slow models. The router only attaches
+        budget_hint; it does not flip the model's pass/fail. The
+        handler's job is to give the model more rope.
+      - Forcing a different model. Slow-but-capable wins; the
+        alternative is escalation, and that's a separate signal.
+    """
+    if not routing or routing.get("budget_hint") != "raise":
+        return config
+
+    level = routing.get("level")
+    if not level:
+        return config
+    prior = LEVEL_ITERATION_PRIORS.get(level)
+    if prior is None:
+        return config
+
+    # Only raise max_iterations, never lower it. An operator who set
+    # config["max_iterations"] = 50 explicitly gets 50, not 8.
+    current_iters = config.get("max_iterations")
+    if current_iters is None or prior > int(current_iters):
+        config["max_iterations"] = prior
+
+    # Wall-clock cap: scale with iterations so a level-2 task with
+    # 8 iterations gets at least 240s. Don't lower existing values.
+    floor_seconds = prior * 30
+    current_duration = config.get("max_duration_seconds")
+    if current_duration is None or floor_seconds > int(current_duration):
+        config["max_duration_seconds"] = floor_seconds
+
+    # Provenance for downstream logging.
+    config["_budget_hint_source"] = {
+        "level": level,
+        "prior_iterations": prior,
+        "floor_seconds": floor_seconds,
+        "model_id": routing.get("model_id"),
+        "routing_cell": routing.get("cell"),
+    }
+    return config
+
+
 @dataclass
 class RoutingResult:
     """Result of task routing."""
