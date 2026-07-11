@@ -78,6 +78,12 @@ class ExecutionRecord:
     original_task_id: Optional[str] = None
     judge_score: Optional[float] = None   # 1-5, None if not judged
     judge_winner: Optional[str] = None    # "original" | "rerun" | "tie" | None
+    # W2.1 — router decision from cfg["_routing"] (set by AgenticHandler
+    # when task_routing.enabled is on). Both optional for backwards
+    # compatibility with pre-routing records and for tasks that
+    # bypassed the router (coding_agent override, etc.).
+    cell: Optional[str] = None      # A / B / C / D
+    level: Optional[str] = None     # L1_single_call / L2_multi_step / L3_feedback / L4_orchestration
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -139,6 +145,22 @@ class BenchmarkStore:
             is_rerun = bool(config.get("is_benchmark_rerun"))
             goal = config.get("goal", "")
             final_answer = (result.metrics or {}).get("final_answer", "") or ""
+            # W2.1 — pull cell/level from the router's decision (set by
+            # AgenticHandler when task_routing.enabled is on). Both
+            # fields are optional: legacy records and tasks that
+            # bypassed the router (coding_agent override) carry None.
+            #
+            # Defensive: cfg["_routing"] is normally a dict, but a
+            # future caller could set it to something else. Treat
+            # non-dict as no-routing and skip the read rather than
+            # crash the scheduler's hot path.
+            routing = config.get("_routing")
+            if isinstance(routing, dict):
+                cell = routing.get("cell")
+                level = routing.get("level")
+            else:
+                cell = None
+                level = None
 
             rec = ExecutionRecord(
                 ts=datetime.utcnow().isoformat(),
@@ -155,6 +177,8 @@ class BenchmarkStore:
                 final_answer_hash=_hash(final_answer) if final_answer else "",
                 is_rerun=is_rerun,
                 original_task_id=config.get("benchmark_original_task_id"),
+                cell=cell,
+                level=level,
             )
             self._append(rec)
         except Exception as e:
