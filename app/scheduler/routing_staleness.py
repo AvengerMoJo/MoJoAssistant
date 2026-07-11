@@ -347,3 +347,32 @@ def run_weekly_check(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report.to_dict(), indent=2))
     return report
+
+
+def format_weekly_summary(report: StalenessReport) -> str:
+    """One-line human-readable summary of the report.
+
+    The weekly scheduler task's `command` writes this to stdout,
+    which the custom handler captures and stores in the task's
+    metrics. Operators can grep scheduler logs for "STALENESS ALERT"
+    to find drift events. The full report is in staleness_report.json.
+    """
+    if report.stale_count == 0:
+        return (
+            f"STALENESS OK: {len(report.checks)} (model, level) cells checked, "
+            f"0 stale (window={report.window_days}d, threshold={report.drift_threshold}, "
+            f"min_samples={report.min_samples})"
+        )
+    stale_lines = []
+    for c in report.checks:
+        if c.stale:
+            stale_lines.append(
+                f"  {c.model_id} {c.level}: lsr={c.lsr:.3f} psr={c.psr:.3f} "
+                f"drift={c.drift:.3f} n={c.n_samples}"
+            )
+    return (
+        f"STALENESS ALERT: {report.stale_count} stale (model, level) cell(s):\n"
+        + "\n".join(stale_lines)
+        + f"\n(window={report.window_days}d, threshold={report.drift_threshold}, "
+        f"min_samples={report.min_samples}, report=~/.memory/benchmarks/routing/staleness_report.json)"
+    )

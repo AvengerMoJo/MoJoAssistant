@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from app.scheduler.routing_staleness import (  # noqa: E402
-    compute_staleness, stale_cells, run_weekly_check,
+    compute_staleness, stale_cells, run_weekly_check, format_weekly_summary,
     StalenessReport, StalenessCheck,
     DEFAULT_MIN_SAMPLES, DEFAULT_DRIFT_THRESHOLD, DEFAULT_WINDOW_DAYS,
     load_execution_records, load_capability_profile,
@@ -406,6 +406,33 @@ class TestLoaders:
         with tempfile.TemporaryDirectory() as td:
             profile = load_capability_profile(Path(td) / "missing.json")
             assert profile == {}
+
+
+class TestFormatWeeklySummary:
+    """The weekly command writes this to stdout for log-grep."""
+
+    def test_no_stale_summary_is_clean(self):
+        # Build a clean report by running through compute_staleness.
+        records = [_rec("model_a", "L1_single_call", True) for _ in range(25)]
+        report = compute_staleness(records, _profile())
+        summary = format_weekly_summary(report)
+        assert "STALENESS OK" in summary
+        assert "0 stale" in summary
+        assert "STALENESS ALERT" not in summary
+
+    def test_stale_summary_lists_cells(self):
+        records = (
+            [_rec("model_a", "L1_single_call", True) for _ in range(5)]
+            + [_rec("model_a", "L1_single_call", False) for _ in range(20)]
+        )
+        report = compute_staleness(records, _profile(), min_samples=20)
+        summary = format_weekly_summary(report)
+        assert "STALENESS ALERT" in summary
+        assert "1 stale" in summary
+        # Cell details in the summary.
+        assert "model_a" in summary
+        assert "L1_single_call" in summary
+        assert "drift=" in summary
 
 
 if __name__ == "__main__":
