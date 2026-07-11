@@ -81,7 +81,7 @@
       "enabled": false,
       "description": "Weekly routing staleness check — compares live success rate to capability profile, flags drifted (model, level) cells. Enable in ~/.memory/config/scheduler_config.json",
       "config": {
-        "command": "python3 -c \"from app.scheduler.routing_staleness import run_weekly_check, format_weekly_summary; r = run_weekly_check(); print(format_weekly_summary(r))\"",
+        "command": "/home/alex/Development/Personal/MoJoAssistant/venv/bin/python3 -c \"from app.scheduler.routing_staleness import run_weekly_check, format_weekly_summary; r = run_weekly_check(); print(format_weekly_summary(r))\"",
         "use_atd": false,
         "window_days": 14,
         "min_samples": 20,
