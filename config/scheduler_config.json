@@ -40,7 +40,7 @@
       "enabled": false,
       "description": "Daily runtime config validation — enable in ~/.memory/config/scheduler_config.json",
       "config": {
-        "goal": "Run the MoJoAssistant configuration doctor to validate system health. Use bash_exec to run: python3 -c \"from app.config.doctor import ConfigDoctor; import json; r = ConfigDoctor().run_all_checks(); errors = [c for c in r.checks if c.status == 'error']; warns = [c for c in r.checks if c.status == 'warn']; print(f'ERRORS: {len(errors)}, WARNS: {len(warns)}'); [print(f'  ERROR [{c.category}/{c.id}] {c.message}') for c in errors]; [print(f'  WARN  [{c.category}/{c.id}] {c.message}') for c in warns]\" Then save the output as your FINAL_ANSWER.",
+        "goal": "Run the MoJoAssistant configuration doctor to validate system health. Use bash_exec to run: /home/alex/Development/Personal/MoJoAssistant/venv/bin/python3 -c \"from app.config.doctor import ConfigDoctor; import json; r = ConfigDoctor().run_all_checks(); errors = [c for c in r.checks if c.status == 'error']; warns = [c for c in r.checks if c.status == 'warn']; print(f'ERRORS: {len(errors)}, WARNS: {len(warns)}'); [print(f'  ERROR [{c.category}/{c.id}] {c.message}') for c in errors]; [print(f'  WARN  [{c.category}/{c.id}] {c.message}') for c in warns]\" (use this exact interpreter path — bare python3 resolves to an unrelated conda environment on this host, not the project venv). Then save the output as your FINAL_ANSWER.",
         "max_iterations": 5,
         "tier_preference": "free",
         "available_tools": ["bash_exec", "add_conversation"],
