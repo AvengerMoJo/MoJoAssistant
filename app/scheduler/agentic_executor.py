@@ -2828,21 +2828,26 @@ class AgenticExecutor:
             self._log(f"Role policy warning for '{name}': {role_decision.reason}", "warning")
         self._policy_monitor.record_call(name)
 
-        # Handle ask_user: pause execution and wait for user reply
+        # Handle ask_user: pause execution and wait for user reply.
+        #
+        # ask_user is documented system-wide (capability_defaults.json:
+        # "ask_user is the HITL escape hatch — can never be removed") as
+        # always available. This USED to be hard-blocked except during a
+        # security-gate escalation (_cv_gate_pending) or an orchestrator
+        # dispatch-role-not-found failure (_cv_dispatch_blocked) — meaning
+        # any role that decided mid-task it genuinely needed to ask the
+        # owner something (e.g. "should I generate and add this SSH deploy
+        # key?") got a flat rejection instead of a real pause, with the
+        # task then completing "successfully" as if nothing was blocked —
+        # no Discord/ntfy notification, nothing waiting in the queue, the
+        # question just vanished. The genuine-pause path (below, via
+        # _cv_waiting_q -> TaskResult.waiting_for_input) already correctly
+        # triggers the scheduler's unconditional notify broadcast — that
+        # part always worked. The only broken piece was this gate. Removed;
+        # ask_user is now always callable, matching the documented design.
+        # exhausts_tools_before_asking (below) remains as the one legitimate
+        # guard — try something else before immediately escalating.
         if name == "ask_user":
-            # Allowed in two cases:
-            #   1. Security-gate escalation (_cv_gate_pending)
-            #   2. Orchestrator dispatch blocker — no valid role to dispatch to
-            #      (_cv_dispatch_blocked), so the orchestrator must ask the user
-            #      which role to use or whether to proceed differently.
-            if not _cv_gate_pending.get() and not _cv_dispatch_blocked.get():
-                return {
-                    "error": (
-                        "ask_user is blocked for normal execution flow. "
-                        "Only security-gate escalations and orchestrator dispatch "
-                        "failures may pause for user input."
-                    )
-                }
             # Enforce behavior_rules.exhausts_tools_before_asking — agent must
             # attempt at least one other tool before escalating to the user.
             if _cv_exhausts_ask.get() and _cv_tool_calls.get() == 0:
