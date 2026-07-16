@@ -143,11 +143,21 @@ class AgenticHandler(TaskHandler):
                 )
                 # Auto-grant shell/file tools for this task — the sandbox IS
                 # the isolation layer so these are safe inside the container.
+                # MUST use '+' (additive) modifiers, not a plain list — a plain
+                # list is an ABSOLUTE override per CapabilityResolver, which
+                # silently replaces the role's ENTIRE capability layer. This
+                # fired for real: a task whose goal text merely mentioned a
+                # github URL for background context (not an actual clone
+                # target) tripped the git-url-in-goal-text heuristic below,
+                # auto-provisioned a sandbox, and reduced an orchestrator
+                # role (dispatch_subtask, sandbox_status, memory_search, ...)
+                # down to just these 4 shell tools.
                 _shell_tools = ["bash_exec", "read_file", "write_file", "list_files"]
                 _existing = list(_cfg_pre.get("available_tools") or [])
+                _existing_bare = {_e.lstrip("+-") for _e in _existing}
                 for _t in _shell_tools:
-                    if _t not in _existing:
-                        _existing.append(_t)
+                    if _t not in _existing_bare:
+                        _existing.append(f"+{_t}")
                 _cfg_pre["available_tools"] = _existing
                 task.config = _cfg_pre
         except Exception as _se:
