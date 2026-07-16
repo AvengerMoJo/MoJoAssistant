@@ -96,20 +96,36 @@ class SafetyPolicy:
                 "reason": f"Tool name '{tool_name}' is blocked by immutable rules",
             }
 
-        # Path sandbox: enforce for write_file and read_file
+        # Path sandbox: enforce for write_file and read_file — UNLESS a
+        # per-task sandbox container/host process is active, in which case
+        # the sandbox itself is the isolation boundary (same principle
+        # bash_exec already documents: "no blocklist applies" inside an
+        # active sandbox). Without this check, read_file/write_file blocked
+        # every path outside ~/.memory/ even when _read_file/_write_file's
+        # own sandbox-routing logic (checking _cv_sandbox_handle) would have
+        # correctly and safely served the request — this fired for real
+        # against a git-cloned repo under /workspace/repo.
         if tool_name in ("write_file", "read_file"):
-            path_arg = args.get("path", "")
-            memory_root = os.path.abspath(get_memory_path())
-            runtime_allowed = [memory_root] + [
-                os.path.abspath(os.path.expanduser(p))
-                for p in sandbox["allowed_paths"]
-            ]
-            abs_path = os.path.abspath(os.path.expanduser(path_arg))
-            if not any(abs_path.startswith(ap) for ap in runtime_allowed):
-                return {
-                    "allowed": False,
-                    "reason": f"Path '{path_arg}' not in sandbox. Allowed: {sandbox['allowed_paths']}",
-                }
+            _sandbox_active = False
+            try:
+                from app.scheduler.sandbox.context import _cv_sandbox_handle
+                _sandbox_active = _cv_sandbox_handle.get() is not None
+            except Exception:
+                _sandbox_active = False
+
+            if not _sandbox_active:
+                path_arg = args.get("path", "")
+                memory_root = os.path.abspath(get_memory_path())
+                runtime_allowed = [memory_root] + [
+                    os.path.abspath(os.path.expanduser(p))
+                    for p in sandbox["allowed_paths"]
+                ]
+                abs_path = os.path.abspath(os.path.expanduser(path_arg))
+                if not any(abs_path.startswith(ap) for ap in runtime_allowed):
+                    return {
+                        "allowed": False,
+                        "reason": f"Path '{path_arg}' not in sandbox. Allowed: {sandbox['allowed_paths']}",
+                    }
 
         # Check bash tool danger level AND block commands targeting blocked paths
         if tool_name == "bash_exec":
