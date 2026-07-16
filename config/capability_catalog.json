@@ -110,15 +110,15 @@
       "danger_level": "medium",
       "description": "Dispatch a task to another agent role and WAIT for the result before continuing. Use when you need a specialist's output inline \u2014 e.g. a researcher dispatching to a provisioner, then using the provisioner's output to continue. Max depth: 2. Blocked when local_only is set. Supports the same sandbox config keys as scheduler_add_task (git_url, sandbox_required)."
     },
-    "agent": {
+    "sandbox_status": {
       "category": "orchestration",
-      "danger_level": "medium",
-      "description": "External agent lifecycle \u2014 start, stop, status, action for OpenCode/Claude Code servers. Use agent(action='start', type='opencode', identifier='git_url') to launch an OpenCode server for a project."
+      "danger_level": "low",
+      "description": "See what sandbox/coding-agent backend options exist and whether they are live \u2014 named LLM-loop sandboxes (from sandbox_request) plus registered OpenCode coding-agent servers. Call this BEFORE dispatching work that needs bash_exec/write_file isolation or a coding_agent-executor role (e.g. popo) \u2014 a subtask that blocks with 'backend not reachable' means you should check here and use sandbox_request, not blindly retry the same dispatch."
     },
-    "external_agent": {
+    "sandbox_request": {
       "category": "orchestration",
       "danger_level": "medium",
-      "description": "External services \u2014 Google Workspace, coding agent HITL bridge. Use for Calendar, Gmail, Drive operations and HITL communication with coding agents."
+      "description": "Create/reuse a named sandbox or start a coding-agent (OpenCode) server. kind='named_sandbox' provisions or resumes an isolated container/host sandbox by name (pass to sandbox_name in a subtask's config to reuse it). kind='coding_agent_server' starts a stopped OpenCode server by its registered id \u2014 use this when a dispatch to a coding_agent-executor role (e.g. popo) reports its backend is unreachable, instead of re-dispatching the same task."
     },
     "ask_user": {
       "category": "comms",

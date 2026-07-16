@@ -173,6 +173,77 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "do something"})
         self.assertIn("Scheduler not available", result["error"])  # depth check passed
 
+    async def test_waiting_for_input_infra_failure_is_auto_removed(self):
+        """A sub-task stuck on 'coding agent backend not reachable' can never be
+        resolved via reply_to_task (no human answers that) — it should be
+        auto-removed to prevent the orphan accumulation seen in production
+        (sub_paul_community_daily_* tasks piling up for a week)."""
+        from app.scheduler.models import Task, TaskType, TaskStatus, TaskResources
+
+        stuck_task = Task(
+            id="sub_parent_task_001_abc123", type=TaskType.ASSISTANT,
+            config={"goal": "fix the CI workflow", "role_id": "popo"},
+            resources=TaskResources(),
+        )
+        stuck_task.status = TaskStatus.WAITING_FOR_INPUT
+        stuck_task.pending_question = (
+            "Coding agent backend not reachable and auto-start failed "
+            "(server_id=None). Start it manually with: agent(action='list') ..."
+        )
+
+        scheduler = MagicMock()
+        scheduler.add_task.return_value = True
+        scheduler.get_task.return_value = stuck_task
+        reg = self._make_registry(scheduler=scheduler)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await reg._dispatch_subtask({
+                "role_id": "popo",
+                "goal": (
+                    "Fix the failing CI workflow. Done when: the workflow passes on a fresh run. "
+                    "Out of scope: unrelated workflows. "
+                    "Verify by: re-running the workflow and confirming success."
+                ),
+            })
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "waiting_for_input")
+        self.assertTrue(result["cleaned_up"])
+        scheduler.remove_task.assert_called_once_with(result["task_id"])
+
+    async def test_waiting_for_input_genuine_question_is_not_removed(self):
+        """A real ask_user() business question must NOT be auto-cleaned —
+        the human may come back and answer it via reply_to_task."""
+        from app.scheduler.models import Task, TaskType, TaskStatus, TaskResources
+
+        stuck_task = Task(
+            id="sub_parent_task_001_def456", type=TaskType.ASSISTANT,
+            config={"goal": "pick a vendor", "role_id": "paul"},
+            resources=TaskResources(),
+        )
+        stuck_task.status = TaskStatus.WAITING_FOR_INPUT
+        stuck_task.pending_question = "Which vendor should I use: Acme or Globex?"
+
+        scheduler = MagicMock()
+        scheduler.add_task.return_value = True
+        scheduler.get_task.return_value = stuck_task
+        reg = self._make_registry(scheduler=scheduler)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await reg._dispatch_subtask({
+                "role_id": "paul",
+                "goal": (
+                    "Pick the vendor for the new integration. Done when: a vendor is chosen. "
+                    "Out of scope: contract negotiation. "
+                    "Verify by: confirming the decision with the owner."
+                ),
+            })
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "waiting_for_input")
+        self.assertFalse(result["cleaned_up"])
+        scheduler.remove_task.assert_not_called()
+
 
 # ===========================================================================
 # dialog tool (_execute_dialog)

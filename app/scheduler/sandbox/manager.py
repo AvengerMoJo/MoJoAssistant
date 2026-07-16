@@ -147,12 +147,18 @@ class SandboxManager:
         parent_task_id: Optional[str] = None,
         environment: Optional[str] = None,
         backend_override: Optional[str] = None,
+        prepare_hook: Optional[str] = None,
+        hook_params: Optional[Dict[str, Any]] = None,
     ) -> SandboxHandle:
         """Provision or resume a sandbox for task_id.
 
         1. Check session store — if an existing handle is paused, resume it.
         2. Otherwise pick backend and call backend.start().
-        3. If git_url provided, clone into /workspace/repo inside the sandbox.
+        3. If git_url provided, run the pre_prepare hook (default:
+           "git_clone_default", a bare `git clone` — see sandbox/hooks.py for
+           alternatives like "git_clone_public_https" that avoid needing SSH
+           credentials at all for public repos). prepare_hook lets the caller
+           pick a different strategy per project instead of one hardcoded path.
         4. Set _cv_sandbox_handle so tools route through this sandbox.
         """
         # 1. Check for existing paused session
@@ -195,24 +201,25 @@ class SandboxManager:
         logger.info("SandboxManager.acquire: started %s sandbox for %s (id=%s)",
                     backend_name, task_id, handle.sandbox_id)
 
-        # 3. Clone git repo if requested
+        # 3. Prepare repo via the pre_prepare hook, if requested
         if git_url:
-            try:
-                clone_dir = "/workspace/repo"
-                clone_result = await self.exec(
-                    handle,
-                    f"git clone {git_url} {clone_dir}",
-                    timeout=180,
-                )
-                if clone_result["success"]:
-                    handle.working_dir = clone_dir
-                    store_handle(handle)
-                    logger.info("SandboxManager.acquire: cloned %s → %s", git_url, clone_dir)
-                else:
-                    logger.warning("SandboxManager.acquire: git clone failed: %s",
-                                   clone_result.get("stderr", ""))
-            except Exception as e:
-                logger.warning("SandboxManager.acquire: git clone error: %s", e)
+            from app.scheduler.sandbox.hooks import HookContext, run_hook
+            hook_name = prepare_hook or "git_clone_default"
+
+            async def _exec_fn(command: str, timeout_s: int) -> Dict[str, Any]:
+                return await self.exec(handle, command, timeout=timeout_s)
+
+            ctx = HookContext(
+                point="pre_prepare", git_url=git_url,
+                exec_fn=_exec_fn, params=hook_params or {},
+            )
+            result = await run_hook(hook_name, ctx)
+            if result.success:
+                handle.working_dir = result.working_dir or handle.working_dir
+                store_handle(handle)
+                logger.info("SandboxManager.acquire: hook '%s' succeeded: %s", hook_name, result.message)
+            else:
+                logger.warning("SandboxManager.acquire: hook '%s' failed: %s", hook_name, result.message)
 
         return handle
 
@@ -220,13 +227,39 @@ class SandboxManager:
         self,
         handle: SandboxHandle,
         mode: Literal["kill", "pause"] = "pause",
+        post_task_hook: Optional[str] = None,
+        hook_params: Optional[Dict[str, Any]] = None,
+        task_result: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Release sandbox after task completion.
 
         mode="pause": freeze container, keep handle in session store (re-attachable)
         mode="kill":  destroy container, delete handle
         Default is pause so the user can inspect what the agent did.
+
+        post_task_hook (optional): run a named hook (see sandbox/hooks.py)
+        BEFORE backend teardown — e.g. upload artifacts, scrub injected
+        credentials. Runs best-effort; a hook failure logs a warning but
+        never blocks teardown.
         """
+        if post_task_hook:
+            try:
+                from app.scheduler.sandbox.hooks import HookContext, run_hook
+
+                async def _exec_fn(command: str, timeout_s: int) -> Dict[str, Any]:
+                    return await self.exec(handle, command, timeout=timeout_s)
+
+                ctx = HookContext(
+                    point="post_task", working_dir=handle.working_dir, repo=handle.name,
+                    exec_fn=_exec_fn, params=hook_params or {}, task_result=task_result,
+                )
+                result = await run_hook(post_task_hook, ctx)
+                if not result.success:
+                    logger.warning("SandboxManager.release: post_task hook '%s' failed: %s",
+                                   post_task_hook, result.message)
+            except Exception as e:
+                logger.warning("SandboxManager.release: post_task hook error (non-fatal): %s", e)
+
         try:
             backend = self._get_backend(handle.backend)
             if mode == "kill":
@@ -254,6 +287,8 @@ class SandboxManager:
         working_dir: Optional[str] = None,
         role_id: Optional[str] = None,
         backend_override: Optional[str] = None,
+        prepare_hook: Optional[str] = None,
+        hook_params: Optional[Dict[str, Any]] = None,
     ) -> SandboxHandle:
         """Acquire a named sandbox — resume if it exists, provision fresh if not.
 
@@ -263,6 +298,11 @@ class SandboxManager:
 
         The handle is stored under the original task_id that created it, but
         the name field is set so find_by_name() can locate it in future calls.
+
+        prepare_hook selects how git_url gets checked out (see sandbox/hooks.py)
+        — defaults to "git_clone_default" (bare `git clone`, whatever auth is
+        already available) for backward compatibility. Pass e.g.
+        "git_clone_public_https" for a public repo to avoid needing SSH auth.
         """
         existing = find_by_name(name)
         if existing and existing.sandbox_id:
@@ -278,13 +318,23 @@ class SandboxManager:
                     logger.info("SandboxManager.acquire_by_name: reusing running named sandbox '%s'",
                                 name)
                 if git_url:
-                    clone_dir = f"/workspace/{name}"
-                    try:
-                        await self.exec(handle, f"git clone {git_url} {clone_dir}", timeout=180)
-                        handle.working_dir = clone_dir
+                    from app.scheduler.sandbox.hooks import HookContext, run_hook
+                    hook_name = prepare_hook or "git_clone_default"
+
+                    async def _exec_fn(command: str, timeout_s: int) -> Dict[str, Any]:
+                        return await self.exec(handle, command, timeout=timeout_s)
+
+                    ctx = HookContext(
+                        point="pre_prepare", git_url=git_url, repo=name,
+                        exec_fn=_exec_fn,
+                        params={"clone_dir": f"/workspace/{name}", **(hook_params or {})},
+                    )
+                    result = await run_hook(hook_name, ctx)
+                    if result.success:
+                        handle.working_dir = result.working_dir or handle.working_dir
                         store_handle(handle)
-                    except Exception as e:
-                        logger.warning("acquire_by_name: git clone failed: %s", e)
+                    else:
+                        logger.warning("acquire_by_name: hook '%s' failed: %s", hook_name, result.message)
                 return handle
             else:
                 logger.info("SandboxManager.acquire_by_name: stale named sandbox '%s', reprovisioning", name)
@@ -301,6 +351,8 @@ class SandboxManager:
             working_dir=working_dir,
             role_id=role_id,
             backend_override=backend_override,
+            prepare_hook=prepare_hook,
+            hook_params={"clone_dir": f"/workspace/{name}", **(hook_params or {})},
         )
         handle.name = name
         store_handle(handle)

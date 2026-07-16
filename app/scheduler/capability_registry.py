@@ -395,7 +395,11 @@ class CapabilityRegistry:
                     "The sub-task runs as a full agentic session; its final answer is returned here. "
                     "Max dispatch depth: 2 (sub-tasks cannot themselves dispatch further sub-tasks). "
                     "Prefer this over scheduler_add_task when you need the result in the current task. "
-                    "Call list_roles first to verify the target role_id exists."
+                    "Call list_roles first to verify the target role_id exists. "
+                    "If the role needs a coding sandbox (executor='coding_agent', e.g. popo) or an "
+                    "isolated bash_exec environment, set project_label instead of guessing a git_url or "
+                    "relying on the role's default — that default caused a week-long outage when it was "
+                    "pinned to a non-git_url server_id that could never auto-start."
                 ),
                 danger_level="medium",
                 category="orchestration",
@@ -409,7 +413,101 @@ class CapabilityRegistry:
                     "max_iterations":  {"type": "integer", "description": "Max iterations for sub-task (default 10)"},
                     "timeout_s":       {"type": "integer", "description": "Seconds to wait for result (default 300)"},
                     "force":           {"type": "boolean", "description": "Bypass spec quality gate. Only use when the calling AI has already validated the spec with the user."},
+                    "project_label":   {
+                        "type": "string",
+                        "description": (
+                            "Preferred way to target a coding sandbox: 'agent+stack+repo' or 'agent+repo' "
+                            "(e.g. 'opencode+python+mcp-buffer'). Resolved via the project registry to a "
+                            "real git_url and used as the sub-task's server_id/backend automatically. If "
+                            "the repo isn't registered yet, also pass git_url the first time. Call "
+                            "sandbox_status first to see already-registered projects."
+                        ),
+                    },
+                    "git_url":         {"type": "string", "description": "Git URL to register/use for project_label's repo, or to clone into a named_sandbox. Required the first time a new repo is referenced via project_label."},
+                    "sandbox_name":    {"type": "string", "description": "For LLM-loop tasks (not coding_agent-executor roles): reuse a named sandbox created via sandbox_request(kind='named_sandbox')."},
+                    "sandbox_required": {"type": "boolean", "description": "For LLM-loop tasks: force an isolated container even without a git_url."},
+                    "working_dir":     {"type": "string", "description": "Initial working directory inside the sub-task's sandbox."},
                 }, "required": ["role_id", "goal"]},
+            ),
+            CapabilityDefinition(
+                name="sandbox_status",
+                description=(
+                    "See what sandbox/coding-agent backend options exist and whether they are live. "
+                    "Returns three lists: 'known_projects' (registered repo labels like "
+                    "'opencode+python+mcp-buffer' — pass the 'label' field as project_label in "
+                    "dispatch_subtask/scheduler_add_task and it resolves + auto-starts automatically, "
+                    "this is the preferred lookup), 'named_sandboxes' (LLM-loop isolated environments "
+                    "created via sandbox_request, reusable across tasks by name), and "
+                    "'coding_agent_servers' (the raw OpenCode project list known_projects resolves "
+                    "against). Call this BEFORE dispatching work to a role that needs bash_exec "
+                    "isolation or runs via a coding agent — if a prior dispatch to that role reported "
+                    "its backend unreachable, check here to see what is actually available rather than "
+                    "re-dispatching the identical task and hoping it works."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {}, "required": []},
+            ),
+            CapabilityDefinition(
+                name="sandbox_request",
+                description=(
+                    "Create/reuse a named sandbox, register+start a coding project by label, or "
+                    "auto-start an OpenCode project directly by git_url. "
+                    "kind='project' (RECOMMENDED for coding work): resolves/registers a human label "
+                    "like 'opencode+python+mcp-buffer' (agent+stack+repo, stack optional) via the "
+                    "project registry and auto-starts it — pass git_url the first time a repo is "
+                    "referenced. Returns the project_label to use in future dispatch_subtask calls. "
+                    "prepare_hook on a project only affects the LLM-loop sandbox path "
+                    "(project_label on a non-coding_agent role/dispatch) — it does NOT yet change how "
+                    "OpenCode bootstraps a coding_agent-executor role's project (that still uses "
+                    "OpenCodeManager's own SSH-deploy-key flow; see sandbox/hooks.py for the current "
+                    "seam and known follow-up). "
+                    "kind='named_sandbox': provisions or resumes an isolated container/host sandbox "
+                    "under 'name' — pass the same name as sandbox_name in a subtask's config to make "
+                    "that subtask reuse this exact environment instead of getting a fresh one. "
+                    "kind='coding_agent_server': starts (or confirms running) an OpenCode project by "
+                    "its raw git_url directly — lower-level than kind='project'; a role's server_id "
+                    "must itself BE a git_url for auto-start to ever succeed, an arbitrary non-git_url "
+                    "server_id can never be auto-started this way — that mismatch is what caused the "
+                    "Popo/mcp-buffer-opencode incident. Prefer kind='project' unless you already have "
+                    "an exact git_url in hand."
+                ),
+                danger_level="medium",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "kind": {
+                        "type": "string", "enum": ["named_sandbox", "coding_agent_server", "project"],
+                        "description": "Which kind of backend to request.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "For named_sandbox: the stable name to create/reuse. For coding_agent_server: the project's git_url (must be a real git URL). For project: the label 'agent+stack+repo' or 'agent+repo' (e.g. 'opencode+python+mcp-buffer'), or just the repo key if already registered.",
+                    },
+                    "backend": {
+                        "type": "string", "enum": ["host", "docker", "cube"],
+                        "description": "named_sandbox only: which backend to use. Defaults to sandbox.json default_backend.",
+                    },
+                    "git_url": {
+                        "type": "string",
+                        "description": "named_sandbox/project: optionally clone this repo into the sandbox on creation.",
+                    },
+                    "prepare_hook": {
+                        "type": "string",
+                        "description": (
+                            "named_sandbox/project: which pluggable hook checks out git_url. Default "
+                            "'git_clone_default'. Use 'git_clone_public_https' for a public repo (no "
+                            "credentials needed) or 'git_clone_ssh_existing_key' with hook_params={"
+                            "'ssh_key_path': ...} for a private repo with an existing deploy key. "
+                            "For kind='project' this is saved with the registration and reused by "
+                            "future project_label references. Call sandbox_status to list registered "
+                            "hooks. Only affects the LLM-loop sandbox path, not OpenCode bootstrap."
+                        ),
+                    },
+                    "hook_params": {
+                        "type": "object",
+                        "description": "named_sandbox only: extra params for prepare_hook.",
+                    },
+                }, "required": ["kind", "name"]},
             ),
             CapabilityDefinition(
                 name="add_conversation",
@@ -697,6 +795,10 @@ class CapabilityRegistry:
                     return await self._web_search(args)
                 elif name == "fetch_url":
                     return await self._fetch_url(args)
+                elif name == "sandbox_status":
+                    return await self._sandbox_status(args)
+                elif name == "sandbox_request":
+                    return await self._sandbox_request(args)
                 else:
                     return {
                         "success": False,
@@ -988,6 +1090,11 @@ class CapabilityRegistry:
         config: Dict[str, Any] = {"goal": goal, "role_id": role_id}
         if args.get("available_tools"):
             config["available_tools"] = args["available_tools"]
+        for _key in ("project_label", "repo", "git_url", "server_id",
+                     "sandbox_required", "sandbox_name", "working_dir",
+                     "prepare_hook", "hook_params", "post_task_hook", "post_task_hook_params"):
+            if args.get(_key) is not None:
+                config[_key] = args[_key]
 
         resources = TaskResources(
             max_iterations=int(args.get("max_iterations", 10))
@@ -1220,6 +1327,15 @@ class CapabilityRegistry:
         config: Dict[str, Any] = {"goal": goal, "role_id": role_id}
         if args.get("available_tools"):
             config["available_tools"] = args["available_tools"]
+        # Sandbox/project targeting — forwarded straight through to the sub-task's
+        # config so a coding_agent-executor role (or the LLM-loop sandbox provisioner)
+        # resolves the right environment. project_label is the preferred form
+        # ("agent+stack+repo", e.g. "opencode+python+mcp-buffer") — see project_registry.
+        for _key in ("project_label", "repo", "git_url", "server_id",
+                     "sandbox_required", "sandbox_name", "working_dir",
+                     "prepare_hook", "hook_params", "post_task_hook", "post_task_hook_params"):
+            if args.get(_key) is not None:
+                config[_key] = args[_key]
 
         task = Task(
             id=task_id,
@@ -1243,6 +1359,41 @@ class CapabilityRegistry:
             t = self._scheduler.get_task(task_id)
             if t is None:
                 return {"success": False, "error": f"Sub-task '{task_id}' disappeared from queue"}
+            if t.status.value == "waiting_for_input" and t.pending_question:
+                # Infrastructure failures (coding-agent backend unreachable) are
+                # reported via pending_question but are NOT a question a human
+                # will ever answer via reply_to_task — nobody "replies" to fix
+                # a missing backend. Left in place, these accumulate as
+                # permanent orphans (this is exactly what caused a week of
+                # stuck sub_paul_community_daily_* tasks). Genuine ask_user()
+                # business questions use free-form text and won't match this
+                # specific infra-failure signature, so auto-cleanup here is
+                # narrowly scoped and safe for real HITL questions.
+                is_infra_failure = "Coding agent backend not reachable" in t.pending_question
+                if is_infra_failure:
+                    self._scheduler.remove_task(task_id)
+                return {
+                    "success": False,
+                    "task_id": task_id,
+                    "error": "waiting_for_input",
+                    "pending_question": t.pending_question,
+                    "cleaned_up": is_infra_failure,
+                    "hint": (
+                        "This sub-task could never be resolved via reply_to_task (no coding-agent "
+                        "backend is reachable for this role/target) and has been automatically "
+                        "removed — no orphan left behind. Call sandbox_status to see what's "
+                        "available, register the target project, and sandbox_request to bring "
+                        "up a backend, then retry the dispatch with the right project_label. "
+                        "Do not just re-dispatch the identical goal — it will fail identically."
+                        if is_infra_failure else
+                        "The sub-task is blocked on infrastructure, not still working — it will "
+                        "NOT complete on its own. If the question mentions a coding agent backend "
+                        "or sandbox being unreachable, call sandbox_status to see what's available "
+                        "and sandbox_request to bring one up, then retry the dispatch. Do not "
+                        "re-dispatch the identical task and expect a different result — escalate "
+                        "with ask_user if you cannot resolve it yourself."
+                    ),
+                }
             if t.status.value in ("completed", "failed"):
                 if t.status.value == "failed":
                     err = t.last_error
@@ -1283,6 +1434,181 @@ class CapabilityRegistry:
             "task_id": task_id,
             "error": f"Sub-task did not complete within {timeout_s}s timeout",
         }
+
+    async def _sandbox_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List available sandbox/coding-agent backend options and their live status."""
+        named_sandboxes: List[Dict[str, Any]] = []
+        try:
+            from app.scheduler.sandbox.base import list_handles
+            for h in list_handles():
+                named_sandboxes.append({
+                    "name": h.name,
+                    "task_id": h.task_id,
+                    "backend": h.backend,
+                    "state": h.state,
+                    "working_dir": h.working_dir,
+                })
+        except Exception as e:
+            named_sandboxes = [{"error": f"Could not list named sandboxes: {e}"}]
+
+        coding_agent_servers: List[Dict[str, Any]] = []
+        try:
+            from app.mcp.agents.registry import AgentRegistry
+            registry = AgentRegistry()
+            opencode_mgr = registry._managers.get("opencode")
+            if opencode_mgr is not None:
+                result = await opencode_mgr.list_projects()
+                coding_agent_servers = result.get("projects") or result.get("agents") or []
+            else:
+                coding_agent_servers = [{
+                    "note": "OpenCode manager not enabled (ENABLE_OPENCODE env var not set)."
+                }]
+        except Exception as e:
+            coding_agent_servers = [{"error": f"Could not list coding-agent servers: {e}"}]
+
+        known_projects: List[Dict[str, Any]] = []
+        try:
+            from app.scheduler.sandbox.project_registry import list_projects
+            live_git_urls = {
+                p.get("git_url") for p in coding_agent_servers if isinstance(p, dict) and p.get("git_url")
+            }
+            for spec in list_projects():
+                known_projects.append({
+                    "label": f"{spec.preferred_agent}+{spec.stack}+{spec.repo}" if spec.stack
+                             else f"{spec.preferred_agent}+{spec.repo}",
+                    "repo": spec.repo,
+                    "git_url": spec.git_url,
+                    "stack": spec.stack,
+                    "preferred_agent": spec.preferred_agent,
+                    "prepare_hook": spec.prepare_hook,
+                    "running": spec.git_url in live_git_urls,
+                })
+        except Exception as e:
+            known_projects = [{"error": f"Could not list known projects: {e}"}]
+
+        available_hooks: Dict[str, Any] = {}
+        try:
+            from app.scheduler.sandbox.hooks import list_hooks
+            available_hooks = list_hooks()
+        except Exception as e:
+            available_hooks = {"error": f"Could not list hooks: {e}"}
+
+        return {
+            "success": True,
+            "named_sandboxes": named_sandboxes,
+            "coding_agent_servers": coding_agent_servers,
+            "known_projects": known_projects,
+            "available_hooks": available_hooks,
+            "hint": (
+                "known_projects is the recommended lookup: pass its 'label' (or 'repo') as "
+                "project_label in dispatch_subtask/scheduler_add_task config — it resolves to "
+                "the right git_url, prepare_hook, and auto-starts automatically, no manual "
+                "server_id needed. If the project you need isn't listed, register it via "
+                "sandbox_request(kind='project', label='<agent>+<repo>', git_url='<url>'), "
+                "optionally with prepare_hook to pick a non-default checkout strategy — see "
+                "available_hooks for options (e.g. 'git_clone_public_https' avoids needing any "
+                "credentials for a public repo). named_sandboxes are for bash_exec/write_file "
+                "isolation in the LLM tool loop — pass sandbox_name=<name> in a subtask's config "
+                "to reuse one, with its own prepare_hook if it needs a git checkout. "
+                "coding_agent_servers is the raw OpenCode project list (git_url-keyed) that "
+                "known_projects/project_label resolve against."
+            ),
+        }
+
+    async def _sandbox_request(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Create/reuse a named sandbox, or start a stopped coding-agent server."""
+        kind = args.get("kind")
+        name = args.get("name")
+        if not kind or not name:
+            return {"success": False, "error": "'kind' and 'name' are required"}
+
+        if kind == "named_sandbox":
+            try:
+                import uuid
+                from app.scheduler.sandbox.manager import SandboxManager
+                mgr = SandboxManager.load()
+                task_id = f"named-{name}-{uuid.uuid4().hex[:8]}"
+                handle = await mgr.acquire_by_name(
+                    name=name,
+                    task_id=task_id,
+                    git_url=args.get("git_url"),
+                    backend_override=args.get("backend"),
+                    prepare_hook=args.get("prepare_hook"),
+                    hook_params=args.get("hook_params"),
+                )
+                return {
+                    "success": True,
+                    "name": handle.name,
+                    "task_id": handle.task_id,
+                    "backend": handle.backend,
+                    "state": handle.state,
+                    "working_dir": handle.working_dir,
+                    "hint": f"Pass sandbox_name='{name}' in a subtask's config to reuse this sandbox.",
+                }
+            except Exception as e:
+                return {"success": False, "error": f"Failed to create named sandbox: {e}"}
+
+        elif kind == "coding_agent_server":
+            try:
+                from app.mcp.agents.registry import AgentRegistry
+                registry = AgentRegistry()
+                opencode_mgr = registry._managers.get("opencode")
+                if opencode_mgr is None:
+                    return {
+                        "success": False,
+                        "error": "OpenCode manager not enabled (ENABLE_OPENCODE env var not set).",
+                    }
+                result = await opencode_mgr.start_project(name)
+                return result
+            except Exception as e:
+                return {"success": False, "error": f"Failed to start coding-agent server '{name}': {e}"}
+
+        elif kind == "project":
+            try:
+                from app.scheduler.sandbox.project_registry import parse_label, resolve as resolve_project
+                if "+" in name:
+                    p_agent, p_stack, p_repo = parse_label(name)
+                else:
+                    p_agent, p_stack, p_repo = "opencode", "", name
+                spec = resolve_project(
+                    repo=p_repo,
+                    git_url=args.get("git_url"),
+                    stack=p_stack,
+                    prepare_hook=args.get("prepare_hook"),
+                )
+                result: Dict[str, Any] = {
+                    "success": True,
+                    "repo": spec.repo,
+                    "git_url": spec.git_url,
+                    "stack": spec.stack,
+                    "preferred_agent": spec.preferred_agent,
+                    "prepare_hook": spec.prepare_hook,
+                    "hint": (
+                        f"Pass project_label='{spec.preferred_agent}+{spec.stack}+{spec.repo}' "
+                        if spec.stack else
+                        f"Pass project_label='{spec.preferred_agent}+{spec.repo}' "
+                    ) + "in a subtask's config to target this project — it resolves and auto-starts automatically.",
+                }
+                if spec.preferred_agent == "opencode":
+                    try:
+                        from app.mcp.agents.registry import AgentRegistry
+                        registry = AgentRegistry()
+                        opencode_mgr = registry._managers.get("opencode")
+                        if opencode_mgr is not None:
+                            start_result = await opencode_mgr.start_project(spec.git_url)
+                            result["opencode_status"] = start_result.get("status")
+                        else:
+                            result["opencode_status"] = "manager_not_enabled"
+                    except Exception as e:
+                        result["opencode_status"] = f"start_failed: {e}"
+                return result
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+            except Exception as e:
+                return {"success": False, "error": f"Failed to resolve/start project '{name}': {e}"}
+
+        else:
+            return {"success": False, "error": f"Unknown kind '{kind}' — must be 'named_sandbox', 'coding_agent_server', or 'project'"}
 
     async def _bash_exec(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute shell command(s) with safety limits."""

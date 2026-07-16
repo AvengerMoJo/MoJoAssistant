@@ -119,6 +119,7 @@ class CodingAgentExecutor:
         self._memory_service = memory_service
         self._session_storage = SessionStorage()
         self._registry: Any = None  # BackendRegistry — lazy-loaded and cached
+        self._last_backend_error: str | None = None  # set by _get_backend on failure
 
     def _log(self, msg: str, level: str = "info") -> None:
         if self._logger:
@@ -158,16 +159,65 @@ class CodingAgentExecutor:
                 error_message=f"Role '{role_id}' not found or has no executor=coding_agent",
             )
 
+        # Resolve project_label/repo to a concrete git_url before anything else —
+        # this is the preferred way callers should target a project ("agent+stack+repo",
+        # e.g. "opencode+python+mcp-buffer") instead of hardcoding git_urls or
+        # relying on a role's static server_id, which caused a week-long outage
+        # when popo.json pinned a non-git_url server_id that could never auto-start.
+        project_label = config.get("project_label") or config.get("repo")
+        if project_label:
+            try:
+                from app.scheduler.sandbox.project_registry import parse_label, resolve as resolve_project
+                if "+" in project_label:
+                    p_agent, p_stack, p_repo = parse_label(project_label)
+                else:
+                    p_agent, p_stack, p_repo = "opencode", "", project_label
+                spec = resolve_project(
+                    repo=p_repo,
+                    git_url=config.get("git_url"),
+                    stack=p_stack,
+                    agent=p_agent,
+                )
+                config["server_id"] = spec.git_url
+                self._log(f"Task {task.id}: project_label {project_label!r} resolved to server_id={spec.git_url}")
+            except Exception as e:
+                return TaskResult(
+                    success=False,
+                    error_message=f"Could not resolve project_label {project_label!r}: {e}",
+                )
+
         # Resolve server_id before loading backend so session key is stable.
+        # project_label (explicit, specific) wins over config.server_id, which
+        # wins over the role's static default.
         server_id = config.get("server_id") or role.get("server_id")
 
         # Load the coding agent backend (also initialises self._registry)
         backend = self._get_backend(role, config)
         if backend is None:
+            reason = self._last_backend_error or "unknown reason"
+            hint = (
+                " This project was likely never bootstrapped as an OpenCode server — "
+                "use sandbox_request(kind='coding_agent_server', name=<git_url>) or "
+                "agent(action='start') to bootstrap it (generates an SSH deploy key "
+                "that must be added to the repo before cloning can work)."
+                if "not found" in reason.lower() else ""
+            )
             return TaskResult(
                 success=False,
-                error_message=f"Could not load coding agent backend for role '{role_id}'",
+                error_message=(
+                    f"Could not load coding agent backend for role '{role_id}' "
+                    f"(server_id={server_id!r}): {reason}.{hint}"
+                ),
             )
+
+        # If server_id was unset, _get_backend just resolved it to the
+        # registry's own default_server internally — but that resolution
+        # never left the registry. Without this, an unhealthy default
+        # backend causes _auto_start_backend to bail immediately on
+        # "no server_id" even though a concrete default id exists and could
+        # be auto-started. Pull it out explicitly so auto-start can use it.
+        if server_id is None and self._registry is not None:
+            server_id = getattr(self._registry, "_default_id", None)
 
         # Health check — if unreachable, attempt auto-start then re-check.
         # Only escalate to waiting_for_input if auto-start fails.
@@ -752,8 +802,15 @@ class CodingAgentExecutor:
     def _get_backend(self, role: dict, config: dict) -> Any | None:
         server_id = config.get("server_id") or role.get("server_id")
         try:
-            return self._get_registry().get(server_id)  # server_id=None → default
+            backend = self._get_registry().get(server_id)  # server_id=None → default
+            self._last_backend_error = None
+            return backend
         except Exception as e:
+            # Stash the real reason (e.g. "Backend not found: <git_url>" — this
+            # project was never bootstrapped as an OpenCode server) so the
+            # caller's TaskResult carries an actionable message instead of a
+            # generic "could not load backend" that hides why.
+            self._last_backend_error = str(e)
             self._log(f"Failed to load coding agent backend (server_id={server_id}): {e}", "warning")
             return None
 

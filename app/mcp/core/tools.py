@@ -916,6 +916,40 @@ class ToolRegistry:
                             "type": "string",
                             "description": "Pin to a specific LLM resource ID, bypassing tier selection (add action).",
                         },
+                        "project_label": {
+                            "type": "string",
+                            "description": (
+                                "Sandbox/coding-project targeting (add action). 'agent+stack+repo' or "
+                                "'agent+repo' (e.g. 'opencode+python+mcp-buffer'). Resolves via the "
+                                "project registry to a real git_url and auto-starts it — use this instead "
+                                "of hardcoding server_id or relying on a role's default backend, which can "
+                                "silently pin to a dead/incompatible server. Pass git_url too the first "
+                                "time a new repo is referenced. Call sandbox_status to see registered labels."
+                            ),
+                        },
+                        "git_url": {
+                            "type": "string",
+                            "description": "Git URL to register for project_label's repo the first time it's referenced, or to clone into a fresh sandbox (add action).",
+                        },
+                        "sandbox_name": {
+                            "type": "string",
+                            "description": "Reuse a named LLM-loop sandbox created via sandbox_request(kind='named_sandbox') (add action, non-coding_agent roles).",
+                        },
+                        "prepare_hook": {
+                            "type": "string",
+                            "description": (
+                                "Which pluggable hook checks out git_url (add action, LLM-loop sandboxes "
+                                "only — not coding_agent roles). Default 'git_clone_default' (bare git clone, "
+                                "whatever host auth exists). Use 'git_clone_public_https' for a public repo "
+                                "to avoid any credential dependency, or 'git_clone_ssh_existing_key' with "
+                                "hook_params={'ssh_key_path': ...} for a private repo with an existing deploy "
+                                "key. Register user-defined hooks in ~/.memory/config/sandbox_hooks.json."
+                            ),
+                        },
+                        "hook_params": {
+                            "type": "object",
+                            "description": "Extra params passed to prepare_hook (add action), e.g. {'ssh_key_path': '...'} for git_clone_ssh_existing_key.",
+                        },
                         "status": {"type": "string", "description": "Filter by status (list action)."},
                         "limit": {"type": "integer", "description": "Max results to return (list action)."},
                         "before_date": {"type": "string", "description": "ISO date cutoff (purge action)."},
@@ -6882,6 +6916,14 @@ Agent resumes within seconds.
                 config["max_iterations"] = add_args["max_iterations"]
             if add_args.get("pinned_resource") and "pinned_resource" not in config:
                 config["pinned_resource"] = add_args["pinned_resource"]
+            # Sandbox/project targeting — see project_registry.py. project_label is
+            # the preferred form ("agent+stack+repo", e.g. "opencode+python+mcp-buffer");
+            # it resolves to a git_url automatically and avoids hardcoding server_id.
+            for _key in ("project_label", "repo", "git_url", "server_id",
+                         "sandbox_required", "sandbox_name", "working_dir",
+                         "prepare_hook", "hook_params", "post_task_hook", "post_task_hook_params"):
+                if add_args.get(_key) is not None and _key not in config:
+                    config[_key] = add_args[_key]
             add_args["config"] = config
             # Map 'cron' shorthand → 'cron_expression' expected by _execute_scheduler_add_task
             if add_args.get("cron") and "cron_expression" not in add_args:
