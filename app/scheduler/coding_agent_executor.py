@@ -178,8 +178,21 @@ class CodingAgentExecutor:
                     stack=p_stack,
                     agent=p_agent,
                 )
-                config["server_id"] = spec.git_url
-                self._log(f"Task {task.id}: project_label {project_label!r} resolved to server_id={spec.git_url}")
+                # BackendRegistry/OpenCodeManager always key projects by the
+                # SSH-normalized form (normalize_git_url: https://... -> git@...).
+                # project_registry.json stores whatever raw form was given at
+                # registration time (often HTTPS). Without normalizing here,
+                # a project registered via HTTPS and bootstrapped via OpenCode
+                # (which normalizes internally) ends up under two different
+                # keys — server_id resolves to one, the live backend is
+                # registered under the other, and the lookup fails as if the
+                # project were never bootstrapped at all. Found live: the
+                # exact failure that made mcp-buffer's real, working, freshly
+                # bootstrapped backend invisible to this resolution path.
+                from app.mcp.opencode.utils import normalize_git_url
+                resolved_git_url = normalize_git_url(spec.git_url) if p_agent == "opencode" else spec.git_url
+                config["server_id"] = resolved_git_url
+                self._log(f"Task {task.id}: project_label {project_label!r} resolved to server_id={resolved_git_url}")
             except Exception as e:
                 return TaskResult(
                     success=False,
