@@ -761,6 +761,9 @@ class ToolRegistry:
                         "description": {"type": "string"},
                         "account_group": {"type": "string"},
                         "agentic_capable": {"type": "boolean"},
+                        "message_format": {"type": "string", "enum": ["openai", "anthropic"], "description": "Wire format for the chat completion request/response. Default 'openai'."},
+                        "completions_path": {"type": "string", "description": "Override the default completions URL suffix for providers with a non-standard endpoint (e.g. MiniMax: 'chatcompletion_v2' instead of the usual 'chat/completions'). Request/response body must still be OpenAI/Anthropic-shape compatible."},
+                        "timeout": {"type": "integer", "description": "Per-call read timeout in seconds. 0 = no timeout (long-running thinking models)."},
                         # custom tool management params
                         "tool_name": {"type": "string"},
                         "parameters": {"type": "object"},
@@ -5277,6 +5280,7 @@ Agent resumes within seconds.
             "priority", "enabled", "description", "account_group",
             "context_limit", "output_limit", "input_limit",
             "agentic_capable", "dynamic_discovery",
+            "message_format", "completions_path", "timeout",
         ]
         entry = dict(existing)
         for f in FIELDS:
