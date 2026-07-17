@@ -194,7 +194,15 @@ class UnifiedLLMClient:
 
         headers = self._build_headers(resource_config)
 
-        if message_format == "anthropic":
+        # completions_path overrides the default suffix for providers with a
+        # non-standard endpoint shape (e.g. MiniMax: /v1/text/chatcompletion_v2,
+        # not the usual /chat/completions — request/response bodies are still
+        # OpenAI-shape compatible, only the URL differs). Verified via direct
+        # curl test 2026-07-17 before wiring into the resource pool.
+        completions_path = resource_config.get("completions_path")
+        if completions_path:
+            url = f"{base_url}/{completions_path.lstrip('/')}"
+        elif message_format == "anthropic":
             url = f"{base_url}/messages"
         else:
             url = f"{base_url}/chat/completions"
@@ -243,7 +251,15 @@ class UnifiedLLMClient:
         payload = self._build_payload(messages, model, output_limit, message_format, tools=tools)
         payload["stream"] = True
 
-        if message_format == "anthropic":
+        # completions_path overrides the default suffix for providers with a
+        # non-standard endpoint shape (e.g. MiniMax: /v1/text/chatcompletion_v2,
+        # not the usual /chat/completions — request/response bodies are still
+        # OpenAI-shape compatible, only the URL differs). Verified via direct
+        # curl test 2026-07-17 before wiring into the resource pool.
+        completions_path = resource_config.get("completions_path")
+        if completions_path:
+            url = f"{base_url}/{completions_path.lstrip('/')}"
+        elif message_format == "anthropic":
             url = f"{base_url}/messages"
         else:
             url = f"{base_url}/chat/completions"
@@ -320,7 +336,15 @@ class UnifiedLLMClient:
 
         headers = self._build_headers(resource_config)
 
-        if message_format == "anthropic":
+        # completions_path overrides the default suffix for providers with a
+        # non-standard endpoint shape (e.g. MiniMax: /v1/text/chatcompletion_v2,
+        # not the usual /chat/completions — request/response bodies are still
+        # OpenAI-shape compatible, only the URL differs). Verified via direct
+        # curl test 2026-07-17 before wiring into the resource pool.
+        completions_path = resource_config.get("completions_path")
+        if completions_path:
+            url = f"{base_url}/{completions_path.lstrip('/')}"
+        elif message_format == "anthropic":
             url = f"{base_url}/messages"
         else:
             url = f"{base_url}/chat/completions"
