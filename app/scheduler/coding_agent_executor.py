@@ -122,6 +122,7 @@ class CodingAgentExecutor:
         self._servers_config: Any = None  # ServersConfig — cached alongside _registry
         self._last_backend_error: str | None = None  # set by _get_backend on failure
         self._model_override: dict | None = None  # set per-task in execute(), also defaulted here
+        self._quota_fallback_model: dict | None = None  # set per-task in execute(), also defaulted here
 
     def _log(self, msg: str, level: str = "info") -> None:
         if self._logger:
@@ -149,6 +150,7 @@ class CodingAgentExecutor:
         self._pending_permission: dict | None = None
         self._auto_approve_external_directory: bool = False
         self._model_override: dict | None = None
+        self._quota_fallback_model: dict | None = None
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -238,6 +240,7 @@ class CodingAgentExecutor:
 
         self._auto_approve_external_directory = self._server_auto_approves_external_directory(server_id)
         self._model_override = self._server_model_override(server_id)
+        self._quota_fallback_model = self._server_quota_fallback_model(server_id)
 
         # Health check — if unreachable, attempt auto-start then re-check.
         # Only escalate to waiting_for_input if auto-start fails.
@@ -690,6 +693,23 @@ class CodingAgentExecutor:
             with suppress(Exception, asyncio.CancelledError):
                 await send_task
             self._log("send_message timed out after 280s", "warning")
+
+            # A "timeout" here can actually be a silently-retried-forever
+            # quota exhaustion (OpenCode never surfaces the underlying
+            # provider error through its HTTP API — found live 2026-07-30,
+            # cost ~40 min to trace via OpenCode's own log file). If the
+            # project has a configured fallback and none is active yet,
+            # check the log now instead of requiring a human to notice.
+            if self._model_override is None and self._quota_fallback_model:
+                if self._opencode_log_shows_quota_exhaustion(session_id):
+                    self._log(
+                        f"Detected quota exhaustion in OpenCode's log for session "
+                        f"{session_id} — switching to fallback model "
+                        f"{self._quota_fallback_model} for the rest of this task",
+                        "warning",
+                    )
+                    self._model_override = self._quota_fallback_model
+
             return {"status": "timeout", "result": "(timed out — no response from coding agent)"}
 
         if send_error is not None:
@@ -825,6 +845,20 @@ class CodingAgentExecutor:
 
         if self._registry is None:
             cfg = load_config()
+            # password_ref: shared-vault indirection for a server's Basic
+            # Auth password, additive alongside the existing inline
+            # `password` field. Resolved here (not inside the submodule —
+            # coding-agent-mcp-tool is a separate repo) by mutating the
+            # already-loaded ServerEntry before BackendRegistry consumes it;
+            # ServerEntry.model_config = {"extra": "allow"} means password_ref
+            # survives pydantic validation as a plain attribute.
+            from app.scheduler.key_vault import resolve_api_key
+            for entry in cfg.servers:
+                password_ref = getattr(entry, "password_ref", None)
+                if password_ref:
+                    vault_password = resolve_api_key(password_ref)
+                    if vault_password:
+                        entry.password = vault_password
             self._servers_config = cfg
             self._registry = BackendRegistry()
             self._registry.reload(cfg.servers, cfg.default_server)
@@ -878,6 +912,76 @@ class CodingAgentExecutor:
                     return override
                 return None
         return None
+
+    def _server_quota_fallback_model(self, server_id: str | None) -> dict | None:
+        """
+        Check the per-server config for an opt-in "quota_fallback_model"
+        object, e.g. {"providerID": "opencode", "modelID": "big-pickle"}.
+
+        Unlike model_override (always forces the model for every call),
+        this only kicks in automatically when a send_message timeout is
+        found — via _opencode_log_shows_quota_exhaustion() — to correlate
+        with a real quota-exhaustion error in OpenCode's own log. Lets a
+        project stay on its normal (often better/paid) default model and
+        only fall back when it's actually rate-limited, rather than always.
+        Returns None (no automatic fallback configured) if unset.
+        """
+        self._get_registry()  # ensures self._servers_config is loaded
+        servers = getattr(getattr(self, "_servers_config", None), "servers", None) or []
+        for entry in servers:
+            if entry.id == server_id:
+                fallback = getattr(entry, "quota_fallback_model", None)
+                if isinstance(fallback, dict) and fallback.get("providerID") and fallback.get("modelID"):
+                    return fallback
+                return None
+        return None
+
+    @staticmethod
+    def _opencode_log_shows_quota_exhaustion(session_id: str, tail_lines: int = 400) -> bool:
+        """
+        Tail OpenCode's own log file (~/.local/share/opencode/log/opencode.log,
+        a single global file shared by every project/session on this host —
+        found live 2026-07-30) for a quota-exhaustion error correlated to
+        this specific session_id.
+
+        OpenCode retries a rate-limited call silently forever internally and
+        never surfaces the underlying provider error through its HTTP API —
+        confirmed live: a "stream error ... Usage limit reached" line sat in
+        this log for ~40 minutes while every agent_send_message from
+        MoJoAssistant's side just looked like a hang. This is the only place
+        the real error is ever visible.
+
+        Only inspects the most recent matching line for this session_id —
+        an older quota error for the same session that has since recovered
+        (a later successful "stream" with no matching error) should not
+        keep triggering the fallback.
+        """
+        from pathlib import Path
+        from app.scheduler.provider_errors import classify_provider_error
+
+        log_path = Path.home() / ".local" / "share" / "opencode" / "log" / "opencode.log"
+        if not log_path.exists():
+            return False
+
+        try:
+            with log_path.open("r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()[-tail_lines:]
+        except Exception:
+            return False
+
+        last_relevant_is_error = False
+        for line in lines:
+            if f"session.id={session_id}" not in line:
+                continue
+            if "stream error" in line:
+                category, _ = classify_provider_error(line)
+                last_relevant_is_error = category == "quota_exhausted"
+            elif "level=INFO" in line and "message=stream " in line:
+                # A later successful stream start for this session — the
+                # provider may have recovered; don't trust a stale error.
+                last_relevant_is_error = False
+
+        return last_relevant_is_error
 
     def _get_backend(self, role: dict, config: dict) -> Any | None:
         server_id = config.get("server_id") or role.get("server_id")

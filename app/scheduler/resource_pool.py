@@ -75,6 +75,12 @@ class UsageRecord:
     total_calls: int = 0
     last_call_at: Optional[float] = None
     consecutive_errors: int = 0
+    # Set when record_usage() classifies a failure as quota_exhausted with a
+    # provider-stated reset time (see provider_errors.classify_provider_error).
+    # Takes precedence over the blind consecutive_errors/300s breaker in
+    # _compute_status() — a provider that says "resets at 15:04:03" should be
+    # trusted over a flat 5-minute guess.
+    rate_limited_until: Optional[float] = None
 
 
 class ResourceManager:
@@ -135,6 +141,12 @@ class ResourceManager:
                     # Reset on startup — stale errors from a dead process must not
                     # permanently block resources on the next server start.
                     consecutive_errors=0,
+                    # NOT reset — a provider-stated quota reset time is a real
+                    # fact about the provider, not a process-local counter that
+                    # a crashed process could have corrupted. Restarting
+                    # mojoassistant should not un-rate-limit a still-exhausted
+                    # provider.
+                    rate_limited_until=rec.get("rate_limited_until"),
                 )
             self._log(f"Loaded usage stats for {len(data)} resource(s)")
         except Exception as e:
@@ -149,6 +161,7 @@ class ResourceManager:
                     "total_calls": usage.total_calls,
                     "last_call_at": usage.last_call_at,
                     "consecutive_errors": usage.consecutive_errors,
+                    "rate_limited_until": usage.rate_limited_until,
                 }
             self.USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.USAGE_FILE.write_text(
@@ -528,8 +541,21 @@ class ResourceManager:
                     self._group_counters[group] = idx + 1
             return best
 
-    def record_usage(self, resource_id: str, tokens_used: int = 0, success: bool = True):
-        """Record a completed LLM call."""
+    def record_usage(
+        self,
+        resource_id: str,
+        tokens_used: int = 0,
+        success: bool = True,
+        error_message: Optional[str] = None,
+    ):
+        """Record a completed LLM call.
+
+        error_message (optional): the raw exception/response text on failure.
+        When it classifies as quota_exhausted with a parseable reset time
+        (see provider_errors.classify_provider_error), rate_limited_until is
+        set instead of relying purely on the blind consecutive_errors
+        counter — see UsageRecord.rate_limited_until docstring.
+        """
         with self._lock:
             usage = self._usage.get(resource_id)
             if usage is None:
@@ -543,8 +569,14 @@ class ResourceManager:
 
             if success:
                 usage.consecutive_errors = 0
+                usage.rate_limited_until = None
             else:
                 usage.consecutive_errors += 1
+                if error_message:
+                    from app.scheduler.provider_errors import classify_provider_error
+                    _category, rate_limited_until = classify_provider_error(error_message)
+                    if rate_limited_until is not None:
+                        usage.rate_limited_until = rate_limited_until
 
             self._persist_usage()
 
@@ -936,6 +968,16 @@ class ResourceManager:
             return ResourceStatus.DISABLED
 
         usage = self._usage.get(resource.id)
+
+        # A provider-stated reset time takes precedence over the blind
+        # consecutive_errors/300s breaker below — trust "resets at 15:04:03"
+        # over a flat 5-minute guess. Cleared automatically once elapsed.
+        if usage and usage.rate_limited_until:
+            if time.time() < usage.rate_limited_until:
+                return ResourceStatus.RATE_LIMITED
+            usage.rate_limited_until = None
+            self._persist_usage()
+
         if usage and usage.consecutive_errors >= 5:
             # Auto-recovery: if last call was long ago, reset error counter
             if usage.last_call_at and (time.time() - usage.last_call_at) > self._ERROR_RECOVERY_SECONDS:

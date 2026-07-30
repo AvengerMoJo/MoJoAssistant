@@ -102,7 +102,7 @@ class ResourcePoolLLMInterface:
                 model_override=resource.model,
             )
         except (TimeoutError, ConnectionError, OSError) as e:
-            self._rm.record_usage(resource.id, success=False)
+            self._rm.record_usage(resource.id, success=False, error_message=str(e))
             logger.error(f"ResourcePoolLLMInterface._generate failed: {e}")
             return ""
 

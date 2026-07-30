@@ -326,6 +326,9 @@ class TestCodingAgentSendPolling(unittest.IsolatedAsyncioTestCase):
         ex._log = lambda *a, **k: None
         ex._pending_permission = None
         ex._waiting_for_input_question = None
+        ex._auto_approve_external_directory = False
+        ex._model_override = None
+        ex._quota_fallback_model = None
         return ex
 
     async def test_send_completes_normally(self):

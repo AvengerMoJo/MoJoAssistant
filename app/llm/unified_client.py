@@ -2,6 +2,7 @@
 UnifiedLLMClient — single entry point for all LLM HTTP calls in MoJoAssistant.
 
 Key resolution order (env beats config, runtime override beats codebase):
+  0. key_ref — shared vault (~/.memory/config/api_keys.json)
   1. key_var / api_key_env environment variable
   2. Inline api_key in resource config (from merged config — runtime layer wins)
   3. resolve_llm_resource(resource_id) — searches both api_models and local_models
@@ -65,6 +66,7 @@ class UnifiedLLMClient:
         Resolve the API key for a resource.
 
         Priority:
+          0. key_ref → shared vault (~/.memory/config/api_keys.json)
           1. key_var / api_key_env → env_override then os.environ
           2. Inline api_key in entry (non-template)
           3. resolve_llm_resource(resource_id) from merged config
@@ -72,6 +74,17 @@ class UnifiedLLMClient:
           5. {PROVIDER}_API_KEY env fallback
         """
         _env = env_override or {}
+
+        # 0. key_ref — explicit, deliberate vault reference wins over
+        # everything else. Additive: existing configs with no key_ref are
+        # completely unaffected (resolve_api_key returns None for a falsy
+        # name and falls through to the existing chain below).
+        key_ref = entry.get("key_ref")
+        if key_ref:
+            from app.scheduler.key_vault import resolve_api_key
+            vault_key = resolve_api_key(key_ref)
+            if vault_key:
+                return vault_key
 
         # 1. key_var / api_key_env
         key_var = entry.get("key_var") or entry.get("api_key_env")

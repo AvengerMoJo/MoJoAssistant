@@ -1373,7 +1373,7 @@ class AgenticExecutor:
                     except Exception:
                         pass  # audit logging must never break task execution
             except Exception as e:
-                self._rm.record_usage(resource.id, success=False)
+                self._rm.record_usage(resource.id, success=False, error_message=str(e))
                 _failed_resource_ids.add(resource.id)
                 self._log(f"LLM call failed: {e} — resource '{resource.id}' excluded for this task", "error")
                 iteration_log.append(
