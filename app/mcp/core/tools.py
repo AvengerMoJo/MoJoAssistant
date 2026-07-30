@@ -915,6 +915,14 @@ class ToolRegistry:
                             "type": "integer",
                             "description": "Max think-act iterations (add action, default 10).",
                         },
+                        "max_duration_seconds": {
+                            "type": "integer",
+                            "description": (
+                                "Wall-clock time budget in seconds (add action, default 600). "
+                                "Raise this for coding_agent-executor roles doing real work "
+                                "(package installs, builds) — the default is often too short."
+                            ),
+                        },
                         "pinned_resource": {
                             "type": "string",
                             "description": "Pin to a specific LLM resource ID, bypassing tier selection (add action).",
@@ -6920,6 +6928,14 @@ Agent resumes within seconds.
                 config["max_iterations"] = add_args["max_iterations"]
             if add_args.get("pinned_resource") and "pinned_resource" not in config:
                 config["pinned_resource"] = add_args["pinned_resource"]
+            # max_duration_seconds was accepted by _execute_scheduler_add_task's
+            # config-popping logic (see its "Extract max_duration_seconds..."
+            # comment) but never reachable through this hub — silently dropped
+            # whenever passed as a scheduler(action="add", ...) kwarg. Found live
+            # 2026-07-30 dispatching a coding_agent task that needed a longer
+            # budget than the 600s default.
+            if add_args.get("max_duration_seconds") is not None and "max_duration_seconds" not in config:
+                config["max_duration_seconds"] = add_args["max_duration_seconds"]
             # Sandbox/project targeting — see project_registry.py. project_label is
             # the preferred form ("agent+stack+repo", e.g. "opencode+python+mcp-buffer");
             # it resolves to a git_url automatically and avoids hardcoding server_id.
