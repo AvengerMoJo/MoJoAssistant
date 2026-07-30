@@ -122,3 +122,70 @@ class TestSendWithPermissionWatchExternalDirectoryAutoApprove:
         )
         assert result["status"] == "completed"
         assert result["result"] == "done"
+
+
+class TestServerModelOverride:
+    """
+    Found live 2026-07-30: a project's default OpenCode provider/model
+    (zai-coding-plan/glm-5.1) hit a 5-hour usage-window rate limit; OpenCode
+    silently retried forever with no error surfaced through its HTTP API, so
+    from CodingAgentExecutor's side every call just looked like a timeout.
+    model_override lets a project opt in to a different provider/model
+    (e.g. OpenCode's own free "big-pickle") per-message as a manual stopgap.
+    """
+
+    def test_returns_none_when_absent(self):
+        executor = _make_executor()
+        executor._servers_config = SimpleNamespace(
+            servers=[SimpleNamespace(id="git@github.com:x/y.git")]
+        )
+        executor._get_registry = lambda: None
+        assert executor._server_model_override("git@github.com:x/y.git") is None
+
+    def test_returns_override_when_set(self):
+        executor = _make_executor()
+        override = {"providerID": "opencode", "modelID": "big-pickle"}
+        executor._servers_config = SimpleNamespace(
+            servers=[SimpleNamespace(id="git@github.com:x/y.git", model_override=override)]
+        )
+        executor._get_registry = lambda: None
+        assert executor._server_model_override("git@github.com:x/y.git") == override
+
+    def test_ignores_incomplete_override(self):
+        executor = _make_executor()
+        executor._servers_config = SimpleNamespace(
+            servers=[SimpleNamespace(id="git@github.com:x/y.git", model_override={"providerID": "opencode"})]
+        )
+        executor._get_registry = lambda: None
+        assert executor._server_model_override("git@github.com:x/y.git") is None
+
+    @pytest.mark.asyncio
+    async def test_send_with_permission_watch_passes_model_override(self):
+        executor = _make_executor()
+        executor._auto_approve_external_directory = False
+        executor._model_override = {"providerID": "opencode", "modelID": "big-pickle"}
+
+        backend = AsyncMock()
+        backend.send_message = AsyncMock(return_value={"parts": [{"type": "text", "text": "OK"}]})
+        backend.list_permissions = AsyncMock(return_value=[])
+
+        result = await executor._send_with_permission_watch(backend, "sess1", "hi")
+
+        backend.send_message.assert_awaited_once_with(
+            "sess1", "hi", model={"providerID": "opencode", "modelID": "big-pickle"}
+        )
+        assert result["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_send_with_permission_watch_omits_model_kwarg_when_unset(self):
+        executor = _make_executor()
+        executor._auto_approve_external_directory = False
+        executor._model_override = None
+
+        backend = AsyncMock()
+        backend.send_message = AsyncMock(return_value={"parts": [{"type": "text", "text": "OK"}]})
+        backend.list_permissions = AsyncMock(return_value=[])
+
+        await executor._send_with_permission_watch(backend, "sess1", "hi")
+
+        backend.send_message.assert_awaited_once_with("sess1", "hi")

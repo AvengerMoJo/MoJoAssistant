@@ -121,6 +121,7 @@ class CodingAgentExecutor:
         self._registry: Any = None  # BackendRegistry — lazy-loaded and cached
         self._servers_config: Any = None  # ServersConfig — cached alongside _registry
         self._last_backend_error: str | None = None  # set by _get_backend on failure
+        self._model_override: dict | None = None  # set per-task in execute(), also defaulted here
 
     def _log(self, msg: str, level: str = "info") -> None:
         if self._logger:
@@ -147,6 +148,7 @@ class CodingAgentExecutor:
         self._waiting_for_input_question: str | None = None
         self._pending_permission: dict | None = None
         self._auto_approve_external_directory: bool = False
+        self._model_override: dict | None = None
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -235,6 +237,7 @@ class CodingAgentExecutor:
             server_id = getattr(self._registry, "_default_id", None)
 
         self._auto_approve_external_directory = self._server_auto_approves_external_directory(server_id)
+        self._model_override = self._server_model_override(server_id)
 
         # Health check — if unreachable, attempt auto-start then re-check.
         # Only escalate to waiting_for_input if auto-start fails.
@@ -596,7 +599,8 @@ class CodingAgentExecutor:
         async def _send():
             nonlocal send_result, send_error
             try:
-                send_result = await backend.send_message(session_id, content)
+                send_kwargs = {"model": self._model_override} if self._model_override else {}
+                send_result = await backend.send_message(session_id, content, **send_kwargs)
             except Exception as e:
                 send_error = e
                 self._log(f"send_message raised: {e}", "warning")
@@ -847,6 +851,33 @@ class CodingAgentExecutor:
             if entry.id == server_id:
                 return bool(getattr(entry, "auto_approve_external_directory", False))
         return False
+
+    def _server_model_override(self, server_id: str | None) -> dict | None:
+        """
+        Check the per-server config for an opt-in "model_override" object
+        (ServerEntry allows extra fields — see coding_agent_mcp.config.models),
+        e.g. {"providerID": "opencode", "modelID": "big-pickle"}.
+
+        Why this exists: OpenCode picks whatever provider/model is set as the
+        project's default (zai-coding-plan/glm-5.1 in our config), which is a
+        paid, rate-limited plan. When that plan's usage window is exhausted,
+        every send_message silently retries forever inside OpenCode with no
+        error surfaced through its HTTP API — it just looks like a hang. A
+        project can opt in to overriding the model per-message (e.g. to
+        OpenCode's own free "big-pickle" model, $0 cost, no API key needed)
+        as a manual stopgap until a proper budget-aware provider scheduler
+        exists (see project_unified_provider_resource_pool_vision memory).
+        Returns None (no override — use OpenCode's own default) if unset.
+        """
+        self._get_registry()  # ensures self._servers_config is loaded
+        servers = getattr(getattr(self, "_servers_config", None), "servers", None) or []
+        for entry in servers:
+            if entry.id == server_id:
+                override = getattr(entry, "model_override", None)
+                if isinstance(override, dict) and override.get("providerID") and override.get("modelID"):
+                    return override
+                return None
+        return None
 
     def _get_backend(self, role: dict, config: dict) -> Any | None:
         server_id = config.get("server_id") or role.get("server_id")
