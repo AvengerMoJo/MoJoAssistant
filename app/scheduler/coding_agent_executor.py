@@ -119,6 +119,7 @@ class CodingAgentExecutor:
         self._memory_service = memory_service
         self._session_storage = SessionStorage()
         self._registry: Any = None  # BackendRegistry — lazy-loaded and cached
+        self._servers_config: Any = None  # ServersConfig — cached alongside _registry
         self._last_backend_error: str | None = None  # set by _get_backend on failure
 
     def _log(self, msg: str, level: str = "info") -> None:
@@ -145,6 +146,7 @@ class CodingAgentExecutor:
         """
         self._waiting_for_input_question: str | None = None
         self._pending_permission: dict | None = None
+        self._auto_approve_external_directory: bool = False
 
         config = task.config or {}
         goal = config.get("goal", "")
@@ -231,6 +233,8 @@ class CodingAgentExecutor:
         # be auto-started. Pull it out explicitly so auto-start can use it.
         if server_id is None and self._registry is not None:
             server_id = getattr(self._registry, "_default_id", None)
+
+        self._auto_approve_external_directory = self._server_auto_approves_external_directory(server_id)
 
         # Health check — if unreachable, attempt auto-start then re-check.
         # Only escalate to waiting_for_input if auto-start fails.
@@ -632,6 +636,15 @@ class CodingAgentExecutor:
                         for prefix in _AUTO_GRANT_PREFIXES
                     )
 
+                    # external_directory permissions never carry a directory/patterns
+                    # value from OpenCode's own API (confirmed: the submodule proxies
+                    # the raw response with zero normalization), so the prefix check
+                    # above can never match them even for a totally safe, project-scoped
+                    # request. Projects that opt in via config get these auto-approved
+                    # instead of escalating on every single one.
+                    if not auto_grantable and title == "external_directory":
+                        auto_grantable = self._auto_approve_external_directory
+
                     if auto_grantable:
                         self._log(
                             f"Auto-granting permission {perm_id} ({title}) "
@@ -808,9 +821,32 @@ class CodingAgentExecutor:
 
         if self._registry is None:
             cfg = load_config()
+            self._servers_config = cfg
             self._registry = BackendRegistry()
             self._registry.reload(cfg.servers, cfg.default_server)
         return self._registry
+
+    def _server_auto_approves_external_directory(self, server_id: str | None) -> bool:
+        """
+        Check the per-server config for an opt-in "auto_approve_external_directory"
+        flag (ServerEntry allows extra fields — see coding_agent_mcp.config.models).
+
+        Why this exists: OpenCode's own /permission API never populates the
+        `directory`/`patterns` fields for `external_directory`-type permission
+        requests, so the path-prefix auto-grant check in
+        _send_with_permission_watch can never match them — every such
+        permission escalates to the user regardless of how safe it actually
+        is. Since each OpenCode server is already scoped to exactly one git
+        repo (its own base_dir), that scoping IS the trust boundary; this lets
+        a specific project opt in to treating external_directory requests as
+        pre-approved instead of escalating on every one. Defaults to False.
+        """
+        self._get_registry()  # ensures self._servers_config is loaded
+        servers = getattr(getattr(self, "_servers_config", None), "servers", None) or []
+        for entry in servers:
+            if entry.id == server_id:
+                return bool(getattr(entry, "auto_approve_external_directory", False))
+        return False
 
     def _get_backend(self, role: dict, config: dict) -> Any | None:
         server_id = config.get("server_id") or role.get("server_id")

@@ -98,6 +98,8 @@ Tasks run in a resource pool. Each role has a tier preference (local free model 
 
 **HITL (Human-in-the-Loop):** Any task can pause mid-execution and inject a question into the owner's inbox via `ask_user`. The owner answers; the task resumes. This is the foundation of MoJo's trust model — agents always have an escalation path to the human, and the human can interrupt any task at any time.
 
+**Sandboxing:** `internal_assignment` tasks and OpenCode-driven (`coding_agent`-executor) tasks use two separate, not-yet-unified isolation systems with different config files and path conventions — see `docs/architecture/SANDBOX_SYSTEMS.md` before debugging a sandbox/permission issue.
+
 ---
 
 ### 3. The Policy Pipeline

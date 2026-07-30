@@ -88,6 +88,50 @@ class TestAvailableToolsEnforcement(unittest.IsolatedAsyncioTestCase):
         registry.set_task_context(task_id="t2", available_tools=None)
         self.assertIsNone(registry._current_available_tools)
 
+    async def test_modifier_syntax_raw_list_blocks_everything(self):
+        """
+        Reproduces the live bug found 2026-07-30: set_task_context() called
+        with the RAW config available_tools (still containing "+"/"-" prefixes,
+        e.g. from the sandbox auto-grant path in handlers/agentic.py) enforces
+        those literal strings against plain tool names, so every call —
+        including the ones the modifier was meant to grant — gets rejected.
+        """
+        registry = self._make_registry()
+        registry.set_task_context(
+            task_id="t1",
+            available_tools=["+bash_exec", "+read_file", "+write_file", "+list_files"],
+        )
+        result = await registry.execute_tool("bash_exec", {"command": "ls"})
+        self.assertFalse(result["success"])
+        self.assertIn("not in this task's available_tools", result["error"])
+
+    async def test_resolved_list_after_modifier_syntax_allows_granted_tools(self):
+        """
+        The fix: CapabilityResolver.resolve() must run on the raw "+"/"-" list
+        first, and the RESOLVED (plain-name) list is what gets passed to
+        set_task_context — not the raw config value. This is what
+        agentic_executor.execute() now does after computing enabled_tool_names.
+        """
+        from app.scheduler.capability_resolver import CapabilityResolver
+
+        registry = self._make_registry()
+        registry._tools["bash_exec"] = __import__(
+            "app.scheduler.capability_registry", fromlist=["CapabilityDefinition"]
+        ).CapabilityDefinition(
+            name="bash_exec", description="", category="exec",
+            executor={"type": "builtin"}, danger_level="low",
+        )
+        registry._bash_exec = AsyncMock(return_value={"success": True, "output": ""})
+
+        resolver = CapabilityResolver()
+        raw_available_tools = ["+bash_exec", "+read_file", "+write_file", "+list_files"]
+        resolved = resolver.resolve(role=None, available_tools=raw_available_tools, tool_registry=registry)
+        self.assertIn("bash_exec", resolved)
+
+        registry.set_task_context(task_id="t1", available_tools=resolved)
+        result = await registry.execute_tool("bash_exec", {"command": "ls"})
+        self.assertTrue(result["success"])
+
 
 class TestAvailableToolsRegressionGoal(unittest.TestCase):
     """

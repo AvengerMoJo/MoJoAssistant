@@ -882,6 +882,20 @@ class AgenticExecutor:
         self._enabled_tool_names = enabled_tool_names
         _cv_enabled_tools.set(enabled_tool_names)
 
+        # The early set_task_context() call above enforced the RAW config
+        # available_tools (e.g. "+bash_exec") against literal tool names,
+        # rejecting every call whenever +/- modifier syntax was used — the
+        # exact syntax the sandbox auto-grant path (handlers/agentic.py) is
+        # required to use to avoid clobbering a role's full capability set.
+        # Re-apply with the resolved list so enforcement matches what the
+        # LLM was actually told it has access to.
+        self._tool_registry.set_task_context(
+            task.id,
+            task.dispatch_depth,
+            role_id=role_id,
+            available_tools=enabled_tool_names,
+        )
+
         # Intent-class preflight (provider-agnostic contract gate).
         # If required intent classes are declared for this task, at least one
         # healthy provider must exist per class before execution can start.
