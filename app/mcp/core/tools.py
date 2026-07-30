@@ -6935,7 +6935,13 @@ Agent resumes within seconds.
             # 2026-07-30 dispatching a coding_agent task that needed a longer
             # budget than the 600s default.
             if add_args.get("max_duration_seconds") is not None and "max_duration_seconds" not in config:
-                config["max_duration_seconds"] = add_args["max_duration_seconds"]
+                try:
+                    config["max_duration_seconds"] = int(add_args["max_duration_seconds"])
+                except (TypeError, ValueError):
+                    return {
+                        "status": "error",
+                        "message": f"'max_duration_seconds' must be an integer, got {add_args['max_duration_seconds']!r}",
+                    }
             # Sandbox/project targeting — see project_registry.py. project_label is
             # the preferred form ("agent+stack+repo", e.g. "opencode+python+mcp-buffer");
             # it resolves to a git_url automatically and avoids hardcoding server_id.
