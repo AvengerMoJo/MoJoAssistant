@@ -1,3 +1,5 @@
+
+
 # MoJoAssistant
 
 **Your AI remembers you. Your data stays on your machine.**
@@ -97,6 +99,7 @@ Run with `--fix` for an interactive guided setup wizard.
 ```bash
 cp .env.example .env
 # Edit .env — set API keys, LLM endpoint, MEMORY_PATH if needed
+# Optional: set DREAMING_DISABLED=1 to skip memory consolidation if the submodule is missing
 ```
 
 ### 5. Start the server
