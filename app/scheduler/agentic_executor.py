@@ -44,15 +44,25 @@ from app.scheduler.intent_class_preflight import (
 # per-task isolation with no locks and no dict lookups.
 _cv_waiting_q:       ContextVar = ContextVar("exec_waiting_q",       default=None)
 _cv_waiting_c:       ContextVar = ContextVar("exec_waiting_c",       default=None)
-from app.scheduler.exec_context import cv_gate_pending as _cv_gate_pending, cv_dispatch_blocked as _cv_dispatch_blocked
+from app.scheduler.exec_context import (
+    cv_gate_pending as _cv_gate_pending,
+    cv_dispatch_blocked as _cv_dispatch_blocked,
+    # task_id/role_id/enabled_tools/dispatch_depth live in exec_context.py, not
+    # declared here, because capability_registry.py also needs them (dispatch_
+    # subtask parent linkage, the depth cap, role-scoped memory_search, and the
+    # tool allowlist check) and can't import agentic_executor.py without a
+    # circular import. See exec_context.py's module docstring and
+    # ~/.memory/research/scheduler_concurrency_context_race_2607.md.
+    cv_task_id as _cv_task_id,
+    cv_dispatch_depth as _cv_dispatch_depth,
+    cv_role_id as _cv_role_id,
+    cv_enabled_tools as _cv_enabled_tools,
+)
 _cv_tool_calls:      ContextVar = ContextVar("exec_tool_calls",      default=0)
 _cv_consec_notool:   ContextVar = ContextVar("exec_consec_notool",   default=0)
 _cv_budget_ext:      ContextVar = ContextVar("exec_budget_ext",      default=0)
 _cv_exhausts_ask:    ContextVar = ContextVar("exec_exhausts_ask",    default=False)
 _cv_requires_tool:   ContextVar = ContextVar("exec_requires_tool",   default=True)
-_cv_task_id:         ContextVar = ContextVar("exec_task_id",         default=None)
-_cv_role_id:         ContextVar = ContextVar("exec_role_id",         default=None)
-_cv_enabled_tools:   ContextVar = ContextVar("exec_enabled_tools",   default=None)
 
 # Tools whose output commonly bloats context (bash stdout, file reads).
 # Results longer than this cap are truncated before being added to messages.
@@ -813,20 +823,17 @@ class AgenticExecutor:
                 self._log(msg, level="error")
                 return TaskResult(success=False, error_message=msg)
 
-        # Compatibility: some roles may store a resource ID in model_preference
-        # (e.g. "lmstudio_qwen35b"). Treat that as a resource pin instead of
-        # passing it as a literal model name to providers.
-        if role_model_preference:
-            try:
-                if self._rm.get_resource(role_model_preference) is not None:
-                    role_preferred_resource_id = role_model_preference
-                    role_model_preference = None
-                    self._log(
-                        f"Role model_preference resolved as resource id: "
-                        f"{role_preferred_resource_id}"
-                    )
-            except Exception:
-                pass
+        # Resolve model_preference into either a pinned resource ID or a
+        # validated literal model override (see _resolve_model_preference
+        # docstring for the community_host 400-Bad-Request incident this
+        # guards against).
+        role_preferred_resource_id, role_model_preference, _mp_warning = (
+            self._resolve_model_preference(role_model_preference, self._rm._resources)
+        )
+        if role_preferred_resource_id:
+            self._log(f"Role model_preference resolved as resource id: {role_preferred_resource_id}")
+        if _mp_warning:
+            self._log(f"Role '{role_id}': {_mp_warning}", level="warning")
 
         # Setup-time ceiling: validate available_tools against role policy
         available_tools = config.get("available_tools", [])
@@ -1067,6 +1074,28 @@ class AgenticExecutor:
 
             if _needs_ask:
                 task.pending_question = _ask_question
+                # Persist a minimal session so `reply_to_task` can resume this task.
+                # The scheduler always sets resume_from_task_id = task.id whenever a
+                # task goes to waiting_for_input (see core.py's dispatch loop), but
+                # without a saved session here, _load_resume_messages() below finds
+                # nothing and resume hard-fails with "Resume session 'X' not found
+                # ... Runtime must not fallback to fresh start." Every OTHER
+                # waiting_for_input pause point in this method happens after the
+                # session is created (line ~1188+), so only this fresh-start gap
+                # check pause was missing one. Save a minimal system+goal session
+                # now (skipping orient/lessons enrichment — acceptable since this
+                # is just enough for resume to have something to append the user's
+                # reply onto).
+                _pause_session = TaskSession(
+                    task_id=task.id,
+                    status="waiting_for_input",
+                    messages=[],
+                    started_at=datetime.now().isoformat(),
+                    metadata={"goal": goal, "max_iterations": max_iterations, "resume_from": None},
+                )
+                self._session_storage.save_session(_pause_session)
+                self._record(task.id, "system", system_prompt, iteration=0)
+                self._record(task.id, "user", f"Goal: {goal}", iteration=0)
                 return TaskResult(
                     success=False,
                     waiting_for_input=_ask_question,
@@ -1247,6 +1276,16 @@ class AgenticExecutor:
                 config=config,
                 iteration_log=iteration_log,
             )
+            # Bug found live 2026-07-21: allowed_tiers (role data_boundary,
+            # e.g. local_only roles like community_host restricted to
+            # ['free']) was only checked AFTER a resource was already
+            # acquired -- by then the task just fails outright instead of
+            # ever considering an allowed resource. This is why
+            # community_host had been unable to restart for 28+ days: every
+            # attempt hit this failure. Filter here, before acquire() ever
+            # sees a disallowed tier, so the boundary is enforced by
+            # candidate selection, not by rejecting the outcome after the fact.
+            iter_tiers = self._apply_data_boundary_to_tiers(iter_tiers, self._data_boundary.get("allowed_tiers"))
             pinned_resource_id = config.get("pinned_resource") or role_preferred_resource_id
             if pinned_resource_id:
                 resource = self._rm.acquire_by_id(pinned_resource_id)
@@ -3380,6 +3419,84 @@ class AgenticExecutor:
                 )
 
         return dynamic_tiers, f"dynamic_complexity_{complexity}"
+
+    @staticmethod
+    def _apply_data_boundary_to_tiers(
+        iter_tiers: List[ResourceTier],
+        allowed_tiers_cfg: Optional[List[str]],
+    ) -> List[ResourceTier]:
+        """Constrain a candidate tier list to a role's data_boundary.allowed_tiers.
+
+        Bug found live 2026-07-21 (community_host stuck unable to restart for
+        28+ days): the allowed_tiers restriction was previously only checked
+        AFTER a resource was already acquired, so a local_only role (like
+        community_host, allowed_tiers=['free']) reliably had FREE_API
+        reordered into its candidate list by dynamic complexity policy, the
+        resource manager happily acquired a free_api resource since it never
+        knew about the role restriction, and the task then failed outright
+        with a data-boundary violation instead of ever trying an allowed tier.
+
+        Filters iter_tiers down to only the allowed ones, preserving order.
+        If that leaves nothing (e.g. dynamic policy proposed only FREE_API/PAID
+        for a free-only role), falls back to the role's allowed tiers directly
+        rather than silently keeping a disallowed list.
+        """
+        if not allowed_tiers_cfg:
+            return iter_tiers
+        allowed_set = {t for t in iter_tiers if t.value in allowed_tiers_cfg}
+        if allowed_set:
+            return [t for t in iter_tiers if t in allowed_set]
+        return [t for t in ResourceTier if t.value in allowed_tiers_cfg]
+
+    @staticmethod
+    def _resolve_model_preference(
+        role_model_preference: Optional[str],
+        resources: Dict[str, "LLMResource"],
+    ) -> tuple:
+        """Resolve a role's raw model_preference value into either a pinned
+        resource ID or a validated literal model override.
+
+        Bug found live 2026-07-22: community_host's role config had
+        model_preference="local" — a generic tier hint (redundant with
+        local_only=true, already enforced via data_boundary elsewhere), not a
+        resource ID or a real model name. It didn't match the resource-ID
+        compatibility check, so it fell through unchanged and got used as a
+        literal model_override — every request sent {"model": "local"} to
+        LMStudio, which isn't a real model, and every single local backend
+        400'd. This is why community_host stayed down even after the tier-
+        boundary fix: two independent bugs stacked on the same restart path.
+
+        A value only survives as a literal model override if it actually
+        matches some configured resource's `model` field (the documented use
+        case — e.g. rebecca's model_preference="qwen3.6-27b-mtp" matching
+        lmstudio_qwen36_27b_mtp's model field). Anything else is cleared with
+        a warning instead of silently corrupting every LLM call for that role.
+
+        Also fixes a latent bug in the resource-ID compatibility check itself:
+        it previously called self._rm.get_resource(...), not a real method on
+        ResourceManager, so it always raised (silently swallowed) and never
+        actually worked for any role.
+
+        Returns (role_preferred_resource_id, role_model_preference, warning_message).
+        Exactly one of the first two is non-None when the input was truthy and
+        resolved; both are None (with a warning) if the value was unrecognized.
+        """
+        if not role_model_preference:
+            return None, None, None
+
+        if role_model_preference in resources:
+            return role_model_preference, None, None
+
+        known_models = {r.model for r in resources.values()}
+        if role_model_preference in known_models:
+            return None, role_model_preference, None
+
+        warning = (
+            f"model_preference={role_model_preference!r} matches neither a resource ID "
+            "nor any configured resource's model field — ignoring it rather than using "
+            "it as a literal model override (would send an invalid 'model' value to every provider)."
+        )
+        return None, None, warning
 
     def _estimate_task_complexity(self, goal: str, config: Dict[str, Any]) -> int:
         """Estimate task complexity on a small 1-5 scale."""

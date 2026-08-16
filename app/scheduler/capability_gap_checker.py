@@ -68,8 +68,15 @@ _BLOCKER_SIGNALS: Dict[str, List[str]] = {
         "run script", "execute script",
     ],
     "browser": [
+        # "playwright"/"selenium" intentionally omitted — like "bash_exec" above,
+        # these are tool/framework names that show up in goal text as proper
+        # nouns or references (e.g. "compare X vs the Playwright framework"),
+        # not necessarily instructions to use them. Browser capability is
+        # already inferred from resolved_tool_names by _infer_categories()
+        # (playwright__* tools → "browser"). Behavioral phrases below still
+        # catch goals that need browser automation without naming a framework.
         "open browser", "navigate to", "click on", "fill form",
-        "take screenshot", "playwright", "selenium",
+        "take screenshot",
     ],
 }
 

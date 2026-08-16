@@ -18,10 +18,9 @@ class TestAvailableToolsEnforcement(unittest.IsolatedAsyncioTestCase):
         from app.scheduler.capability_registry import CapabilityRegistry
 
         registry = CapabilityRegistry.__new__(CapabilityRegistry)
-        registry._current_task_id = None
-        registry._current_dispatch_depth = 0
-        registry._current_role_id = None
-        registry._current_available_tools = None
+        # task/role/depth/allowlist context now lives in ContextVars, not
+        # plain instance attributes -- see exec_context.py.
+        registry.set_task_context(task_id=None, dispatch_depth=0, role_id=None, available_tools=None)
         registry._tools = {}
         registry._memory_service = None
         registry._mcp_registry = None
@@ -76,17 +75,21 @@ class TestAvailableToolsEnforcement(unittest.IsolatedAsyncioTestCase):
 
     def test_set_task_context_stores_allowlist_as_copy(self):
         """Mutating the original list after set_task_context must not affect the registry."""
+        from app.scheduler.exec_context import cv_enabled_tools
+
         registry = self._make_registry()
         tools = ["web_search"]
         registry.set_task_context(task_id="t1", available_tools=tools)
         tools.append("dispatch_subtask")  # mutate original
-        self.assertNotIn("dispatch_subtask", registry._current_available_tools)
+        self.assertNotIn("dispatch_subtask", cv_enabled_tools.get())
 
     def test_set_task_context_clears_allowlist_on_none(self):
+        from app.scheduler.exec_context import cv_enabled_tools
+
         registry = self._make_registry()
         registry.set_task_context(task_id="t1", available_tools=["web_search"])
         registry.set_task_context(task_id="t2", available_tools=None)
-        self.assertIsNone(registry._current_available_tools)
+        self.assertIsNone(cv_enabled_tools.get())
 
     async def test_modifier_syntax_raw_list_blocks_everything(self):
         """

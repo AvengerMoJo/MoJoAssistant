@@ -18,6 +18,7 @@ Session history persists at ~/.memory/roles/{role_id}/chat_history/{session_id}.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -36,6 +37,7 @@ MAX_HISTORY_TURNS = 10    # conversation turns carried into context
 MAX_KU_ITEMS = 8          # knowledge units injected as context
 MAX_KU_QUOTE_CHARS = 200  # truncate long KU quotes
 MAX_CHAT_ITERATIONS = 5   # max tool-call iterations per exchange
+STREAM_FALLBACK_KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalives during blocking fallback
 
 # Maps tool catalog categories → concrete tool names available in chat mode.
 # Filtered at runtime by the active mode contract's allowed_tool_categories.
@@ -1070,8 +1072,28 @@ class RoleChatSession:
                                 tool_calls_received = event["tool_calls"]
                     except Exception as stream_err:
                         logger.warning(f"[role_chat] stream failed: {stream_err}")
-                        # Fallback to blocking call
-                        fallback_data = await self._call_raw(messages, resource_manager, tools=chat_tools)
+                        # Surface a client-visible status token immediately so the
+                        # browser gets bytes right away, then send periodic SSE
+                        # keepalive comments while the blocking fallback call runs.
+                        # Without this, the connection goes fully silent for the
+                        # entire fallback duration -- this exact silence (zero
+                        # bytes during a slow blocking call) is what produced
+                        # "Error: network error" client-side when call_stream_async
+                        # broke (see the httpx.AsyncClient timeout kwarg bug fixed
+                        # 2026-08). That one trigger is fixed, but this fallback
+                        # path itself still exists for any future streaming failure,
+                        # so it needs to stop going silent regardless of cause.
+                        yield f'data: {json.dumps({"type": "status", "message": "Stream interrupted, retrying..."})}\n\n'
+                        fallback_task = asyncio.create_task(
+                            self._call_raw(messages, resource_manager, tools=chat_tools)
+                        )
+                        while not fallback_task.done():
+                            done, _ = await asyncio.wait(
+                                {fallback_task}, timeout=STREAM_FALLBACK_KEEPALIVE_INTERVAL
+                            )
+                            if not done:
+                                yield ": keepalive\n\n"
+                        fallback_data = await fallback_task
                         fallback_msg = (fallback_data.get("choices") or [{}])[0].get("message") or {}
                         tool_calls_received = fallback_msg.get("tool_calls")
                         if not tool_calls_received:

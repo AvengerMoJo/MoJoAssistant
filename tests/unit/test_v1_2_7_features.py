@@ -39,10 +39,11 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         reg._tools = {}
         reg._mcp_client_manager = None
         reg._scheduler = scheduler
-        reg._current_task_id = "parent_task_001"
-        reg._current_dispatch_depth = depth
         reg._memory_service = None
         reg._resource_manager = None
+        # task/role/depth context now lives in ContextVars (per-asyncio-task
+        # isolation), not plain instance attributes -- see exec_context.py.
+        reg.set_task_context("parent_task_001", dispatch_depth=depth)
         return reg
 
     async def test_blocks_at_max_depth(self):
@@ -75,7 +76,18 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         scheduler = MagicMock()
         scheduler.add_task.return_value = False
         reg = self._make_registry(scheduler=scheduler)
-        result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "do something"})
+        # Spec-shaped goal (success criterion + scope boundary + acceptance
+        # check) so it clears spec_quality_gate and this test actually
+        # exercises the add_task-failure path it's named for, rather than
+        # being rejected earlier for vagueness.
+        result = await reg._dispatch_subtask({
+            "role_id": "analyst",
+            "goal": (
+                "Summarize competitor pricing pages. Done when: a table of "
+                "5 competitors' prices exists. Out of scope: our own pricing. "
+                "Verify by: table has 5 rows with numeric prices."
+            ),
+        })
         self.assertFalse(result["success"])
         self.assertIn("Failed to queue", result["error"])
 
@@ -83,11 +95,19 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         from app.scheduler.models import Task, TaskType, TaskStatus, TaskResult, TaskResources
         import uuid
 
+        # Spec-shaped goal so it clears spec_quality_gate (a 2-word goal
+        # like "research X" is rejected before dispatch logic ever runs).
+        goal = (
+            "Research the top 3 competitors' feature sets. Done when: a "
+            "written comparison exists. Out of scope: pricing. "
+            "Verify by: comparison lists 3 competitors with features."
+        )
+
         # Build a completed task that the scheduler.get_task() will return
         completed_task = Task(
             id="sub_parent_task_001_abc123",
             type=TaskType.ASSISTANT,
-            config={"goal": "research X", "role_id": "analyst"},
+            config={"goal": goal, "role_id": "analyst"},
             resources=TaskResources(),
         )
         completed_task.status = TaskStatus.COMPLETED
@@ -104,7 +124,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
 
         # Patch asyncio.sleep to avoid real waiting
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "research X"})
+            result = await reg._dispatch_subtask({"role_id": "analyst", "goal": goal})
 
         self.assertTrue(result["success"])
         self.assertEqual(result["result"], "Here is the research result.")
@@ -113,10 +133,18 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
     async def test_failed_subtask_returns_error(self):
         from app.scheduler.models import Task, TaskType, TaskStatus, TaskResources
 
+        # Spec-shaped goal so it clears spec_quality_gate.
+        goal = (
+            "Update the deployment script for the new API endpoint. "
+            "Done when: the script targets the new endpoint. "
+            "Out of scope: rollback logic. "
+            "Verify by: running the script against staging."
+        )
+
         failed_task = Task(
             id="sub_parent_task_001_abc123",
             type=TaskType.ASSISTANT,
-            config={"goal": "do X", "role_id": "analyst"},
+            config={"goal": goal, "role_id": "analyst"},
             resources=TaskResources(),
         )
         failed_task.status = TaskStatus.FAILED
@@ -129,7 +157,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         reg = self._make_registry(scheduler=scheduler)
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            result = await reg._dispatch_subtask({"role_id": "analyst", "goal": "do X"})
+            result = await reg._dispatch_subtask({"role_id": "analyst", "goal": goal})
 
         self.assertFalse(result["success"])
         self.assertIn("Tool execution error", result["error"])
@@ -137,9 +165,17 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
     async def test_depth_incremented_on_child_task(self):
         from app.scheduler.models import Task, TaskType, TaskStatus, TaskResources
 
+        # Spec-shaped goal so it clears spec_quality_gate.
+        goal = (
+            "Draft a one-page summary of the Q3 roadmap. "
+            "Done when: the summary covers all 3 workstreams. "
+            "Out of scope: budget figures. "
+            "Verify by: summary lists all 3 workstream names."
+        )
+
         completed_task = Task(
             id="sub_x", type=TaskType.ASSISTANT,
-            config={"goal": "g", "role_id": "analyst"},
+            config={"goal": goal, "role_id": "analyst"},
             resources=TaskResources(),
         )
         completed_task.status = TaskStatus.COMPLETED
@@ -159,7 +195,7 @@ class TestDispatchSubtask(unittest.IsolatedAsyncioTestCase):
         scheduler.add_task.side_effect = capture_add
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            await reg._dispatch_subtask({"role_id": "analyst", "goal": "g"})
+            await reg._dispatch_subtask({"role_id": "analyst", "goal": goal})
 
         self.assertEqual(len(created_tasks), 1)
         self.assertEqual(created_tasks[0].dispatch_depth, 2)

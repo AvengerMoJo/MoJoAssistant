@@ -72,6 +72,30 @@ class TestClassifyFailure:
         fc = classify_failure(success=False, elapsed_s=5.0, response="I tried.")
         assert fc is FailureClass.VERIFICATION_MISMATCH
 
+    def test_slow_threshold_is_60s_not_30s(self):
+        # Adjusted live 2026-08-16: the original 30s bar was disproportionate
+        # to the real per-task budget (up to 300s / 8+ iterations) -- a local
+        # model doing genuine tool-call reasoning in 34-37s isn't "slow" in
+        # any practical sense. Raised to 60s.
+        assert classify_failure(success=True, elapsed_s=45.0) is None  # under 60s -> clean
+        assert classify_failure(success=True, elapsed_s=61.0) is FailureClass.FINAL_ANSWER_SLOW
+
+    def test_timeout_threshold_matches_real_budget_cap(self):
+        # Raised from 120s to 300s to match run_routing_profiler's real
+        # max_duration_s cap -- see TIMEOUT_DURATION_S docstring comment.
+        assert TIMEOUT_DURATION_S == 300.0
+
+    def test_correct_slow_answer_no_longer_mislabeled_timeout(self):
+        # The landmine this fixes: before, a genuinely correct answer that
+        # simply took >120s (well within the real 300s allowance) got
+        # labeled "timeout" even though success stayed True -- misleading
+        # to anyone reading failure_modes without also checking success.
+        # Now the classifier can't fire ahead of an actual timeout: by
+        # 300s the run loop itself would already have cut the task off.
+        fc = classify_failure(success=True, elapsed_s=150.0)
+        assert fc is FailureClass.FINAL_ANSWER_SLOW  # not TIMEOUT
+        assert fc is not FailureClass.TIMEOUT
+
 
 # ---------------------------------------------------------------------------
 # Routing profile aggregation (A7)

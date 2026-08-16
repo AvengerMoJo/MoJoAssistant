@@ -280,7 +280,7 @@ class UnifiedLLMClient:
         # Accumulate tool calls across chunks
         tool_call_acc: Dict[int, Dict] = {}
 
-        async with httpx.AsyncClient(timeout=300.0, connect=10.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
             async with client.stream("POST", url, json=payload, headers=headers) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():

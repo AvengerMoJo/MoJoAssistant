@@ -8,6 +8,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from app.config.paths import get_memory_path
+from app.scheduler.exec_context import (
+    cv_task_id as _cv_task_id,
+    cv_dispatch_depth as _cv_dispatch_depth,
+    cv_role_id as _cv_role_id,
+    cv_enabled_tools as _cv_enabled_tools,
+)
 
 
 def _get_agent_workdir() -> str:
@@ -175,9 +181,13 @@ class CapabilityRegistry:
         self._mcp_registry = None
         self._mcp_client_manager = None
         self._scheduler = None
-        self._current_task_id: Optional[str] = None
-        self._current_dispatch_depth: int = 0
-        self._current_available_tools: Optional[list] = None  # enforced allowlist
+        # task_id/dispatch_depth/role_id/available_tools are NOT instance
+        # attributes -- they live in the shared ContextVars imported above
+        # (cv_task_id etc.), set via set_task_context() below. A plain
+        # instance attribute here would be shared mutable state across every
+        # concurrently-running asyncio task that touches this (singleton)
+        # registry -- see set_task_context()'s docstring and
+        # ~/.memory/research/scheduler_concurrency_context_race_2607.md.
         self._tools: Dict[str, CapabilityDefinition] = {}
         self._ensure_registry_seeded()
         self._load_registry()
@@ -735,12 +745,13 @@ class CapabilityRegistry:
     ) -> Dict[str, Any]:
         """Execute a tool, dispatching on executor type."""
         # Enforce available_tools allowlist set by the current task context.
-        if self._current_available_tools is not None and name not in self._current_available_tools:
+        _enabled = _cv_enabled_tools.get()
+        if _enabled is not None and name not in _enabled:
             return {
                 "success": False,
                 "error": (
                     f"Tool '{name}' is not in this task's available_tools list "
-                    f"({', '.join(self._current_available_tools)}). "
+                    f"({', '.join(_enabled)}). "
                     "Remove it from your plan."
                 ),
             }
@@ -1252,7 +1263,14 @@ class CapabilityRegistry:
         if not self._scheduler:
             return {"success": False, "error": "Scheduler not available in this context"}
 
-        if self._current_dispatch_depth >= self.MAX_DISPATCH_DEPTH:
+        # Read once at the top and reuse -- these come from ContextVars (this
+        # asyncio task's own isolated copy), not shared instance state, so a
+        # single consistent read here is correct even though the coroutine
+        # `await`s (and therefore yields to other concurrently-running tasks)
+        # further down in this same function.
+        _task_id = _cv_task_id.get()
+        _dispatch_depth = _cv_dispatch_depth.get()
+        if _dispatch_depth >= self.MAX_DISPATCH_DEPTH:
             return {
                 "success": False,
                 "error": (
@@ -1309,7 +1327,7 @@ class CapabilityRegistry:
                 },
                 resources=TaskResources(),
                 created_by="dispatch_guard",
-                parent_task_id=self._current_task_id,
+                parent_task_id=_task_id,
             )
             self._scheduler.add_task(gate_task)
             return {
@@ -1321,7 +1339,7 @@ class CapabilityRegistry:
                 ),
             }
 
-        task_id = f"sub_{self._current_task_id or 'unknown'}_{uuid.uuid4().hex[:6]}"
+        task_id = f"sub_{_task_id or 'unknown'}_{uuid.uuid4().hex[:6]}"
         timeout_s = int(args.get("timeout_s", self.DISPATCH_DEFAULT_TIMEOUT_S))
 
         config: Dict[str, Any] = {"goal": goal, "role_id": role_id}
@@ -1344,8 +1362,8 @@ class CapabilityRegistry:
             config=config,
             resources=TaskResources(max_iterations=int(args.get("max_iterations", 10))),
             created_by="agent",
-            parent_task_id=self._current_task_id,
-            dispatch_depth=self._current_dispatch_depth + 1,
+            parent_task_id=_task_id,
+            dispatch_depth=_dispatch_depth + 1,
         )
 
         if not self._scheduler.add_task(task):
@@ -1789,7 +1807,7 @@ class CapabilityRegistry:
             import asyncio
             import inspect as _inspect
 
-            role_id = getattr(self, "_current_role_id", None)
+            role_id = _cv_role_id.get()
             target_role_id = FRAMEWORK_ROLE_ID if scope == "framework" else role_id
 
             document = ""
@@ -1845,7 +1863,7 @@ class CapabilityRegistry:
             return {"success": False, "error": "Memory service not available"}
 
         try:
-            role_id = getattr(self, "_current_role_id", None)
+            role_id = _cv_role_id.get()
             import inspect as _inspect
             sig = _inspect.signature(self._memory_service._search_knowledge_base_async)
             if "role_id" in sig.parameters:
@@ -2118,12 +2136,23 @@ class CapabilityRegistry:
         role_id: Optional[str] = None,
         available_tools: Optional[list] = None,
     ) -> None:
-        """Set the current task context so dispatch_subtask can link parent→child."""
-        self._current_task_id = task_id
-        self._current_dispatch_depth = dispatch_depth
-        self._current_role_id = role_id  # used to scope memory_search to the active role
+        """Set the current task context so dispatch_subtask can link parent→child.
+
+        Writes to shared ContextVars (imported from exec_context.py), not
+        instance attributes -- this registry is a singleton reused across every
+        concurrently-running asyncio task (scheduler tasks AND dashboard chat
+        sessions), so a plain `self._current_*` attribute would let one task's
+        context silently clobber another's between an `await` yield and its
+        next read. ContextVar.set() only affects the calling asyncio task's own
+        context, so this is safe under real concurrency -- see
+        ~/.memory/research/scheduler_concurrency_context_race_2607.md for the
+        incident this fixes.
+        """
+        _cv_task_id.set(task_id)
+        _cv_dispatch_depth.set(dispatch_depth)
+        _cv_role_id.set(role_id)  # used to scope memory_search to the active role
         # None means "no restriction"; an explicit list is enforced as an allowlist.
-        self._current_available_tools = list(available_tools) if available_tools is not None else None
+        _cv_enabled_tools.set(list(available_tools) if available_tools is not None else None)
 
     def set_scheduler(self, scheduler) -> None:
         """Set the Scheduler for scheduler_add_task tool support."""

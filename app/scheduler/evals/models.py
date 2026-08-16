@@ -377,8 +377,16 @@ class CapabilitySummary:
 
 # Cheap heuristic cutoffs. Tuned against observed LM Studio + Qwen/Ornith runs;
 # the same constants appear in the A7 unit tests so a flip forces a test flip.
-SLOW_DURATION_S = 30.0      # > this on a successful task -> final_answer_slow
-TIMEOUT_DURATION_S = 120.0  # > this on any task -> timeout (assumed iteration cap hit)
+SLOW_DURATION_S = 60.0      # > this on a successful task -> final_answer_slow
+# Matches run_routing_profiler's max_duration_s default (300s). Raised from
+# 120.0 2026-08-16: this was checked BEFORE the success/failure branch, so a
+# genuinely correct answer that simply took >120s (well within the real
+# 300s budget every task actually gets) was mislabeled "timeout" even
+# though `success` stayed True underneath -- a landmine for anyone reading
+# failure_modes without also checking success. Matching this to the real
+# cap means the classifier can no longer fire ahead of an actual timeout;
+# by 300s the run loop itself has already cut the task off for real.
+TIMEOUT_DURATION_S = 300.0  # > this on any task -> timeout (assumed iteration cap hit)
 
 
 def classify_failure(
