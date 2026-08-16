@@ -16,7 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Run from repo root so the profiler import path works.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -26,14 +26,131 @@ sys.path.insert(0, str(REPO_ROOT / "tests" / "benchmarks"))
 from run_routing_profiler import (
     CELL_BUDGETS,
     DEFAULT_MODELS,
+    PROJECT_ROOT,
     SCRATCH_DIR,
+    build_system_prompt,
     build_tool_schema,
     check_answer,
     clean_scratch_for_task,
     filter_models,
+    run_task_with_model,
+    _extract_scratch_target,
     _find_all_done_run,
     _find_resumable_run,
 )
+
+
+class TestBuildSystemPromptNoTruncation(unittest.TestCase):
+    """Bug found live 2026-08-15: injected file/role content used to be
+    hard-truncated to [:2000] chars, even though every model in the pool
+    has a 262144-token (~1M+ char) context window. resource_pool.json is
+    ~12KB -- truncation silently dropped everything past `gemini_elmntri`,
+    so any cell-A/C task asking about a later entry (e.g.
+    lmstudio_qwen36_27b_mtp) never had the answer in context at all,
+    despite being designed as a "single read_file lookup, low breadth"
+    task. Affected 10/15 cell-A and most resource_pool.json-based cell-C
+    tasks, across all 34 historical profiler runs."""
+
+    def test_large_file_content_not_truncated(self):
+        with tempfile.TemporaryDirectory() as td:
+            big_file = Path(td) / "big.json"
+            # Bigger than the old 2000-char cap.
+            content = "X" * 5000 + "NEEDLE_AT_END"
+            big_file.write_text(content)
+            task = {"setup": f"file={big_file}"}
+            prompt = build_system_prompt(task)
+            self.assertIn("NEEDLE_AT_END", prompt)
+
+    def test_large_role_content_not_truncated(self):
+        with tempfile.TemporaryDirectory() as td:
+            roles_dir = Path(td) / ".memory" / "roles"
+            roles_dir.mkdir(parents=True)
+            role_file = roles_dir / "bigrole.json"
+            content = "X" * 5000 + "NEEDLE_AT_END"
+            role_file.write_text(content)
+            task = {"setup": "role=bigrole"}
+            with patch("run_routing_profiler.Path.home", return_value=Path(td)):
+                prompt = build_system_prompt(task)
+            self.assertIn("NEEDLE_AT_END", prompt)
+
+
+class TestBuildSystemPromptRolesSetup(unittest.TestCase):
+    """Bug found live 2026-08-16 on cellC_005: the setup="roles" summary
+    only ever included id+capabilities. Tasks asking about executor/
+    agent_type/nine_chapter_score/max_iterations had none of that in
+    context, and since roles are stored one-per-file (not a single
+    combined roles.json), the model burned its whole budget guessing
+    nonexistent combined-file paths and never found a real answer."""
+
+    def _make_roles_dir(self, td):
+        roles_dir = Path(td) / ".memory" / "roles"
+        roles_dir.mkdir(parents=True)
+        (roles_dir / "popo.json").write_text(json.dumps({
+            "id": "popo", "capabilities": ["exec"], "executor": "coding_agent",
+            "agent_type": "executor", "nine_chapter_score": 90, "max_iterations": 20,
+        }))
+        (roles_dir / "paul.json").write_text(json.dumps({
+            "id": "paul", "capabilities": ["orchestration"],
+            "agent_type": "orchestrator",
+        }))
+        return roles_dir
+
+    def test_roles_summary_includes_executor_field(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._make_roles_dir(td)
+            with patch("run_routing_profiler.Path.home", return_value=Path(td)):
+                prompt = build_system_prompt({"setup": "roles"})
+            self.assertIn("executor=coding_agent", prompt)
+            self.assertIn("agent_type=executor", prompt)
+
+    def test_roles_summary_notes_individual_file_path_pattern(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._make_roles_dir(td)
+            with patch("run_routing_profiler.Path.home", return_value=Path(td)):
+                prompt = build_system_prompt({"setup": "roles"})
+            self.assertIn("~/.memory/roles/<id>.json", prompt)
+
+    def test_roles_summary_not_capped_at_20(self):
+        with tempfile.TemporaryDirectory() as td:
+            roles_dir = Path(td) / ".memory" / "roles"
+            roles_dir.mkdir(parents=True)
+            for i in range(25):
+                (roles_dir / f"role{i}.json").write_text(json.dumps({"id": f"role{i}"}))
+            with patch("run_routing_profiler.Path.home", return_value=Path(td)):
+                prompt = build_system_prompt({"setup": "roles"})
+            for i in range(25):
+                self.assertIn(f"role{i}:", prompt)
+
+
+class TestBuildSystemPromptDirSetup(unittest.TestCase):
+    """Bug found live 2026-08-16: build_system_prompt() had no handler at
+    all for setup="dir=..." (cellC_004, cellC_014, cellD_015) -- those
+    tasks got only the bare base prompt, zero grounding. Confirmed live:
+    a model burned its entire budget on `pwd`, `find / -maxdepth 3 -type d
+    -name config`, and scanning unrelated project directories before ever
+    reaching the actual question, because it had no idea where "config/"
+    even was relative to its sandboxed bash_exec cwd."""
+
+    def test_dir_setup_injects_directory_listing(self):
+        with tempfile.TemporaryDirectory() as td:
+            target_dir = Path(td) / "myconfig"
+            target_dir.mkdir()
+            (target_dir / "a.json").write_text("{}")
+            (target_dir / "b.json").write_text("{}")
+            task = {"setup": f"dir={target_dir}"}
+            prompt = build_system_prompt(task)
+            self.assertIn(str(target_dir), prompt)
+            self.assertIn("a.json", prompt)
+            self.assertIn("b.json", prompt)
+
+    def test_dir_setup_was_previously_silent(self):
+        # Documents the pre-fix behavior directly: unhandled setup prefixes
+        # fell through to the bare base prompt with zero information.
+        task = {"setup": "dir=config"}
+        base_only = "You are a helpful assistant. Answer concisely and accurately."
+        # Without a dir= branch, build_system_prompt would return exactly
+        # this and nothing else -- the bug this test guards against.
+        self.assertNotEqual(build_system_prompt(task), base_only)
 
 
 class TestCellBudgets:
@@ -100,6 +217,291 @@ class TestCheckAnswer:
         # not match anything (otherwise the profiler would silently pass).
         task = {"match_type": "contains", "correct_answer": ""}
         assert check_answer("any response", task) is False
+
+    def test_list_answer_matches_bullet_formatting(self):
+        # Incident 2026-07-19: a model that lists every correct item as a
+        # bullet/numbered list shouldn't fail just because it didn't
+        # reproduce the literal "a,b,c" joined string.
+        task = {"match_type": "contains", "correct_answer": "ahman,anna,bao"}
+        response = "Roles with the capability:\n1. ahman\n2. anna\n3. bao\n"
+        assert check_answer(response, task) is True
+
+    def test_list_answer_still_fails_on_missing_item(self):
+        # Tolerating format must not tolerate a genuinely incomplete list —
+        # confirmed live: qwen36_31b_a3b_mtp dropped 6 of 23 real files on
+        # cellC_004 and correctly still failed under this same logic.
+        task = {"match_type": "contains", "correct_answer": "ahman,anna,bao"}
+        response = "Roles with the capability:\n1. ahman\n2. anna\n"  # missing bao
+        assert check_answer(response, task) is False
+
+    def test_single_value_contains_unaffected_by_list_logic(self):
+        # No comma in correct_answer -> falls through to plain substring,
+        # unchanged from before.
+        task = {"match_type": "contains", "correct_answer": "popo=263"}
+        assert check_answer("popo=263 is the count", task) is True
+        assert check_answer("something else", task) is False
+
+    def test_structural_with_correct_answer_checks_value_not_length(self):
+        # Incident 2026-07-19, cellB_002: match_type="structural" but the
+        # task DOES carry a real correct_answer ("36"). A short-but-exact
+        # value must not fail the length>10 heuristic just because it's
+        # short — all 4 remaining local models wrote "36" (2 chars) to the
+        # scratch file and were wrongly failed before this fix.
+        task = {"match_type": "structural", "correct_answer": "36"}
+        assert check_answer("36", task) is True
+        assert check_answer("The count is 36.", task) is True
+        assert check_answer("35", task) is False  # wrong value, still short
+
+    def test_structural_without_correct_answer_falls_back_to_length(self):
+        # Genuine structural tasks (no fixed answer) keep the original
+        # "wrote something substantive" bar.
+        task = {"match_type": "structural", "correct_answer": ""}
+        assert check_answer("Some meaningful answer with words", task) is True
+        assert check_answer("ok", task) is False
+
+    def test_semicolon_only_answer_is_winnable_out_of_order(self):
+        # Bug found live 2026-08-15: 12 real tasks (7/15 cell C, 5/15 cell
+        # D) use ";" as the top-level item separator with no "," anywhere
+        # in the answer key. Before the fix, only "," triggered per-item
+        # splitting, so these fell through to a whole-blob substring check
+        # requiring the model to reproduce the ENTIRE semicolon-joined
+        # answer key verbatim, in that exact order, as one contiguous
+        # string -- unwinnable by any model regardless of correctness or
+        # phrasing. This directly explains why cell D scored ~0% across
+        # every model ever profiled with this tool.
+        #
+        # The fix restores per-item independence (matching the existing
+        # comma-list precedent below): each "id=value" item is checked on
+        # its own, in any order, anywhere in the response. It does NOT
+        # loosen the literal "id=value" substring requirement itself --
+        # that stricter formatting expectation already existed for
+        # comma-separated answers before this fix (see
+        # test_single_value_contains_unaffected_by_list_logic) and is out
+        # of scope here; this fix is specifically about the separator bug.
+        task = {
+            "match_type": "contains",
+            "correct_answer": "gemini_avengermojo=enabled;gemini_elmntri=enabled",
+        }
+        # Items present, but in reverse order and with prose around them --
+        # the old whole-blob check required the exact joined order.
+        response = "Status: gemini_elmntri=enabled. Also, gemini_avengermojo=enabled."
+        assert check_answer(response, task) is True
+
+    def test_semicolon_only_answer_still_fails_on_missing_item(self):
+        task = {
+            "match_type": "contains",
+            "correct_answer": "gemini_avengermojo=enabled;gemini_elmntri=enabled",
+        }
+        response = "gemini_avengermojo=enabled."  # missing gemini_elmntri
+        assert check_answer(response, task) is False
+
+    def test_semicolon_only_answer_unwinnable_before_fix(self):
+        # Documents the pre-fix bug directly: without per-item splitting,
+        # even a response containing every correct fact fails unless it
+        # reproduces the entire answer key as one literal substring.
+        correct = "gemini_avengermojo=enabled;gemini_elmntri=enabled"
+        response_with_every_fact_but_reordered = (
+            "gemini_elmntri=enabled and gemini_avengermojo=enabled"
+        )
+        # The old behavior (no ";" splitting): whole-blob substring check.
+        assert correct.lower() not in response_with_every_fact_but_reordered.lower()
+
+    def test_mixed_comma_and_semicolon_answer_checks_every_atomic_token(self):
+        # Tasks like cellD_007 ("count=3;models=a,b,c") mix both
+        # separators: ";" between top-level entities, "," inside a value
+        # list. The fix flattens recursively so every atomic token --
+        # including ones nested inside a comma list -- is checked
+        # independently, in any order.
+        task = {
+            "match_type": "contains",
+            "correct_answer": "count=3;models=gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite",
+        }
+        response = (
+            "models=gemini-2.5-flash-lite models=gemini-2.5-flash "
+            "models=gemini-2.5-pro count=3"
+        )
+        assert check_answer(response, task) is True
+        # Drop one nested item -> must still fail.
+        response_missing = "models=gemini-2.5-pro models=gemini-2.5-flash count=3"
+        assert check_answer(response_missing, task) is False
+
+    def test_pure_comma_answer_unaffected_by_semicolon_fix(self):
+        # No ";" anywhere -> identical behavior to before.
+        task = {"match_type": "contains", "correct_answer": "ahman,anna,bao"}
+        response = "Roles: ahman, anna, bao"
+        assert check_answer(response, task) is True
+
+    def test_none_token_tolerates_natural_phrasing(self):
+        # Bug found live 2026-08-16 on cellC_005: a model that correctly
+        # said a field is absent ("not present") rather than reproducing
+        # the literal Python token "=None" used to fail even though the
+        # content was fully correct.
+        task = {
+            "match_type": "contains",
+            "correct_answer": "popo=coding_agent,paul=None,rebecca=None,carl=None",
+        }
+        response = (
+            "popo=coding_agent. paul: not present. rebecca: not present. "
+            "carl: not present."
+        )
+        assert check_answer(response, task) is True
+
+    def test_none_token_still_requires_the_key_present(self):
+        task = {
+            "match_type": "contains",
+            "correct_answer": "popo=coding_agent,paul=None",
+        }
+        # "not present" appears but "paul" is never mentioned at all.
+        response = "popo=coding_agent. Something is not present somewhere."
+        assert check_answer(response, task) is False
+
+    def test_none_token_literal_still_works(self):
+        # Backward compat: the exact literal token must still pass.
+        task = {"match_type": "contains", "correct_answer": "paul=None"}
+        assert check_answer("paul=None", task) is True
+
+    def test_non_none_value_unaffected_by_synonym_tolerance(self):
+        # The synonym tolerance only applies when the value is literally
+        # "none" -- a real value still requires its own literal substring.
+        task = {"match_type": "contains", "correct_answer": "popo=coding_agent"}
+        response = "popo is not present anywhere."  # wrong value, has a synonym word
+        assert check_answer(response, task) is False
+
+    def test_real_value_glued_token_brittleness_fixed(self):
+        # Bug found live 2026-08-16 re-verifying the None-tolerance fix
+        # above: the SAME glued-token brittleness also hits real values,
+        # not just "None". qwen36_31b_a3b_mtp wrote `popo: "coding_agent"`
+        # (colon+quotes) for a multi-item answer and failed despite being
+        # completely correct -- no model naturally writes Python
+        # dict-literal syntax in prose.
+        task = {
+            "match_type": "contains",
+            "correct_answer": "popo=coding_agent,paul=None",
+        }
+        response = 'popo: "coding_agent". paul: not set.'
+        assert check_answer(response, task) is True
+
+    def test_real_value_still_requires_both_key_and_value_present(self):
+        task = {"match_type": "contains", "correct_answer": "popo=coding_agent,paul=None"}
+        response = 'popo: "coding_agent". '  # paul never mentioned at all
+        assert check_answer(response, task) is False
+
+    def test_short_numeric_values_do_not_use_independent_fallback(self):
+        # Guard against false positives: a multi-item priority list like
+        # "id_a=4,id_b=5,id_c=6" must not let id_a's check pass just
+        # because SOME OTHER item's correct "5" or "6" appears elsewhere
+        # in the response for a different id. Short/numeric values still
+        # require the glued "key=value" substring.
+        task = {"match_type": "contains", "correct_answer": "id_a=4,id_b=5"}
+        # id_a is paired with the WRONG value (5, which belongs to id_b),
+        # but "5" does appear somewhere in the response (for id_b) -- must
+        # still fail because "id_a=4" the glued token is absent and "4" is
+        # numeric so no independent fallback applies.
+        response = "id_a=5, id_b=5"
+        assert check_answer(response, task) is False
+
+    def test_correct_answer_fn_overrides_stale_static_answer(self):
+        # Bug found live 2026-08-16: a frozen correct_answer for anything
+        # derived from live state (resource counts, config files, role
+        # data) goes stale the moment that state changes. correct_answer_fn
+        # computes the expected value fresh at check time instead.
+        task = {
+            "match_type": "exact",
+            "correct_answer": "999",  # deliberately wrong/stale
+            "correct_answer_fn": "resource_pool_total_count",
+        }
+        with patch(
+            "dynamic_answers.resolve_dynamic_answer", return_value="7"
+        ):
+            assert check_answer("7", task) is True
+            assert check_answer("999", task) is False  # the stale value must NOT pass
+
+    def test_correct_answer_fn_falls_back_to_static_when_unresolvable(self):
+        task = {
+            "match_type": "exact",
+            "correct_answer": "fallback-value",
+            "correct_answer_fn": "no_such_function_registered",
+        }
+        assert check_answer("fallback-value", task) is True
+
+
+class TestCheckAnswerScratchTarget(unittest.TestCase):
+    """Incident fix (2026-07-19): scratch-file tasks must verify the actual
+    file the model wrote, not its chat prose — otherwise a model can pass
+    by describing (or merely quoting) the right answer without ever
+    producing the deliverable. See
+    ~/.memory/research/routing_harness_verification_flaw_2607.md.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.scratch = Path(self.tmp.name) / "cellD_001.txt"
+
+    def test_chat_prose_alone_does_not_pass_when_scratch_target_given(self):
+        # The model *said* the right thing in chat but never wrote the file.
+        task = {"match_type": "contains", "correct_answer": "popo=263"}
+        assert check_answer("The answer is popo=263", task, self.scratch) is False
+
+    def test_missing_scratch_file_fails_even_with_matching_prose(self):
+        task = {"match_type": "exact", "correct_answer": "42"}
+        assert not self.scratch.exists()
+        assert check_answer("42", task, self.scratch) is False
+
+    def test_correct_file_content_passes_regardless_of_chat_prose(self):
+        task = {"match_type": "exact", "correct_answer": "42"}
+        self.scratch.write_text("42")
+        # Chat prose is irrelevant once a scratch_target is given — only
+        # the file's own content is checked.
+        assert check_answer("I refuse to answer", task, self.scratch) is True
+
+    def test_wrong_file_content_fails_even_if_prose_matches(self):
+        task = {"match_type": "contains", "correct_answer": "popo=263"}
+        self.scratch.write_text("9")
+        assert check_answer("popo=263", task, self.scratch) is False
+
+    def test_refusal_quoting_target_string_in_file_still_passes_naive_contains(self):
+        # Documents a known residual limitation: "contains" matching on
+        # the FILE is still naive substring matching. If a model writes a
+        # refusal that happens to quote the target string to the scratch
+        # file itself, it still passes. The fix closes the *feedback leak*
+        # channel (the harness no longer hands the model that string) and
+        # the *wrong-artifact* channel (chat prose is no longer checked);
+        # it does not add semantic understanding to match_type=contains.
+        task = {"match_type": "contains", "correct_answer": "popo=263"}
+        self.scratch.write_text("I refuse to write popo=263 without verifying it.")
+        assert check_answer("irrelevant", task, self.scratch) is True
+
+
+class TestNoAnswerLeakInFeedback:
+    """The retry-feedback text built in run_task_with_model must never
+    contain task["correct_answer"] verbatim. This is a static check on the
+    source rather than an execution test (the feedback branch lives inside
+    a live LLM loop) — it fails loudly if someone reintroduces an f-string
+    that interpolates `correct` into the feedback message.
+    """
+
+    def test_source_never_interpolates_correct_answer_into_feedback(self):
+        src = (REPO_ROOT / "tests" / "benchmarks" / "run_routing_profiler.py").read_text()
+        # The old bug: f"...'{correct}'..." inside the feedback block.
+        assert "{correct}" not in src, (
+            "Found 'correct' interpolated into a feedback string — this is "
+            "the exact leak that let models pass by parroting the answer "
+            "key back after a failed attempt. See incident doc: "
+            "~/.memory/research/routing_harness_verification_flaw_2607.md"
+        )
+
+
+class TestExtractScratchTarget:
+    def test_cell_d_goal_extracts_target(self):
+        task = {"goal": "Compute it and write the count to ~/.memory/benchmarks/routing/scratch/cellD_001.txt"}
+        target = _extract_scratch_target(task)
+        assert target == SCRATCH_DIR / "cellD_001.txt"
+
+    def test_cell_a_goal_has_no_target(self):
+        task = {"goal": "What model does lmstudio_qwen36_27b_mtp use?"}
+        assert _extract_scratch_target(task) is None
 
 
 class TestBuildToolSchema:
@@ -239,6 +641,147 @@ class TestResumeRunHelpers:
             r = _find_resumable_run(root, ["m1"], "A", 2, None)
             assert r in {"p_old", "p_newer"}
             assert r == "p_newer"  # only one with pending
+
+
+class TestModuleInvocation(unittest.TestCase):
+    """The module docstring documents `python -m tests.benchmarks.run_routing_profiler`
+    as the way to run this tool. That form used to crash at first task execution
+    with ModuleNotFoundError: profiler_tool_executor -- the module only added
+    PROJECT_ROOT to sys.path, not its own directory, so the bare
+    `from profiler_tool_executor import ...` inside run_task_with_model()
+    resolved only when the script was run directly (which gets its own
+    directory on sys.path[0] for free), not via -m (where sys.path[0] is the
+    invoking cwd instead)."""
+
+    def test_dash_m_invocation_imports_cleanly(self):
+        import subprocess
+
+        proc = subprocess.run(
+            [sys.executable, "-m", "tests.benchmarks.run_routing_profiler", "--help"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Run routing profiler", proc.stdout)
+
+    def test_dash_m_invocation_can_reach_profiler_tool_executor_import(self):
+        """Directly reproduces the exact failure: run a real (short-lived)
+        model filter that resolves to zero models so the process exits fast,
+        but only after the module has fully loaded under -m. If the
+        sys.path fix regresses, this still exercises the same import
+        machinery as --help; the real proof is a subprocess import check of
+        profiler_tool_executor itself from a cwd where only PROJECT_ROOT
+        (not the script's own directory) is on sys.path -- i.e. exactly the
+        -m invocation shape."""
+        import subprocess
+
+        code = (
+            "import sys; "
+            "sys.path.insert(0, '.'); "
+            "import tests.benchmarks.run_routing_profiler as m; "
+            "sys.path  # noqa\n"
+            "from profiler_tool_executor import ProfilerExecutionContext\n"
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("OK", proc.stdout)
+
+
+class TestRunTaskWithModelPathHint(unittest.IsolatedAsyncioTestCase):
+    """Bug found live 2026-08-15 on cellB_004: a model that (reasonably)
+    wants to re-verify system-prompt-injected file content via a real
+    read_file call had to guess the path from the goal's bare filename,
+    burning iteration/wall-clock budget on wrong guesses unrelated to its
+    real capability. The fix appends the resolved path to the goal
+    whenever the task's own `setup` field already tells the harness
+    exactly which file is involved."""
+
+    async def _run_and_capture_messages(self, task):
+        captured = {}
+
+        async def fake_call_async(messages, resource_config, model_override=None, tools=None):
+            captured["messages"] = messages
+            return {
+                "choices": [{"message": {"content": "final answer", "tool_calls": None}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        fake_client = MagicMock()
+        fake_client.call_async = fake_call_async
+
+        with patch("run_routing_profiler.load_resource", return_value={
+            "base_url": "http://x", "model": "m", "api_key": "k",
+        }), patch("app.llm.unified_client.UnifiedLLMClient", return_value=fake_client), \
+             patch("app.llm.unified_client.UnifiedLLMClient.resolve_key", return_value="k"):
+            await run_task_with_model(task, "fake_resource", budget=2, max_duration_s=30.0)
+
+        return captured["messages"]
+
+    async def test_file_setup_task_gets_path_hint(self):
+        task = {
+            "id": "t1", "cell": "B",
+            "goal": "Find something in resource_pool.json and write it.",
+            "correct_answer": "x", "match_type": "contains",
+            "declared_tools": ["read_file", "write_file"],
+            "setup": "file=~/.memory/config/resource_pool.json",
+        }
+        messages = await self._run_and_capture_messages(task)
+        user_msg = next(m["content"] for m in messages if m["role"] == "user")
+        self.assertIn("File path for read_file", user_msg)
+        self.assertIn(str(Path.home() / ".memory" / "config" / "resource_pool.json"), user_msg)
+
+    async def test_no_setup_task_gets_no_hint(self):
+        task = {
+            "id": "t2", "cell": "A",
+            "goal": "What is 2+2?",
+            "correct_answer": "4", "match_type": "contains",
+            "declared_tools": [],
+            "setup": "",
+        }
+        messages = await self._run_and_capture_messages(task)
+        user_msg = next(m["content"] for m in messages if m["role"] == "user")
+        self.assertEqual(user_msg, "What is 2+2?")
+        self.assertNotIn("File path", user_msg)
+
+    async def test_file_setup_without_file_tools_gets_no_hint(self):
+        # setup="file=..." exists (for system-prompt injection) but the
+        # task declares no read_file/write_file tool -- no hint needed.
+        task = {
+            "id": "t3", "cell": "A",
+            "goal": "What model does X use?",
+            "correct_answer": "x", "match_type": "contains",
+            "declared_tools": [],
+            "setup": "file=~/.memory/config/resource_pool.json",
+        }
+        messages = await self._run_and_capture_messages(task)
+        user_msg = next(m["content"] for m in messages if m["role"] == "user")
+        self.assertNotIn("File path", user_msg)
+
+    async def test_dir_setup_task_gets_directory_path_hint(self):
+        # Bug found live 2026-08-16: dir= tasks (cellC_004, cellC_014,
+        # cellD_015) got no path hint at all -- combined with the missing
+        # build_system_prompt() dir= handler, the model had zero
+        # information about where the directory even was.
+        task = {
+            "id": "t4", "cell": "D",
+            "goal": "Count total lines across all files in config/.",
+            "correct_answer": "x", "match_type": "exact",
+            "declared_tools": ["bash_exec", "read_file", "write_file"],
+            "setup": "dir=config",
+        }
+        messages = await self._run_and_capture_messages(task)
+        user_msg = next(m["content"] for m in messages if m["role"] == "user")
+        self.assertIn("Directory path", user_msg)
+        self.assertIn(str(PROJECT_ROOT / "config"), user_msg)
 
 
 if __name__ == "__main__":

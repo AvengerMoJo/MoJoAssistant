@@ -57,6 +57,34 @@ class TestReadFile(unittest.TestCase):
         # The contract is ">= 0", not "> 0".
         self.assertGreaterEqual(r.elapsed_s, 0.0)
 
+    def test_reads_file_larger_than_old_8kb_cap_in_full(self):
+        # Bug found live 2026-08-15: READ_MAX_BYTES was 8192, silently
+        # truncating real config files (resource_pool.json ~12KB,
+        # tool_catalog.json ~12.5KB) with zero indication to the model.
+        # Every model in the pool has a 262144-token context window, so
+        # 8KB was never a real constraint.
+        big_file = self.readable / "big.json"
+        content = "X" * 10000 + "NEEDLE_AT_END"
+        big_file.write_text(content)
+        r = self.ctx.execute("read_file", {"path": str(big_file)})
+        self.assertTrue(r.ok, r.error)
+        self.assertIn("NEEDLE_AT_END", r.content)
+        self.assertNotIn("TRUNCATED", r.content)
+
+    def test_pathological_read_still_truncates_with_visible_marker(self):
+        # READ_MAX_BYTES still exists as a bound against a truly
+        # pathological read (e.g. a huge log file) -- but truncation must
+        # never be silent. A model reasoning over a partial file without
+        # knowing it's partial was exactly the bug this fixes.
+        from profiler_tool_executor import READ_MAX_BYTES
+
+        huge_file = self.readable / "huge.txt"
+        huge_file.write_text("Y" * (READ_MAX_BYTES + 5000))
+        r = self.ctx.execute("read_file", {"path": str(huge_file)})
+        self.assertTrue(r.ok, r.error)
+        self.assertIn("TRUNCATED", r.content)
+        self.assertLess(len(r.content), READ_MAX_BYTES + 5000)
+
     def test_denies_path_outside_allow_list(self):
         r = self.ctx.execute("read_file", {"path": str(self.secret_file)})
         self.assertFalse(r.ok)

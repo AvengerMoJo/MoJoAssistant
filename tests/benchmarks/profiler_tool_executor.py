@@ -36,10 +36,19 @@ from typing import Any, Dict, List, Optional
 # so the model gets feedback instead of silent ignore.
 KNOWN_TOOLS = {"read_file", "write_file", "list_files", "bash_exec"}
 
-# Max bytes returned from read_file. The cell-A/B context files are small;
-# 8KB is plenty for any A8 task and prevents a pathological read from
-# blowing up the next LLM call's context window.
-READ_MAX_BYTES = 8192
+# Max bytes returned from read_file. Every model in the pool has a
+# 262144-token (~1M+ char) context window, so this exists only to bound a
+# truly pathological read, not to save context budget. The original 8KB
+# value was silently truncating real task files with zero indication to
+# the model -- resource_pool.json (~12KB) and tool_catalog.json (~12.5KB)
+# both exceeded it. Found live 2026-08-15 auditing cellB_004: the model
+# called read_file successfully (ok=True) but may have been working from
+# a silently-clipped ~8KB slice of a 12KB file, on top of the separate
+# system-prompt truncation bug already fixed in run_routing_profiler.py's
+# build_system_prompt(). Raised to comfortably exceed every current task
+# file with headroom for growth; still finite so a truly pathological
+# target (e.g. a huge log file) can't blow the next LLM call's context.
+READ_MAX_BYTES = 262144
 
 # Bash timeout. A8 cell-B tasks use bash for "wc -l" and "ls" — 10s is
 # overkill but cheap. The timeout exists to bound blast radius.
@@ -210,7 +219,18 @@ class ProfilerExecutionContext:
             return ToolResult(tool="read_file", args=args, ok=False,
                               error=f"not a regular file: {path}")
         try:
-            content = path.read_text(errors="replace")[:READ_MAX_BYTES]
+            full = path.read_text(errors="replace")
+            content = full[:READ_MAX_BYTES]
+            if len(full) > READ_MAX_BYTES:
+                # Never truncate silently -- a model reasoning over a
+                # partial file without knowing it's partial is exactly the
+                # bug found live 2026-08-15. Prepend the note into content
+                # itself (rather than the `error` field) so it survives
+                # regardless of which fields a caller happens to surface.
+                content = (
+                    f"[TRUNCATED: showing first {READ_MAX_BYTES} of "
+                    f"{len(full)} bytes]\n" + content
+                )
             return ToolResult(tool="read_file", args=args, ok=True, content=content)
         except Exception as e:
             return ToolResult(tool="read_file", args=args, ok=False,

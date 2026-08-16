@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -41,6 +42,14 @@ from typing import Any, Dict, List, Optional
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+# This module's own directory must also be on sys.path for the bare
+# `from profiler_tool_executor import ...` below to resolve. Running the
+# script directly (`python tests/benchmarks/run_routing_profiler.py`) gets
+# this for free (Python adds the script's own dir to sys.path[0]), but the
+# docstring's documented `-m tests.benchmarks.run_routing_profiler` form
+# does not — sys.path[0] is the invoking cwd in that case, not this
+# directory, so the import used to raise ModuleNotFoundError.
+sys.path.insert(0, str(Path(__file__).parent))
 
 from app.scheduler.task_router import compute_cell
 from app.scheduler.routing_profile import (
@@ -136,7 +145,6 @@ def clean_scratch_for_task(task: Dict[str, Any]) -> int:
     goal = task.get("goal", "")
     removed = 0
     # Match patterns like scratch/cellB_001.txt or ~/.memory/.../scratch/cellD_005.txt
-    import re
     for match in re.finditer(r"scratch/(cell[A-D]_\d+\.\w+)", goal):
         target = SCRATCH_DIR / match.group(1)
         if target.exists():
@@ -180,48 +188,277 @@ def build_tool_schema(declared_tools: List[str]) -> List[Dict[str, Any]]:
 
 
 def build_system_prompt(task: Dict[str, Any]) -> str:
-    """Build the system prompt from the task's setup field."""
+    """Build the system prompt from the task's setup field.
+
+    Injected file/role content is NOT truncated. Every model in the pool
+    has a 262144-token context window (~1M+ chars) -- config/role files
+    here top out around 12KB, i.e. under 0.3% of that budget. A prior
+    hardcoded [:2000] char cap silently dropped 80%+ of larger files
+    (e.g. resource_pool.json at ~12KB) from context, forcing "single
+    read_file lookup, low breadth" cell-A/C tasks into unguided
+    multi-file-path-guessing that had nothing to do with the model's real
+    capability. Found 2026-08-15 auditing why qwen3.8-27b only scored 60%
+    on cell A. Affected 10/15 cell-A and most resource_pool.json-based
+    cell-C tasks, across all 34 historical profiler runs since this tool's
+    first commit (2026-07-09) -- every prior capability_profile.json for
+    every model is suspect for those specific tasks.
+    """
     setup = task.get("setup", "")
     base = "You are a helpful assistant. Answer concisely and accurately."
     if setup.startswith("role="):
         role_id = setup.split("=", 1)[1]
         role_path = Path.home() / ".memory" / "roles" / f"{role_id}.json"
         if role_path.exists():
-            return base + f"\n\nRole config:\n{role_path.read_text()[:2000]}"
+            return base + f"\n\nRole config:\n{role_path.read_text()}"
     if setup.startswith("file="):
         file_path = Path(setup.split("=", 1)[1]).expanduser()
         if not file_path.is_absolute():
             file_path = PROJECT_ROOT / file_path
         if file_path.exists():
-            return base + f"\n\nFile content:\n{file_path.read_text()[:2000]}"
+            return base + f"\n\nFile content:\n{file_path.read_text()}"
     if setup == "roles":
         roles_dir = Path.home() / ".memory" / "roles"
         summaries = []
-        for f in sorted(roles_dir.glob("*.json"))[:20]:
+        # No [:20] cap -- was silently dropping roles once the count grew
+        # past 20 (17 live as of 2026-08-16, i.e. already close), same
+        # truncation-without-warning class as the other caps fixed this
+        # session.
+        for f in sorted(roles_dir.glob("*.json")):
             try:
                 r = json.loads(f.read_text())
-                summaries.append(f"{r.get('id','?')}: capabilities={r.get('capabilities',[])}")
+                # Bug found live 2026-08-16 on cellC_005: this summary only
+                # ever included id+capabilities. Several tasks ask about
+                # executor/agent_type/nine_chapter_score, none of which were
+                # in context -- forcing the model to go hunting for a
+                # source file, and since roles are stored one-per-file
+                # (~/.memory/roles/<id>.json), not a single combined
+                # "roles.json", it burned its whole budget guessing
+                # nonexistent combined-file paths and never found one.
+                # system_prompt deliberately excluded: too verbose to
+                # summarize for every role, and the one task that needs it
+                # (cellD_001, full-text word count) needs the real file
+                # regardless of any summary.
+                summaries.append(
+                    f"{r.get('id','?')}: capabilities={r.get('capabilities',[])} "
+                    f"executor={r.get('executor')} agent_type={r.get('agent_type')} "
+                    f"nine_chapter_score={r.get('nine_chapter_score')} "
+                    f"max_iterations={r.get('max_iterations')}"
+                )
             except Exception:
                 pass
-        return base + "\n\nRoles:\n" + "\n".join(summaries)
+        return (
+            base + "\n\nRoles (individual files at ~/.memory/roles/<id>.json "
+            "if you need a field not shown here, e.g. system_prompt):\n"
+            + "\n".join(summaries)
+        )
+    if setup.startswith("dir="):
+        # Bug found live 2026-08-16: this branch didn't exist at all, so
+        # every "dir=..." task (cellC_004, cellC_014, cellD_015) got ZERO
+        # grounding -- just the bare base prompt. A model with no idea
+        # where it even is has to blind-discover the filesystem from
+        # scratch: confirmed live on cellD_015, a model burned its entire
+        # 12-call budget on `pwd`, `find / -maxdepth 3 -type d -name
+        # config`, and scanning unrelated project directories before ever
+        # reaching the actual question. Fix: inject the resolved absolute
+        # path plus a directory listing, mirroring what "file=" already
+        # does for single files.
+        dir_path = Path(setup.split("=", 1)[1]).expanduser()
+        if not dir_path.is_absolute():
+            dir_path = PROJECT_ROOT / dir_path
+        if dir_path.exists() and dir_path.is_dir():
+            entries = sorted(p.name + ("/" if p.is_dir() else "") for p in dir_path.iterdir())
+            return (
+                base
+                + f"\n\nDirectory: {dir_path}\nContents:\n" + "\n".join(entries)
+            )
     return base
 
 
-def check_answer(response_text: str, task: Dict[str, Any]) -> bool:
-    """Verify the model's response against the task's correct_answer."""
+def _extract_scratch_target(task: Dict[str, Any]) -> Optional[Path]:
+    """Extract the scratch file a task's goal instructs the model to write to.
+
+    Cell B/D tasks reference ``scratch/cellX_NNN.ext`` in their goal text
+    (the same pattern ``clean_scratch_for_task`` matches to clear stale
+    answers before a run). Cell A/C tasks never mention scratch — they're
+    answered directly in chat — so this returns None for them, which is
+    the signal ``check_answer`` uses to fall back to text matching.
+    """
+    goal = task.get("goal", "")
+    m = re.search(r"scratch/(cell[A-D]_\d+\.\w+)", goal)
+    if not m:
+        return None
+    return SCRATCH_DIR / m.group(1)
+
+
+def check_answer(
+    response_text: str,
+    task: Dict[str, Any],
+    scratch_target: Optional[Path] = None,
+) -> bool:
+    """Verify the model's answer against the task's correct_answer.
+
+    Bug found live 2026-07-19 (see ~/.memory/research/
+    routing_harness_verification_flaw_2607.md): for any task whose goal
+    says "write the answer to a scratch file that a verifier checks
+    byte-for-byte", this function used to check the model's CHAT PROSE
+    instead — the file was never read. A model could describe the right
+    answer without ever writing it, or (worse, combined with the feedback
+    leak this same incident fixed in run_task_with_model) simply parrot
+    a hinted string back in a sentence explicitly REFUSING the task and
+    still score a pass. Confirmed false positives: MiniMax M3 on
+    cellD_001/cellD_004 (paid), two local models on cellC_005 — all
+    scored "success" with zero tool calls, by quoting a value they never
+    verified.
+
+    Fix: when ``scratch_target`` is given (task goal references a scratch
+    file), read THAT file and verify its content — the actual deliverable,
+    not what the model said about it. Falls back to response_text only for
+    cell A/C tasks, which have no file to check by design (chat-answer-only).
+
+    Bug found live 2026-08-16: several tasks ask about live, mutable
+    system state (resource_pool.json contents, config/ directory
+    contents, role configs). A frozen ``correct_answer`` snapshot of that
+    state goes stale the instant it changes -- which happens routinely --
+    failing even a model that computed the true current answer correctly.
+    When a task carries ``correct_answer_fn``, the expected value is
+    computed fresh right now via dynamic_answers.resolve_dynamic_answer()
+    instead of read from the frozen JSON field, so the check is correct
+    at any point in time. Falls back to the static correct_answer if the
+    function is unknown or the live computation fails for any reason.
+    """
     match_type = task.get("match_type", "contains")
     correct = task.get("correct_answer", "")
-    if not response_text:
+    correct_answer_fn = task.get("correct_answer_fn")
+    if correct_answer_fn:
+        from dynamic_answers import resolve_dynamic_answer
+        dynamic = resolve_dynamic_answer(correct_answer_fn)
+        if dynamic is not None:
+            correct = dynamic
+    # structural tasks have no correct_answer by design (see below); only
+    # exact/contains require one to have anything to check against.
+    if not correct and match_type != "structural":
+        return False
+
+    text_to_check = response_text
+    if scratch_target is not None:
+        # The task's own deliverable is the file. Don't fall back to prose
+        # if the file is missing — that means the model never wrote it,
+        # which is a fail regardless of what it claimed in chat.
+        if not scratch_target.exists():
+            return False
+        try:
+            text_to_check = scratch_target.read_text(errors="replace")
+        except Exception:
+            return False
+
+    if not text_to_check:
         return False
     if match_type == "exact":
-        return bool(correct) and response_text.strip().lower() == correct.strip().lower()
-    if match_type == "contains":
-        return bool(correct) and correct.lower() in response_text.lower()
+        return text_to_check.strip().lower() == correct.strip().lower()
+    if match_type in ("contains", "structural") and correct:
+        # List-shaped correct_answer (comma-joined, cellA/C multi-item tasks):
+        # check each item independently rather than requiring the exact
+        # joined string. Found live 2026-07-19 re-verifying this fix: models
+        # that correctly listed every item as a bullet/numbered list (instead
+        # of the literal "a,b,c" the answer key uses) failed the single-
+        # substring check even though the content was fully correct — e.g.
+        # gemma4_12b and ornith both listed all 15 correct role IDs on
+        # cellC_002 as "1. **ahman** ...", which doesn't contain the literal
+        # substring "ahman,anna,bao,...". Per-item checking still requires
+        # EVERY item present, so a genuinely incomplete list (confirmed
+        # separately: qwen36_31b_a3b_mtp dropped 6 of 23 files on cellC_004)
+        # still correctly fails — this only tolerates formatting, not gaps.
+        #
+        # ``structural`` tasks share this path when correct_answer is set:
+        # found live the same day, re-verifying cellB_002 ("36"). structural
+        # was designed for tasks with no fixed answer (prose-length is the
+        # only signal) — but some structural tasks DO carry a real
+        # correct_answer, and a short-but-exact value ("36", 2 chars) will
+        # always fail a length>10 bar once that bar is checked against file
+        # content instead of verbose chat prose. If a correct_answer exists,
+        # checking it beats a length heuristic regardless of match_type label.
+        # Bug found live 2026-08-15 auditing why every model ever profiled
+        # scored suspiciously close to 0% on cell D: this only ever split
+        # on ",". Several task authors used ";" as the top-level separator
+        # for multi-entity answers (e.g. "id=v1,v2;id=v2,v3" — role→
+        # capability-list pairs, joined by role) either alone or mixed with
+        # "," inside each entity's value list. A "," in the answer sent
+        # THOSE straight to the whole-blob check below, which requires the
+        # model to reproduce the entire semicolon-joined answer key
+        # verbatim as one substring — unwinnable by any model, correct or
+        # not. Affected 12 tasks (7/15 cell C, 5/15 cell D) — see
+        # ~/.memory/benchmarks/routing/tasks/ for the ";" in correct_answer.
+        # Fix: split recursively on both "," and ";" to a flat list of
+        # atomic tokens and require each present independently. This keeps
+        # the same "tolerates formatting, not gaps" philosophy as the
+        # 2026-07-19 comma fix above — it can't verify which entity a
+        # capability belongs to (neither could the comma-only version), but
+        # it can verify every fact was actually stated, which is the
+        # signal this checker has always been designed to catch.
+        if "," in correct or ";" in correct:
+            items = [
+                p.strip().lower()
+                for chunk in correct.split(";")
+                for p in chunk.split(",")
+                if p.strip()
+            ]
+            haystack = text_to_check.lower()
+
+            def _item_satisfied(item: str) -> bool:
+                if item in haystack:
+                    return True
+                if "=" in item:
+                    # Bug found live 2026-08-16 on cellC_005, in two stages.
+                    # Stage 1 (None values): a model that correctly reports a
+                    # field absent rarely writes the literal Python token
+                    # "None" -- "not present"/"n/a"/"unset" are equally
+                    # correct, but the glued "key=None" substring check
+                    # rejected them.
+                    # Stage 2 (real values, found re-verifying stage 1):
+                    # the SAME glued-token brittleness also hits real
+                    # values -- qwen36_31b_a3b_mtp wrote `popo: "coding_agent"`
+                    # (colon+quotes) instead of the literal "popo=coding_agent"
+                    # and failed despite being completely correct. No model
+                    # naturally writes Python dict-literal syntax in prose.
+                    # Fix: fall back to checking key and value as two
+                    # INDEPENDENT substrings (key present AND value present,
+                    # anywhere in the response, not necessarily adjacent).
+                    # This can't verify the two are actually paired together
+                    # -- but neither can any other multi-item check in this
+                    # function (see the semicolon-fix comment above); that
+                    # tradeoff is already accepted throughout this checker.
+                    # None-valued items keep an additional synonym set since
+                    # "None" itself is even less likely to appear verbatim
+                    # than a real value is.
+                    key, _, value = item.partition("=")
+                    key = key.strip()
+                    value = value.strip()
+                    if not key:
+                        return False
+                    if value == "none":
+                        none_synonyms = (
+                            "none", "not present", "n/a", "unset",
+                            "not set", "no executor", "not specified", "null",
+                        )
+                        return key in haystack and any(s in haystack for s in none_synonyms)
+                    if value:
+                        # Guard against short/numeric values (priorities,
+                        # counts) colliding coincidentally with an unrelated
+                        # number elsewhere in a multi-item list (e.g.
+                        # cellC_011's "id=4,id=5,id=6,..." priority list) --
+                        # only apply the independent-substring fallback to
+                        # values distinctive enough that a false match is
+                        # implausible.
+                        if len(value) >= 3 and not value.isdigit():
+                            return key in haystack and value in haystack
+                return False
+
+            return bool(items) and all(_item_satisfied(item) for item in items)
+        return correct.lower() in text_to_check.lower()
     if match_type == "structural":
-        # Structural: the agent wrote *something* substantive. The profile
-        # doesn't read the scratch file; this measures engagement, not
-        # file-write correctness.
-        return len(response_text.strip()) > 10
+        # No correct_answer at all — "wrote something substantive" is the
+        # only signal available, by design.
+        return len(text_to_check.strip()) > 10
     return False
 
 
@@ -248,9 +485,16 @@ async def preload_model(resource_id: str) -> Dict[str, Any]:
     resource_config = {
         "base_url": resource.get("base_url", ""),
         "model": resource.get("model", ""),
-        "api_key": resource.get("api_key", ""),
+        # resource.get("api_key", "") only ever worked for local LMStudio
+        # entries which store a literal key. Real paid providers correctly
+        # use api_key_env (never raw secrets in config) -- resolve_key is
+        # the canonical resolver every other caller (ResourceManager) uses.
+        # Bug found live 2026-07-17: every DeepSeek/MiniMax call 401'd
+        # because the profiler silently sent an empty Bearer token.
+        "api_key": UnifiedLLMClient.resolve_key(resource_id, resource),
         "output_limit": 256,
-        "message_format": "openai",
+        "message_format": resource.get("message_format", "openai"),
+        "completions_path": resource.get("completions_path"),
         "provider": resource.get("provider", ""),
         "timeout": PER_CALL_TIMEOUT_S,
     }
@@ -336,6 +580,37 @@ async def run_task_with_model(
     cell = task.get("cell", "?")
     goal = task["goal"]
     declared_tools = task.get("declared_tools", [])
+    # Give the model the resolved path for its own read_file/write_file
+    # call when the task setup already tells the harness exactly which
+    # file is involved. Without this, a model that (reasonably) wants to
+    # re-verify system-prompt-injected content via a real tool call has to
+    # guess the path from the goal's bare filename (e.g. "resource_pool.json"
+    # -> tries "resources.json", "config/resources.json", ...), burning
+    # iteration/wall-clock budget on wrong guesses that have nothing to do
+    # with the model's real capability. Found live 2026-08-15 on cellB_004:
+    # the model reasoned correctly but was marked "timeout" at 312.7s vs a
+    # 300s cap, having spent 2 of 8 iterations on wrong path guesses.
+    setup = task.get("setup", "")
+    if setup.startswith("file=") and ("read_file" in declared_tools or "write_file" in declared_tools):
+        hint_path = Path(setup.split("=", 1)[1]).expanduser()
+        if not hint_path.is_absolute():
+            hint_path = PROJECT_ROOT / hint_path
+        goal = goal + f"\n\n(File path for read_file, if you need it: {hint_path})"
+    elif setup.startswith("dir=") and declared_tools:
+        # Same reasoning as the file= hint above, for directory-scoped
+        # tasks (cellC_004, cellC_014, cellD_015). Without this the model
+        # only knows the directory NAME from the goal text ("config/"),
+        # not where it actually is relative to its bash_exec cwd (locked
+        # to the scratch dir, nowhere near the project) -- confirmed live
+        # 2026-08-16 burning a full budget on `find / -maxdepth 3 -type d
+        # -name config` before ever reaching the actual question.
+        hint_path = Path(setup.split("=", 1)[1]).expanduser()
+        if not hint_path.is_absolute():
+            hint_path = PROJECT_ROOT / hint_path
+        goal = goal + f"\n\n(Directory path, if you need it: {hint_path})"
+    # None for cell A/C (chat-answer-only); a scratch Path for cell B/D
+    # tasks, whose real deliverable is the file, not the chat reply.
+    scratch_target = _extract_scratch_target(task)
 
     start = time.time()
     result: Dict[str, Any] = {
@@ -373,9 +648,12 @@ async def run_task_with_model(
         resource_config = {
             "base_url": resource.get("base_url", ""),
             "model": resource.get("model", ""),
-            "api_key": resource.get("api_key", ""),
+            # See preload_model's identical fix for why resolve_key is required
+            # instead of a literal resource.get("api_key", "") read.
+            "api_key": UnifiedLLMClient.resolve_key(resource_id, resource),
             "output_limit": min(resource.get("output_limit", 8192), 8192),
-            "message_format": "openai",
+            "message_format": resource.get("message_format", "openai"),
+            "completions_path": resource.get("completions_path"),
             "provider": resource.get("provider", ""),
             "timeout": PER_CALL_TIMEOUT_S,  # real per-call cap — see PER_CALL_TIMEOUT_S
         }
@@ -482,21 +760,43 @@ async def run_task_with_model(
                 continue
 
             # ---- Final-answer branch: no tool_calls, check and exit ----
-            if check_answer(response_text, task):
+            if check_answer(response_text, task, scratch_target):
                 result["success"] = True
                 break
 
             # ---- Verification-mismatch: craft retry feedback ----
             # This is the same retry-with-feedback pattern from A9,
             # preserved for tasks that don't use tools. The model got
-            # the goal, produced prose, and the prose doesn't verify —
-            # give it a hint and let it try again within the budget.
+            # the goal, produced prose, and it didn't verify — give it
+            # a hint and let it try again within the budget.
+            #
+            # NEVER put task["correct_answer"] in this feedback. The prior
+            # version did (an f-string interpolating the raw answer key
+            # into "must include the exact substring ... quote it
+            # verbatim") which handed the model the ground truth on a
+            # plate — any later turn that merely repeated that
+            # string, including one explicitly REFUSING to answer with it,
+            # then passed check_answer's naive substring match. Confirmed
+            # false positives this caused: MiniMax M3 on cellD_001/cellD_004
+            # (paid), two local models on cellC_005 — all zero tool calls.
+            # See ~/.memory/research/routing_harness_verification_flaw_2607.md.
             match_type = task.get("match_type", "contains")
-            correct = task.get("correct_answer", "")
-            if match_type == "exact" and correct:
-                feedback = f"Your answer does not exactly match the expected value '{correct}'. Re-state it precisely."
-            elif match_type == "contains" and correct:
-                feedback = f"Your answer must include the exact substring '{correct}'. Search the source file again and quote the value verbatim."
+            if scratch_target is not None:
+                feedback = (
+                    f"No verified answer yet. This task's deliverable is the file "
+                    f"{scratch_target.name} in the scratch dir — call write_file with "
+                    f"the value you find there. Re-read the source first if you "
+                    f"haven't verified it with a tool call; don't guess or write "
+                    f"something you haven't confirmed."
+                )
+            elif match_type == "exact":
+                feedback = ("Your answer doesn't exactly match the source data. "
+                            "Re-read the source — don't guess or recall from memory — "
+                            "and state the precise value you find.")
+            elif match_type == "contains":
+                feedback = ("Your answer doesn't match what the source data actually "
+                            "shows. Re-check the source directly rather than guessing, "
+                            "and don't state a value you haven't verified.")
             elif match_type == "structural":
                 feedback = "Provide a substantive answer (at least a few words) addressing the question."
             else:
@@ -509,7 +809,7 @@ async def run_task_with_model(
     # If the deadline fired after a response arrived, give that response
     # one final check — a slow-but-correct model shouldn't be mis-classified.
     if timed_out and result["response"] and not result["success"]:
-        if check_answer(result["response"], task):
+        if check_answer(result["response"], task, scratch_target):
             result["success"] = True
 
     # Only surface an error string if we have no usable response.
@@ -846,12 +1146,52 @@ async def run_profiler(
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
     # Persist derived routing_table.json + capability_profile.json live.
-    routing_path = Path.home() / ".memory" / "benchmarks" / "routing" / "routing_table.json"
-    routing_path.write_text(json.dumps(
-        {k: v for k, v in routing_table.items() if not k.startswith("_")}, indent=2,
-    ))
+    #
+    # MUST merge with what's already on disk, not blindly overwrite. `profile`
+    # here only ever covers the (models, cell) combination THIS invocation
+    # touched -- e.g. a --cell D --models deepseek,minimax run only has D-cell
+    # entries for those two models. A plain write_text would silently erase
+    # every other model/cell already profiled (this happened for real on
+    # 2026-07-17: a paid-model D-cell run wiped the full A/B/C/D dataset for
+    # all 5 local models). Merge per (model, cell) instead: new data replaces
+    # only the matching keys, everything else already on disk is preserved.
     profile_path = Path.home() / ".memory" / "benchmarks" / "routing" / "capability_profile.json"
-    profile_path.write_text(json.dumps(profile, indent=2))
+    merged_profile: Dict[str, Any] = {}
+    if profile_path.exists():
+        try:
+            merged_profile = json.loads(profile_path.read_text())
+        except Exception:
+            merged_profile = {}
+    for model_id, by_cell in profile.items():
+        merged_profile.setdefault(model_id, {}).update(by_cell)
+    profile_path.write_text(json.dumps(merged_profile, indent=2))
+
+    routing_path = Path.home() / ".memory" / "benchmarks" / "routing" / "routing_table.json"
+    # Re-derive the routing table from the FULL merged profile (not just this
+    # run's subset) so a partial run never regresses cells/models it didn't
+    # touch. Cost order MUST be preserved-then-appended, not "this run's
+    # models first" -- that would wrongly promote a paid model ahead of
+    # already-profiled free/local ones just because it happened to be the
+    # subset under test. Load the existing _cost_order (built up over prior
+    # runs) as the base and append any model this run introduced that isn't
+    # in it yet, in the order given.
+    existing_cost_order: List[str] = []
+    if routing_path.exists():
+        try:
+            existing_cost_order = json.loads(routing_path.read_text()).get("_cost_order") or []
+        except Exception:
+            existing_cost_order = []
+    full_candidate_order = list(existing_cost_order)
+    for m in models:
+        if m not in full_candidate_order:
+            full_candidate_order.append(m)
+    for m in merged_profile.keys():
+        if m not in full_candidate_order:
+            full_candidate_order.append(m)
+    merged_routing_table = derive_routing_table(merged_profile, candidate_order=full_candidate_order)
+    routing_path.write_text(json.dumps(
+        {k: v for k, v in merged_routing_table.items() if not k.startswith("_")}, indent=2,
+    ))
     print(f"\nWrote: {run_dir}/summary.json")
     print(f"      {run_dir}/results.tsv ({len(completed_keys)} rows)")
     print(f"      {run_dir}/tasks/*.json ({len(list(tasks_dir.glob('*.json')))} files)")
