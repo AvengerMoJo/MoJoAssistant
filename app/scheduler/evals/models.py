@@ -414,7 +414,14 @@ def classify_failure(
     # Error path — backend / executor surfaced an exception.
     if error:
         e = error.lower()
-        if "timeout" in e or "timed out" in e:
+        # Bug found live 2026-08-17: the profiler's own wall-clock cutoff
+        # raises "max_duration_s exceeded (300.0s)" -- containing neither
+        # "timeout" nor "timed out" -- so every genuine cap-hit fell
+        # through to the generic EXECUTOR_EXCEPTION bucket instead of
+        # TIMEOUT. Confirmed live: 6/9 "executor_exception" results in one
+        # cell-D run were actually this exact cutoff, obscuring the real
+        # signal (a budget/duration mismatch, not an executor crash).
+        if "timeout" in e or "timed out" in e or "max_duration_s exceeded" in e:
             return FailureClass.TIMEOUT
         if "backend" in e or "unavailable" in e or "connection" in e:
             return FailureClass.TOOL_BACKEND_UNAVAILABLE

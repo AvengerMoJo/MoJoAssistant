@@ -173,6 +173,49 @@ def popo_system_prompt_word_count() -> str:
     return str(len(popo.get("system_prompt", "").split()))
 
 
+def scheduler_orchestration_roles() -> str:
+    """cellD_012: roles referenced by role_id in scheduler_config.json (repo
+    default merged with the personal override, matching how the real
+    scheduler resolves it -- see that file's own _comment) that also carry
+    the 'orchestration' capability.
+
+    Bug found live 2026-08-17: the frozen correct_answer
+    ("ahman,anna,doc_audit,paul,popo,quinn") didn't match either the repo
+    default (zero role_id entries) or the personal config (one: "paul")
+    under any interpretation tried -- almost certainly written against an
+    earlier scheduler_config.json snapshot with more role_id-tagged tasks
+    that has since been trimmed. Rather than guess at historical intent,
+    this computes the answer fresh from whatever the live merged config
+    actually contains right now.
+    """
+    def _role_ids(cfg) -> set:
+        ids: set = set()
+
+        def walk(o):
+            if isinstance(o, dict):
+                if "role_id" in o:
+                    ids.add(o["role_id"])
+                for v in o.values():
+                    walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+        walk(cfg)
+        return ids
+
+    repo_cfg = json.loads((PROJECT_ROOT / "config" / "scheduler_config.json").read_text())
+    personal_path = Path.home() / ".memory" / "config" / "scheduler_config.json"
+    personal_cfg = json.loads(personal_path.read_text()) if personal_path.exists() else {}
+    role_ids = _role_ids(repo_cfg) | _role_ids(personal_cfg)
+
+    roles = _load_roles()
+    orchestration = sorted(
+        rid for rid in role_ids
+        if "orchestration" in (roles.get(rid, {}).get("capabilities") or [])
+    )
+    return "orchestration_roles=" + ",".join(orchestration)
+
+
 def coding_agent_roles_avg_max_iterations() -> str:
     roles = _load_roles()
     vals = [r.get("max_iterations") for r in roles.values() if r.get("executor") == "coding_agent"]
@@ -229,6 +272,7 @@ REGISTRY: Dict[str, Callable[[], str]] = {
     "coding_agent_roles_avg_max_iterations": coding_agent_roles_avg_max_iterations,
     "roles_avg_nine_chapter_score": roles_avg_nine_chapter_score,
     "roles_count_default_port_embedding_model": roles_count_default_port_embedding_model,
+    "scheduler_orchestration_roles": scheduler_orchestration_roles,
 }
 
 

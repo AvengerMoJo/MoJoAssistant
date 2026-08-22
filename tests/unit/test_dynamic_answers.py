@@ -171,5 +171,51 @@ class TestRolesCountDefaultPortEmbeddingModel(unittest.TestCase):
             self.assertEqual(after.split(";")[0], "2")
 
 
+class TestSchedulerOrchestrationRoles(unittest.TestCase):
+    """cellD_012's frozen answer ("ahman,anna,doc_audit,paul,popo,quinn")
+    didn't match either the repo default or personal scheduler_config.json
+    under any interpretation -- almost certainly written against an
+    earlier snapshot with more role_id-tagged tasks. Computed fresh from
+    whatever the live merged config actually contains instead."""
+
+    def test_merges_repo_and_personal_configs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config_dir = root / "config"
+            config_dir.mkdir()
+            (config_dir / "scheduler_config.json").write_text(json.dumps({
+                "default_tasks": [{"id": "t1", "config": {"role_id": "alice"}}]
+            }))
+            home = root / "home"
+            (home / ".memory" / "config").mkdir(parents=True)
+            (home / ".memory" / "config" / "scheduler_config.json").write_text(json.dumps({
+                "default_tasks": [{"id": "t2", "config": {"role_id": "bob"}}]
+            }))
+            fake_roles = {
+                "alice": {"capabilities": ["orchestration"]},
+                "bob": {"capabilities": ["file"]},
+            }
+            with patch.object(da, "PROJECT_ROOT", root), \
+                 patch.object(da.Path, "home", return_value=home), \
+                 patch.object(da, "_load_roles", return_value=fake_roles):
+                result = da.scheduler_orchestration_roles()
+            self.assertEqual(result, "orchestration_roles=alice")  # bob lacks orchestration
+
+    def test_missing_personal_config_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config_dir = root / "config"
+            config_dir.mkdir()
+            (config_dir / "scheduler_config.json").write_text(json.dumps({
+                "default_tasks": [{"id": "t1", "config": {"role_id": "alice"}}]
+            }))
+            home = root / "no_memory_here"
+            with patch.object(da, "PROJECT_ROOT", root), \
+                 patch.object(da.Path, "home", return_value=home), \
+                 patch.object(da, "_load_roles", return_value={"alice": {"capabilities": ["orchestration"]}}):
+                result = da.scheduler_orchestration_roles()
+            self.assertEqual(result, "orchestration_roles=alice")
+
+
 if __name__ == "__main__":
     unittest.main()

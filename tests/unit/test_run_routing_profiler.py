@@ -34,6 +34,7 @@ from run_routing_profiler import (
     clean_scratch_for_task,
     filter_models,
     run_task_with_model,
+    _effective_max_duration_s,
     _extract_scratch_target,
     _find_all_done_run,
     _find_resumable_run,
@@ -169,6 +170,39 @@ class TestCellBudgets:
         # design doc: L3=12 → cell D → L3
         assert CELL_BUDGETS["D"] == 12
 
+
+class TestEffectiveMaxDurationS:
+    """Bug found live 2026-08-17: max_duration_s was a flat value applied
+    identically to every cell regardless of its own iteration budget. Cell
+    D's 12-iteration budget needs far more real wall-clock time than the
+    300s default at observed per-call latency (a model scoring 100% on
+    cells A-C needed 27-66s/call on cell D) -- the flat cap was cutting
+    genuinely-progressing tasks off mid-budget, which was very likely the
+    dominant reason cell D scored near-0% across every model profiled."""
+
+    def test_cell_d_gets_a_much_higher_floor_than_the_default(self):
+        result = _effective_max_duration_s("D", 300.0)
+        assert result == 12 * 75.0  # 900s, far above the flat 300s default
+
+    def test_cell_a_default_is_unaffected(self):
+        # Budget 4 * 75s = 300s -- exactly the existing default, no change
+        # in practice for a cell that's never needed more than 1-2 calls.
+        result = _effective_max_duration_s("A", 300.0)
+        assert result == 300.0
+
+    def test_explicit_override_higher_than_floor_is_respected(self):
+        # A caller-requested value larger than the budget-derived floor
+        # must never be shrunk.
+        result = _effective_max_duration_s("A", 5000.0)
+        assert result == 5000.0
+
+    def test_explicit_override_lower_than_floor_is_not_shrunk_below_floor(self):
+        # The floor is a MINIMUM, not a replacement -- a low override for
+        # cell D still gets at least the budget-derived floor so genuine
+        # progress isn't cut off.
+        result = _effective_max_duration_s("D", 60.0)
+        assert result == 12 * 75.0
+
     def test_default_models_use_current_resource_ids(self):
         # No stale IDs from before the 2026-07-01 resource-pool cleanup.
         assert "lmstudio__google_gemma_4_26b_a4b" not in DEFAULT_MODELS  # double underscore
@@ -205,6 +239,30 @@ class TestCheckAnswer:
         assert check_answer("qwen3.6-27b-mtp", task) is True
         assert check_answer("qwen3.6-27b-mtp ", task) is True  # trim
         assert check_answer("model: qwen3.6-27b-mtp", task) is False  # extra content
+
+    def test_exact_match_numeric_tolerance(self):
+        # Bug found live 2026-08-17 on cellD_015 ("count total lines"):
+        # `wc -l` (what a model naturally uses via bash_exec) and Python's
+        # splitlines() (what dynamic_answers.py uses) disagree by one line
+        # per file lacking a trailing newline -- a real, defensible
+        # ambiguity in "line count" method, not a wrong answer.
+        task = {"match_type": "exact", "correct_answer": "6417", "numeric_tolerance": 10}
+        assert check_answer("6413", task) is True  # within tolerance
+        assert check_answer("6417", task) is True  # exact still works
+        assert check_answer("5000", task) is False  # genuinely wrong, still fails
+
+    def test_exact_match_without_tolerance_field_unaffected(self):
+        # No numeric_tolerance -> identical strict behavior to before.
+        task = {"match_type": "exact", "correct_answer": "6417"}
+        assert check_answer("6413", task) is False
+
+    def test_exact_match_tolerance_ignores_non_numeric_answers(self):
+        # Tolerance only applies when both sides parse as numbers -- a
+        # non-numeric exact-match task with a (meaningless) tolerance
+        # field must not start fuzzy-matching text.
+        task = {"match_type": "exact", "correct_answer": "coding_agent", "numeric_tolerance": 10}
+        assert check_answer("coding_agent", task) is True
+        assert check_answer("other_agent", task) is False
 
     def test_structural_needs_substantive_response(self):
         task = {"match_type": "structural", "correct_answer": ""}
@@ -398,6 +456,26 @@ class TestCheckAnswer:
         # still fail because "id_a=4" the glued token is absent and "4" is
         # numeric so no independent fallback applies.
         response = "id_a=5, id_b=5"
+        assert check_answer(response, task) is False
+
+    def test_single_numeric_fact_uses_independent_fallback(self):
+        # Bug found live 2026-08-17 re-verifying cell D: cellD_009's
+        # answer "count=7;tools=..." has only ONE numeric item -- nothing
+        # else it could collide with -- but the blanket numeric guard
+        # blocked it anyway, failing a response that correctly wrote
+        # "Total count: 7" instead of the literal "count=7".
+        task = {
+            "match_type": "contains",
+            "correct_answer": "count=7,tools=bash_exec",
+        }
+        response = "Total count: 7. tools=bash_exec listed below."
+        assert check_answer(response, task) is True
+
+    def test_multiple_numeric_facts_still_require_glued_token(self):
+        # Companion to the above: with MORE than one numeric item, the
+        # collision risk is real again, so the stricter check stays.
+        task = {"match_type": "contains", "correct_answer": "id_a=4,id_b=5,id_c=6"}
+        response = "id_a=6, id_b=6, id_c=6"  # only id_c is actually correct
         assert check_answer(response, task) is False
 
     def test_correct_answer_fn_overrides_stale_static_answer(self):

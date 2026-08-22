@@ -58,6 +58,19 @@ class TestClassifyFailure:
         fc = classify_failure(success=False, elapsed_s=10.0, error="LLM timed out after 60s")
         assert fc is FailureClass.TIMEOUT
 
+    def test_max_duration_exceeded_string_classified_as_timeout(self):
+        # Bug found live 2026-08-17: the profiler's own wall-clock cutoff
+        # raises "max_duration_s exceeded (300.0s)" -- containing neither
+        # "timeout" nor "timed out" -- so genuine cap-hits were falling
+        # through to the generic EXECUTOR_EXCEPTION bucket. Confirmed
+        # live: 6/9 "executor_exception" results in one cell-D run were
+        # actually this exact cutoff.
+        fc = classify_failure(
+            success=False, elapsed_s=300.0,
+            error="max_duration_s exceeded (300.0s)",
+        )
+        assert fc is FailureClass.TIMEOUT
+
     def test_error_string_backend_unavailable(self):
         fc = classify_failure(success=False, elapsed_s=10.0, error="backend unavailable")
         assert fc is FailureClass.TOOL_BACKEND_UNAVAILABLE

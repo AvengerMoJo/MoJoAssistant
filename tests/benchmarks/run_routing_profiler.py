@@ -66,6 +66,14 @@ from app.scheduler.routing_profile import (
 # Cells map to levels: A->L1, B->L2, C->L2, D->L3, dispatch_subtask->L4.
 CELL_BUDGETS = {"A": 4, "B": 8, "C": 8, "D": 12}
 
+# Seconds to allow per LLM round-trip when deriving a per-cell wall-clock
+# cap from CELL_BUDGETS (see _effective_max_duration_s). Real observed
+# per-call latency across every model profiled this project ranges ~10s
+# (fast, simple cell-A answers) to ~100s (slower models on multi-step cell
+# C/D tasks with tool calls) -- 75s is a deliberately generous middle
+# ground so the cap isn't the thing cutting a call short.
+SECONDS_PER_ITERATION_BUDGET = 75.0
+
 # Per-call LLM timeout. The previous value 0 made UnifiedLLMClient fall back to
 # a 3600s read timeout, so a hung backend (e.g. LMStudio stalling on a tool-
 # schema request — the default path since every calibration task declares tools)
@@ -132,6 +140,30 @@ def filter_models(all_models: List[str], model_filter: Optional[str]) -> List[st
     if not model_filter:
         return all_models
     return [m for m in all_models if model_filter in m]
+
+
+def _effective_max_duration_s(cell: str, requested_max_duration_s: float) -> float:
+    """Scale the wall-clock cap to the cell's own iteration budget.
+
+    Bug found live 2026-08-17: max_duration_s was a single flat value
+    (default 300s) applied identically to every cell, independent of how
+    many iterations that cell's budget actually allows. Cell D's budget
+    is 12, but at REAL observed per-call latency (27-66s for a model that
+    was otherwise scoring 100% on cells A-C) even a model making steady,
+    correct progress needs 5-11 iterations and 300-800+ seconds to use
+    that budget -- the 300s cap was cutting it off mid-task, misclassified
+    as "executor_exception" (see the classify_failure fix below) rather
+    than genuine incapability. This was very likely the dominant reason
+    cell D scored near-0% across every model profiled all project,
+    predating this specific fix pass.
+
+    Takes the LARGER of the caller's requested value and a budget-derived
+    floor, so an explicit --max-duration-s override for a fast smoke-test
+    run is never shrunk, but a cell whose budget implies more real time is
+    needed gets that time instead of being silently truncated.
+    """
+    budget = CELL_BUDGETS.get(cell, 4)
+    return max(requested_max_duration_s, budget * SECONDS_PER_ITERATION_BUDGET)
 
 
 def clean_scratch_for_task(task: Dict[str, Any]) -> int:
@@ -354,7 +386,29 @@ def check_answer(
     if not text_to_check:
         return False
     if match_type == "exact":
-        return text_to_check.strip().lower() == correct.strip().lower()
+        stripped_response = text_to_check.strip().lower()
+        stripped_correct = correct.strip().lower()
+        if stripped_response == stripped_correct:
+            return True
+        # Bug found live 2026-08-17 on cellD_015 ("count total lines"):
+        # `wc -l` (what a model naturally reaches for via bash_exec) and
+        # Python's `str.splitlines()` (what dynamic_answers.py uses to
+        # compute the expected value) disagree by one line per file
+        # lacking a trailing newline -- a real, defensible ambiguity in
+        # what "line count" means, not a wrong answer. A model that
+        # traced the exact right files and used a reasonable counting
+        # method shouldn't fail sheer method choice. Only applies when a
+        # task opts in via "numeric_tolerance" -- exact tasks without it
+        # keep the strict byte-for-byte bar unchanged.
+        tolerance = task.get("numeric_tolerance")
+        if tolerance is not None:
+            try:
+                response_num = float(stripped_response)
+                correct_num = float(stripped_correct)
+                return abs(response_num - correct_num) <= tolerance
+            except ValueError:
+                pass
+        return False
     if match_type in ("contains", "structural") and correct:
         # List-shaped correct_answer (comma-joined, cellA/C multi-item tasks):
         # check each item independently rather than requiring the exact
@@ -404,6 +458,22 @@ def check_answer(
             ]
             haystack = text_to_check.lower()
 
+            # How many items in THIS answer key have a purely-numeric value.
+            # Used below to decide whether the independent-substring
+            # fallback is safe for a numeric value: with only one numeric
+            # fact in the whole answer (e.g. "count=7"), there's nothing
+            # else it could coincidentally collide with, so the fallback is
+            # safe. With multiple (e.g. a priority list "id_a=4,id_b=5,..."),
+            # a wrong pairing could slip through by matching a DIFFERENT
+            # item's correct number, so the stricter glued-token check stays
+            # required. Bug found live 2026-08-17 re-verifying cell D: the
+            # blanket numeric guard below was blocking "count=7" (the only
+            # number in its answer) just because a response wrote
+            # "Total count: 7" instead of the literal "count=7".
+            _numeric_value_count = sum(
+                1 for it in items if "=" in it and it.partition("=")[2].strip().isdigit()
+            )
+
             def _item_satisfied(item: str) -> bool:
                 if item in haystack:
                     return True
@@ -442,15 +512,16 @@ def check_answer(
                         )
                         return key in haystack and any(s in haystack for s in none_synonyms)
                     if value:
-                        # Guard against short/numeric values (priorities,
-                        # counts) colliding coincidentally with an unrelated
-                        # number elsewhere in a multi-item list (e.g.
-                        # cellC_011's "id=4,id=5,id=6,..." priority list) --
-                        # only apply the independent-substring fallback to
-                        # values distinctive enough that a false match is
-                        # implausible.
                         if len(value) >= 3 and not value.isdigit():
                             return key in haystack and value in haystack
+                        if value.isdigit() and _numeric_value_count <= 1:
+                            # Only numeric fact in this answer -- nothing
+                            # else it could coincidentally collide with.
+                            return key in haystack and value in haystack
+                        # Multiple numeric items (e.g. a priority list) --
+                        # require the glued literal to avoid a wrong
+                        # pairing slipping through via a different item's
+                        # correct number.
                 return False
 
             return bool(items) and all(_item_satisfied(item) for item in items)
@@ -1067,7 +1138,8 @@ async def run_profiler(
                   + f": {task['goal'][:50]}...",
                   end=" ", flush=True)
 
-            result = await run_task_with_model(task, model_id, budget, max_duration_s)
+            effective_max_duration_s = _effective_max_duration_s(cell_letter, max_duration_s)
+            result = await run_task_with_model(task, model_id, budget, effective_max_duration_s)
             _write_task_json(tasks_dir, model_id, result)
             _write_tsv_row(tsv_path, result)
 
