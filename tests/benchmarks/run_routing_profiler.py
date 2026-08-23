@@ -142,6 +142,70 @@ def filter_models(all_models: List[str], model_filter: Optional[str]) -> List[st
     return [m for m in all_models if model_filter in m]
 
 
+def _lms_ps_loaded_model_keys() -> Optional[set]:
+    """Query `lms ps --json` for model identifiers currently resident in
+    LMStudio's VRAM. Returns None (never an empty set) on any failure --
+    the caller must not mistake "couldn't check" for "nothing is loaded"
+    and skip every model.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["lms", "ps", "--json"], capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            return None
+        loaded = json.loads(proc.stdout)
+    except Exception:
+        return None
+    keys: set = set()
+    for entry in loaded if isinstance(loaded, list) else []:
+        if isinstance(entry, dict):
+            for field_name in ("identifier", "modelKey", "path"):
+                v = entry.get(field_name)
+                if v:
+                    keys.add(v)
+    return keys
+
+
+def validate_models_loaded(models: List[str]) -> List[str]:
+    """Drop any local-resource model that isn't actually loaded in LMStudio
+    right now, instead of silently sending it requests.
+
+    Bug found live 2026-08-23: the profiler resolved a model's base_url/model
+    straight from resource_pool.json and fired requests at it with no check
+    that LMStudio actually has those weights resident. An unloaded local
+    model either 400s immediately or JIT-loads mid-run -- either way the
+    result reflects LMStudio's load state at that moment, not the model's
+    capability, which is exactly the class of framework artifact this
+    harness exists to eliminate (see build_system_prompt's docstring for a
+    prior instance of the same failure mode, with context truncation).
+    """
+    loaded_keys = _lms_ps_loaded_model_keys()
+    if loaded_keys is None:
+        print("WARNING: could not query `lms ps` -- skipping loaded-model "
+              "validation. If a model below isn't actually loaded, its "
+              "results may be skewed by JIT-load cold-start.")
+        return models
+
+    validated = []
+    for model_id in models:
+        resource = load_resource(model_id)
+        if resource is None:
+            print(f"  SKIP {model_id}: no resource_pool.json entry")
+            continue
+        if resource.get("type") != "local":
+            validated.append(model_id)  # API resources have no load state
+            continue
+        model_key = resource.get("model", "")
+        if model_key in loaded_keys:
+            validated.append(model_id)
+        else:
+            print(f"  SKIP {model_id}: not loaded in LMStudio "
+                  f"(model='{model_key}') -- run `lms load {model_key}` first")
+    return validated
+
+
 def _effective_max_duration_s(cell: str, requested_max_duration_s: float) -> float:
     """Scale the wall-clock cap to the cell's own iteration budget.
 
@@ -1049,6 +1113,12 @@ async def run_profiler(
     models = filter_models(models, model_filter)
     if not models:
         print("No models after filtering!")
+        return {}
+
+    models = validate_models_loaded(models)
+    if not models:
+        print("No models left after loaded-state validation! "
+              "Load at least one with `lms load <model>` and retry.")
         return {}
 
     tasks = load_tasks(cell=cell, max_per_cell=tasks_per_cell)

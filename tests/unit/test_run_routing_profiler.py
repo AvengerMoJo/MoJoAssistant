@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "tests" / "benchmarks"))
 
+import run_routing_profiler as rrp  # noqa: E402
 from run_routing_profiler import (
     CELL_BUDGETS,
     DEFAULT_MODELS,
@@ -34,10 +35,12 @@ from run_routing_profiler import (
     clean_scratch_for_task,
     filter_models,
     run_task_with_model,
+    validate_models_loaded,
     _effective_max_duration_s,
     _extract_scratch_target,
     _find_all_done_run,
     _find_resumable_run,
+    _lms_ps_loaded_model_keys,
 )
 
 
@@ -860,6 +863,67 @@ class TestRunTaskWithModelPathHint(unittest.IsolatedAsyncioTestCase):
         user_msg = next(m["content"] for m in messages if m["role"] == "user")
         self.assertIn("Directory path", user_msg)
         self.assertIn(str(PROJECT_ROOT / "config"), user_msg)
+
+
+class TestLmsPsLoadedModelKeys(unittest.TestCase):
+    """Bug found live 2026-08-23: the profiler fired requests straight at
+    resource_pool.json's base_url/model with no check that LMStudio
+    actually has those weights loaded -- an unloaded model either 400s or
+    JIT-loads mid-run, either way polluting results with load-state noise
+    rather than measuring capability."""
+
+    def test_returns_none_on_nonzero_exit(self):
+        fake_proc = MagicMock(returncode=1, stdout="", stderr="boom")
+        with patch("subprocess.run", return_value=fake_proc):
+            self.assertIsNone(_lms_ps_loaded_model_keys())
+
+    def test_returns_none_on_exception(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError("no lms binary")):
+            self.assertIsNone(_lms_ps_loaded_model_keys())
+
+    def test_extracts_identifier_modelkey_and_path_fields(self):
+        stdout = json.dumps([
+            {"identifier": "qwen/qwen3.8-27b", "modelKey": "qwen3.8-27b-key", "path": "/models/qwen3.8"},
+            {"identifier": "other-model"},
+        ])
+        fake_proc = MagicMock(returncode=0, stdout=stdout, stderr="")
+        with patch("subprocess.run", return_value=fake_proc):
+            keys = _lms_ps_loaded_model_keys()
+        self.assertEqual(
+            keys,
+            {"qwen/qwen3.8-27b", "qwen3.8-27b-key", "/models/qwen3.8", "other-model"},
+        )
+
+
+class TestValidateModelsLoaded(unittest.TestCase):
+    def test_drops_local_model_not_currently_loaded(self):
+        with patch.object(rrp, "_lms_ps_loaded_model_keys", return_value={"qwen/qwen3.8-27b"}), \
+             patch.object(rrp, "load_resource", side_effect=lambda rid: {
+                 "lmstudio_loaded": {"type": "local", "model": "qwen/qwen3.8-27b"},
+                 "lmstudio_unloaded": {"type": "local", "model": "gemma-4-31b-qat"},
+             }[rid]):
+            result = validate_models_loaded(["lmstudio_loaded", "lmstudio_unloaded"])
+        self.assertEqual(result, ["lmstudio_loaded"])
+
+    def test_api_resources_are_never_filtered_by_load_state(self):
+        with patch.object(rrp, "_lms_ps_loaded_model_keys", return_value=set()), \
+             patch.object(rrp, "load_resource", return_value={"type": "api", "model": "gemini-2.5-pro"}):
+            result = validate_models_loaded(["gemini_avengermojo"])
+        self.assertEqual(result, ["gemini_avengermojo"])
+
+    def test_unknown_resource_id_is_dropped(self):
+        with patch.object(rrp, "_lms_ps_loaded_model_keys", return_value=set()), \
+             patch.object(rrp, "load_resource", return_value=None):
+            result = validate_models_loaded(["no_such_resource"])
+        self.assertEqual(result, [])
+
+    def test_fails_open_when_lms_ps_unavailable(self):
+        # If we can't even ask LMStudio what's loaded, don't silently drop
+        # every model -- that would turn "lms isn't on PATH" into "0 models
+        # tested" with no visible cause.
+        with patch.object(rrp, "_lms_ps_loaded_model_keys", return_value=None):
+            result = validate_models_loaded(["lmstudio_whatever"])
+        self.assertEqual(result, ["lmstudio_whatever"])
 
 
 if __name__ == "__main__":
