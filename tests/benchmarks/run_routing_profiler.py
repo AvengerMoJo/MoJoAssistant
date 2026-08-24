@@ -819,7 +819,18 @@ async def run_task_with_model(
                     tools=tools_schema,
                 )
             except Exception as e:
-                last_error = f"LLM call failed: {e}"
+                # Bug found live 2026-08-23: httpx.ReadTimeout/ConnectTimeout
+                # and asyncio.TimeoutError all stringify to "" -- a genuine
+                # per-call read timeout (PER_CALL_TIMEOUT_S) was rendering as
+                # "LLM call failed: " with nothing after the colon, which
+                # classify_failure's substring check can't recognize as a
+                # timeout, so it fell into the generic executor_exception
+                # bucket instead -- hiding that the model was actually
+                # timing out on individual calls, not crashing. Falling back
+                # to the exception's class name (e.g. "ReadTimeout",
+                # "TimeoutError") keeps the "timeout" substring classify_failure
+                # already looks for, with no changes needed there.
+                last_error = f"LLM call failed: {str(e) or type(e).__name__}"
                 break
 
             result["iterations"] = it

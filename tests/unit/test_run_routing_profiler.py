@@ -865,6 +865,47 @@ class TestRunTaskWithModelPathHint(unittest.IsolatedAsyncioTestCase):
         self.assertIn(str(PROJECT_ROOT / "config"), user_msg)
 
 
+class TestRunTaskWithModelEmptyExceptionString(unittest.IsolatedAsyncioTestCase):
+    """Bug found live 2026-08-23 on cellD_015/qwen3.8-27b: httpx.ReadTimeout
+    (and asyncio.TimeoutError) stringify to "" -- a genuine per-call read
+    timeout was rendering as "LLM call failed: " with nothing after the
+    colon, which classify_failure's substring check can't recognize as a
+    timeout, so it fell into the generic executor_exception bucket instead
+    of TIMEOUT, hiding the real signal."""
+
+    async def _run_and_capture_error(self, exc):
+        async def fake_call_async(messages, resource_config, model_override=None, tools=None):
+            raise exc
+
+        fake_client = MagicMock()
+        fake_client.call_async = fake_call_async
+
+        task = {
+            "id": "t1", "cell": "D",
+            "goal": "do something", "correct_answer": "x", "match_type": "exact",
+            "declared_tools": [], "setup": "",
+        }
+        with patch("run_routing_profiler.load_resource", return_value={
+            "base_url": "http://x", "model": "m", "api_key": "k",
+        }), patch("app.llm.unified_client.UnifiedLLMClient", return_value=fake_client), \
+             patch("app.llm.unified_client.UnifiedLLMClient.resolve_key", return_value="k"):
+            result = await run_task_with_model(task, "fake_resource", budget=2, max_duration_s=30.0)
+        return result
+
+    async def test_empty_str_exception_falls_back_to_class_name(self):
+        import httpx
+        result = await self._run_and_capture_error(httpx.ReadTimeout(""))
+        self.assertEqual(result["error"], "LLM call failed: ReadTimeout")
+
+    async def test_asyncio_timeout_error_falls_back_to_class_name(self):
+        result = await self._run_and_capture_error(TimeoutError())
+        self.assertEqual(result["error"], "LLM call failed: TimeoutError")
+
+    async def test_exception_with_a_real_message_is_unaffected(self):
+        result = await self._run_and_capture_error(ValueError("bad payload"))
+        self.assertEqual(result["error"], "LLM call failed: bad payload")
+
+
 class TestLmsPsLoadedModelKeys(unittest.TestCase):
     """Bug found live 2026-08-23: the profiler fired requests straight at
     resource_pool.json's base_url/model with no check that LMStudio
