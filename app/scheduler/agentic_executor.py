@@ -61,6 +61,7 @@ from app.scheduler.exec_context import (
 _cv_tool_calls:      ContextVar = ContextVar("exec_tool_calls",      default=0)
 _cv_consec_notool:   ContextVar = ContextVar("exec_consec_notool",   default=0)
 _cv_budget_ext:      ContextVar = ContextVar("exec_budget_ext",      default=0)
+_cv_duration_ext:    ContextVar = ContextVar("exec_duration_ext",    default=0.0)
 _cv_exhausts_ask:    ContextVar = ContextVar("exec_exhausts_ask",    default=False)
 _cv_requires_tool:   ContextVar = ContextVar("exec_requires_tool",   default=True)
 
@@ -613,6 +614,21 @@ NEAR_LIMIT_PROMPT = (
 
 _BUDGET_EXTENSION_PREFIX = "BUDGET_EXTENSION_REQUEST:"
 _BUDGET_EXTENSION_MAX_GRANT = 20  # cap per extension to avoid runaway loops
+
+# Bug found live 2026-08-25 (Rebecca, task rebecca_agent_boundary_research_2608):
+# a BUDGET_EXTENSION_REQUEST grants more max_iterations but the wall-clock
+# max_duration cap (default 300s, see max_duration = config.get(...) below)
+# was never extended alongside it -- the extension was granted, the loop
+# said "continue your work", and then the very next elapsed-time check
+# killed the task anyway. Failed 3/3 retries this way: the agent was doing
+# real, correct work (real web research, a genuine paper fetched) and was
+# never actually given the time the granted iterations implied it could use.
+# Each granted iteration gets this many additional wall-clock seconds too,
+# applied via _cv_duration_ext the same way _cv_budget_ext extends
+# max_iterations. Value matches the slower end of iterations observed in
+# that incident (web_search + fetch_url pairs ran 20-32s; the first
+# iteration's double memory_search ran 79s) with headroom.
+_SECONDS_PER_EXTENDED_ITERATION = 90.0
 
 
 class AgenticExecutor:
@@ -1254,6 +1270,14 @@ class AgenticExecutor:
                     f"iterations (new max: {max_iterations})"
                 )
                 _cv_budget_ext.set(0)
+            if _cv_duration_ext.get() > 0:
+                _dur_ext = _cv_duration_ext.get()
+                max_duration += _dur_ext
+                self._log(
+                    f"Task {task.id}: time budget extended +{_dur_ext:.0f}s "
+                    f"(new max: {max_duration:.0f}s)"
+                )
+                _cv_duration_ext.set(0.0)
             if iteration > max_iterations:
                 break
             abs_iteration = start_iteration + iteration
@@ -1669,9 +1693,10 @@ class AgenticExecutor:
                 match = _re.search(r"Need\s+(\d+)\s+more", response_text, _re.IGNORECASE)
                 grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
                 max_iterations += grant
+                max_duration += grant * _SECONDS_PER_EXTENDED_ITERATION
                 self._log(
                     f"Task {task.id}: plain-text budget extension detected, granted +{grant} "
-                    f"(new max: {max_iterations})"
+                    f"(new max: {max_iterations}, new time budget: {max_duration:.0f}s)"
                 )
                 messages.append({"role": "user", "content": f"Budget extended by {grant} iterations. Continue your work."})
                 self._record(task.id, "user", f"Budget extended by {grant} iterations. Continue your work.", iteration=abs_iteration)
@@ -2926,9 +2951,10 @@ class AgenticExecutor:
                 match = _re.search(r"Need\s+(\d+)\s+more", question, _re.IGNORECASE)
                 grant = min(int(match.group(1)) if match else 10, _BUDGET_EXTENSION_MAX_GRANT)
                 _cv_budget_ext.set(_cv_budget_ext.get() + grant)
+                _cv_duration_ext.set(_cv_duration_ext.get() + grant * _SECONDS_PER_EXTENDED_ITERATION)
                 self._log(
-                    f"Task {_cv_task_id.get()}: budget extension granted (+{grant} iterations). "
-                    f"Message: {question[:120]}"
+                    f"Task {_cv_task_id.get()}: budget extension granted (+{grant} iterations, "
+                    f"+{grant * _SECONDS_PER_EXTENDED_ITERATION:.0f}s). Message: {question[:120]}"
                 )
                 return {
                     "success": True,
@@ -2954,6 +2980,22 @@ class AgenticExecutor:
         # blindly hides real sessions from the agent.
 
         # Try dynamic registry first
+        # Bug found live 2026-08-25 (Rebecca, task rebecca_agent_boundary_
+        # research_2608): read_file/list_files worked at iterations 2-3, then
+        # failed at 4-6 with "Unknown or unavailable tool" -- despite being
+        # real, registered builtins that had just succeeded. Root cause: an
+        # exception from self._tool_registry.execute_tool() was caught below,
+        # logged internally (never surfaced to the model or this task's
+        # visible output), and silently fell through to the small builtin
+        # dispatch chain a few lines down -- which has no case for read_file/
+        # list_files (only memory_search/smoke_*/browser_*/calendar), so it
+        # hit the generic catch-all and told the model the tool was
+        # "unknown or unavailable". That's actively misleading: the tool
+        # exists and normally works: something inside its own execution
+        # raised. Track whether we actually hit that exception path so the
+        # final catch-all can report the real error instead of pretending
+        # ignorance of a tool that plainly exists.
+        _dynamic_call_raised: Optional[Exception] = None
         try:
             result = await self._tool_registry.execute_tool(name, args)
             # Registry signals "ask the user" on behalf of the tool (e.g. non-existent role dispatch)
@@ -2979,6 +3021,7 @@ class AgenticExecutor:
                 return result if len(result) > 1 else {"error": err or f"Tool '{name}' failed"}
         except Exception as e:
             self._log(f"Dynamic tool {name} failed: {e}", "error")
+            _dynamic_call_raised = e
 
         # Fallback to built-in tools
         if name == "memory_search" and self._memory_service:
@@ -3004,6 +3047,8 @@ class AgenticExecutor:
         if name in ("google_calendar_list", "google_calendar_create"):
             return await self._execute_google_calendar(name, args)
 
+        if _dynamic_call_raised is not None:
+            return {"error": f"Tool '{name}' raised an error: {_dynamic_call_raised}"}
         return {"error": f"Unknown or unavailable tool: {name}"}
 
     # --- Google Calendar bridge -------------------------------------------------
