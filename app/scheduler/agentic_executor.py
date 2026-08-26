@@ -64,6 +64,18 @@ _cv_budget_ext:      ContextVar = ContextVar("exec_budget_ext",      default=0)
 _cv_duration_ext:    ContextVar = ContextVar("exec_duration_ext",    default=0.0)
 _cv_exhausts_ask:    ContextVar = ContextVar("exec_exhausts_ask",    default=False)
 _cv_requires_tool:   ContextVar = ContextVar("exec_requires_tool",   default=True)
+# Bug found live 2026-08-25 (Rebecca, task rebecca_agent_boundary_research_2608):
+# her task goal and her own role's "Deliver" workflow stage both said to
+# write findings to memory/a file before finishing -- a prompt-level
+# instruction with nothing enforcing it. She produced a <FINAL_ANSWER> and
+# stopped without ever calling write_file or add_conversation; the task
+# was accepted as a success anyway, and the "durable research" the task
+# existed to produce simply didn't exist. Mirrors the existing
+# requires_tool_use guard (behavior_rules-driven, checked before accepting
+# a final answer) but for a configurable set of *specific* tool names
+# rather than "any tool at all".
+_cv_requires_deliverable:      ContextVar = ContextVar("exec_requires_deliverable",      default=())
+_cv_deliverable_tools_called:  ContextVar = ContextVar("exec_deliverable_tools_called",  default=frozenset())
 
 # Tools whose output commonly bloats context (bash stdout, file reads).
 # Results longer than this cap are truncated before being added to messages.
@@ -753,6 +765,8 @@ class AgenticExecutor:
         _cv_budget_ext.set(0)
         _cv_exhausts_ask.set(False)
         _cv_requires_tool.set(False)
+        _cv_requires_deliverable.set(())
+        _cv_deliverable_tools_called.set(frozenset())
         _cv_task_id.set(task.id)
         self._tool_calls_made = 0
         # Propagate task context to registry for sub-agent dispatch linkage + role scoping
@@ -821,6 +835,9 @@ class AgenticExecutor:
                     ))
                     _cv_requires_tool.set(behavior_rules.get(
                         "requires_tool_use", True
+                    ))
+                    _cv_requires_deliverable.set(tuple(
+                        behavior_rules.get("requires_tools_called_before_final", []) or ()
                     ))
                     # Pull expanded data_boundary from monitor (local_only expansion applied)
                     self._data_boundary = self._policy_monitor.data_boundary
@@ -2973,6 +2990,8 @@ class AgenticExecutor:
         # use a deterministic counter even outside a live ContextVar loop.
         _cv_tool_calls.set(_cv_tool_calls.get() + 1)
         self._tool_calls_made = getattr(self, "_tool_calls_made", 0) + 1
+        if name in _cv_requires_deliverable.get():
+            _cv_deliverable_tools_called.set(_cv_deliverable_tools_called.get() | {name})
 
         # tmux tools may accept a per-call "socket" override, but do not force
         # one here. The tmux MCP backend may already be configured with a fixed
@@ -3645,6 +3664,26 @@ class AgenticExecutor:
         )
         if not semantic_ok:
             return False, semantic_error
+
+        # Bug found live 2026-08-25 (Rebecca, task rebecca_agent_boundary_
+        # research_2608): a role/task can say "write your findings to
+        # memory/a file" in prose, and a model can simply skip it and
+        # still produce an accepted FINAL_ANSWER -- the deliverable the
+        # task existed to produce never gets created. behavior_rules.
+        # requires_tools_called_before_final names the tool(s) that count
+        # as "actually delivered" (e.g. ["write_file", "add_conversation"]);
+        # if set, at least one must have been called before a final answer
+        # is accepted.
+        required_deliverable_tools = _cv_requires_deliverable.get()
+        if required_deliverable_tools:
+            called = _cv_deliverable_tools_called.get()
+            if not (called & set(required_deliverable_tools)):
+                return False, (
+                    "final answer rejected: this role requires calling one of "
+                    f"{list(required_deliverable_tools)} before finishing (e.g. to "
+                    "persist findings), and none of them have been called yet. "
+                    "Call one now, then provide your final answer."
+                )
 
         return True, None
 
