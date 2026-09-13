@@ -142,7 +142,12 @@ class HostOpenCodeBackend(SandboxBackend):
         if handle.sandbox_id:
             try:
                 os.killpg(int(handle.sandbox_id), signal.SIGTERM)
-            except (ProcessLookupError, ValueError):
+            except (ProcessLookupError, ValueError, PermissionError):
+                # ProcessLookupError: pid already gone (normal teardown race)
+                # ValueError: sandbox_id isn't a valid pid (bad persisted state)
+                # PermissionError: process group owned by another user —
+                #   nothing we can signal, but the handle should still be
+                #   removed from the store so it doesn't leak.
                 pass
         delete_handle(handle.task_id)
 
