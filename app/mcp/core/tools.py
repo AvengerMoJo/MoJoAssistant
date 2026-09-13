@@ -76,6 +76,23 @@ class ToolRegistry:
         # Initialize Scheduler (pass memory_service for agentic tool use)
         from app.scheduler.core import Scheduler
 
+        # max_concurrent was previously a hardcoded default (3), never
+        # config-driven. Made configurable 2026-07-22 alongside the
+        # concurrency-safety incident (shared mutable per-task context on a
+        # singleton executor races under concurrent execution — see
+        # ~/.memory/research/scheduler_concurrency_context_race_2607.md).
+        # The queue itself has no size limit and doesn't need one; only the
+        # concurrent-execution count matters for this class of race, so keep
+        # it low and conservative until the contextvar fix lands and is
+        # verified safe under real concurrency.
+        _scheduler_max_concurrent = 3
+        try:
+            from app.config.config_loader import load_layered_json_config
+            _sched_cfg = load_layered_json_config("config/scheduler_config.json")
+            _scheduler_max_concurrent = int(_sched_cfg.get("max_concurrent", 3))
+        except Exception:
+            pass
+
         self.scheduler = Scheduler(
             logger=logger,
             memory_service=memory_service,
@@ -83,6 +100,7 @@ class ToolRegistry:
             mcp_client_manager=self._mcp_client_manager,
             push_manager=self._push_manager,
             event_log=self._event_log,
+            max_concurrent=_scheduler_max_concurrent,
         )
         self.scheduler_thread = None
 
@@ -5059,6 +5077,68 @@ Agent resumes within seconds.
                 "message": str(e),
             })
 
+        # 3b. Loaded-model mapping — is the resource pool's priority ordering
+        # aligned with what's actually resident in VRAM right now? Added
+        # 2026-07-21 after a live incident where acquire() walked past 3
+        # loaded 27-35B local models to try 3 unloaded ones (2 errored).
+        # doctor_health is an inherently manual/infrequent diagnostic call,
+        # so this always forces a fresh `lms ps` check rather than relying
+        # on acquire()'s lazy 24h cache.
+        try:
+            import json as _json
+            from app.scheduler.resource_pool import ResourceManager
+            rm = ResourceManager()
+            refreshed = rm.refresh_loaded_models_now()
+            loaded_ids = set(refreshed["loaded_resource_ids"])
+            local_resources = {r.id: r for r in rm._resources.values() if r.type == "local"}
+            configured_loaded = sorted(loaded_ids & set(local_resources.keys()))
+            configured_unloaded = sorted(set(local_resources.keys()) - loaded_ids)
+
+            # Orphaned: models `lms ps` reports as loaded that don't match
+            # ANY local resource's `model` field — VRAM spent on something
+            # the pool can't route to at all (confirmed incident: 18.85GB
+            # for google/gemma-4-31b-qat before it was registered).
+            import subprocess as _subprocess
+            orphaned = []
+            try:
+                proc = _subprocess.run(["lms", "ps", "--json"], capture_output=True, text=True, timeout=8.0)
+                if proc.returncode == 0:
+                    lms_loaded = _json.loads(proc.stdout)
+                    configured_models = {r.model for r in local_resources.values()}
+                    for entry in lms_loaded if isinstance(lms_loaded, list) else []:
+                        ident = entry.get("identifier") or entry.get("modelKey")
+                        if ident and ident not in configured_models:
+                            orphaned.append(ident)
+            except Exception:
+                pass
+
+            issues = []
+            if orphaned:
+                issues.append(f"{len(orphaned)} loaded model(s) have NO resource_pool entry: {orphaned}")
+            # Flag if a low-priority (worse) resource is loaded while a
+            # strictly better-priority sibling of similar capability sits
+            # cold — informational only, not scored as an error, since it's
+            # often intentional.
+            report["checks"].append({
+                "name": "loaded_model_mapping",
+                "status": "warn" if orphaned else "pass",
+                "message": (
+                    f"{len(configured_loaded)}/{len(local_resources)} configured local resources "
+                    f"currently loaded: {configured_loaded}. Unloaded: {configured_unloaded}."
+                    + (f" ORPHANED (loaded, unregistered): {orphaned}" if orphaned else "")
+                ),
+                "loaded": configured_loaded,
+                "unloaded": configured_unloaded,
+                "orphaned_loaded_models": orphaned,
+                "checked_at": refreshed["checked_at"],
+            })
+        except Exception as e:
+            report["checks"].append({
+                "name": "loaded_model_mapping",
+                "status": "skip",
+                "message": str(e),
+            })
+
         # 4. Scheduler status
         try:
             if hasattr(self, "scheduler") and self.scheduler:
@@ -5077,6 +5157,43 @@ Agent resumes within seconds.
         except Exception as e:
             report["checks"].append({
                 "name": "scheduler_running",
+                "status": "skip",
+                "message": str(e),
+            })
+
+        # 5. Network provider (Headscale mesh, Phase 1) — gated on
+        # network_provider.json's enabled flag so this skips cleanly on any
+        # install that hasn't set up Headscale yet.
+        try:
+            from app.config.config_loader import load_layered_json_config
+            net_cfg = load_layered_json_config("config/network_provider.json")
+            if not net_cfg.get("enabled"):
+                report["checks"].append({
+                    "name": "network_provider",
+                    "status": "skip",
+                    "message": "Network provider not enabled (config/network_provider.json: enabled=false)",
+                })
+            else:
+                from app.services.provider_contracts import get_registry
+                net = get_registry().resolve_network_provider()
+                nodes = net.list_nodes()
+                import socket
+                self_hostname = socket.gethostname()
+                self_node = next(
+                    (n for n in nodes if n.get("hostname") == self_hostname), None
+                )
+                self_online = bool(self_node and self_node.get("online"))
+                report["checks"].append({
+                    "name": "network_provider",
+                    "status": "pass" if self_online else "warn",
+                    "message": (
+                        f"{len(nodes)} node(s) registered on {net_cfg.get('provider', 'headscale')} "
+                        f"tailnet; self-node ({self_hostname}) online={self_online}"
+                    ),
+                })
+        except Exception as e:
+            report["checks"].append({
+                "name": "network_provider",
                 "status": "skip",
                 "message": str(e),
             })

@@ -91,6 +91,27 @@ class ResourceManager:
     META_FILE = Path(get_memory_subpath("resource_pool_meta.json"))
     SMOKE_LOG_FILE = Path(get_memory_subpath("resource_pool_smoke_log.jsonl"))
 
+    # Bug found live 2026-07-21: acquire() sorted candidates by static
+    # `priority` alone, with zero signal for whether a local model is
+    # actually resident in VRAM. This routed tasks to cold models while
+    # already-loaded ones sat idle, causing real ConnectTimeout/400 failures
+    # (confirmed: a Paul dispatch walked past 3 loaded 27-35B local models
+    # to try 3 unloaded ones, 2 of which errored). Meanwhile the GPU sits at
+    # ~99.9% VRAM, so a "higher priority but cold" pick isn't just slower —
+    # it may not even have room to load. Loaded-state is now folded into
+    # selection as an effective-priority penalty (see get_loaded_resource_ids
+    # / acquire), not an absolute override — an unloaded resource can still
+    # win if its real priority is far enough ahead, since unloading/reloading
+    # is a legitimate outcome, not something to prevent outright.
+    LOAD_PENALTY = 10
+    # Loaded-state is checked via `lms ps` (LMStudio CLI), which is cheap but
+    # not free — don't shell out on every acquire() call. Refresh lazily,
+    # at most once per this TTL, or on-demand via refresh_loaded_models_now()
+    # (wired into doctor_health, which is an inherently manual/infrequent
+    # diagnostic call so an unconditional refresh there is fine).
+    LOADED_MODEL_CACHE_TTL_SECONDS = 86400  # 24h
+    LMS_PS_TIMEOUT_SECONDS = 8.0
+
     def __init__(self, config_path: str = "config/resource_pool.json", logger=None):
         self._config_path = config_path
         self._logger = logger
@@ -108,6 +129,12 @@ class ResourceManager:
         # Stale entries (older than AGENTIC_CAPABLE_TTL_DAYS) are treated as None
         # so a working model is never permanently blocked by an old failed test.
         self._agentic_capable: Dict[str, Any] = {}
+        # Loaded-model cache: resource_id -> True for every LOCAL resource
+        # currently resident in LMStudio's VRAM, per `lms ps --json`.
+        # Non-local (API/paid) resources are never in this set and are
+        # never penalized by it (see acquire()).
+        self._loaded_resource_ids: set = set()
+        self._loaded_models_checked_at: Optional[float] = None
         self._load_sandbox_env()
         self._load_usage()
         self._load_meta()
@@ -432,8 +459,23 @@ class ResourceManager:
             if not candidates:
                 return None
 
-            # Sort by priority (lower = preferred)
-            candidates.sort(key=lambda r: r.priority)
+            # Sort by effective priority: a resource's configured `priority`,
+            # plus LOAD_PENALTY if it's a local model NOT currently resident
+            # in VRAM. This is a penalty, not an absolute filter — a resource
+            # far enough ahead on raw priority can still win over a loaded
+            # one, since cold-loading (or LMStudio evicting something to make
+            # room) is a legitimate outcome the system should still be able
+            # to choose, not something to prevent outright. Non-local
+            # (API/paid) resources are never penalized — "loaded" only means
+            # something for local backends.
+            loaded_ids = self.get_loaded_resource_ids()
+
+            def _effective_priority(r: LLMResource) -> tuple:
+                is_cold_local = r.type == "local" and r.id not in loaded_ids
+                penalty = self.LOAD_PENALTY if is_cold_local else 0
+                return (r.priority + penalty, 1 if is_cold_local else 0)
+
+            candidates.sort(key=_effective_priority)
 
             # For resources in the same account_group, apply round-robin
             best = candidates[0]
@@ -579,6 +621,27 @@ class ResourceManager:
                         usage.rate_limited_until = rate_limited_until
 
             self._persist_usage()
+
+    def resolve_via_service(self, route_id: str) -> Dict[str, Any]:
+        """Resolve a credential through the standalone ai-credential-manager
+        service instead of local config -- Phase 2 additive first step, see
+        credential_manager_client.py's module docstring.
+
+        NOT called from acquire()/record_usage() or any other existing code
+        path -- this is an isolated, opt-in method so the service-backed
+        path can be proven correct against a real deployed route without
+        touching how any currently-running task resolves its LLM resource.
+        Raises CredentialManagerError on any failure (unreachable service,
+        no grant for this route, etc.) -- no fallback to local config.
+        """
+        from app.scheduler.credential_manager_client import get_credential_manager_client
+        return get_credential_manager_client().resolve_credential(route_id)
+
+    def report_usage_to_service(self, route_id: str, success: bool, error_message: Optional[str] = None) -> Dict[str, Any]:
+        """Companion to resolve_via_service() -- reports outcome to the
+        service's shared usage ledger. Also not wired into record_usage()."""
+        from app.scheduler.credential_manager_client import get_credential_manager_client
+        return get_credential_manager_client().report_usage(route_id, success, error_message)
 
     def get_status(self) -> Dict[str, Any]:
         """Return status of all resources with usage stats."""
@@ -753,16 +816,104 @@ class ResourceManager:
                 elif isinstance(v, dict):
                     migrated[rid] = v
             self._agentic_capable = migrated
+            # Restore the loaded-model cache so a process restart doesn't
+            # force an immediate `lms ps` shell-out — it's still valid until
+            # LOADED_MODEL_CACHE_TTL_SECONDS has elapsed since it was checked.
+            loaded_meta = data.get("loaded_models", {})
+            if isinstance(loaded_meta, dict):
+                self._loaded_resource_ids = set(loaded_meta.get("resource_ids", []))
+                self._loaded_models_checked_at = loaded_meta.get("checked_at")
         except Exception:
             pass
 
     def _save_meta(self) -> None:
         """Persist resource metadata to disk."""
         try:
-            data = {"agentic_capable": self._agentic_capable}
+            data = {
+                "agentic_capable": self._agentic_capable,
+                "loaded_models": {
+                    "resource_ids": sorted(self._loaded_resource_ids),
+                    "checked_at": self._loaded_models_checked_at,
+                },
+            }
             self.META_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception:
             pass
+
+    def _refresh_loaded_models(self, force: bool = False) -> None:
+        """Refresh which LOCAL resources are currently loaded in LMStudio.
+
+        Uses `lms ps --json` (LMStudio's own CLI) rather than hitting the
+        HTTP API directly — ad-hoc HTTP probing of LMStudio's endpoints was
+        found live to return inconsistent schema-stub responses depending on
+        headers; `lms ps` is the stable, documented source of truth for
+        "what's actually resident in VRAM right now."
+
+        Cheap but not free, so this only actually shells out if the cache is
+        older than LOADED_MODEL_CACHE_TTL_SECONDS or `force=True`. Fails
+        open on any error (missing `lms` binary, timeout, bad JSON) — a
+        broken loaded-state check must never break resource selection, it
+        just means the load-penalty in acquire() won't apply this round.
+        """
+        now = time.time()
+        if not force and self._loaded_models_checked_at is not None:
+            if now - self._loaded_models_checked_at < self.LOADED_MODEL_CACHE_TTL_SECONDS:
+                return
+
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                ["lms", "ps", "--json"],
+                capture_output=True, text=True, timeout=self.LMS_PS_TIMEOUT_SECONDS,
+            )
+            if proc.returncode != 0:
+                self._log(f"_refresh_loaded_models: `lms ps` exited {proc.returncode}: {proc.stderr[:200]}", "warning")
+                return
+            loaded = json.loads(proc.stdout)
+        except Exception as e:
+            self._log(f"_refresh_loaded_models: failed to query loaded models: {e}", "warning")
+            return
+
+        # Cross-reference LMStudio's loaded identifiers against each local
+        # resource's configured `model` field (identifier/modelKey are the
+        # same string LMStudio uses for both `lms ps` and the chat-completions
+        # `model` parameter our resources reference).
+        loaded_model_keys = set()
+        for entry in loaded if isinstance(loaded, list) else []:
+            if isinstance(entry, dict):
+                for field_name in ("identifier", "modelKey", "path"):
+                    v = entry.get(field_name)
+                    if v:
+                        loaded_model_keys.add(v)
+
+        loaded_resource_ids = {
+            r.id for r in self._resources.values()
+            if r.type == "local" and r.model in loaded_model_keys
+        }
+
+        self._loaded_resource_ids = loaded_resource_ids
+        self._loaded_models_checked_at = now
+        self._save_meta()
+        self._log(f"_refresh_loaded_models: {len(loaded_resource_ids)} local resource(s) currently loaded: {sorted(loaded_resource_ids)}")
+
+    def get_loaded_resource_ids(self) -> set:
+        """Return the set of resource IDs currently loaded in VRAM (lazy-refreshed)."""
+        with self._lock:
+            self._refresh_loaded_models(force=False)
+            return set(self._loaded_resource_ids)
+
+    def refresh_loaded_models_now(self) -> Dict[str, Any]:
+        """Force an immediate loaded-model refresh. For manual/doctor use —
+        NOT called from the acquire() hot path, which only ever lazy-refreshes
+        on TTL expiry.
+        """
+        with self._lock:
+            self._refresh_loaded_models(force=True)
+            return {
+                "loaded_resource_ids": sorted(self._loaded_resource_ids),
+                "checked_at": self._loaded_models_checked_at,
+            }
 
     def _is_agentic_entry_stale(self, entry: Any) -> bool:
         from datetime import datetime as _dt, timedelta as _td

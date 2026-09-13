@@ -587,6 +587,18 @@ class OpenCodeSessionHandler(TaskHandler):
                 logger.warning("SandboxManager lookup for %s failed: %s", sandbox_key, e)
 
         # 3. EXACT working_dir match against running sandboxes — no fuzzy match
+        #
+        # step3_confirmed_no_match tracks whether this block definitively
+        # searched and found zero running sandboxes for working_dir (as
+        # opposed to the lookup itself erroring, e.g. a legacy-manager
+        # exception) — see its use in step 4's guard below. Without this
+        # distinction, step 4 (Unified SandboxManager) unconditionally
+        # re-triggers whenever working_dir is set, which for the plain
+        # host/no-match case masked step 7's clear "No running sandbox
+        # matches" error behind a confusing real-filesystem check instead
+        # (found live 2026-08-01 via test_fails_loud_when_working_dir_has_no_match
+        # — step 7 was unreachable dead code for this scenario).
+        step3_confirmed_no_match = False
         if working_dir and not start_new:
             try:
                 from app.sandbox.manager import SandboxManager
@@ -612,6 +624,7 @@ class OpenCodeSessionHandler(TaskHandler):
                         "Specify sandbox_id explicitly to disambiguate."
                     )
                 # No match — fall through to either start_new or error
+                step3_confirmed_no_match = True
             except RuntimeError:
                 raise
             except Exception as e:
@@ -631,7 +644,19 @@ class OpenCodeSessionHandler(TaskHandler):
         # Covers start_new, non-host backends, resume-by-working_dir, and
         # legacy use_sandbox. acquire() checks the session store first and
         # resumes a paused session rather than starting a fresh one.
-        if start_new or backend_name != "host" or working_dir or sandbox_key or cfg.get("use_sandbox"):
+        #
+        # working_dir alone does NOT trigger this block when step 3 already
+        # confirmed zero matches on the plain host backend — that exact
+        # scenario (host backend, no start_new, no sandbox_key/use_sandbox,
+        # step 3 found nothing) is fully owned by step 7's clear fail-loud
+        # error below. working_dir still triggers this block for non-host
+        # backends (step 3 doesn't cover those) or if step 3's lookup
+        # itself errored rather than cleanly confirming zero matches.
+        working_dir_needs_unified_manager = working_dir and not (
+            step3_confirmed_no_match and backend_name == "host"
+            and not sandbox_key and not cfg.get("use_sandbox")
+        )
+        if start_new or backend_name != "host" or working_dir_needs_unified_manager or sandbox_key or cfg.get("use_sandbox"):
             try:
                 from app.scheduler.sandbox.manager import SandboxManager
                 mgr = SandboxManager.load()

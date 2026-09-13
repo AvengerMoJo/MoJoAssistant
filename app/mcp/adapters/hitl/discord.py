@@ -97,7 +97,9 @@ class DiscordHITLAdapter(HITLAdapter):
             try:
                 ch = await self._client.fetch_channel(self._channel_id)
             except Exception as exc:
-                logger.warning("[hitl/discord] cannot fetch channel %s: %s", self._channel_id, exc)
+                logger.warning(
+                    "[hitl/discord] cannot fetch channel %s: %s", self._channel_id, exc, exc_info=True
+                )
         return ch
 
     # ------------------------------------------------------------------
@@ -147,7 +149,7 @@ class DiscordHITLAdapter(HITLAdapter):
             self._pending[msg.id] = (task_id, choices)
             logger.info("[hitl/discord] HITL posted (task=%s, msg=%s)", task_id, msg.id)
         except Exception as exc:
-            logger.error("[hitl/discord] failed to send HITL: %s", exc)
+            logger.error("[hitl/discord] failed to send HITL: %s", exc, exc_info=True)
 
     async def send_notification(self, title: str, body: str, severity: str = "info") -> None:
         ch = await self._get_channel()
@@ -168,7 +170,7 @@ class DiscordHITLAdapter(HITLAdapter):
             )
             await ch.send(embed=embed)
         except Exception as exc:
-            logger.error("[hitl/discord] failed to send notification: %s", exc)
+            logger.error("[hitl/discord] failed to send notification: %s", exc, exc_info=True)
 
     # ------------------------------------------------------------------
     # Inbound
