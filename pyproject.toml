@@ -50,6 +50,7 @@ dependencies = [
     # Auth (OAuth 2.1 / Claude Connectors)
     "PyJWT>=2.8.0",
     "python-jose[cryptography]>=3.3.0",
+    "pycryptodome>=3.20.0",
 ]
 
 [project.optional-dependencies]

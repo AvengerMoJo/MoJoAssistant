@@ -77,6 +77,7 @@ def _load_builtins() -> None:
     """Import built-in adapters. Add new ones here."""
     _safe_import("app.mcp.adapters.messenger.discord")
     _safe_import("app.mcp.adapters.messenger.telegram")
+    _safe_import("app.mcp.adapters.messenger.wecom")
 
 
 def _load_entry_points() -> None:

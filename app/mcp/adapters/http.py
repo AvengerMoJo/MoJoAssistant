@@ -412,6 +412,12 @@ class HTTPAdapter(ProtocolAdapter):
         if self.logger:
             self.logger.info("HITL reply endpoint mounted at /api/hitl")
 
+        # WeCom callback webhook — verification handshake + inbound messages
+        from app.mcp.routers.wecom import router as wecom_router
+        app.include_router(wecom_router)
+        if self.logger:
+            self.logger.info("WeCom callback webhook mounted at /api/wecom")
+
         @app.get("/health")
         async def health_check():
             uptime = time.time() - self.engine.start_time
