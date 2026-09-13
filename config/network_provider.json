@@ -1,0 +1,10 @@
+{
+  "comment": "Self-hosted mesh networking (Headscale) — Phase 1. User overrides live in ~/.memory/config/network_provider.json. Real server_url/enabled values go there, not here.",
+  "server_url_comment": "8091 is just scripts/install_headscale.sh's starting guess, not a fixed requirement — it checks the port is actually free before using it and falls back automatically if not (found live 2026-07-23: the original guess, 8080, collided with LMStudio's API gateway on this machine). Match whatever port the installer actually reported.",
+  "enabled": false,
+  "provider": "headscale",
+  "server_url": "http://127.0.0.1:8091",
+  "magic_dns_domain": "mojo.internal",
+  "headscale_user": "mojo",
+  "cli_path": "headscale"
+}

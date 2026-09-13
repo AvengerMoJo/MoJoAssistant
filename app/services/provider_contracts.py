@@ -473,6 +473,48 @@ class GrowthProvider(ABC):
 
 
 # ---------------------------------------------------------------------------
+# Network Provider Contract
+# ---------------------------------------------------------------------------
+# Self-hosted mesh networking (Headscale by default) — see
+# ~/.claude/projects/-home-alex-Development-Personal-MoJoAssistant/memory/
+# project_network_provider_vision.md. Same swappable-provider pattern as
+# Memory/Growth/Skill: a node registers to get a stable hostname, without
+# any code elsewhere depending on which mesh implementation is behind it.
+
+@dataclass
+class NetworkNode:
+    node_id: str
+    hostname: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class NetworkProvider(ABC):
+    """Provider contract for mesh-network node registration and discovery."""
+
+    @abstractmethod
+    def get_version(self) -> ProviderVersion:
+        ...
+
+    @abstractmethod
+    def register(self, node: NetworkNode) -> str:
+        """Register a node with the mesh. Returns its stable hostname."""
+        ...
+
+    @abstractmethod
+    def deregister(self, node: NetworkNode) -> None:
+        """Remove a node from the mesh."""
+        ...
+
+    @abstractmethod
+    def list_nodes(self) -> List[Dict[str, Any]]:
+        """List all nodes currently registered with the mesh."""
+        ...
+
+    def health_check(self) -> Dict[str, Any]:
+        return {"status": "ok", "details": {"provider": self.get_version().provider_name}}
+
+
+# ---------------------------------------------------------------------------
 # Skill Provider Contract
 # ---------------------------------------------------------------------------
 
@@ -589,6 +631,7 @@ class ProviderRegistry:
         self._persona_providers: Dict[str, type] = {}
         self._growth_providers: Dict[str, type] = {}
         self._skill_providers: Dict[str, type] = {}
+        self._network_providers: Dict[str, type] = {}
         self._instances: Dict[str, Any] = {}
         self._modules: Dict[str, Dict[str, Any]] = {}  # name -> module.json data
         self._health_status: Dict[str, Dict[str, Any]] = {}  # name -> health result
@@ -630,6 +673,13 @@ class ProviderRegistry:
             raise TypeError(f"{provider_class} must be a subclass of SkillProvider")
         self._skill_providers[name] = provider_class
         logger.info("provider_registry: registered skill provider '%s'", name)
+
+    def register_network_provider(self, name: str, provider_class: type) -> None:
+        """Register a network provider class by name."""
+        if not issubclass(provider_class, NetworkProvider):
+            raise TypeError(f"{provider_class} must be a subclass of NetworkProvider")
+        self._network_providers[name] = provider_class
+        logger.info("provider_registry: registered network provider '%s'", name)
 
     # -- Module discovery ---------------------------------------------------
 
@@ -1035,6 +1085,36 @@ class ProviderRegistry:
             self._instances[cache_key] = self._growth_providers[name](**kwargs)
         return self._instances[cache_key]
 
+    def resolve_network_provider(
+        self,
+        name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> "NetworkProvider":
+        """
+        Resolve and instantiate a network provider.
+        Resolution order:
+        1. Explicit name parameter
+        2. MOJO_NETWORK_PROVIDER env var
+        3. Default ("headscale")
+        """
+        if name is None:
+            name = os.getenv("MOJO_NETWORK_PROVIDER", "headscale")
+
+        if name not in self._network_providers:
+            self._register_default_network_provider(name)
+
+        if name not in self._network_providers:
+            available = list(self._network_providers.keys())
+            raise ValueError(
+                f"Network provider '{name}' not registered. "
+                f"Available: {available}"
+            )
+
+        cache_key = f"network:{name}"
+        if cache_key not in self._instances:
+            self._instances[cache_key] = self._network_providers[name](**kwargs)
+        return self._instances[cache_key]
+
     # -- Startup validation -------------------------------------------------
 
     def validate_compatibility(self) -> List[str]:
@@ -1097,6 +1177,16 @@ class ProviderRegistry:
             self.register_growth_provider("bonsai_growth", BonsaiGrowthModule)
         except ImportError:
             logger.warning("provider_registry: could not import bonsai growth provider")
+
+    def _register_default_network_provider(self, name: str) -> None:
+        """Auto-register default network provider."""
+        if name != "headscale":
+            return
+        try:
+            from app.scheduler.network_provider import HeadscaleNetworkProvider
+            self.register_network_provider("headscale", HeadscaleNetworkProvider)
+        except ImportError:
+            logger.warning("provider_registry: could not import headscale network provider")
 
     def resolve_skill_provider(
         self,
