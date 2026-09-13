@@ -212,9 +212,13 @@ cloudflared tunnel run mojo
 ```
 Run as systemd service so it starts with MoJo.
 
-### Option 3: Tailscale / Headscale (post-beta)
+### Option 3: Tailscale / Headscale
 Self-hosted mesh VPN — stable internal hostname across all your devices.
-Deferred to post-v2.0.0. See memory: `project_network_provider_vision.md`.
+**Phase 1 implemented (2026-07-23)**: self-hosted Headscale + `NetworkProvider`
+module, single-node (this machine) proof of life. See
+`docs/architecture/HEADSCALE_SETUP.md` for setup and
+`~/.claude/projects/-home-alex-Development-Personal-MoJoAssistant/memory/project_network_provider_vision.md`
+for the full multi-node vision — sandbox VM integration is still a future phase.
 
 ---
 

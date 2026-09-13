@@ -373,8 +373,8 @@ cloudflared tunnel --url http://localhost:3100
 ```
 Produces a public HTTPS URL. Add it to Claude.ai → Settings → Integrations.
 
-**Private mesh network (post-beta)**
-Self-hosted Headscale (open-source Tailscale control plane) + WireGuard for stable internal hostnames across all devices. Every node (localhost, 249 server, sandbox VMs) gets a `*.mojo.internal` hostname. Agents register nodes via a future `NetworkProvider` ABC. Deferred to post-v2.0.0.
+**Private mesh network — Phase 1 implemented (2026-07-23)**
+Self-hosted Headscale (open-source Tailscale control plane) for stable internal hostnames across all devices. Phase 1: this machine joined as the first node, `NetworkProvider` ABC + `HeadscaleNetworkProvider` implementation live (see `docs/architecture/HEADSCALE_SETUP.md`). Multi-node expansion (249 server, sandbox VMs each getting a `*.mojo.internal` hostname) is a future phase.
 
 ### Infrastructure Roles
 
@@ -465,7 +465,7 @@ Non-negotiable gates (all complete except setup experience):
 
 ### Post-v2.0.0
 
-- **Self-hosted mesh network** — Headscale + WireGuard, `NetworkProvider` ABC, stable `*.mojo.internal` hostnames
+- **Self-hosted mesh network, multi-node** — Phase 1 (single node, this machine) done 2026-07-23, see `docs/architecture/HEADSCALE_SETUP.md`. Remaining: 249 server + sandbox VMs joining the tailnet, stable `*.mojo.internal` hostnames for all of them
 - **BRIDLE DIRECTION pillar** — owner weekly one-on-one + chat→dream bridge
 - **BRIDLE PRESENT pillar** — HITL growth validation
 - **Message passing + containerization** — language-agnostic agents, proper process isolation
