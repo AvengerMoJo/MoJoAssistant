@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -460,16 +461,22 @@ class TestEvalStore(unittest.TestCase):
         self.assertEqual(latest.ts, "2026-01-02T00:00:00")
 
     def test_compute_summary(self):
+        # compute_summary() defaults to a 30-day lookback window from
+        # datetime.now() -- use timestamps relative to "now" rather than a
+        # hardcoded date, or this test silently ages out of the window and
+        # starts failing purely because time passed (found live 2026-08-01,
+        # the original hardcoded "2026-06-10" had aged past 30 days old).
+        recent = datetime.now(timezone.utc) - timedelta(days=1)
         store = self._make_store()
         store.append(self._make_record(
             suite="qualification_fast", success=True, duration_seconds=5.0,
             checks=[{"check_id": "tool_called", "kind": "tool_called", "status": "pass"}],
-            ts="2026-06-10T00:00:00",
+            ts=recent.isoformat(),
         ))
         store.append(self._make_record(
             suite="qualification_fast", success=True, duration_seconds=7.0,
             checks=[{"check_id": "tool_called", "kind": "tool_called", "status": "pass"}],
-            ts="2026-06-10T00:01:00",
+            ts=(recent + timedelta(minutes=1)).isoformat(),
         ))
 
         summary = store.compute_summary("test_resource")
