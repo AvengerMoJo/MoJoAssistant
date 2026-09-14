@@ -12,6 +12,8 @@ Available backends:
   - "host"  : OpenCodePerTaskBackend (one host process per task)
   - "cube"  : CubeSandboxBackend (one KVM microVM per task, persisted)
   - "docker": DockerSandboxBackend (one docker container per task)
+  - "ssh"   : SSHRemoteBackend (remote host over SSH + tailnet, installs
+              opencode server mode on demand)
 
 Adding a new backend = register in _BACKENDS below.
 """
@@ -68,6 +70,13 @@ def _register_builtins() -> None:
             register_backend("docker")(DockerSandboxBackend)
         except Exception as e:
             logger.warning("Failed to register 'docker' backend: %s", e)
+
+    if "ssh" not in _BACKENDS:
+        try:
+            from app.scheduler.sandbox.ssh_backend import SSHRemoteBackend
+            register_backend("ssh")(SSHRemoteBackend)
+        except Exception as e:
+            logger.warning("Failed to register 'ssh' backend: %s", e)
 
 
 _register_builtins()

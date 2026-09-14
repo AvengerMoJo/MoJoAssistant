@@ -63,6 +63,20 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
         "host": {
             "workdir": str(Path.home() / ".memory" / "sandboxes"),
         },
+        # SSH remote-host backend: opencode serve on a distant machine,
+        # reached over the user's tailnet. Empty host = disabled; see
+        # app/scheduler/sandbox/ssh_backend.py for the full schema.
+        "ssh": {
+            "host": "",
+            "user": "",
+            "ssh_port": 22,
+            "identity_file": "",
+            "url_host": "",
+            "opencode_bin": "",
+            "install_opencode": True,
+            "bind_host": "0.0.0.0",
+            "port_range": [4600, 4699],
+        },
     },
 }
 

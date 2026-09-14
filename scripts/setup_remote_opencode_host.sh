@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# One-time bootstrap for a remote host that will run opencode server mode
+# for MoJoAssistant's 'ssh' sandbox backend.
+#
+# Usage:
+#   scripts/setup_remote_opencode_host.sh user@host [options]
+#
+# Options:
+#   -i KEY          SSH identity file (default: agent/default key)
+#   -p PORT         SSH port (default 22)
+#   --ts-authkey K  Join the host to your Tailscale tailnet with this auth key
+#                   (generate: tailscale.com admin console, or
+#                    `tailscale authkey` on an authorized node)
+#
+# What it does on the remote host:
+#   1. installs opencode (bun if available, else the official curl installer)
+#   2. optionally joins the tailnet (systemd service enabled)
+#   3. prints the tailscale hostname + next config steps
+#
+# The ssh sandbox backend can also install opencode on demand at task start;
+# this script is for setting the host up ahead of time.
+
+set -euo pipefail
+
+DEST="${1:?usage: setup_remote_opencode_host.sh user@host [-i KEY] [-p PORT] [--ts-authkey KEY]}"
+shift || true
+
+IDENTITY_ARGS=()
+SSH_PORT=22
+TS_AUTHKEY=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i) IDENTITY_ARGS+=(-i "$2"); shift 2 ;;
+    -p) SSH_PORT="$2"; shift 2 ;;
+    --ts-authkey) TS_AUTHKEY="$2"; shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+SSH_OPTS=(-p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+
+remote() {
+  ssh "${SSH_OPTS[@]}" "${IDENTITY_ARGS[@]}" "$DEST" "$@"
+}
+
+echo "==> Checking SSH connectivity to $DEST ..."
+remote 'echo ok' >/dev/null
+
+echo "==> Installing opencode (bun if present, else curl installer) ..."
+remote '
+  set -e
+  if command -v opencode >/dev/null 2>&1; then
+    echo "opencode already at $(command -v opencode)"
+  elif command -v bun >/dev/null 2>&1; then
+    bun install -g opencode-ai
+  elif command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://opencode.ai/install | bash
+  else
+    echo "ERROR: no bun and no curl on remote host" >&2
+    exit 1
+  fi
+  BIN=$(command -v opencode || ls "$HOME"/.opencode/bin/opencode "$HOME"/.bun/bin/opencode 2>/dev/null | head -1)
+  test -n "$BIN" || { echo "ERROR: opencode binary not found after install" >&2; exit 1; }
+  echo "opencode binary: $BIN"
+  "$BIN" --version || true
+'
+
+if [ -n "$TS_AUTHKEY" ]; then
+  echo "==> Joining tailnet ..."
+  remote "
+    set -e
+    if ! command -v tailscale >/dev/null 2>&1; then
+      curl -fsSL https://tailscale.com/install.sh | sh
+    fi
+    sudo systemctl enable --now tailscaled 2>/dev/null || true
+    sudo tailscale up --authkey='$TS_AUTHKEY' --hostname=\$(hostname) 2>/dev/null || \
+      tailscale up --authkey='$TS_AUTHKEY' --hostname=\$(hostname)
+    tailscale ip -4 | head -1
+    tailscale status --self --json 2>/dev/null | grep -oE '\"[a-z0-9-]+\\.[a-z0-9.-]+\\.ts\\.net\"' | head -1 || true
+  "
+else
+  echo "(skipping tailnet join, no --ts-authkey given)"
+fi
+
+cat <<'EOF'
+
+==> Done. Next steps on the MoJo machine:
+
+1. Merge into ~/.memory/config/sandbox.json (see config/sandbox.ssh.example.json):
+     "backends": { "ssh": { "host": "<tailscale-name-or-100.x-ip>", "user": "<user>", ... } }
+2. Verify: ssh <user>@<host> 'command -v opencode && ss -ltn | head -1'
+3. Schedule a task with config:
+     {"sandbox_backend": "ssh", "working_dir": "~/projects/<your-project>"}
+   MoJo will SSH in, spawn `opencode serve`, and drive it over the tailnet.
+EOF
