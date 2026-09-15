@@ -34,7 +34,7 @@ workaround) hosts every MCP client concurrently.
 | `app/mcp/agent_bridge/server.py` | FastMCP server + MCP tools + `build_app()` |
 | `app/mcp/agent_bridge/registry.py` | `HostRegistry` — one `OpenCodeClient` per host |
 | `app/mcp/agent_bridge/config.py` | loads `~/.memory/config/agent_bridge.json` |
-| `app/mcp/agent_bridge/__main__.py` | `python -m app.mcp.agent_bridge.server` run entry |
+| `app/mcp/agent_bridge/__main__.py` | `python -m app.mcp.agent_bridge` run entry |
 | `config/agent_bridge.example.json` | config schema example |
 | `tests/unit/test_agent_bridge.py` | tool unit tests (OpenCodeClient mocked) |
 

@@ -174,5 +174,5 @@ Managed mode (--managed) instead:
        Hosts for ~/.memory/config/agent_bridge.json:
          { "hosts": { "<name>": { "base_url": "http://<tailscale-name>:'"$MANAGED_PORT"'",
                                    "password": "<OPENCODE_SERVER_PASSWORD from ~/.mojo/server.env>" } } }
-     Then run: python -m app.mcp.agent_bridge.server  (Streamable HTTP on :8497)
+     Then run: python -m app.mcp.agent_bridge  (Streamable HTTP on :8497)
 EOF

@@ -1,4 +1,4 @@
-"""Entry point: python -m app.mcp.agent_bridge.server"""
+"""Entry point: python -m app.mcp.agent_bridge"""
 
 from __future__ import annotations
 
