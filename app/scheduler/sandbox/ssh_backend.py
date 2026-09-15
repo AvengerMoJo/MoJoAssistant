@@ -121,6 +121,12 @@ class SSHRemoteBackend(SandboxBackend):
         port_range: Optional[Sequence[int]] = None,
         connect_timeout: int = 10,
         boot_timeout: int = 120,
+        # Managed-mode: attach to an always-on systemd-managed `opencode serve`
+        # on the remote host instead of spawning a per-task ephemeral server.
+        use_managed: bool = False,
+        managed_port: int = 4096,
+        managed_env_file: str = "~/.mojo/server.env",
+        managed_service: str = "opencode-serve",
         **kwargs: Any,
     ) -> None:
         self._host = (host or "").strip()
@@ -135,6 +141,11 @@ class SSHRemoteBackend(SandboxBackend):
         self._port_range = (int(pr[0]), int(pr[1]))
         self._connect_timeout = int(connect_timeout)
         self._boot_timeout = int(boot_timeout)
+        # Managed mode
+        self._use_managed = bool(use_managed)
+        self._managed_port = int(managed_port)
+        self._managed_env_file = (managed_env_file or "~/.mojo/server.env").strip()
+        self._managed_service = (managed_service or "opencode-serve").strip()
 
     # ------------------------------------------------------------------
     # SSH plumbing
@@ -305,11 +316,116 @@ class SSHRemoteBackend(SandboxBackend):
         return False
 
     # ------------------------------------------------------------------
-    # SandboxBackend API
+    # Managed-mode helpers
     # ------------------------------------------------------------------
+
+    def _is_managed(self) -> bool:
+        return self._use_managed
+
+    def _managed_url(self) -> str:
+        return f"http://{self._url_host}:{self._managed_port}"
+
+    def _read_managed_env(self) -> str:
+        """Read the OPENCODE_SERVER_PASSWORD from the remote server.env."""
+        result = self._run_remote(
+            f"cat {_rp(self._managed_env_file)} 2>/dev/null",
+            timeout=15,
+        )
+        if not result["success"]:
+            raise RuntimeError(
+                f"SSH sandbox managed mode: could not read {self._managed_env_file} "
+                f"on {self._host}. Run setup_remote_opencode_host.sh --managed first."
+            )
+        for line in result["stdout"].splitlines():
+            line = line.strip()
+            if line.startswith("OPENCODE_SERVER_PASSWORD="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+        raise RuntimeError(
+            f"SSH sandbox managed mode: OPENCODE_SERVER_PASSWORD not found in "
+            f"{self._managed_env_file} on {self._host}"
+        )
+
+    def _managed_ensure_service(self) -> None:
+        """Ensure the managed opencode service is running, start if needed."""
+        status = self._run_remote(
+            f"systemctl --user is-active {self._managed_service} 2>/dev/null",
+            timeout=15,
+        )
+        if status["stdout"].strip() == "active":
+            return
+        # Not running — start it
+        self._run_remote_checked(
+            f"systemctl --user start {self._managed_service}",
+            f"start managed service {self._managed_service}",
+        )
+        # Wait for it to become healthy
+        password = self._read_managed_env()
+        url = self._managed_url()
+        if not self._wait_healthy(url, password, self._boot_timeout):
+            raise RuntimeError(
+                f"SSH sandbox managed mode: service {self._managed_service} on "
+                f"{self._host} did not become healthy in {self._boot_timeout}s after start"
+            )
+        logger.info("SSH sandbox managed mode: started service %s on %s", self._managed_service, self._host)
+
+    def _start_managed(self, task_id: str, working_dir: str, **kwargs: Any) -> SandboxHandle:
+        """Attach to the always-on managed opencode server. No per-task process spawned."""
+        self._require_host()
+
+        existing = load_handle(task_id)
+        if (
+            existing
+            and existing.backend == self.name
+            and existing.state in ("running", "paused")
+            and existing.sandbox_id == "managed"
+            and existing.url == self._managed_url()
+        ):
+            # Verify the shared server is still reachable
+            try:
+                health = self.health_check(existing)
+                if health.get("status") == "ok":
+                    if existing.state == "paused":
+                        existing.state = "running"
+                        store_handle(existing)
+                    logger.info("SSH sandbox managed mode: re-attached %s url=%s", task_id, existing.url)
+                    return existing
+            except Exception:
+                pass
+            delete_handle(task_id)
+
+        password = self._read_managed_env()
+        self._managed_ensure_service()
+        url = self._managed_url()
+
+        local_log = Path.home() / ".memory" / "task_logs" / _safe_id(task_id) / "remote_agent.log"
+        handle = SandboxHandle(
+            task_id=task_id,
+            backend=self.name,
+            sandbox_id="managed",
+            url=url,
+            state="running",
+            working_dir=working_dir or f"~/{_REMOTE_BASE_DIR}/sandboxes/{_safe_id(task_id)}",
+            log_path=str(local_log),
+            password=password,
+            role_id=kwargs.get("role_id"),
+            parent_task_id=kwargs.get("parent_task_id"),
+            environment=kwargs.get("environment"),
+        )
+        store_handle(handle)
+        logger.info("SSH sandbox managed mode: attached %s url=%s", task_id, url)
+        return handle
+
+    def _managed_service_command(self, command: str) -> Dict[str, Any]:
+        return self._run_remote(
+            f"systemctl --user {command} {self._managed_service} 2>/dev/null",
+            timeout=15,
+        )
 
     def start(self, task_id: str, working_dir: str, **kwargs: Any) -> SandboxHandle:
         self._require_host()
+
+        if self._is_managed():
+            return self._start_managed(task_id, working_dir, **kwargs)
 
         # Resume a persisted ssh-backend session if the remote process is
         # still alive. Handles from other backends are left to their owner.
@@ -415,6 +531,14 @@ class SSHRemoteBackend(SandboxBackend):
 
     def pause(self, handle: SandboxHandle) -> SandboxHandle:
         self._require_host()
+        if self._is_managed() and handle.sandbox_id == "managed":
+            # Logical-only pause: the shared systemd server keeps serving other
+            # tasks, so SIGSTOP is off-limits. This task's session simply stops
+            # receiving messages.
+            handle.state = "paused"
+            store_handle(handle)
+            logger.info("SSH sandbox managed mode: paused (logical) %s", handle.task_id)
+            return handle
         pid = self._require_pid(handle)
         self._run_remote_checked(f"kill -STOP {pid}", f"SIGSTOP pid={pid}")
         handle.state = "paused"
@@ -424,6 +548,11 @@ class SSHRemoteBackend(SandboxBackend):
 
     def resume(self, handle: SandboxHandle) -> SandboxHandle:
         self._require_host()
+        if self._is_managed() and handle.sandbox_id == "managed":
+            handle.state = "running"
+            store_handle(handle)
+            logger.info("SSH sandbox managed mode: resumed (logical) %s", handle.task_id)
+            return handle
         pid = self._require_pid(handle)
         if not self._pid_alive_remote(pid):
             raise RuntimeError(
@@ -437,6 +566,12 @@ class SSHRemoteBackend(SandboxBackend):
 
     def kill(self, handle: SandboxHandle) -> None:
         self._require_host()
+        if self._is_managed() and handle.sandbox_id == "managed":
+            # Kill the *session*, not the shared managed server — other tasks
+            # keep running on it.
+            logger.info("SSH sandbox managed mode: killed task %s (server stays up)", handle.task_id)
+            delete_handle(handle.task_id)
+            return
         if handle.sandbox_id:
             try:
                 pid = int(handle.sandbox_id)

@@ -6,7 +6,17 @@ async, exactly like the local host backend. The remote host uses your
 existing hosted Tailscale tailnet for reachability; Headscale is not
 required.
 
-## Architecture
+Two operating modes:
+
+- **Ephemeral (default)** — a per-task `opencode serve` is spawned on the
+  remote host and torn down on kill.
+- **Managed (`use_managed: true`)** — one always-on `opencode serve`
+  managed by a systemd user service (`Restart=always`, linger enabled)
+  hosts all tasks concurrently. Tasks get sessions, not processes. The
+  same server can also be exposed to third-party MCP clients through the
+  agent bridge (see `AGENT_BRIDGE.md`).
+
+## Architecture (ephemeral mode)
 
 ```
 scheduler task (config: sandbox_backend=ssh, working_dir=~/projects/x)
@@ -20,7 +30,7 @@ SSHRemoteBackend (app/scheduler/sandbox/ssh_backend.py)
        ├── detects / installs opencode (bun, else curl installer)
        ├── mkdir working dir + ~/.mojo/task_logs/<task>/
        ├── writes 0600 env file (random per-task OPENCODE_SERVER_PASSWORD,
-        │  never on the command line / in ps)
+       │  never on the command line / in ps)
        ├── picks free port in 4600-4699 (remote ss -ltn)
        ├── spawns: nohup setsid opencode serve --port P --hostname 0.0.0.0
        └── pause/resume/kill via remote SIGSTOP/SIGCONT/SIGTERM
@@ -30,17 +40,43 @@ OpenCodeClient (app/scheduler/sandbox/opencode_client.py)
        └── sessions / messages / permissions — the normal async agent loop
 ```
 
+## Architecture (managed mode)
+
+```
+                       ┌──────────────────────────────────────────────┐
+                       │  remote host  (systemd user)                 │
+                       │  opencode-serve.service  (Restart=always)    │
+                       │    opencode serve :4096  (bind 0.0.0.0)      │
+                       │    → ~/.mojo/server.env   (0600, password)   │
+                       └──────────────┬───────────────────────────────┘
+                                      │ tailnet + BasicAuth
+              ┌───────────────────────┼─────────────────────────┐
+              ▼                        ▼                         ▼
+  SSHRemoteBackend             agent bridge (FastMCP)      third-party MCP
+  use_managed: true           app/mcp/agent_bridge/        clients (Claude
+  per-task sessions           python -m …server (:8497)    Desktop, Cursor…)
+  on the shared server        agent_run/reply/sessions
+```
+
+In managed mode `pause()`/`resume()` are *logical only* — there is no
+SIGSTOP on a shared server that must keep serving other tasks. `kill()`
+removes the handle (and the task's session is abandoned) without touching
+the server.
+
 ## Components
 
 | File | Role |
 |------|------|
-| `app/scheduler/sandbox/ssh_backend.py` | `SSHRemoteBackend` — lifecycle over SSH |
+| `app/scheduler/sandbox/ssh_backend.py` | `SSHRemoteBackend` — lifecycle over SSH, both modes |
 | `app/scheduler/sandbox/registry.py` | registers the `"ssh"` backend name |
 | `app/scheduler/sandbox/manager.py` | `backends.ssh` defaults in `_DEFAULT_CONFIG` |
 | `config/sandbox.ssh.example.json` | config schema example (system layer) |
 | `~/.memory/config/sandbox.json` | real values (personal layer) |
-| `scripts/setup_remote_opencode_host.sh` | optional one-time remote bootstrap (opencode + optional tailnet join) |
+| `scripts/setup_remote_opencode_host.sh` | one-time remote bootstrap: opencode, optional tailnet join, optional `--managed` service |
+| `app/mcp/agent_bridge/` | Streamable-HTTP MCP bridge exposing managed servers to 3rd-party MCP clients |
+| `docs/architecture/AGENT_BRIDGE.md` | agent bridge setup + usage |
 | `tests/unit/test_ssh_sandbox_backend.py` | unit tests (all ssh mocked) |
+| `tests/unit/test_agent_bridge.py` | bridge tool tests (OpenCodeClient mocked) |
 
 ## Setup
 
@@ -52,7 +88,15 @@ bootstrap ahead of time:
 ```bash
 scripts/setup_remote_opencode_host.sh user@host            # opencode only
 scripts/setup_remote_opencode_host.sh user@host --ts-authkey tskey-...
+scripts/setup_remote_opencode_host.sh user@host --managed \
+    --managed-bind 0.0.0.0 --managed-port 4096
 ```
+
+The `--managed` variant installs `opencode-serve.service` (systemd user
+unit, `Restart=always`, linger enabled) and writes the shared
+`OPENCODE_SERVER_PASSWORD` to `~/.mojo/server.env` (mode 0600). Bind
+`0.0.0.0` so the tailnet can reach it; the tailnet + password are the
+security boundary.
 
 Requirements on the remote host: bash, `ss` (iproute2), and bun or curl.
 Join it to your tailnet (installer script can, or `tailscale up` manually)
@@ -70,14 +114,20 @@ Merge into `~/.memory/config/sandbox.json` (schema in
     "ssh": {
       "host": "remote-host.your-tailnet.ts.net",
       "user": "deploy",
-      "identity_file": "~/.ssh/id_ed25519"
+      "identity_file": "~/.ssh/id_ed25519",
+      "use_managed": true,
+      "managed_port": 4096,
+      "managed_env_file": "~/.mojo/server.env"
     }
   }
 }
 ```
 
 `host` should be the Tailscale MagicDNS name or 100.x address. `url_host`
-(defaults to `host`) is what MoJo dials for the opencode API.
+(defaults to `host`) is what MoJo dials for the opencode API. In managed
+mode the backend reads the password from the remote `managed_env_file`
+rather than generating a per-task one, and checks `managed_service` is
+`active` (auto-starting it if `Restart=always` hasn't).
 
 ### 3. Run a task
 
@@ -91,6 +141,11 @@ MoJo SSHes in, spawns `opencode serve` on a free port, and runs the normal
 coding-session loop remotely. On completion the sandbox pauses (remote
 SIGSTOP) and stays re-attachable via the usual sandbox tools; logs mirror
 to `~/.memory/task_logs/<task>/remote_agent.log`.
+
+In managed mode MoJo instead attaches to the always-on
+`opencode-serve.service`, gets a session on it, and drives the same loop;
+completion marks the handle paused (logically) without freezing other
+tasks' sessions on the shared server.
 
 ## Security notes
 

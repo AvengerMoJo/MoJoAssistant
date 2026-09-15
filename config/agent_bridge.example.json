@@ -1,0 +1,12 @@
+{
+  "bind": "0.0.0.0",
+  "port": 8497,
+  "password": "",
+
+  "hosts": {
+    "orgvm-memoria-hk001": {
+      "base_url": "http://orgvm-memoria-hk001:4096",
+      "password": "OPENCODE_SERVER_PASSWORD-from-remote-server.env"
+    }
+  }
+}

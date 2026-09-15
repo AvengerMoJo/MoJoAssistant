@@ -516,3 +516,141 @@ def test_ssh_base_includes_batchmode_and_identity():
     assert "2222" in base
     assert any(str(p).endswith("id_ed25519") for p in base if isinstance(p, str))
     assert base[-1] == "deploy@remote-host"
+
+
+# ----------------------------------------------------------------------
+# managed mode
+# ----------------------------------------------------------------------
+
+
+def test_managed_start_reads_server_env_and_skips_spawn():
+    fake = FakeSSH()
+    fake.on(lambda r: "OPENCODE_SERVER_PASSWORD" in r or "server.env" in r,
+            stdout="OPENCODE_SERVER_PASSWORD=managedpw99\n")
+    fake.on(lambda r: "systemctl --user is-active" in r, stdout="active\n")
+    # no spawn routes — managed mode must not spawn!
+
+    backend = _backend(use_managed=True, managed_port=4096)
+    with patch("app.scheduler.sandbox.ssh_backend.subprocess.run", fake), \
+         patch.object(backend, "_wait_healthy", return_value=True):
+        handle = backend.start("taskM", "~/projects/biz")
+
+    assert handle.sandbox_id == "managed"
+    assert handle.url == "http://remote-host:4096"
+    assert handle.password == "managedpw99"
+    assert handle.state == "running"
+
+    remote_cmds = [c[-1] for c in fake.calls]
+    # Never spawns opencode serve
+    assert not any("serve" in r and "echo $!" in r for r in remote_cmds)
+    # Reads the managed env file
+    assert any("server.env" in r for r in remote_cmds)
+    # Service checked
+    assert any("systemctl --user is-active" in r for r in remote_cmds)
+
+
+def test_managed_start_starts_service_when_inactive():
+    fake = FakeSSH()
+    fake.on(lambda r: "server.env" in r, stdout="OPENCODE_SERVER_PASSWORD=mp\n")
+    # First probe: inactive; then the start command runs.
+    fake.on(lambda r: "systemctl --user is-active" in r, stdout="inactive\n")
+    fake.on(lambda r: "systemctl --user start" in r)
+
+    backend = _backend(use_managed=True, managed_port=4096)
+    with patch("app.scheduler.sandbox.ssh_backend.subprocess.run", fake), \
+         patch.object(backend, "_wait_healthy", return_value=True):
+        handle = backend.start("taskN", "")
+
+    remote_cmds = [c[-1] for c in fake.calls]
+    assert any("systemctl --user start" in r for r in remote_cmds)
+    assert handle.sandbox_id == "managed"
+
+
+def test_managed_start_raises_when_env_file_missing():
+    fake = FakeSSH()
+    fake.on(lambda r: "server.env" in r, rc=1, stderr="No such file")
+
+    backend = _backend(use_managed=True)
+    with patch("app.scheduler.sandbox.ssh_backend.subprocess.run", fake), \
+         pytest.raises(RuntimeError, match="setup_remote_opencode_host.sh --managed"):
+        backend.start("taskO", "")
+
+
+def test_managed_start_resumes_existing_handle_without_redial():
+    from app.scheduler.sandbox.base import SandboxHandle, store_handle
+
+    stored = SandboxHandle(
+        task_id="taskP", backend="ssh", sandbox_id="managed",
+        url="http://remote-host:4096", state="paused",
+        working_dir="~/proj", password="managedpw99",
+    )
+    store_handle(stored)
+
+    fake = FakeSSH()
+    backend = _backend(use_managed=True, managed_port=4096)
+
+    from unittest.mock import patch as _patch
+
+    with _patch("app.scheduler.sandbox.ssh_backend.subprocess.run", fake), \
+         _patch.object(backend, "health_check", return_value={"status": "ok"}):
+        handle = backend.start("taskP", "~/proj")
+
+    assert handle.sandbox_id == "managed"
+    assert handle.state == "running"  # was paused → resumed
+    assert fake.calls == []  # no SSH round-trip at all
+
+
+def test_managed_pause_resume_are_logical_only():
+    from app.scheduler.sandbox.base import SandboxHandle
+
+    handle = SandboxHandle(
+        task_id="taskQ", backend="ssh", sandbox_id="managed",
+        url="http://remote-host:4096", state="running",
+        working_dir="~/proj", password="mp",
+    )
+    backend = _backend(use_managed=True)
+    fake = FakeSSH()
+
+    with patch("app.scheduler.sandbox.ssh_backend.subprocess.run", fake):
+        paused = backend.pause(handle)
+        assert paused.state == "paused"
+        resumed = backend.resume(paused)
+        assert resumed.state == "running"
+
+    # Never sends SIGSTOP/SIGCONT to the shared server
+    assert not any("kill -STOP" in r or "kill -CONT" in r for r in fake.calls)
+
+
+def test_managed_kill_never_touches_remote_process():
+    from app.scheduler.sandbox.base import SandboxHandle
+
+    handle = SandboxHandle(
+        task_id="taskR", backend="ssh", sandbox_id="managed",
+        url="http://remote-host:4096", state="running",
+        working_dir="~/proj", password="mp",
+    )
+    backend = _backend(use_managed=True)
+    fake = FakeSSH()
+
+    with patch("app.scheduler.sandbox.ssh_backend.subprocess.run", fake):
+        backend.kill(handle)
+
+    assert fake.calls == []  # kill local handle, no remote signal
+    from app.scheduler.sandbox.base import load_handle
+    assert load_handle("taskR") is None
+
+
+def test_managed_ephemeral_paths_still_work_when_disabled():
+    """use_managed=False must leave the old ephemeral spawn path intact."""
+    fake = FakeSSH()
+    _detect_route(fake, ["/home/deploy/.bun/bin/opencode\n"])
+    _spawn_routes(fake, pid="777", used_ports="")
+
+    backend = _backend()  # use_managed defaults False
+    with patch("app.scheduler.sandbox.ssh_backend.subprocess.run", fake), \
+         patch.object(backend, "_wait_healthy", return_value=True):
+        handle = backend.start("tasksched", "~/proj")
+
+    assert handle.sandbox_id == "777"
+    remote_cmds = [c[-1] for c in fake.calls]
+    assert any("serve" in r and "echo $!" in r for r in remote_cmds)

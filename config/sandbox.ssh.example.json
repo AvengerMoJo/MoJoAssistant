@@ -1,24 +1,19 @@
 {
-  "comment": "Example for the 'ssh' sandbox backend (remote host over your tailnet). Copy the backends.ssh block into ~/.memory/config/sandbox.json and fill in real values. Project config/ is read-only at runtime.",
+  "default_backend": "ssh",
   "backends": {
     "ssh": {
-      "host": "bizbuild-01.your-tailnet.ts.net",
+      "host": "orgvm-memoria-hk001.your-tailnet.ts.net",
       "user": "deploy",
-      "ssh_port": 22,
       "identity_file": "~/.ssh/id_ed25519",
-      "url_host": "",
-      "opencode_bin": "",
+      "url_host": "orgvm-memoria-hk001",
       "install_opencode": true,
       "bind_host": "0.0.0.0",
-      "port_range": [4600, 4699]
+      "port_range": [4600, 4699],
+
+      "use_managed": false,
+      "managed_port": 4096,
+      "managed_env_file": "~/.mojo/server.env",
+      "managed_service": "opencode-serve"
     }
-  },
-  "notes": [
-    "host: SSH destination. Prefer the Tailscale MagicDNS name or 100.x address so traffic stays on the tailnet.",
-    "url_host: what MoJo dials over HTTP for the opencode API. Defaults to host. Set only when the ssh alias differs from the routable name.",
-    "bind_host: opencode --hostname on the remote. 0.0.0.0 is safe behind the tailnet plus per-task random BasicAuth password; use the remote's tailscale IP to be stricter.",
-    "SSH must work non-interactively (key auth); the backend runs ssh with BatchMode=yes.",
-    "Remote host needs: bash, ss (iproute2), and either bun or curl for the one-time opencode install.",
-    "Run a task with sandbox_backend=ssh in its config, e.g.: scheduler add task with config {\"sandbox_backend\": \"ssh\", \"working_dir\": \"~/projects/bizbuild\", \"git_url\": \"...\"}"
-  ]
+  }
 }

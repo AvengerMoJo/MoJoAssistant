@@ -76,6 +76,15 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
             "install_opencode": True,
             "bind_host": "0.0.0.0",
             "port_range": [4600, 4699],
+            # Managed mode: attach to an always-on `opencode serve` managed by
+            # systemd on the remote host (see scripts/setup_remote_opencode_host.sh
+            # --managed) instead of spawning a per-task ephemeral server. The
+            # tailnet + server.env BasicAuth password are the security boundary;
+            # one server hosts many concurrent task sessions.
+            "use_managed": False,
+            "managed_port": 4096,
+            "managed_env_file": "~/.mojo/server.env",
+            "managed_service": "opencode-serve",
         },
     },
 }
