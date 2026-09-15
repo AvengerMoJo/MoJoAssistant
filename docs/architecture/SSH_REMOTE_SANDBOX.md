@@ -72,11 +72,42 @@ the server.
 | `app/scheduler/sandbox/manager.py` | `backends.ssh` defaults in `_DEFAULT_CONFIG` |
 | `config/sandbox.ssh.example.json` | config schema example (system layer) |
 | `~/.memory/config/sandbox.json` | real values (personal layer) |
-| `scripts/setup_remote_opencode_host.sh` | one-time remote bootstrap: opencode, optional tailnet join, optional `--managed` service |
+| `scripts/setup_remote_opencode_host.sh` | one-time remote bootstrap: opencode, optional tailnet join, optional `--managed` service, optional `--herdr` |
 | `app/mcp/agent_bridge/` | Streamable-HTTP MCP bridge exposing managed servers to 3rd-party MCP clients |
 | `docs/architecture/AGENT_BRIDGE.md` | agent bridge setup + usage |
 | `tests/unit/test_ssh_sandbox_backend.py` | unit tests (all ssh mocked) |
 | `tests/unit/test_agent_bridge.py` | bridge tool tests (OpenCodeClient mocked) |
+| remote: `~/.local/bin/herdr` | herdr v0.9.0 — agent-native terminal multiplexer |
+| remote: `~/.config/systemd/user/herdr-serve.service` | headless herdr server (`Restart=always`) |
+| remote: `~/.config/opencode/plugins/herdr-agent-state.js` | opencode integration — lifecycle authority inside herdr panes |
+| remote: `~/.config/opencode/skills/herdr/SKILL.md` | agent skill: pane layout, output reads, multi-agent awareness |
+
+## herdr supervision layer (complementary to managed mode)
+
+[herdr](https://herdr.dev) is an agent-native terminal multiplexer (like tmux
+but designed for coding agents). On managed-mode hosts it runs alongside
+`opencode-serve.service` as `herdr-serve.service` (also `Restart=always`,
+linger enabled) and provides:
+
+- **Terminal supervision:** herdr tracks every agent pane (`idle`, `working`,
+  `blocked`, `done`, `unknown`); `blocked` surfaces approval questions —
+  never hunt for the stuck agent.
+- **Multi-agent panes:** create workspace → tab → pane layout; start a second
+  opencode instance or a helper agent in a sibling pane; read/wait on any pane.
+- **Detach/reattach:** detach from herdr TUI with `ctrl+b q`; panes keep
+  running; reattach later; restart restores session shape.
+- **Remote attach from any machine:** `herdr --remote user@host` (SSH socket
+  forwarding, no extra auth needed beyond SSH keys). Falls back to a saved
+  machine profile (`herdr machine add <name>`).
+- **opencode integration v11:** when opencode runs inside a herdr pane, the
+  plugin reports authoritative lifecycle state + native session identity.
+  Session restore after server restart: `opencode --session <id>`.
+
+Key distinction: **herdr manages the opencode TUI** (terminal panes, session
+restore, lifecycle reads); **`opencode serve` runs the headless HTTP server**
+that `SSHRemoteBackend` and the agent bridge talk to. These are orthogonal
+surfaces — herdr adds supervision and multi-agent panes without changing the
+existing managed-mode HTTP path.
 
 ## Setup
 
@@ -90,6 +121,8 @@ scripts/setup_remote_opencode_host.sh user@host            # opencode only
 scripts/setup_remote_opencode_host.sh user@host --ts-authkey tskey-...
 scripts/setup_remote_opencode_host.sh user@host --managed \
     --managed-bind 0.0.0.0 --managed-port 4096
+scripts/setup_remote_opencode_host.sh user@host --managed --herdr \
+    --managed-bind 0.0.0.0 --managed-port 4096
 ```
 
 The `--managed` variant installs `opencode-serve.service` (systemd user
@@ -97,6 +130,11 @@ unit, `Restart=always`, linger enabled) and writes the shared
 `OPENCODE_SERVER_PASSWORD` to `~/.mojo/server.env` (mode 0600). Bind
 `0.0.0.0` so the tailnet can reach it; the tailnet + password are the
 security boundary.
+
+The `--herdr` flag installs herdr alongside the managed server
+(`herdr-serve.service` headless, opencode integration, agent skill).
+Access the herdr session from any machine with:
+`herdr --remote user@host`.
 
 Requirements on the remote host: bash, `ss` (iproute2), and bun or curl.
 Join it to your tailnet (installer script can, or `tailscale up` manually)
@@ -157,3 +195,7 @@ tasks' sessions on the shared server.
   (`~/.mojo/task_logs/<task>/env`), never in `ps` output or command lines.
 - File contents and passwords travel over ssh stdin, never inside remote
   command strings (quoting is asserted by unit tests).
+- herdr sockets (`~/.config/herdr/herdr.sock`) are mode `0700` (user-only).
+  `herdr --remote` forwards over SSH — no extra authentication beyond SSH keys.
+  The agent skill (`~/.config/opencode/skills/herdr/SKILL.md`) gates on
+  `HERDR_ENV=1`: an agent outside a herdr pane refuses to act.

@@ -121,6 +121,26 @@ url = "http://127.0.0.1:8497/mcp"
 headers = { "Authorization": "Basic <base64(opencode:bridge-password)>" }
 ```
 
+## herdr as alternate control surface
+
+On hosts running `herdr-serve.service` alongside `opencode-serve.service`,
+the **herdr CLI over SSH** provides an interactive alternative to the MCP
+bridge — useful for live debugging, multi-agent panes, and session
+restore (detached sessions survive SSH disconnects). For scripted
+interactions use the CLI with JSON output (`herdr <group> --json`).
+
+```bash
+# interactive: open herdr TUI for the remote session
+herdr --remote user@host
+
+# scripted: list agents in JSON for a calling script
+herdr agent list --json
+```
+
+The MCP bridge (this file) is the right surface for programmatic tool
+calls from other MCP clients; herdr is the right surface for humans
+and for direct pane supervision.
+
 ## Security notes
 
 - The bridge should sit on loopback/tailnet and front it with Tailscale
