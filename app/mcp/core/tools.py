@@ -7063,7 +7063,7 @@ Agent resumes within seconds.
             # the preferred form ("agent+stack+repo", e.g. "opencode+python+mcp-buffer");
             # it resolves to a git_url automatically and avoids hardcoding server_id.
             for _key in ("project_label", "repo", "git_url", "server_id",
-                         "sandbox_required", "sandbox_name", "working_dir",
+                         "sandbox_required", "sandbox_backend", "sandbox_name", "working_dir",
                          "prepare_hook", "hook_params", "post_task_hook", "post_task_hook_params"):
                 if add_args.get(_key) is not None and _key not in config:
                     config[_key] = add_args[_key]
