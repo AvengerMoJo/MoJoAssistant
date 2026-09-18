@@ -161,6 +161,14 @@ As of this writing: one control-plane host, three registered workers
 (one Linux, one Windows, one on the legacy `backend: "legacy_mcp"` path
 described in `AGENT_BRIDGE.md`).
 
+**Ownership boundary:** every host in the bridge registry carries an
+`owner` field (`personal` vs `customer`), surfaced by `agent_fleet`.
+Customer-owned workers (e.g. infrastructure belonging to a client) must
+never be used as personal workforce or for personal experiments — touch
+them only when the task is explicitly on behalf of that client, through
+channels the customer has agreed to. When extending the registry, always
+set `owner` and keep the boundary visible.
+
 ## When to use which
 
 - **Native assistant**: the user is present; interactive design, review,

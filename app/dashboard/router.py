@@ -10,6 +10,11 @@ Routes:
   GET  /dashboard/tasks/{id}       — task detail + session transcript
   GET  /dashboard/events           — full event log
   GET  /dashboard/roles            — roles overview
+  GET  /dashboard/workforce        — third-party agent workforce fleet
+                                      (agent_bridge hosts: location,
+                                      hardware profile, tier, live
+                                      availability -- including
+                                      legacy_mcp/virtual-interface hosts)
   GET  /dashboard/chat             — list roles available for chat
   GET  /dashboard/chat/{role_id}         — chat UI for a role (optional ?session_id=)
   GET  /dashboard/chat/{role_id}/stream  — SSE stream: ?message=&session_id=
@@ -95,6 +100,7 @@ _NAV = """
   <a href="/dashboard/tasks">Tasks</a>
   <a href="/dashboard/events">Events</a>
   <a href="/dashboard/roles">Roles</a>
+  <a href="/dashboard/workforce">Workforce</a>
   <a href="/dashboard/library">Library</a>
   <a href="/dashboard/chat">Chat</a>
   <a href="/dashboard/privacy">Privacy</a>
@@ -129,6 +135,8 @@ a:hover { text-decoration: underline; }
 .s-scheduled  { background: #001a1a; color: #7ee3c0; }
 .s-waiting_for_input { background: #2a1a00; color: #e3c07e; }
 .s-dreaming   { background: #1a002a; color: #c07ee3; }
+.s-ok         { background: #002a00; color: #7ec87e; }
+.s-unreachable { background: #2a0000; color: #e37e7e; }
 .lvl0 { color: #555; }
 .lvl1 { color: #888; }
 .lvl2 { color: #aaa; }
@@ -670,6 +678,89 @@ async def roles_view(mojo_dash: Optional[str] = Cookie(default=None)):
 <h1>Roles</h1>
 <table>
   <tr><th>Name / ID</th><th>Type</th><th>Tools</th><th>Completed</th><th>Failed</th><th>Private Memory</th></tr>
+  {rows}
+</table>
+""")
+
+
+# ---------------------------------------------------------------------------
+# Workforce (third-party agent bridge fleet)
+# ---------------------------------------------------------------------------
+
+@router.get("/workforce", response_class=HTMLResponse)
+async def workforce_view(mojo_dash: Optional[str] = Cookie(default=None)):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    try:
+        from app.mcp.agent_bridge.config import load_config
+        from app.mcp.agent_bridge.registry import HostRegistry
+        from app.mcp.agent_bridge.server import _check_availability
+
+        cfg = load_config()
+        reg = HostRegistry(cfg.get("hosts", {}))
+        host_names = list(reg.list_hosts())
+    except Exception as e:
+        return _page("Workforce", f"""<h1>Workforce</h1>
+<p style="color:#e37e7e">Could not load agent_bridge config: {html.escape(str(e))}</p>""")
+
+    rows = ""
+    for name in host_names:
+        entry = reg.describe(name)
+        avail = await _check_availability(reg, name)
+        status = avail.get("status", "unreachable")
+        backend = entry.get("backend", "opencode_serve")
+        owner = entry.get("owner", "personal")
+        owner_display = ("customer" if owner == "customer" else "personal").upper()
+        owner_style = 'style="color:#e3b07e;font-weight:bold"' if owner == "customer" else 'style="color:#7ec87e"'
+        location = entry.get("location", {})
+        loc_display = ", ".join(filter(None, [location.get("region"), location.get("provider")])) or "—"
+        profile = entry.get("profile", {})
+        accel = ", ".join(profile.get("hardware_accel", [])) or "—"
+        caps = ", ".join(profile.get("capabilities", [])) or "—"
+        tier = entry.get("tier", {})
+        tier_display = f'{tier.get("type", "—")} / {tier.get("backend", "—")}' if tier else "—"
+        session_count = "—"
+        if backend == "opencode_serve" and status == "ok":
+            try:
+                sessions = await reg.get_client(name).list_sessions()
+                session_count = str(len(sessions))
+            except Exception:
+                session_count = "?"
+        elif backend == "legacy_mcp":
+            session_count = "n/a (legacy)"
+
+        backend_note = (
+            ' <span style="color:#555;font-size:10px">(virtual interface)</span>'
+            if backend == "legacy_mcp" else ""
+        )
+
+        rows += f"""<tr>
+          <td><b>{html.escape(name)}</b><br><span style="color:#555;font-size:10px">{html.escape(backend)}{backend_note}</span></td>
+          <td>{_badge(status)}</td>
+          <td {owner_style}>{html.escape(owner_display)}</td>
+          <td style="color:#888;font-size:11px">{html.escape(loc_display)}</td>
+          <td style="color:#888;font-size:11px">{html.escape(accel)}</td>
+          <td style="color:#888;font-size:11px">{html.escape(caps)}</td>
+          <td style="color:#888;font-size:11px">{html.escape(tier_display)}</td>
+          <td style="color:#7ec8e3">{session_count}</td>
+        </tr>"""
+
+    if not rows:
+        rows = '<tr><td colspan="8" style="text-align:center;color:#555;padding:30px">No hosts registered in agent_bridge.json</td></tr>'
+
+    return _page("Workforce", f"""
+<h1>Third-Party Agent Workforce</h1>
+<p style="color:#888;margin-bottom:16px">Hosts registered in <code>~/.memory/config/agent_bridge.json</code>,
+live-checked the same way AgentBridge's <code>agent_fleet</code> MCP tool does. A <code>legacy_mcp</code>
+backend speaks a different wire protocol entirely (predates AgentBridge) — checked via a raw MCP
+handshake instead of the opencode REST API, so it still shows a real status instead of a false
+"unreachable".</p>
+<p style="color:#888;margin-bottom:16px"><span style="color:#7ec87e">PERSONAL</span> = your own
+infrastructure. <span style="color:#e3b07e;font-weight:bold">CUSTOMER</span> = client-owned
+(e.g. Bedrock Memoria) — never used as personal workforce.</p>
+<table>
+  <tr><th>Host / Backend</th><th>Status</th><th>Owner</th><th>Location</th><th>HW Accel</th><th>Capabilities</th><th>Tier</th><th>Sessions</th></tr>
   {rows}
 </table>
 """)
