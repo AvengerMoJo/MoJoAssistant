@@ -221,7 +221,7 @@ interface, show availability of the whole workforce" ask.
 Branch from `main` (per `Coding Agents Rules.md` git practices) as
 `wip_agent_workforce_dashboard`. Implement using whichever mix of the
 native assistant (interactive, this session) and the third-party agent
-workforce (`orgvm-memoria-hk001-agent` via AgentBridge, or any other
+workforce (`agent-workforce` via AgentBridge, or any other
 registered host) makes sense per piece — this feature is itself a good
 first real test of the workforce dispatching real implementation work on
 itself. PR back to `AvengerMoJo/MoJoAssistant` against `main` when the
