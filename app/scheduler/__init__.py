@@ -9,4 +9,4 @@ Provides persistent task scheduling and execution:
 """
 # [mojo-integration]
 
-__version__ = "1.4.2-beta"
+__version__ = "1.5.1"
