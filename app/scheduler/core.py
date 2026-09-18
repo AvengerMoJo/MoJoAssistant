@@ -296,6 +296,26 @@ class Scheduler:
                     if removed:
                         self._log(f"Cleaned up {removed} completed dreaming task(s)")
 
+                # Quality Monitor: deterministic task-health watchdog (see
+                # docs/specs/quality_monitor_spec.md). Every 5 ticks — with
+                # the default 60s tick_interval that's ~5 minutes, matching
+                # the confirmed cadence. Deliberately not its own scheduled
+                # task: a watchdog run through the same agentic loop it
+                # watches could get stuck the same way its subjects do.
+                if self.tick_count % 5 == 0:
+                    try:
+                        from app.scheduler.quality_monitor import run_quality_check
+                        findings = run_quality_check(self.queue)
+                        if findings:
+                            self._log(
+                                f"Quality Monitor: {len(findings)} finding(s) — "
+                                + "; ".join(f"{f.task_id}={f.classification}->{f.action}" for f in findings)
+                            )
+                        else:
+                            self._log("Quality Monitor: all tasks healthy", "debug")
+                    except Exception as _qme:
+                        self._log(f"Quality Monitor check failed (non-fatal): {_qme}", "warning")
+
                 # Heartbeat every 10th tick
                 if self.tick_count % 10 == 0:
                     from app.scheduler.models import TaskStatus as _TS
