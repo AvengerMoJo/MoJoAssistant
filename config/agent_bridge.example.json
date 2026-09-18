@@ -7,6 +7,21 @@
     "orgvm-memoria-hk001": {
       "base_url": "http://orgvm-memoria-hk001:4096",
       "password": "OPENCODE_SERVER_PASSWORD-from-remote-server.env"
+    },
+    "example-gpu-host": {
+      "base_url": "http://example-gpu-host:4096",
+      "password": "OPENCODE_SERVER_PASSWORD-from-remote-server.env",
+      "location": { "region": "home", "provider": "self-hosted" },
+      "profile": {
+        "hardware_accel": ["nvidia-cuda"],
+        "capabilities": ["text", "graphics", "audio-transcription"]
+      },
+      "tier": { "type": "free", "backend": "self-hosted-local" }
+    },
+    "example-legacy-host": {
+      "base_url": "http://example-legacy-host:4097/mcp",
+      "backend": "legacy_mcp",
+      "_comment": "backend defaults to opencode_serve; legacy_mcp hosts skip OpenCodeClient entirely -- see docs/architecture/AGENT_BRIDGE.md"
     }
   }
 }
