@@ -225,9 +225,12 @@ class Task:
             # Strip non-serializable runtime objects (per-task backends, HTTP clients)
             # from config before serialization. These hold process references that
             # don't survive JSON encoding and aren't needed after task completion.
+            # Quality-Monitor state (_qm_*) is durable bookkeeping (restart counts,
+            # escalation stamps) -- keep it so restart caps and dedup survive daemon
+            # reloads instead of silently resetting.
             "config": {
                 k: v for k, v in (self.config or {}).items()
-                if not k.startswith("_") and not callable(v)
+                if (not k.startswith("_") or k.startswith("_qm_")) and not callable(v)
             },
             "resources": self.resources.to_dict(),
             "result": self.result.to_dict() if self.result else None,

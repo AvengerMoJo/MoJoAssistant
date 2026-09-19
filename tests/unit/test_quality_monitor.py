@@ -26,6 +26,7 @@ from app.scheduler.quality_monitor import (
     apply_action,
     check_done_when,
     classify_task,
+    load_final_answer,
     run_quality_check,
 )
 
@@ -89,6 +90,71 @@ class TestCheckDoneWhen:
             file_checker=lambda p: True,
         )
         assert result is True
+
+
+class TestLoadFinalAnswer:
+    """Regression for a live incident (28eb4899_qm_restart_1, 2026-09-18):
+    a task report stored final_answer as {"raw_text": "..."} rather than a
+    plain string. Concatenating that dict into a goal string crashed with
+    "unsupported operand type(s) for +: 'dict' and 'str'", silently
+    breaking every quality-monitor tick for hours. load_final_answer must
+    never return anything but str or None, whatever shape the report uses.
+    """
+
+    def _write_report(self, tmp_path, monkeypatch, task_id, data):
+        import app.scheduler.quality_monitor as qm
+
+        report_dir = tmp_path / "task_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / f"{task_id}.json").write_text(__import__("json").dumps(data))
+        monkeypatch.setattr(
+            qm, "get_memory_subpath",
+            lambda *parts: str(tmp_path.joinpath(*parts))
+        )
+
+    def test_plain_string_final_answer(self, tmp_path, monkeypatch):
+        self._write_report(tmp_path, monkeypatch, "t1", {"final_answer": "done"})
+        assert load_final_answer("t1") == "done"
+
+    def test_dict_shaped_final_answer_extracts_raw_text(self, tmp_path, monkeypatch):
+        self._write_report(tmp_path, monkeypatch, "t2", {"final_answer": {"raw_text": "did the thing"}})
+        result = load_final_answer("t2")
+        assert result == "did the thing"
+        assert isinstance(result, str)
+
+    def test_dict_shaped_final_answer_without_known_key_falls_back_to_json(self, tmp_path, monkeypatch):
+        self._write_report(tmp_path, monkeypatch, "t3", {"final_answer": {"weird": "shape"}})
+        result = load_final_answer("t3")
+        assert isinstance(result, str)
+        assert "weird" in result
+
+    def test_missing_report_returns_none(self, tmp_path, monkeypatch):
+        import app.scheduler.quality_monitor as qm
+        monkeypatch.setattr(qm, "get_memory_subpath", lambda *parts: str(tmp_path.joinpath(*parts)))
+        assert load_final_answer("nonexistent") is None
+
+    def test_end_to_end_dict_final_answer_does_not_crash_continuation_build(self, tmp_path, monkeypatch):
+        """The actual failure mode: a falsely_completed task whose real
+        final_answer is dict-shaped must still build a continuation task
+        without raising."""
+        self._write_report(tmp_path, monkeypatch, "28eb4899_qm_restart_1",
+                            {"final_answer": {"raw_text": "claimed done, wasn't"}})
+        task = _completed_task("28eb4899_qm_restart_1", PAUL_GOAL, success=True)
+        task.config[QM_RESTART_COUNT_KEY] = 1  # one restart already used, cap is 2
+
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = TaskQueue(storage_path=str(Path(tmp) / "tasks.json"))
+            queue.add(task)
+            finding = classify_task(
+                task,
+                final_answer_loader=load_final_answer,
+                done_when_checker=lambda goal: False,
+            )
+            result = apply_action(queue, task, finding)  # must not raise
+
+        assert result.action == "restarted"
+        continuation = queue.get("28eb4899_qm_restart_1_qm_restart_2")
+        assert "claimed done, wasn't" in continuation.config["goal"]
 
 
 class TestClassifyTask:
@@ -237,6 +303,24 @@ class TestApplyAction:
 
         assert result.action == "escalated"
 
+    def test_escalation_does_not_duplicate_alert_for_same_subject(self, queue):
+        """Regression for the 56-duplicate-alert storm on sub_28eb4899_952400:
+        escalating the same terminal failure twice must not raise a second
+        alert -- one (task, classification) -> one alert."""
+        task = Task(
+            id="t10", type=TaskType.INTERNAL_ASSIGNMENT, status=TaskStatus.FAILED,
+            retry_count=3, max_retries=3,
+        )
+        queue.add(task)
+        finding = classify_task(task)
+        apply_action(queue, task, finding)  # first pass raises the alert
+
+        finding2 = classify_task(task)
+        apply_action(queue, task, finding2)  # second pass must be a no-op
+
+        alerts = [t for t in queue.list_tasks() if t.id.startswith("quality_monitor_alert_")]
+        assert len(alerts) == 1
+
 
 class TestRunQualityCheck:
     def test_empty_queue_no_findings(self, queue):
@@ -278,3 +362,24 @@ class TestRunQualityCheck:
         assert findings[0].classification == "falsely_completed"
         assert findings[0].action == "restarted"
         assert queue.get("28eb4899_qm_restart_1") is not None
+
+    def test_run_quality_check_escalates_once_then_stays_silent(self, queue):
+        """Regression for the alert storm: a terminal failure should produce
+        exactly ONE escalated finding across repeated ticker passes."""
+        task = Task(
+            id="sub_28eb4899_952400", type=TaskType.INTERNAL_ASSIGNMENT,
+            status=TaskStatus.FAILED, retry_count=3, max_retries=3,
+            last_error="Backend not found: git@github.com:AvengerMoJo/MoJoAssistant.git",
+        )
+        queue.add(task)
+
+        first = run_quality_check(queue)
+        second = run_quality_check(queue)
+        third = run_quality_check(queue)
+
+        assert [f.action for f in first] == ["escalated"]
+        assert len(first) == 1
+        assert second == []
+        assert third == []
+        alerts = [t for t in queue.list_tasks() if t.id.startswith("quality_monitor_alert_")]
+        assert len(alerts) == 1

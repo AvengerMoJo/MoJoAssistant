@@ -35,6 +35,7 @@ STUCK_GRACE_SECONDS = 300  # slack beyond a task's own max_duration_seconds
 WAITING_TOO_LONG_HOURS = 24
 QM_RESTART_COUNT_KEY = "_qm_restart_count"
 QM_ORIGIN_KEY = "_qm_restarted_from"
+QM_ESCALATED_KEY = "_qm_escalated_at"  # stamped per (task, classification)
 ALERT_ID_PREFIX = "quality_monitor_alert_"
 
 Classification = str  # "stuck" | "waiting_for_input_too_long" | "falsely_completed" | "genuinely_failed" | "healthy"
@@ -52,13 +53,32 @@ class QualityFinding:
 def load_final_answer(task_id: str) -> Optional[str]:
     """Same lookup Scheduler._load_final_answer uses — duplicated here (not
     imported from core.py) so this module has no dependency on a live
-    Scheduler instance and stays independently unit-testable."""
+    Scheduler instance and stays independently unit-testable.
+
+    Found live 2026-09-18: 28eb4899_qm_restart_1's report stored
+    final_answer as {"raw_text": "..."} (a structured-output shape some
+    model backends produce) rather than a plain string. Concatenating that
+    dict into a goal string in _build_continuation_task crashed with
+    "unsupported operand type(s) for +: 'dict' and 'str'", silently
+    breaking every quality-monitor tick (caught non-fatally by core.py, so
+    the scheduler kept running -- but the monitor itself did nothing) for
+    hours. Always return a str or None here; never let a raw dict escape
+    this function no matter what shape a report happens to use."""
     try:
         report_path = Path(get_memory_subpath("task_reports", f"{task_id}.json"))
         if report_path.exists():
             with open(report_path) as f:
                 d = json.load(f)
-            return d.get("final_answer") or d.get("content")
+            answer = d.get("final_answer") or d.get("content")
+            if isinstance(answer, str):
+                return answer
+            if isinstance(answer, dict):
+                for key in ("raw_text", "text", "content", "final_answer"):
+                    if isinstance(answer.get(key), str):
+                        return answer[key]
+                return json.dumps(answer)
+            if answer is not None:
+                return str(answer)
     except Exception:
         pass
     return None
@@ -184,6 +204,39 @@ def _restart_count(task: Task) -> int:
     return int((task.config or {}).get(QM_RESTART_COUNT_KEY, 0))
 
 
+def _escalation_key(classification: Classification) -> str:
+    return f"{QM_ESCALATED_KEY}:{classification}"
+
+
+def _already_escalated(task: Task, classification: Classification) -> bool:
+    """True if this task was already escalated for this classification.
+    A terminal finding is a statement of fact -- once a human is notified,
+    re-notifying every tick is noise, not signal (the exact failure mode
+    that produced the 56-identical-alert storm on sub_28eb4899_952400)."""
+    return bool((task.config or {}).get(_escalation_key(classification)))
+
+
+def _mark_escalated(queue: TaskQueue, task: Task, classification: Classification, now: Optional[datetime] = None) -> None:
+    """Stamp the subject task so future passes suppress duplicates. Mutation
+    is persisted immediately -- the task is the live queue object."""
+    task.config = dict(task.config or {})
+    task.config[_escalation_key(classification)] = (now or datetime.now()).isoformat()
+    queue.update(task)
+
+
+def _live_alert_exists(queue: TaskQueue, original_task_id: str, classification: Classification) -> bool:
+    """Reactive guard on the alert side: never create a second unresolved
+    alert for the same (task, classification) even if the subject marker is
+    somehow absent (e.g. alerts pre-existing before this fix deployed)."""
+    for t in queue.list_tasks():
+        if t.id.startswith(ALERT_ID_PREFIX):
+            cfg = t.config or {}
+            if (cfg.get("original_task_id") == original_task_id
+                    and cfg.get("classification") == classification):
+                return True
+    return False
+
+
 def _build_continuation_task(original: Task, finding: QualityFinding) -> Task:
     prior_count = _restart_count(original)
     goal = (original.config or {}).get("goal", "") or ""
@@ -216,11 +269,16 @@ def _build_continuation_task(original: Task, finding: QualityFinding) -> Task:
     )
 
 
-def _raise_alert(queue: TaskQueue, finding: QualityFinding, now: Optional[datetime] = None) -> None:
-    """Surface via the EXISTING Discord HITL path — the Discord adapter
+def _raise_alert(queue: TaskQueue, finding: QualityFinding, now: Optional[datetime] = None) -> bool:
+    """Surface via the EXISTING Discord HITL path -- the Discord adapter
     already polls queue.list_tasks(status=WAITING_FOR_INPUT) for any task
     with pending_question set (see app/mcp/adapters/hitl/discord.py) and
-    delivers it. No new notification channel needed."""
+    delivers it. No new notification channel needed.
+
+    Returns True if an alert was actually raised, False if a live alert for
+    the same (task, classification) already exists (dedupe guard)."""
+    if _live_alert_exists(queue, finding.task_id, finding.classification):
+        return False
     alert_id = f"{ALERT_ID_PREFIX}{finding.task_id}_{int((now or datetime.now()).timestamp())}"
     question = (
         f"Quality Monitor: task {finding.task_id} classified as "
@@ -237,6 +295,7 @@ def _raise_alert(queue: TaskQueue, finding: QualityFinding, now: Optional[dateti
     )
     alert.pending_question = question
     queue.add(alert)
+    return True
 
 
 def apply_action(queue: TaskQueue, task: Task, finding: QualityFinding, now: Optional[datetime] = None) -> QualityFinding:
@@ -252,8 +311,13 @@ def apply_action(queue: TaskQueue, task: Task, finding: QualityFinding, now: Opt
         finding.action = "restarted"
         finding.detail = (finding.detail or "") + f"\n-> continuation task: {continuation.id}"
     else:
-        _raise_alert(queue, finding, now=now)
+        raised = _raise_alert(queue, finding, now=now)
         finding.action = "escalated"
+        if raised:
+            # One notification per (task, classification). Only stamp when an
+            # alert was actually created so a future reprocess after it is
+            # resolved can escalate again if the situation recurs.
+            _mark_escalated(queue, task, finding.classification, now=now)
     return finding
 
 
@@ -283,5 +347,7 @@ def run_quality_check(
         )
         if finding is None:
             continue
+        if _already_escalated(task, finding.classification):
+            continue  # already notified once for this state; don't repeat
         findings.append(apply_action(queue, task, finding, now=now))
     return findings

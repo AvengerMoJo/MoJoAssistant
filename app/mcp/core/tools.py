@@ -493,6 +493,7 @@ class ToolRegistry:
             "app.roles.owner_context",
             "app.scheduler.agentic_executor",
             "app.config.doctor",
+            "app.scheduler.quality_monitor",  # reload before core — core depends on it
             "app.scheduler.core",          # must be last — depends on above
         ]
 
