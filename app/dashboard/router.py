@@ -101,6 +101,7 @@ _NAV = """
   <a href="/dashboard/events">Events</a>
   <a href="/dashboard/roles">Roles</a>
   <a href="/dashboard/workforce">Workforce</a>
+  <a href="/dashboard/projects">Projects</a>
   <a href="/dashboard/library">Library</a>
   <a href="/dashboard/chat">Chat</a>
   <a href="/dashboard/privacy">Privacy</a>
@@ -137,6 +138,19 @@ a:hover { text-decoration: underline; }
 .s-dreaming   { background: #1a002a; color: #c07ee3; }
 .s-ok         { background: #002a00; color: #7ec87e; }
 .s-unreachable { background: #2a0000; color: #e37e7e; }
+.s-todo       { background: #1a1a1a; color: #888; }
+.s-in_progress { background: #002a00; color: #7ec87e; }
+.s-done       { background: #001a2a; color: #7ec8e3; }
+.s-blocked    { background: #2a0000; color: #e37e7e; }
+.s-active     { background: #002a00; color: #7ec87e; }
+.s-archived   { background: #1a1a1a; color: #666; }
+.kind-feature { color: #7ec8e3; }
+.kind-bug     { color: #e37e7e; }
+.kind-update  { color: #e3c07e; }
+.project-card { background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 16px 20px; margin-bottom: 16px; }
+.project-card h3 { font-size: 14px; color: #fff; margin-bottom: 4px; }
+.project-card .goal { color: #888; font-size: 12px; margin-bottom: 10px; }
+.project-card table { margin-top: 6px; }
 .lvl0 { color: #555; }
 .lvl1 { color: #888; }
 .lvl2 { color: #aaa; }
@@ -763,6 +777,75 @@ infrastructure. <span style="color:#e3b07e;font-weight:bold">CUSTOMER</span> = c
   <tr><th>Host / Backend</th><th>Status</th><th>Owner</th><th>Location</th><th>HW Accel</th><th>Capabilities</th><th>Tier</th><th>Sessions</th></tr>
   {rows}
 </table>
+""")
+
+
+# ---------------------------------------------------------------------------
+# Project checklists
+# ---------------------------------------------------------------------------
+
+@router.get("/projects", response_class=HTMLResponse)
+async def projects_view(mojo_dash: Optional[str] = Cookie(default=None)):
+    if redir := _require_auth(mojo_dash):
+        return redir
+
+    from app.scheduler.project_tracker import list_projects
+
+    try:
+        projects = list_projects()
+    except Exception as e:
+        return _page("Projects", f"""<h1>Projects</h1>
+<p style="color:#e37e7e">Could not load projects: {html.escape(str(e))}</p>""")
+
+    if not projects:
+        return _page("Projects", """
+<h1>Projects</h1>
+<p style="color:#888;margin-bottom:16px">Ongoing, multi-feature work tracked as a checklist rather
+than a single bounded task — see <code>app/scheduler/project_tracker.py</code>. Audited nightly by
+the <code>project_sentinel</code> role, which verifies each item's claimed status against real repo/PR
+evidence and escalates any gap to Paul.</p>
+<p style="color:#555;text-align:center;padding:30px">No projects tracked yet.</p>""")
+
+    cards = ""
+    for project in projects:
+        total = len(project.items)
+        done = sum(1 for i in project.items if i.status == "done")
+        progress = f"{done}/{total}" if total else "0/0"
+
+        item_rows = ""
+        for item in project.items:
+            tasks_display = ", ".join(item.task_ids) if item.task_ids else "—"
+            notes_display = html.escape(item.notes) if item.notes else ""
+            item_rows += f"""<tr>
+              <td><span class="kind-{html.escape(item.kind)}">{html.escape(item.kind)}</span></td>
+              <td>{html.escape(item.title)}</td>
+              <td>{_badge(item.status)}</td>
+              <td style="color:#888;font-size:11px">{html.escape(tasks_display)}</td>
+              <td style="color:#888;font-size:11px">{notes_display}</td>
+            </tr>"""
+        if not item_rows:
+            item_rows = '<tr><td colspan="5" style="text-align:center;color:#555;padding:16px">No checklist items yet</td></tr>'
+
+        owner_display = f' · owner: <b>{html.escape(project.owner_role_id)}</b>' if project.owner_role_id else ""
+
+        cards += f"""<div class="project-card">
+          <h3>{html.escape(project.name)} {_badge(project.status)}
+            <span style="color:#555;font-size:11px;font-weight:normal"> · {progress} items done{owner_display}</span>
+          </h3>
+          <div class="goal">{html.escape(project.goal)}</div>
+          <table>
+            <tr><th>Kind</th><th>Item</th><th>Status</th><th>Tasks</th><th>Notes</th></tr>
+            {item_rows}
+          </table>
+        </div>"""
+
+    return _page("Projects", f"""
+<h1>Projects</h1>
+<p style="color:#888;margin-bottom:16px">Ongoing, multi-feature work tracked as a checklist rather
+than a single bounded task — see <code>app/scheduler/project_tracker.py</code>. Audited nightly by
+the <code>project_sentinel</code> role, which verifies each item's claimed status against real repo/PR
+evidence (not just the status label) and escalates any gap to Paul via <code>dispatch_subtask</code>.</p>
+{cards}
 """)
 
 
