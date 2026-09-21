@@ -181,6 +181,11 @@ class Task:
     parent_task_id: Optional[str] = None  # Task that spawned this one (None = top-level)
     dispatch_depth: int = 0               # 0 = top-level; max enforced at dispatch time
 
+    # Project rollup — set when this task is one deliverable within an ongoing,
+    # multi-feature project/module (see app/scheduler/project_tracker.py) rather
+    # than a bounded, one-shot task closed out by its own "Done when:" clause.
+    project_id: Optional[str] = None
+
     def is_due(self) -> bool:
         """Check if task is due to run"""
         if self.status != TaskStatus.PENDING:
@@ -252,6 +257,7 @@ class Task:
             "importance": self.importance,
             "parent_task_id": self.parent_task_id,
             "dispatch_depth": self.dispatch_depth,
+            "project_id": self.project_id,
         }
         return data
 
@@ -291,5 +297,6 @@ class Task:
         data.setdefault("importance", None)
         data.setdefault("parent_task_id", None)
         data.setdefault("dispatch_depth", 0)
+        data.setdefault("project_id", None)
 
         return cls(**data)
