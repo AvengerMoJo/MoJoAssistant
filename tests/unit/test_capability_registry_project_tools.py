@@ -36,8 +36,9 @@ def registry():
 
 
 class TestToolsRegistered:
-    def test_all_four_tools_present_with_orchestration_category(self, registry):
-        for name in ("project_list", "project_create", "project_add_item", "project_update_item_status"):
+    def test_all_tools_present_with_orchestration_category(self, registry):
+        for name in ("project_list", "project_create", "project_add_item",
+                     "project_update_item_status", "project_set_workspace"):
             tool = registry.get_tool(name)
             assert tool is not None, f"{name} not registered"
             assert tool.category == "orchestration"
@@ -131,6 +132,126 @@ class TestProjectList:
         result = await registry.execute_tool("project_list", {})
         assert result["success"] is True
         assert result["count"] == 2
+
+
+class TestProjectSetWorkspace:
+    @pytest.mark.asyncio
+    async def test_set_workspace_succeeds(self, registry):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        result = await registry.execute_tool("project_set_workspace", {
+            "project_id": "p1",
+            "git_url": "git@github.com:Org/repo.git",
+            "project_label": "opencode+repo",
+        })
+        assert result["success"] is True
+        assert result["project"]["workspace"] == {
+            "git_url": "git@github.com:Org/repo.git", "project_label": "opencode+repo",
+        }
+
+    @pytest.mark.asyncio
+    async def test_set_workspace_missing_project_fails(self, registry):
+        result = await registry.execute_tool("project_set_workspace", {
+            "project_id": "nope", "git_url": "git@github.com:Org/repo.git", "project_label": "opencode+repo",
+        })
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_set_workspace_missing_field_fails(self, registry):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        result = await registry.execute_tool("project_set_workspace", {"project_id": "p1", "git_url": "x"})
+        assert result["success"] is False
+
+
+class TestDispatchSubtaskProjectIdAutoResolve:
+    """dispatch_subtask(project_id=...) must auto-fill project_label/git_url
+    from the project's linked workspace, so a dispatcher doesn't have to
+    guess a server_id -- guessing wrong is exactly what caused the
+    A/B-test/28eb4899 backend-not-found failures (2026-09-22)."""
+
+    @pytest.fixture
+    def fake_scheduler(self, monkeypatch):
+        from app.scheduler.models import Task, TaskResult, TaskStatus
+        import app.scheduler.capability_registry as cr
+
+        monkeypatch.setattr(cr.CapabilityRegistry, "DISPATCH_POLL_INTERVAL_S", 0.001)
+
+        class FakeScheduler:
+            def __init__(self):
+                self.added_task = None
+
+            def add_task(self, task):
+                self.added_task = task
+                return True
+
+            def get_task(self, task_id):
+                t = self.added_task
+                t.status = TaskStatus.COMPLETED
+                t.result = TaskResult(success=True, metrics={"final_answer": "done"})
+                return t
+
+        return FakeScheduler()
+
+    @pytest.mark.asyncio
+    async def test_project_id_fills_label_and_git_url_from_workspace(self, registry, fake_scheduler):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        await registry.execute_tool("project_set_workspace", {
+            "project_id": "p1",
+            "git_url": "git@github.com:Org/repo.git",
+            "project_label": "opencode+repo",
+        })
+        registry._scheduler = fake_scheduler
+
+        result = await registry.execute_tool("dispatch_subtask", {
+            "role_id": "popo", "goal": "do the thing please", "force": True, "project_id": "p1",
+        })
+
+        assert result["success"] is True
+        task = fake_scheduler.added_task
+        assert task.config["project_label"] == "opencode+repo"
+        assert task.config["git_url"] == "git@github.com:Org/repo.git"
+        assert task.project_id == "p1"
+
+    @pytest.mark.asyncio
+    async def test_explicit_project_label_wins_over_project_id(self, registry, fake_scheduler):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        await registry.execute_tool("project_set_workspace", {
+            "project_id": "p1",
+            "git_url": "git@github.com:Org/repo.git",
+            "project_label": "opencode+repo",
+        })
+        registry._scheduler = fake_scheduler
+
+        result = await registry.execute_tool("dispatch_subtask", {
+            "role_id": "popo", "goal": "do the thing please", "force": True,
+            "project_id": "p1", "project_label": "opencode+different",
+        })
+
+        assert result["success"] is True
+        assert fake_scheduler.added_task.config["project_label"] == "opencode+different"
+
+    @pytest.mark.asyncio
+    async def test_project_id_without_workspace_leaves_label_unset(self, registry, fake_scheduler):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        registry._scheduler = fake_scheduler
+
+        result = await registry.execute_tool("dispatch_subtask", {
+            "role_id": "popo", "goal": "do the thing please", "force": True, "project_id": "p1",
+        })
+
+        assert result["success"] is True
+        assert "project_label" not in fake_scheduler.added_task.config
+        assert fake_scheduler.added_task.project_id == "p1"
+
+    @pytest.mark.asyncio
+    async def test_unknown_project_id_does_not_crash(self, registry, fake_scheduler):
+        registry._scheduler = fake_scheduler
+
+        result = await registry.execute_tool("dispatch_subtask", {
+            "role_id": "popo", "goal": "do the thing please", "force": True, "project_id": "does-not-exist",
+        })
+
+        assert result["success"] is True
+        assert "project_label" not in fake_scheduler.added_task.config
 
 
 class TestAvailableToolsGating:

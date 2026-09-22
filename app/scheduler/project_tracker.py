@@ -65,6 +65,11 @@ class Project:
     status: ProjectStatus = "active"
     items: List[ChecklistItem] = field(default_factory=list)
     owner_role_id: Optional[str] = None  # e.g. "paul" — who's accountable for gaps found here
+    # Shared resource any role/agent dispatched under this project_id should work in --
+    # {"git_url": ..., "project_label": "opencode+..."} for a git-repo-shaped project.
+    # None means this project has no linked coding-agent workspace (e.g. pure research/
+    # tracking work) -- dispatch falls back to whatever the dispatcher specifies directly.
+    workspace: Optional[Dict[str, Any]] = None
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -153,6 +158,23 @@ def add_item(
     if any(i.id == item_id for i in project.items):
         raise ValueError(f"project_tracker: item {item_id!r} already exists on project {project_id!r}")
     project.items.append(ChecklistItem(id=item_id, kind=kind, title=title, status=status, notes=notes))
+    save_project(project)
+    return project
+
+
+def set_workspace(
+    project_id: str,
+    git_url: str,
+    project_label: str,
+) -> Project:
+    """Link a project to the shared coding-agent workspace any role/agent
+    dispatched under this project_id should resolve into. Does not bootstrap
+    the backend itself -- callers should confirm it's reachable (or bootstrap
+    it) separately before relying on auto-resolution working."""
+    project = load_project(project_id)
+    if project is None:
+        raise ValueError(f"project_tracker: project {project_id!r} not found")
+    project.workspace = {"git_url": git_url, "project_label": project_label}
     save_project(project)
     return project
 
