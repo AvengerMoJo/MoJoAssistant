@@ -397,6 +397,72 @@ class CapabilityRegistry:
                 }, "required": []},
             ),
             CapabilityDefinition(
+                name="project_list",
+                description=(
+                    "List every tracked Project (ongoing, multi-feature work — see "
+                    "app/scheduler/project_tracker.py), each with its id, name, goal, status, "
+                    "owner_role_id, and checklist items. Distinct from a scheduler Task: a Project "
+                    "is not closed by one Done-when clause, it accumulates feature/bug/update items "
+                    "over time, each independently tracked. Call this before project_add_item/"
+                    "project_update_item_status to see what already exists."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {}, "required": []},
+            ),
+            CapabilityDefinition(
+                name="project_create",
+                description=(
+                    "Create a new Project — a persistent checklist for ongoing, multi-feature work "
+                    "that doesn't fit a single bounded Task. Fails if project_id already exists — "
+                    "call project_list first to check."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "project_id": {"type": "string", "description": "Unique, stable snake_case id"},
+                    "name":       {"type": "string", "description": "Human-readable project name"},
+                    "goal":       {"type": "string", "description": "What 'done' looks like for the project as a whole"},
+                    "owner_role_id": {"type": "string", "description": "Role accountable for gaps found on this project (e.g. 'paul')"},
+                }, "required": ["project_id", "name", "goal"]},
+            ),
+            CapabilityDefinition(
+                name="project_add_item",
+                description=(
+                    "Add a feature/bug/update checklist item to an existing project. Fails if the "
+                    "project doesn't exist (call project_create first) or the item_id is already "
+                    "used on that project."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "project_id": {"type": "string"},
+                    "item_id":    {"type": "string", "description": "Unique, stable snake_case id within this project"},
+                    "kind":       {"type": "string", "enum": ["feature", "bug", "update"]},
+                    "title":      {"type": "string"},
+                    "status":     {"type": "string", "enum": ["todo", "in_progress", "done", "blocked"], "description": "Defaults to 'todo'"},
+                    "notes":      {"type": "string", "description": "Scope, boundaries, acceptance criteria — whatever context future readers need"},
+                }, "required": ["project_id", "item_id", "kind", "title"]},
+            ),
+            CapabilityDefinition(
+                name="project_update_item_status",
+                description=(
+                    "Update a checklist item's status, notes, and/or link a Task id to it. Use "
+                    "task_id to roll a scheduler Task's work up into this item (e.g. after "
+                    "dispatch_subtask returns a task id for work on this item). This is the only "
+                    "way item status should change — do not edit ~/.memory/projects/*.json directly."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "project_id": {"type": "string"},
+                    "item_id":    {"type": "string"},
+                    "status":     {"type": "string", "enum": ["todo", "in_progress", "done", "blocked"]},
+                    "notes":      {"type": "string", "description": "Replaces existing notes if provided"},
+                    "task_id":    {"type": "string", "description": "Scheduler Task id to append to this item's linked task_ids"},
+                }, "required": ["project_id", "item_id", "status"]},
+            ),
+            CapabilityDefinition(
                 name="dispatch_subtask",
                 description=(
                     "Dispatch a task to another agent role and WAIT for its result before continuing. "
@@ -794,6 +860,14 @@ class CapabilityRegistry:
                     return await self._scheduler_add_task(args)
                 elif name == "list_roles":
                     return await self._list_roles(args)
+                elif name == "project_list":
+                    return await self._project_list(args)
+                elif name == "project_create":
+                    return await self._project_create(args)
+                elif name == "project_add_item":
+                    return await self._project_add_item(args)
+                elif name == "project_update_item_status":
+                    return await self._project_update_item_status(args)
                 elif name == "dispatch_subtask":
                     return await self._dispatch_subtask(args)
                 elif name == "reason_tree_audit":
@@ -1200,6 +1274,78 @@ class CapabilityRegistry:
                 "If none match your need, use ask_user to request a new role."
             ),
         }
+
+    async def _project_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List every tracked Project and its checklist items."""
+        from app.scheduler.project_tracker import list_projects
+
+        try:
+            projects = list_projects()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+        return {
+            "success": True,
+            "count": len(projects),
+            "projects": [p.to_dict() for p in projects],
+        }
+
+    async def _project_create(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new Project checklist."""
+        from app.scheduler.project_tracker import create_project
+
+        project_id = args.get("project_id")
+        name = args.get("name")
+        goal = args.get("goal")
+        if not project_id or not name or not goal:
+            return {"success": False, "error": "project_id, name, and goal are all required"}
+
+        try:
+            project = create_project(
+                project_id=project_id,
+                name=name,
+                goal=goal,
+                owner_role_id=args.get("owner_role_id"),
+            )
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        return {"success": True, "project": project.to_dict()}
+
+    async def _project_add_item(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a checklist item to an existing Project."""
+        from app.scheduler.project_tracker import add_item
+
+        try:
+            project = add_item(
+                project_id=args.get("project_id"),
+                item_id=args.get("item_id"),
+                kind=args.get("kind"),
+                title=args.get("title"),
+                status=args.get("status", "todo"),
+                notes=args.get("notes"),
+            )
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        return {"success": True, "project": project.to_dict()}
+
+    async def _project_update_item_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a checklist item's status/notes/linked task_id."""
+        from app.scheduler.project_tracker import update_item_status
+
+        try:
+            project = update_item_status(
+                project_id=args.get("project_id"),
+                item_id=args.get("item_id"),
+                status=args.get("status"),
+                notes=args.get("notes"),
+                task_id=args.get("task_id"),
+            )
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        return {"success": True, "project": project.to_dict()}
 
     def _reason_tree_audit(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
