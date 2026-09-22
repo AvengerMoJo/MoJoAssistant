@@ -463,6 +463,25 @@ class CapabilityRegistry:
                 }, "required": ["project_id", "item_id", "status"]},
             ),
             CapabilityDefinition(
+                name="project_set_workspace",
+                description=(
+                    "Link a project to the shared coding-agent workspace (git repo + "
+                    "project_label) that any role/agent dispatched under this project_id "
+                    "should resolve into. Once set, pass project_id (instead of project_label/"
+                    "server_id) to dispatch_subtask and it auto-fills the right target -- no "
+                    "need to remember or guess the label. Does NOT bootstrap the backend "
+                    "itself; confirm project_label resolves (e.g. via sandbox_status) or "
+                    "bootstrap it first (sandbox_request(kind='project', ...))."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "project_id":     {"type": "string"},
+                    "git_url":        {"type": "string", "description": "e.g. 'git@github.com:AvengerMoJo/MoJoAssistant.git'"},
+                    "project_label":  {"type": "string", "description": "e.g. 'opencode+MoJoAssistant'"},
+                }, "required": ["project_id", "git_url", "project_label"]},
+            ),
+            CapabilityDefinition(
                 name="dispatch_subtask",
                 description=(
                     "Dispatch a task to another agent role and WAIT for its result before continuing. "
@@ -475,7 +494,11 @@ class CapabilityRegistry:
                     "If the role needs a coding sandbox (executor='coding_agent', e.g. popo) or an "
                     "isolated bash_exec environment, set project_label instead of guessing a git_url or "
                     "relying on the role's default — that default caused a week-long outage when it was "
-                    "pinned to a non-git_url server_id that could never auto-start."
+                    "pinned to a non-git_url server_id that could never auto-start. If the work belongs "
+                    "to a tracked Project (see project_list), pass project_id instead — it auto-resolves "
+                    "project_label/git_url from that project's linked workspace (set via "
+                    "project_set_workspace) and rolls this sub-task into the project's checklist "
+                    "automatically. Explicit project_label/git_url/server_id always win if both given."
                 ),
                 danger_level="medium",
                 category="orchestration",
@@ -489,6 +512,7 @@ class CapabilityRegistry:
                     "max_iterations":  {"type": "integer", "description": "Max iterations for sub-task (default 10)"},
                     "timeout_s":       {"type": "integer", "description": "Seconds to wait for result (default 300)"},
                     "force":           {"type": "boolean", "description": "Bypass spec quality gate. Only use when the calling AI has already validated the spec with the user."},
+                    "project_id":      {"type": "string", "description": "A tracked Project id (see project_list) to auto-resolve project_label/git_url from its linked workspace, and roll this sub-task into its checklist."},
                     "project_label":   {
                         "type": "string",
                         "description": (
@@ -868,6 +892,8 @@ class CapabilityRegistry:
                     return await self._project_add_item(args)
                 elif name == "project_update_item_status":
                     return await self._project_update_item_status(args)
+                elif name == "project_set_workspace":
+                    return await self._project_set_workspace(args)
                 elif name == "dispatch_subtask":
                     return await self._dispatch_subtask(args)
                 elif name == "reason_tree_audit":
@@ -1347,6 +1373,23 @@ class CapabilityRegistry:
 
         return {"success": True, "project": project.to_dict()}
 
+    async def _project_set_workspace(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Link a project to its shared coding-agent workspace."""
+        from app.scheduler.project_tracker import set_workspace
+
+        project_id = args.get("project_id")
+        git_url = args.get("git_url")
+        project_label = args.get("project_label")
+        if not project_id or not git_url or not project_label:
+            return {"success": False, "error": "project_id, git_url, and project_label are all required"}
+
+        try:
+            project = set_workspace(project_id, git_url, project_label)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        return {"success": True, "project": project.to_dict()}
+
     def _reason_tree_audit(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Audit multiple reviewer reports for Conflict/Divergence Points.
@@ -1491,6 +1534,22 @@ class CapabilityRegistry:
         config: Dict[str, Any] = {"goal": goal, "role_id": role_id}
         if args.get("available_tools"):
             config["available_tools"] = args["available_tools"]
+
+        # project_id auto-resolves project_label/git_url from the Project's linked
+        # workspace, so a dispatcher doesn't have to know/guess it (this is what a
+        # guessed, never-bootstrapped server_id used to silently fail on). Explicit
+        # project_label/git_url/server_id in args always win over the auto-resolved
+        # values -- set first, then let the loop below override.
+        _dispatch_project_id = args.get("project_id")
+        if _dispatch_project_id:
+            from app.scheduler.project_tracker import load_project
+            _project = load_project(_dispatch_project_id)
+            if _project is not None and _project.workspace:
+                if _project.workspace.get("project_label"):
+                    config["project_label"] = _project.workspace["project_label"]
+                if _project.workspace.get("git_url"):
+                    config["git_url"] = _project.workspace["git_url"]
+
         # Sandbox/project targeting — forwarded straight through to the sub-task's
         # config so a coding_agent-executor role (or the LLM-loop sandbox provisioner)
         # resolves the right environment. project_label is the preferred form
@@ -1510,6 +1569,7 @@ class CapabilityRegistry:
             created_by="agent",
             parent_task_id=_task_id,
             dispatch_depth=_dispatch_depth + 1,
+            project_id=_dispatch_project_id,
         )
 
         if not self._scheduler.add_task(task):
