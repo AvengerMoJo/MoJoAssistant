@@ -98,6 +98,41 @@ class TestUpdateItemStatus:
         assert project.items[0].task_ids == ["task-1", "task-2"]
 
 
+class TestWorkspace:
+    def test_new_project_has_no_workspace(self):
+        pt.create_project("proj1", "Test", "Goal")
+        assert pt.load_project("proj1").workspace is None
+
+    def test_set_workspace_persists(self):
+        pt.create_project("proj1", "Test", "Goal")
+        project = pt.set_workspace("proj1", "git@github.com:Org/repo.git", "opencode+repo")
+        assert project.workspace == {"git_url": "git@github.com:Org/repo.git", "project_label": "opencode+repo"}
+
+        reloaded = pt.load_project("proj1")
+        assert reloaded.workspace == {"git_url": "git@github.com:Org/repo.git", "project_label": "opencode+repo"}
+
+    def test_set_workspace_missing_project_raises(self):
+        with pytest.raises(ValueError, match="not found"):
+            pt.set_workspace("nope", "git@github.com:Org/repo.git", "opencode+repo")
+
+    def test_set_workspace_overwrites_existing(self):
+        pt.create_project("proj1", "Test", "Goal")
+        pt.set_workspace("proj1", "git@github.com:Org/repo.git", "opencode+repo")
+        project = pt.set_workspace("proj1", "git@github.com:Org/repo2.git", "opencode+repo2")
+        assert project.workspace["git_url"] == "git@github.com:Org/repo2.git"
+
+    def test_loads_pre_workspace_project_dict_without_error(self):
+        """Project dicts written before this field existed (the 5 real
+        projects created 2026-09-22) must still load cleanly."""
+        old_style = {
+            "id": "legacy", "name": "Legacy", "goal": "Goal",
+            "status": "active", "items": [], "owner_role_id": None,
+            "created_at": "2026-09-22T00:00:00", "updated_at": "2026-09-22T00:00:00",
+        }
+        project = pt.Project.from_dict(old_style)
+        assert project.workspace is None
+
+
 class TestListProjects:
     def test_list_empty_when_no_projects(self):
         assert pt.list_projects() == []
