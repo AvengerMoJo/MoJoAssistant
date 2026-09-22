@@ -14,11 +14,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.mcp.adapters.hitl.base import HITLAdapter
 
 logger = logging.getLogger(f"mojo_assistant.{__name__}")
+
+# Durable stamp (in task.config, persisted by the queue) recording when this
+# adapter last successfully posted a HITL message for the task. Mirrors
+# Quality Monitor's _qm_escalated_at pattern (app/scheduler/quality_monitor.py).
+HITL_POSTED_KEY = "_hitl_posted_at"
+# Re-post once if still unanswered after this long, matching Quality
+# Monitor's WAITING_TOO_LONG_HOURS convention — never silence forever.
+HITL_REPOST_AFTER_HOURS = 24
 
 
 class DiscordHITLAdapter(HITLAdapter):
@@ -79,12 +88,63 @@ class DiscordHITLAdapter(HITLAdapter):
             for task in waiting:
                 if not task.pending_question:
                     continue
+                if self._hitl_recently_posted(task):
+                    logger.info("[hitl/discord] catch-up: task %s HITL already posted — skipping", task.id)
+                    continue
                 choices = task.config.get("pending_options") or task.config.get("pending_choices") or []
                 if task.id not in {tid for tid, _ in self._pending.values()}:
                     logger.info("[hitl/discord] catch-up: notifying task %s", task.id)
                     await self.send_hitl(task.id, task.pending_question, choices)
         except Exception as exc:
             logger.warning("[hitl/discord] catch-up failed: %s", exc, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Durable post dedupe (restart-safe)
+    # ------------------------------------------------------------------
+
+    def _stamp_hitl_posted(self, task_id: str) -> None:
+        """Persistently mark that this task's HITL was posted to Discord.
+
+        The in-memory self._pending map resets on every process restart
+        while the task itself persists in WAITING_FOR_INPUT, so an
+        in-memory-only guard cannot stop the catch-up hook from re-posting
+        the same question after each restart. Same durable-stamp pattern as
+        Quality Monitor's _mark_escalated: mutate task.config, then
+        queue.update() so it hits disk. Best-effort — a stamp failure must
+        not unwind a post that already succeeded."""
+        if not self._scheduler:
+            return
+        try:
+            task = self._scheduler.queue.get(task_id)
+            if task is None:
+                return
+            task.config = dict(task.config or {})
+            task.config[HITL_POSTED_KEY] = datetime.now().isoformat()
+            self._scheduler.queue.update(task)
+        except Exception as exc:
+            logger.warning(
+                "[hitl/discord] could not stamp %s on task %s: %s",
+                HITL_POSTED_KEY, task_id, exc, exc_info=True,
+            )
+
+    def _hitl_recently_posted(self, task: Any, now: Optional[datetime] = None) -> bool:
+        """True if this task's HITL was posted no more than
+        HITL_REPOST_AFTER_HOURS ago. A stamp older than that means the
+        question has been sitting in the owner channel unanswered for a day
+        — allow exactly one re-post (the re-post re-stamps, so it repeats
+        at most once per window)."""
+        raw = (task.config or {}).get(HITL_POSTED_KEY)
+        if not raw:
+            return False
+        try:
+            posted_at = datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            return False
+        now = now or datetime.now()
+        # Strictly-past threshold re-posts, matching QM's classify_task
+        # ((now - since) > WAITING_TOO_LONG_HOURS escalates): a stamp exactly
+        # 24h old still suppresses.
+        return (now - posted_at) <= timedelta(hours=HITL_REPOST_AFTER_HOURS)
 
     # ------------------------------------------------------------------
     # Cross-loop bridge
@@ -194,6 +254,7 @@ class DiscordHITLAdapter(HITLAdapter):
             msg = await ch.send(embed=embed, view=view if choices else None)
             self._pending[msg.id] = (task_id, choices)
             logger.info("[hitl/discord] HITL posted (task=%s, msg=%s)", task_id, msg.id)
+            self._stamp_hitl_posted(task_id)
         except Exception as exc:
             logger.error("[hitl/discord] failed to send HITL: %s", exc, exc_info=True)
 
