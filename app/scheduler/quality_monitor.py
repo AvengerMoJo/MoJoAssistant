@@ -303,13 +303,48 @@ def apply_action(queue: TaskQueue, task: Task, finding: QualityFinding, now: Opt
     auto-restart ONLY for falsely_completed/stuck cases where the restart
     cap isn't exhausted; everything else (waiting_for_input_too_long,
     genuinely_failed, or cap exhausted) escalates. Never both, never
-    neither -- every unhealthy finding gets exactly one action."""
+    neither -- every unhealthy finding gets exactly one action.
+
+    Found live 2026-09-23: task 28eb4899 was "restarted" every ~5 minutes
+    for 1h47m+ straight, never escalating. Root cause was two compounding
+    bugs, both fixed here:
+    1. The restart count was only ever stamped on the NEW continuation
+       task's config, never persisted back onto the ORIGINAL task. Since
+       the original's own status never changes (it stays "completed"
+       forever), every tick re-found it falsely_completed with
+       _restart_count() reading 0 again -- the cap could never trigger.
+    2. Because prior_count always computed as 0, the continuation id was
+       always "<original>_qm_restart_1" -- colliding with the real one
+       already created days earlier. queue.add() on a duplicate id
+       returns False (see TaskQueue.add), which was never checked, so
+       every tick silently failed to create anything while still
+       logging/reporting action="restarted" as if it had.
+    """
     can_auto_restart = finding.classification in ("falsely_completed", "stuck")
     if can_auto_restart and _restart_count(task) < RESTART_CAP:
         continuation = _build_continuation_task(task, finding)
-        queue.add(continuation)
-        finding.action = "restarted"
-        finding.detail = (finding.detail or "") + f"\n-> continuation task: {continuation.id}"
+        added = queue.add(continuation)
+        if added:
+            # Persist the new count on the ORIGINAL so the next scan of it
+            # (its own status never changes) sees accurate history instead
+            # of perpetually reading 0.
+            task.config = dict(task.config or {})
+            task.config[QM_RESTART_COUNT_KEY] = _restart_count(task) + 1
+            queue.update(task)
+            finding.action = "restarted"
+            finding.detail = (finding.detail or "") + f"\n-> continuation task: {continuation.id}"
+        else:
+            # Continuation id collided with an existing task -- restarting
+            # isn't actually happening, so don't claim it did. Fall through
+            # to escalate instead of silently no-op'ing forever.
+            finding.detail = (
+                (finding.detail or "")
+                + f"\n-> restart skipped: continuation task {continuation.id} already exists"
+            )
+            raised = _raise_alert(queue, finding, now=now)
+            finding.action = "escalated"
+            if raised:
+                _mark_escalated(queue, task, finding.classification, now=now)
     else:
         raised = _raise_alert(queue, finding, now=now)
         finding.action = "escalated"

@@ -267,6 +267,71 @@ class TestApplyAction:
         assert continuation.status == TaskStatus.PENDING
         assert continuation.config[QM_RESTART_COUNT_KEY] == 1
         assert "wrote PRD" in continuation.config["goal"]
+        # The ORIGINAL task must also be stamped -- its own status never
+        # changes (stays "completed" forever), so without this the next
+        # scan of it would read _restart_count()==0 again and restart
+        # forever. Found live 2026-09-23: 28eb4899 restarted every ~5min
+        # for 1h47m+ straight because this stamp was never written.
+        assert queue.get("28eb4899").config[QM_RESTART_COUNT_KEY] == 1
+
+    def test_repeated_scans_of_the_same_original_stop_restarting_at_cap(self, queue):
+        """Regression for the real incident: run_quality_check re-finds the
+        SAME original task every tick (its status never changes to
+        non-completed just because a continuation was dispatched). Calling
+        apply_action on it repeatedly -- exactly what happens live -- must
+        restart up to the cap, then escalate, not restart forever."""
+        task = _completed_task("28eb4899", PAUL_GOAL, success=True)
+        queue.add(task)
+
+        def rescan():
+            current = queue.get("28eb4899")
+            finding = classify_task(
+                current, final_answer_loader=lambda tid: "wrote PRD",
+                done_when_checker=lambda g: False,
+            )
+            return apply_action(queue, current, finding)
+
+        first = rescan()
+        assert first.action == "restarted"
+        assert queue.get("28eb4899_qm_restart_1") is not None
+
+        second = rescan()
+        assert second.action == "restarted"
+        assert queue.get("28eb4899_qm_restart_2") is not None
+
+        # Cap is 2 -- the third scan of the same original must escalate,
+        # not attempt a third restart.
+        third = rescan()
+        assert third.action == "escalated"
+        assert queue.get("28eb4899_qm_restart_3") is None
+
+        # And it must not spawn a fresh alert every subsequent tick either.
+        fourth = rescan()
+        assert fourth.action == "escalated"
+        alerts = [t for t in queue.list_tasks() if t.id.startswith("quality_monitor_alert_")]
+        assert len(alerts) == 1
+
+    def test_duplicate_continuation_id_falls_back_to_escalate(self, queue):
+        """If a continuation with the computed id already exists (the exact
+        collision that silently no-op'd for 1h47m+ live: queue.add()
+        returned False, unchecked, while the code still claimed
+        action="restarted"), do not claim success -- escalate instead."""
+        task = _completed_task("28eb4899", PAUL_GOAL, success=True)
+        queue.add(task)
+        # Pre-create the id apply_action would compute (prior_count=0 -> _1),
+        # simulating the stale leftover from days earlier that caused the
+        # real collision.
+        queue.add(Task(id="28eb4899_qm_restart_1", type=TaskType.INTERNAL_ASSIGNMENT))
+
+        finding = classify_task(
+            task, final_answer_loader=lambda tid: "wrote PRD", done_when_checker=lambda g: False
+        )
+        result = apply_action(queue, task, finding)
+
+        assert result.action == "escalated"
+        assert "already exists" in (result.detail or "")
+        alerts = [t for t in queue.list_tasks() if t.status == TaskStatus.WAITING_FOR_INPUT]
+        assert len(alerts) == 1
 
     def test_restart_cap_exhausted_escalates_instead(self, queue):
         task = _completed_task("28eb4899", PAUL_GOAL, success=True)
