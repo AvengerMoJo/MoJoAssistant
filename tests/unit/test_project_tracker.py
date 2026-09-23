@@ -133,6 +133,59 @@ class TestWorkspace:
         assert project.workspace is None
 
 
+class TestCategory:
+    def test_new_project_has_no_category(self):
+        pt.create_project("proj1", "Test", "Goal")
+        assert pt.load_project("proj1").category is None
+
+    def test_set_category_persists(self):
+        pt.create_project("proj1", "Test", "Goal")
+        project = pt.set_category("proj1", "private")
+        assert project.category == "private"
+        assert pt.load_project("proj1").category == "private"
+
+    def test_set_category_missing_project_raises(self):
+        with pytest.raises(ValueError, match="not found"):
+            pt.set_category("nope", "private")
+
+    def test_set_category_accepts_any_string(self):
+        """Not a rigid enum -- judgment belongs to the caller."""
+        pt.create_project("proj1", "Test", "Goal")
+        project = pt.set_category("proj1", "some-new-category-nobody-thought-of")
+        assert project.category == "some-new-category-nobody-thought-of"
+
+    def test_loads_pre_category_project_dict_without_error(self):
+        old_style = {
+            "id": "legacy", "name": "Legacy", "goal": "Goal",
+            "status": "active", "items": [], "owner_role_id": None, "workspace": None,
+            "created_at": "2026-09-22T00:00:00", "updated_at": "2026-09-22T00:00:00",
+        }
+        project = pt.Project.from_dict(old_style)
+        assert project.category is None
+
+
+class TestArchiveProject:
+    def test_archive_sets_status(self):
+        pt.create_project("proj1", "Test", "Goal")
+        project = pt.archive_project("proj1")
+        assert project.status == "archived"
+        assert pt.load_project("proj1").status == "archived"
+
+    def test_archive_with_reason_appends_to_goal(self):
+        pt.create_project("proj1", "Test", "Goal")
+        project = pt.archive_project("proj1", reason="merged into project X")
+        assert "merged into project X" in project.goal
+
+    def test_archive_without_reason_leaves_goal_unchanged(self):
+        pt.create_project("proj1", "Test", "Original goal")
+        project = pt.archive_project("proj1")
+        assert project.goal == "Original goal"
+
+    def test_archive_missing_project_raises(self):
+        with pytest.raises(ValueError, match="not found"):
+            pt.archive_project("nope")
+
+
 class TestListProjects:
     def test_list_empty_when_no_projects(self):
         assert pt.list_projects() == []
