@@ -829,7 +829,20 @@ class AgenticExecutor:
                     role_model_preference = role.get("model_preference")
                     self._policy_monitor = PolicyMonitor.from_role(role_id, role, task_id=task.id)
                     self._log(f"Loaded role: {role.get('name')} (id={role_id})")
-                    behavior_rules = role.get("behavior_rules", {})
+                    # behavior_rules has two conventions in the wild: a dict of
+                    # machine-readable control flags (paul.json:
+                    # {"exhausts_tools_before_asking": true}) or a list of
+                    # human-readable rule strings meant for the system prompt
+                    # (security_sentinel.json, project_sentinel.json,
+                    # portfolio_steward.json). Only the dict form carries control
+                    # flags -- a list form crashed here with "'list' object has
+                    # no attribute 'get'" (found live 2026-09-23, project_sentinel
+                    # never successfully ran once because of it) since it was
+                    # never meant to be read as flags. Normalize instead of
+                    # assuming one convention.
+                    behavior_rules = role.get("behavior_rules") or {}
+                    if not isinstance(behavior_rules, dict):
+                        behavior_rules = {}
                     _cv_exhausts_ask.set(behavior_rules.get(
                         "exhausts_tools_before_asking", False
                     ))
