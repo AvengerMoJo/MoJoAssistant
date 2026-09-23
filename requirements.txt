@@ -17,8 +17,12 @@ llama-index-llms-openai
 llama_index
 langchain-community
 uvicorn
-starlette
-sse_starlette
+# Bounded to stay inside fastapi 0.115.x's supported starlette range
+# (<0.42.0) — an unpinned starlette resolved to 1.6.0 on 2026-09-21 and
+# broke every APIRouter() call (Router.__init__() got an unexpected
+# keyword argument 'on_startup'), crash-looping the whole service.
+starlette>=0.40.0,<0.42.0
+sse_starlette>=1.8.0,<3.0.0
 starlette_context
 fastapi
 llama-cpp-python

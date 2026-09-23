@@ -12,12 +12,22 @@ Transport lifecycle:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.mcp.adapters.hitl.base import HITLAdapter
 
 logger = logging.getLogger(f"mojo_assistant.{__name__}")
+
+# Durable stamp (in task.config, persisted by the queue) recording when this
+# adapter last successfully posted a HITL message for the task. Mirrors
+# Quality Monitor's _qm_escalated_at pattern (app/scheduler/quality_monitor.py).
+HITL_POSTED_KEY = "_hitl_posted_at"
+# Re-post once if still unanswered after this long, matching Quality
+# Monitor's WAITING_TOO_LONG_HOURS convention — never silence forever.
+HITL_REPOST_AFTER_HOURS = 24
 
 
 class DiscordHITLAdapter(HITLAdapter):
@@ -78,12 +88,97 @@ class DiscordHITLAdapter(HITLAdapter):
             for task in waiting:
                 if not task.pending_question:
                     continue
+                if self._hitl_recently_posted(task):
+                    logger.info("[hitl/discord] catch-up: task %s HITL already posted — skipping", task.id)
+                    continue
                 choices = task.config.get("pending_options") or task.config.get("pending_choices") or []
                 if task.id not in {tid for tid, _ in self._pending.values()}:
                     logger.info("[hitl/discord] catch-up: notifying task %s", task.id)
                     await self.send_hitl(task.id, task.pending_question, choices)
         except Exception as exc:
             logger.warning("[hitl/discord] catch-up failed: %s", exc, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Durable post dedupe (restart-safe)
+    # ------------------------------------------------------------------
+
+    def _stamp_hitl_posted(self, task_id: str) -> None:
+        """Persistently mark that this task's HITL was posted to Discord.
+
+        The in-memory self._pending map resets on every process restart
+        while the task itself persists in WAITING_FOR_INPUT, so an
+        in-memory-only guard cannot stop the catch-up hook from re-posting
+        the same question after each restart. Same durable-stamp pattern as
+        Quality Monitor's _mark_escalated: mutate task.config, then
+        queue.update() so it hits disk. Best-effort — a stamp failure must
+        not unwind a post that already succeeded."""
+        if not self._scheduler:
+            return
+        try:
+            task = self._scheduler.queue.get(task_id)
+            if task is None:
+                return
+            task.config = dict(task.config or {})
+            task.config[HITL_POSTED_KEY] = datetime.now().isoformat()
+            self._scheduler.queue.update(task)
+        except Exception as exc:
+            logger.warning(
+                "[hitl/discord] could not stamp %s on task %s: %s",
+                HITL_POSTED_KEY, task_id, exc, exc_info=True,
+            )
+
+    def _hitl_recently_posted(self, task: Any, now: Optional[datetime] = None) -> bool:
+        """True if this task's HITL was posted no more than
+        HITL_REPOST_AFTER_HOURS ago. A stamp older than that means the
+        question has been sitting in the owner channel unanswered for a day
+        — allow exactly one re-post (the re-post re-stamps, so it repeats
+        at most once per window)."""
+        raw = (task.config or {}).get(HITL_POSTED_KEY)
+        if not raw:
+            return False
+        try:
+            posted_at = datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            return False
+        now = now or datetime.now()
+        # Strictly-past threshold re-posts, matching QM's classify_task
+        # ((now - since) > WAITING_TOO_LONG_HOURS escalates): a stamp exactly
+        # 24h old still suppresses.
+        return (now - posted_at) <= timedelta(hours=HITL_REPOST_AFTER_HOURS)
+
+    # ------------------------------------------------------------------
+    # Cross-loop bridge
+    # ------------------------------------------------------------------
+
+    async def _run_on_client_loop(self, coro: Any) -> Any:
+        """Run `coro` on the Discord client's own event loop and await the
+        result from whatever loop/thread we're actually called on.
+
+        The scheduler runs in its own dedicated thread with its own event
+        loop (app/mcp/core/tools.py run_scheduler: loop.run_until_complete),
+        separate from the loop discord.py's Client (and its aiohttp
+        ClientSession) was started on. Awaiting a Discord API call directly
+        from the scheduler's loop raises aiohttp's "Timeout context manager
+        should be used inside a task" -- the session belongs to a different
+        loop than the one actually executing the await. Found live
+        2026-09-22: every ask_user HITL prompt failed to post to Discord
+        with exactly this error, so nothing ever reached the owner channel
+        to reply to.
+
+        Mirrors the already-correct pattern in Scheduler.wake() (see
+        app/scheduler/core.py) for the reverse direction.
+        """
+        target_loop = getattr(self._client, "loop", None)
+        if target_loop is None:
+            return await coro
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is target_loop:
+            return await coro
+        future = asyncio.run_coroutine_threadsafe(coro, target_loop)
+        return await asyncio.wrap_future(future)
 
     # ------------------------------------------------------------------
     # Channel helper
@@ -107,6 +202,17 @@ class DiscordHITLAdapter(HITLAdapter):
     # ------------------------------------------------------------------
 
     async def send_hitl(
+        self,
+        task_id: str,
+        question: str,
+        choices: List[str],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        await self._run_on_client_loop(
+            self._send_hitl_impl(task_id, question, choices, context)
+        )
+
+    async def _send_hitl_impl(
         self,
         task_id: str,
         question: str,
@@ -148,10 +254,14 @@ class DiscordHITLAdapter(HITLAdapter):
             msg = await ch.send(embed=embed, view=view if choices else None)
             self._pending[msg.id] = (task_id, choices)
             logger.info("[hitl/discord] HITL posted (task=%s, msg=%s)", task_id, msg.id)
+            self._stamp_hitl_posted(task_id)
         except Exception as exc:
             logger.error("[hitl/discord] failed to send HITL: %s", exc, exc_info=True)
 
     async def send_notification(self, title: str, body: str, severity: str = "info") -> None:
+        await self._run_on_client_loop(self._send_notification_impl(title, body, severity))
+
+    async def _send_notification_impl(self, title: str, body: str, severity: str = "info") -> None:
         ch = await self._get_channel()
         if ch is None:
             return
@@ -181,15 +291,39 @@ class DiscordHITLAdapter(HITLAdapter):
         self.handle_response(task_id, choice)
 
     async def handle_owner_message(self, message: Any) -> None:
-        """Route a free-text owner message to the most recent pending HITL task."""
-        if not self._pending:
-            await message.reply("No pending HITL task right now.", mention_author=False)
+        """Route a free-text owner message to the most recent pending HITL
+        task that actually expects a reply.
+
+        Quality Monitor's alert tasks (config.source == "quality_monitor")
+        are pure one-way notifications -- Task(type=CUSTOM, no "command")
+        posted to WAITING_FOR_INPUT purely so this adapter's existing
+        send_hitl path delivers them, never meant to be resumed. Found
+        live 2026-09-22: a genuine reply ("where are we", meant for a real
+        pending task) landed on a stale alert instead because it happened
+        to be the most recently posted message -- resuming it flips it to
+        PENDING and dispatches it through CustomHandler, which fails with
+        "Missing 'command' in task config" since it was never meant to run.
+        Skip notification-only tasks here even when they're most recent.
+        """
+        candidates = sorted(self._pending.items(), key=lambda kv: kv[0], reverse=True)
+        for msg_id, (task_id, _choices) in candidates:
+            if self._is_notification_only(task_id):
+                continue
+            self._resolve_pending_by_task(task_id)
+            self.handle_response(task_id, message.content.strip())
+            await message.add_reaction("✅")
             return
-        latest_msg_id = max(self._pending)
-        task_id, _ = self._pending[latest_msg_id]
-        self._resolve_pending_by_task(task_id)
-        self.handle_response(task_id, message.content.strip())
-        await message.add_reaction("✅")
+        await message.reply("No pending HITL task right now.", mention_author=False)
+
+    def _is_notification_only(self, task_id: str) -> bool:
+        """True for tasks posted to Discord purely as notifications (e.g.
+        Quality Monitor alerts) that must never be resumed via a reply."""
+        if self._scheduler is None:
+            return False
+        task = self._scheduler.queue.get(task_id)
+        if task is None:
+            return False
+        return task.config.get("source") == "quality_monitor"
 
     def _resolve_pending_by_task(self, task_id: str) -> None:
         self._pending = {k: v for k, v in self._pending.items() if v[0] != task_id}

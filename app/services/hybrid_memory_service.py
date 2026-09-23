@@ -149,7 +149,8 @@ class HybridMemoryService(_Base):
             self.multi_model_enabled = False
 
     def add_to_knowledge_base(
-        self, document: str, metadata: Optional[Dict[str, Any]] = None
+        self, document: str, metadata: Optional[Dict[str, Any]] = None,
+        role_id: Optional[str] = None,
     ) -> None:
         """Override to inject provenance defaults into every new unit."""
         if metadata is None:
@@ -157,4 +158,4 @@ class HybridMemoryService(_Base):
         metadata.setdefault("action_history", [])
         metadata.setdefault("confidence_score", 1.0)
         metadata.setdefault("last_validated", datetime.now(timezone.utc).isoformat())
-        super().add_to_knowledge_base(document, metadata)
+        super().add_to_knowledge_base(document, metadata, role_id=role_id)

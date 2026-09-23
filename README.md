@@ -4,7 +4,7 @@
 
 Every AI assistant today forgets you the moment the conversation ends. MoJoAssistant sits between you and your AI systems — keeping your memory, context, and workflow state on your own hardware, then exposing everything through a clean tool surface that any AI client can use.
 
-Current release: `v1.4.2-beta`
+Current release: `v1.5.1`
 
 ---
 
@@ -430,7 +430,7 @@ Before merging:
 
 ## Status
 
-Active beta (`v1.4.2-beta`). Core memory, MCP, scheduler, policy, role chat, dreaming
+Active beta (`v1.5.1`). Core memory, MCP, scheduler, policy, role chat, dreaming
 pipeline, behavioral security, agent learning loop, BRIDLE growth framework,
 and PII scanning are production-ready for personal use.
 

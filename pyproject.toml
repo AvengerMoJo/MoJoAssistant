@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mojoassistant"
-version = "1.5.0"
+version = "1.5.1"
 description = "AI memory and code understanding system with OpenCode Manager and git-aware capabilities"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,8 +27,8 @@ dependencies = [
     # Web server
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.27.0",
-    "starlette>=0.36.0",
-    "sse-starlette>=1.8.0",
+    "starlette>=0.40.0,<0.42.0",
+    "sse-starlette>=1.8.0,<3.0.0",
     "starlette-context>=0.3.6",
     "python-multipart>=0.0.6",
     # MCP

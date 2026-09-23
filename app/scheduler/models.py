@@ -181,6 +181,11 @@ class Task:
     parent_task_id: Optional[str] = None  # Task that spawned this one (None = top-level)
     dispatch_depth: int = 0               # 0 = top-level; max enforced at dispatch time
 
+    # Project rollup — set when this task is one deliverable within an ongoing,
+    # multi-feature project/module (see app/scheduler/project_tracker.py) rather
+    # than a bounded, one-shot task closed out by its own "Done when:" clause.
+    project_id: Optional[str] = None
+
     def is_due(self) -> bool:
         """Check if task is due to run"""
         if self.status != TaskStatus.PENDING:
@@ -225,9 +230,12 @@ class Task:
             # Strip non-serializable runtime objects (per-task backends, HTTP clients)
             # from config before serialization. These hold process references that
             # don't survive JSON encoding and aren't needed after task completion.
+            # Quality-Monitor state (_qm_*) is durable bookkeeping (restart counts,
+            # escalation stamps) -- keep it so restart caps and dedup survive daemon
+            # reloads instead of silently resetting.
             "config": {
                 k: v for k, v in (self.config or {}).items()
-                if not k.startswith("_") and not callable(v)
+                if (not k.startswith("_") or k.startswith("_qm_")) and not callable(v)
             },
             "resources": self.resources.to_dict(),
             "result": self.result.to_dict() if self.result else None,
@@ -249,6 +257,7 @@ class Task:
             "importance": self.importance,
             "parent_task_id": self.parent_task_id,
             "dispatch_depth": self.dispatch_depth,
+            "project_id": self.project_id,
         }
         return data
 
@@ -288,5 +297,6 @@ class Task:
         data.setdefault("importance", None)
         data.setdefault("parent_task_id", None)
         data.setdefault("dispatch_depth", 0)
+        data.setdefault("project_id", None)
 
         return cls(**data)
