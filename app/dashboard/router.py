@@ -806,8 +806,7 @@ the <code>project_sentinel</code> role, which verifies each item's claimed statu
 evidence and escalates any gap to Paul.</p>
 <p style="color:#555;text-align:center;padding:30px">No projects tracked yet.</p>""")
 
-    cards = ""
-    for project in projects:
+    def _render_card(project) -> str:
         total = len(project.items)
         done = sum(1 for i in project.items if i.status == "done")
         progress = f"{done}/{total}" if total else "0/0"
@@ -828,7 +827,7 @@ evidence and escalates any gap to Paul.</p>
 
         owner_display = f' · owner: <b>{html.escape(project.owner_role_id)}</b>' if project.owner_role_id else ""
 
-        cards += f"""<div class="project-card">
+        return f"""<div class="project-card">
           <h3>{html.escape(project.name)} {_badge(project.status)}
             <span style="color:#555;font-size:11px;font-weight:normal"> · {progress} items done{owner_display}</span>
           </h3>
@@ -839,6 +838,22 @@ evidence and escalates any gap to Paul.</p>
           </table>
         </div>"""
 
+    active_projects = [p for p in projects if p.status != "archived"]
+    archived_projects = [p for p in projects if p.status == "archived"]
+
+    cards = "".join(_render_card(p) for p in active_projects)
+    if not cards:
+        cards = '<p style="color:#555;text-align:center;padding:30px">No active projects — see archived below.</p>'
+
+    archived_html = ""
+    if archived_projects:
+        archived_cards = "".join(_render_card(p) for p in archived_projects)
+        archived_html = f"""
+<details style="margin-top:24px">
+  <summary>Archived ({len(archived_projects)})</summary>
+  {archived_cards}
+</details>"""
+
     return _page("Projects", f"""
 <h1>Projects</h1>
 <p style="color:#888;margin-bottom:16px">Ongoing, multi-feature work tracked as a checklist rather
@@ -846,6 +861,7 @@ than a single bounded task — see <code>app/scheduler/project_tracker.py</code>
 the <code>project_sentinel</code> role, which verifies each item's claimed status against real repo/PR
 evidence (not just the status label) and escalates any gap to Paul via <code>dispatch_subtask</code>.</p>
 {cards}
+{archived_html}
 """)
 
 

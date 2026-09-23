@@ -72,6 +72,35 @@ def test_projects_page_escapes_html_in_names(client):
     assert "&lt;script&gt;" in resp.text
 
 
+def test_projects_page_separates_archived_from_active(client):
+    pt.create_project("active1", "Active Project", "Goal")
+    pt.create_project("old1", "Old Merged Project", "Goal")
+    archived = pt.load_project("old1")
+    archived.status = "archived"
+    pt.save_project(archived)
+
+    resp = client.get("/dashboard/projects")
+    assert resp.status_code == 200
+    # Active project appears before the <details> archived section.
+    active_idx = resp.text.index("Active Project")
+    details_idx = resp.text.index("<details")
+    archived_idx = resp.text.index("Old Merged Project")
+    assert active_idx < details_idx < archived_idx
+    assert "Archived (1)" in resp.text
+
+
+def test_projects_page_all_archived_shows_active_empty_message(client):
+    pt.create_project("old1", "Old Project", "Goal")
+    archived = pt.load_project("old1")
+    archived.status = "archived"
+    pt.save_project(archived)
+
+    resp = client.get("/dashboard/projects")
+    assert resp.status_code == 200
+    assert "No active projects" in resp.text
+    assert "Old Project" in resp.text  # still visible under archived
+
+
 def test_projects_page_requires_auth(monkeypatch):
     monkeypatch.setattr(dashboard_router, "verify_token", lambda token: False)
     app = FastAPI()
