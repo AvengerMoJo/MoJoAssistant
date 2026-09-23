@@ -11,6 +11,7 @@
     "example-gpu-host": {
       "base_url": "http://example-gpu-host:4096",
       "password": "OPENCODE_SERVER_PASSWORD-from-remote-server.env",
+      "ssh": "deploy@example-gpu-host",
       "location": { "region": "home", "provider": "self-hosted" },
       "profile": {
         "hardware_accel": ["nvidia-cuda"],

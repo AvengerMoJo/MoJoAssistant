@@ -14,6 +14,9 @@ Tools exposed to MCP clients:
                           every host regardless of backend/protocol
   agent_fleet_summary   – agent_fleet grouped by region/tier, with
                           per-group session counts
+  agent_sessions_unified – one time-sorted session list per host, merging
+                          MCP/scheduler-driven opencode sessions with
+                          human-driven herdr panes, tagged by origin
 
 Multiple backends, one dashboard: a host's `backend` field (default
 "opencode_serve") selects how its availability is actually checked.
@@ -34,6 +37,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from app.mcp.agent_bridge.config import load_config
+from app.mcp.agent_bridge.herdr_client import list_remote_agents, resolve_ssh_target
 from app.mcp.agent_bridge.registry import HostRegistry
 
 logger = logging.getLogger(__name__)
@@ -258,10 +262,132 @@ def _register_tools(mcp: FastMCP, reg: HostRegistry) -> None:
                 group["total_sessions"] += entry["session_count"]
         return groups
 
+    @mcp.tool()
+    async def agent_sessions_unified(host: Optional[str] = None) -> Any:
+        """One unified, time-sorted session list per host — MCP-driven and
+        scheduler-driven opencode sessions merged with human-driven herdr
+        panes, each tagged with its origin.
+
+        origin values: "mcp" (opencode session created via this bridge or
+        any MCP client), "scheduler" (opencode session whose title/directory
+        matches the scheduler's task naming — heuristic, see below),
+        "human" (herdr-managed agent pane).
+
+        With host=None every host is returned as {name: result}; with a
+        specific host just that host's result. Failures degrade per host
+        into "notes" (legacy_mcp hosts have no MCP-side session API; hosts
+        without a configured "ssh" key simply have no herdr side) — one
+        broken surface never blanks the whole view.
+
+        The scheduler heuristic: opencode sessions surfaced by
+        list_sessions() all arrive through the same REST API, so an
+        explicit marker is unavailable today; a title or directory
+        containing "task_logs" or starting with "task_" is classified as
+        scheduler. A reliable discriminator needs the scheduler to stamp
+        session titles explicitly — tracked in
+        docs/specs/agent_workforce_dashboard_spec.md."""
+        known = reg.list_hosts()
+        if host is not None and host not in known:
+            return {"error": f"Unknown host {host!r}. Known: {list(known)}"}
+
+        targets = [host] if host is not None else list(known)
+        out: Dict[str, Any] = {}
+
+        for name in targets:
+            sessions: List[Dict[str, Any]] = []
+            notes: List[str] = []
+
+            if reg.backend_of(name) == "legacy_mcp":
+                notes.append(
+                    "legacy_mcp backend: opencode session API not available, "
+                    "MCP-side sessions skipped"
+                )
+            else:
+                try:
+                    raw = await reg.get_client(name).list_sessions()
+                except Exception as exc:
+                    notes.append(f"opencode session list failed: {exc}")
+                else:
+                    for s in raw:
+                        if not isinstance(s, dict):
+                            continue
+                        info = s.get("info") or {}
+                        title = info.get("title") or s.get("title")
+                        directory = info.get("directory") or s.get("directory") or ""
+                        sessions.append({
+                            "origin": _classify_opencode_session(title, directory),
+                            "host": name,
+                            "id": s.get("id") or s.get("sessionID"),
+                            "title": title,
+                            "time_created_ms": (info.get("time") or s.get("time") or {}).get("created"),
+                        })
+
+            ssh_target = resolve_ssh_target(reg.describe(name))
+            if ssh_target:
+                herdr = await list_remote_agents(ssh_target)
+                if herdr.get("ok"):
+                    for a in herdr.get("agents", []):
+                        created = (
+                            a.get("time_created_ms")
+                            or a.get("created_at_ms")
+                            or _nested_created_ms(a.get("time"))
+                        )
+                        sessions.append({
+                            "origin": "human",
+                            "host": name,
+                            "id": a.get("pane") or a.get("name"),
+                            "name": a.get("name"),
+                            "title": a.get("title") or a.get("name"),
+                            "state": a.get("state"),
+                            "time_created_ms": created,
+                        })
+                else:
+                    notes.append(
+                        f"herdr unavailable ({herdr.get('kind')}): "
+                        f"{str(herdr.get('error'))[:120]}"
+                    )
+            else:
+                notes.append("herdr target not configured (optional host 'ssh' key)")
+
+            sessions.sort(
+                key=lambda s: (
+                    s.get("time_created_ms") is None,
+                    -(s.get("time_created_ms") or 0),
+                )
+            )
+            counts = {
+                origin: sum(1 for s in sessions if s["origin"] == origin)
+                for origin in ("mcp", "scheduler", "human")
+            }
+            out[name] = {"sessions": sessions, "counts": counts, "notes": notes}
+
+        return out[host] if host is not None else out
+
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+
+def _nested_created_ms(value: Any) -> Optional[int]:
+    """Extract a `created` epoch-ms from a herdr agent's nested time object,
+    tolerating absent/non-dict shapes."""
+    if isinstance(value, dict):
+        created = value.get("created")
+        if isinstance(created, (int, float)):
+            return int(created)
+    return None
+
+
+def _classify_opencode_session(title: Optional[str], directory: str) -> str:
+    """Heuristic origin classifier for opencode sessions (see
+    agent_sessions_unified's docstring): scheduler task naming →
+    "scheduler", everything else → "mcp"."""
+    for field in (title or "", directory or ""):
+        lowered = field.lower()
+        if "task_logs" in lowered or lowered.startswith("task_"):
+            return "scheduler"
+    return "mcp"
 
 
 def _extract_text(msg: Any) -> str:

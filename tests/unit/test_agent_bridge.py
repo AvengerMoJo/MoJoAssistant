@@ -322,3 +322,134 @@ async def test_agent_fleet_summary_groups_by_region_and_tier(mixed_tools, mixed_
     # sessions in a way that hides worker-gpu's real count -- total should be
     # exactly worker-gpu's 2, not miscounted.
     assert summary[key]["total_sessions"] == 2
+
+
+# ----------------------------------------------------------------------
+# agent_sessions_unified — merged opencode + herdr session view
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def unified_reg():
+    """Registry shaped for agent_sessions_unified: an opencode_serve host
+    with an 'ssh' key (herdr reachable) and a legacy_mcp host without one."""
+    return HostRegistry({
+        "worker-gpu": {
+            "base_url": "http://worker-gpu:4096", "password": "pw1",
+            "ssh": "ops@worker-gpu",
+            "location": {"region": "home", "provider": "self-hosted"},
+            "tier": {"type": "free", "backend": "self-hosted-local"},
+        },
+        "worker-legacy": {
+            "base_url": "http://worker-legacy:4097/mcp", "backend": "legacy_mcp",
+        },
+    })
+
+
+@pytest.fixture
+def unified_tools(unified_reg):
+    import app.mcp.agent_bridge.server as srv
+
+    mcp, _ = srv._ensure(reg=unified_reg)
+    return {name: tool.fn for name, tool in mcp._tool_manager._tools.items()}
+
+
+async def test_agent_sessions_unified_merges_mcp_and_herdr(unified_tools, unified_reg, monkeypatch):
+    import app.mcp.agent_bridge.server as srv
+
+    c = unified_reg.get_client("worker-gpu")
+    c.list_sessions = AsyncMock(return_value=[
+        {"id": "ses_a", "info": {"title": "bugfix review", "time": {"created": 2000}}},
+    ])
+    monkeypatch.setattr(srv, "list_remote_agents", AsyncMock(return_value={
+        "ok": True,
+        "agents": [
+            {"name": "rev1", "pane": "w1:p1", "state": "working", "time": {"created": 3000}},
+            {"name": "rev2", "pane": "w1:p2", "state": "idle"},
+        ],
+        "ssh_target": "ops@worker-gpu",
+    }))
+
+    out = await unified_tools["agent_sessions_unified"]()
+
+    gpu = out["worker-gpu"]
+    assert gpu["counts"] == {"mcp": 1, "scheduler": 0, "human": 2}
+    # time-descending, herdr agent without a timestamp sorts last
+    assert [s["id"] for s in gpu["sessions"]] == ["w1:p1", "ses_a", "w1:p2"]
+    assert gpu["sessions"][0]["origin"] == "human"
+    assert gpu["sessions"][0]["state"] == "working"
+    assert gpu["sessions"][1]["origin"] == "mcp"
+
+    legacy = out["worker-legacy"]
+    assert legacy["counts"] == {"mcp": 0, "scheduler": 0, "human": 0}
+    assert any("legacy_mcp" in n for n in legacy["notes"])
+
+
+async def test_agent_sessions_unified_scheduler_heuristic(unified_tools, unified_reg, monkeypatch):
+    c = unified_reg.get_client("worker-gpu")
+    c.list_sessions = AsyncMock(return_value=[
+        {"id": "ses_plain", "info": {"title": "chat about docs", "time": {"created": 3}}},
+        {"id": "ses_task", "info": {"title": "task_77 nightly build", "time": {"created": 2}}},
+        {"id": "ses_logs", "info": {"title": None}, "directory": "/home/u/.memory/task_logs/t9", "time": {"created": 1}},
+    ])
+
+    out = await unified_tools["agent_sessions_unified"]("worker-gpu")
+
+    origins = {s["id"]: s["origin"] for s in out["sessions"]}
+    assert origins == {
+        "ses_plain": "mcp",
+        "ses_task": "scheduler",
+        "ses_logs": "scheduler",
+    }
+
+
+async def test_agent_sessions_unified_legacy_host_skips_mcp_side(unified_tools, unified_reg):
+    c = unified_reg.get_client("worker-legacy")
+    c.list_sessions = AsyncMock(side_effect=AssertionError("must not be called for legacy_mcp"))
+
+    out = await unified_tools["agent_sessions_unified"]("worker-legacy")
+
+    assert out["counts"] == {"mcp": 0, "scheduler": 0, "human": 0}
+    assert any("legacy_mcp" in n for n in out["notes"])
+    assert any("herdr target not configured" in n for n in out["notes"])
+    c.list_sessions.assert_not_awaited()
+
+
+async def test_agent_sessions_unified_unknown_host_error(unified_tools):
+    out = await unified_tools["agent_sessions_unified"]("nope")
+    assert "error" in out
+    assert "nope" in out["error"]
+
+
+async def test_agent_sessions_unified_single_host_mode(unified_tools, unified_reg, monkeypatch):
+    import app.mcp.agent_bridge.server as srv
+
+    c = unified_reg.get_client("worker-gpu")
+    c.list_sessions = AsyncMock(return_value=[{"id": "s1", "info": {"title": "t", "time": {"created": 5}}}])
+    monkeypatch.setattr(srv, "list_remote_agents", AsyncMock(return_value={
+        "ok": True, "agents": [], "ssh_target": "ops@worker-gpu",
+    }))
+
+    out = await unified_tools["agent_sessions_unified"]("worker-gpu")
+
+    # single-host mode returns the host's result directly, not {host: result}
+    assert set(out) == {"sessions", "counts", "notes"}
+    assert out["counts"] == {"mcp": 1, "scheduler": 0, "human": 0}
+
+
+async def test_agent_sessions_unified_herdr_failure_degrades(unified_tools, unified_reg, monkeypatch):
+    import app.mcp.agent_bridge.server as srv
+
+    c = unified_reg.get_client("worker-gpu")
+    c.list_sessions = AsyncMock(return_value=[
+        {"id": "s1", "info": {"title": "still visible", "time": {"created": 5}}},
+    ])
+    monkeypatch.setattr(srv, "list_remote_agents", AsyncMock(return_value={
+        "ok": False, "kind": "server_error", "error": "ssh: connect refused",
+    }))
+
+    out = await unified_tools["agent_sessions_unified"]("worker-gpu")
+
+    # herdr being down must not blank the MCP-side sessions
+    assert out["counts"] == {"mcp": 1, "scheduler": 0, "human": 0}
+    assert any("herdr unavailable (server_error)" in n for n in out["notes"])

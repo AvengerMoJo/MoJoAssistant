@@ -197,10 +197,14 @@ already supported task shapes.
       heterogeneous-backend case.
 - [ ] `agent_sessions_unified()` returns sessions tagged with the correct
       origin for at least one MCP-driven and one herdr-driven session.
-      **Not yet implemented** — this AC is still open.
+      **Implemented + unit-tested** (6 mocked-herdr tests in
+      `tests/unit/test_agent_bridge.py`); live end-to-end verification
+      against a host with a real herdr pane still pending.
 - [ ] A scheduled daily task successfully reaches the HITL checkpoint
       (`ask_user`/HITL inbox) with a real digest, once, end-to-end.
-      **Not yet implemented** — still open.
+      **Template implemented** (`app/internal_assignments/templates/
+      daily_review_loop.py`, validated against the real TaskQueue +
+      hitl_bridge); a live scheduled run still pending.
 - [x] `tests/unit/test_agent_bridge.py` covers the new tools with mocked
       `OpenCodeClient`/httpx calls — 20/20 passing, including a
       legacy_mcp-backend fleet test and a mixed-backend summary test.
@@ -210,11 +214,12 @@ already supported task shapes.
       and `AGENT_BRIDGE.md`'s config example are updated to reflect the
       new schema fields, plus `config/agent_bridge.example.json`.
 
-**Remaining scope**: `agent_sessions_unified()` and the daily HITL-review
-loop (design items 3 and 4) are not built. What shipped here is the
-registry schema extension and the fleet dashboard itself (items 1 and 2),
-covering the user's explicit "add the 3rd agent, reflect its virtual
-interface, show availability of the whole workforce" ask.
+**Remaining scope**: live verification runs for `agent_sessions_unified()`
+(against a host with a real herdr pane) and the daily HITL-review loop
+(one real scheduled fire reaching the inbox). All four design items are
+implemented: the registry schema extension and fleet dashboard (items 1
+and 2, live-verified), and `agent_sessions_unified()` + the daily loop
+(items 3 and 4, implemented and unit-tested, awaiting live runs).
 
 ## Delivery
 

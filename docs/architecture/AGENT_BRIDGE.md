@@ -15,9 +15,12 @@ MCP client (Claude Desktop, Cursor, …)     MCP client (MoJo host backend)
    app/mcp/agent_bridge/server.py      (FastMCP, Streamable-HTTP transport)
    agent_run / agent_reply / agent_sessions / agent_status / agent_servers
    agent_fleet / agent_fleet_summary   (dashboard: metadata + availability,
-                                         every host regardless of backend)
-        │  OpenCodeClient (httpx, BasicAuth) — opencode_serve hosts
-        │  raw MCP handshake (httpx)         — legacy_mcp hosts
+                                          every host regardless of backend)
+   agent_sessions_unified (merged session view: MCP/scheduler opencode
+                          sessions + human herdr panes, origin-tagged)
+         │  OpenCodeClient (httpx, BasicAuth) — opencode_serve hosts
+         │  raw MCP handshake (httpx)         — legacy_mcp hosts
+         │  `herdr --remote` shell (asyncio)  — human-surface sessions
         ▼
    remote host(s): opencode-serve.service  (systemd, always-on, :4096)
                    or a legacy_mcp host (different wire protocol,
@@ -32,6 +35,11 @@ via a raw MCP `initialize` handshake. `agent_run`/`agent_reply`/
 `agent_sessions` still assume the opencode REST API and will error
 against a `legacy_mcp` host — the fleet dashboard is what actually
 supports mixed backends today, not the full agent lifecycle.
+
+`agent_sessions_unified` handles mixed backends the same way: a
+`legacy_mcp` host contributes no MCP-side sessions (its opencode session
+API doesn't exist here) but still contributes herdr panes when it has an
+`ssh` target configured.
 
 One bridge serves any number of hosts from the registry config; each host
 is a `use_managed: true` SSH remote backend target (see
@@ -49,6 +57,8 @@ workaround) hosts every MCP client concurrently.
 | `app/mcp/agent_bridge/registry.py` | `HostRegistry` — one `OpenCodeClient` per host |
 | `app/mcp/agent_bridge/config.py` | loads `~/.memory/config/agent_bridge.json` |
 | `app/mcp/agent_bridge/__main__.py` | `python -m app.mcp.agent_bridge` run entry |
+| `app/mcp/agent_bridge/herdr_client.py` | `herdr --remote … agent list --json` shell-out for the unified session view |
+| `app/internal_assignments/templates/daily_review_loop.py` | cron'd daily-review task template (digest → one HITL checkpoint; see `AGENT_WORKFORCE.md`) |
 | `config/agent_bridge.example.json` | config schema example |
 | `tests/unit/test_agent_bridge.py` | tool unit tests (OpenCodeClient mocked) |
 
@@ -65,6 +75,20 @@ Merge into `~/.memory/config/agent_bridge.json` (personal layer):
     "orgvm-memoria-hk001": {
       "base_url": "http://orgvm-memoria-hk001:4096",
       "password": "<OPENCODE_SERVER_PASSWORD from ~/.mojo/server.env>"
+    },
+    "example-gpu-host": {
+      "base_url": "http://example-gpu-host:4096",
+      "password": "<OPENCODE_SERVER_PASSWORD>",
+      "location": { "region": "home", "provider": "self-hosted", "note": "…" },
+      "profile": {
+        "hardware_accel": ["nvidia-cuda"],
+        "capabilities": ["text", "graphics", "audio-transcription"]
+      },
+      "tier": { "type": "free", "backend": "self-hosted-local" }
+    },
+    "example-legacy-host": {
+      "base_url": "http://example-legacy-host:4097/mcp",
+      "backend": "legacy_mcp"
     }
   }
 }
@@ -74,6 +98,44 @@ Merge into `~/.memory/config/agent_bridge.json` (personal layer):
 - Each **host password** is that host's `OPENCODE_SERVER_PASSWORD`,
   read from `~/.mojo/server.env` on the remote (written by
   `setup_remote_opencode_host.sh --managed`).
+
+### Optional host metadata fields
+
+All of these are **additive and optional** — a host with only
+`base_url`/`password` (like `orgvm-memoria-hk001` above) keeps loading
+unchanged. They are opaque to `OpenCodeClient` and are surfaced through
+`agent_fleet()`/`agent_fleet_summary()` (see
+`docs/specs/agent_workforce_dashboard_spec.md`):
+
+- **`location`** — object; `region` and `provider` are the two fields the
+  fleet summary groups by (e.g. `home`, `hk`; `self-hosted`, `orgvm`).
+  Free-form `note` allowed. Missing → host groups under `unknown`.
+- **`profile`** — hardware/capability model:
+  - `hardware_accel`: list — `none`, `nvidia-cuda`, `amd-rocm`,
+    `amd-directml` (Windows AMD NPU/iGPU), `apple-mps`. Drives which
+    hosts a graphics/audio task is eligible to land on.
+  - `capabilities`: list — kinds of work the host is fit for: `text`,
+    `graphics`, `audio-transcription`, extend as needed.
+- **`tier`** — cost model: `type` is `free` | `subscription` | `paid-api`;
+  `backend` is the concrete provider/plan name (`big-pickle`,
+  `zai-coding-plan`, `self-hosted-local`, …) — mirrors the naming used in
+  the unified resource-pool vision so the systems reconcile without a
+  rename later.
+- **`backend`** — `"opencode_serve"` (default; the real opencode REST API)
+  or `"legacy_mcp"` (a legacy pre-AgentBridge Express host). A
+  `legacy_mcp` host never goes through `OpenCodeClient`; only its
+  reachability is checked (raw MCP `initialize` handshake), and its
+  `base_url` is used as-is (point it at the actual MCP mount path).
+
+Also accepted per host: `owner` (`personal` | `customer`) plus an
+`owner_note` — surfaced by `agent_fleet` to keep the personal vs.
+customer-owned boundary visible (see `AGENT_WORKFORCE.md`).
+
+A host may also carry an optional **`ssh`** key — `"user@host"` or
+`{"user": …, "host": …}` — the target `agent_sessions_unified` uses to
+run `herdr --remote` for the human-surface session list. Absent → that
+host simply has no herdr side in the unified view (never an error).
+SSH is key-auth/BatchMode only (see `SSH_REMOTE_SANDBOX.md`).
 
 ## Run
 
@@ -264,6 +326,7 @@ curl -s -X POST http://<control-plane-tailnet-ip>:8497/mcp \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 # tools: agent_servers agent_status agent_run agent_reply agent_sessions
 #        agent_close_session agent_fleet agent_fleet_summary
+#        agent_sessions_unified
 ```
 
 Then `tools/call agent_run {server: worker-a, prompt: "..."}` returns a

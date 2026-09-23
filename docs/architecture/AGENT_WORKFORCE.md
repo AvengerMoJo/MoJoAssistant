@@ -83,6 +83,9 @@ raw server:
 
 Division of labor: **AgentBridge = programmatic control surface
 (MCP tools); herdr = interactive/human surface (TUI, panes, restore).**
+The two views meet in `agent_sessions_unified`, which merges the bridge's
+MCP-side session list with `herdr agent list --json` over SSH (per-host
+optional `ssh` key in the registry config), tagged by origin.
 
 ### 3. tailscale — the transport
 
@@ -110,6 +113,14 @@ agent_run            create session + send prompt (blocking reply)
 agent_reply          continue an existing session
 agent_sessions       list sessions on a host
 agent_close_session  delete a session on a host
+agent_fleet          full fleet: registry metadata (location/profile/
+                     tier/owner) + live availability, every host
+                     regardless of backend — the dashboard data endpoint
+agent_fleet_summary  fleet grouped by region and tier, with per-group
+                     session counts ("what's running, what's it costing")
+agent_sessions_unified  per-host merged session list: MCP/scheduler-driven
+                     opencode sessions + human herdr panes, tagged by
+                     origin (mcp/scheduler/human), time-sorted
 ```
 
 One bridge registers **any number of hosts** (N:1) in
@@ -168,6 +179,18 @@ never be used as personal workforce or for personal experiments — touch
 them only when the task is explicitly on behalf of that client, through
 channels the customer has agreed to. When extending the registry, always
 set `owner` and keep the boundary visible.
+
+## Daily review loop
+
+`app/internal_assignments/templates/daily_review_loop.py` is the
+scheduler-side half of the dashboard: a cron'd `internal_assignment`
+task (default `0 18 * * *`, role `daily-reviewer`) whose goal calls
+`agent_fleet_summary()` + `agent_sessions_unified()`, composes a short
+digest, and raises **one** HITL checkpoint per day (`ask_user` → HITL
+inbox → `reply_to_task`). The human approves, investigates, or snoozes;
+the next checkpoint comes with tomorrow's cron fire. Register it once
+via `build_daily_review_task()` + `TaskQueue.add`, or the scheduler MCP
+`create` action with the same fields.
 
 ## When to use which
 
