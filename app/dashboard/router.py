@@ -147,6 +147,11 @@ a:hover { text-decoration: underline; }
 .kind-feature { color: #7ec8e3; }
 .kind-bug     { color: #e37e7e; }
 .kind-update  { color: #e3c07e; }
+.cat-private  { background: #1a1a2a; color: #7ec8e3; }
+.cat-public   { background: #002a1a; color: #7ee3c0; }
+.cat-business { background: #2a1a00; color: #e3c07e; }
+.cat-goodwill { background: #1a2a00; color: #b8e37e; }
+.cat-optional { background: #1a1a1a; color: #888; }
 .project-card { background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 16px 20px; margin-bottom: 16px; }
 .project-card h3 { font-size: 14px; color: #fff; margin-bottom: 4px; }
 .project-card .goal { color: #888; font-size: 12px; margin-bottom: 10px; }
@@ -826,9 +831,13 @@ evidence and escalates any gap to Paul.</p>
             item_rows = '<tr><td colspan="5" style="text-align:center;color:#555;padding:16px">No checklist items yet</td></tr>'
 
         owner_display = f' · owner: <b>{html.escape(project.owner_role_id)}</b>' if project.owner_role_id else ""
+        category_display = (
+            f' <span class="badge cat-{html.escape(project.category)}">{html.escape(project.category)}</span>'
+            if project.category else ""
+        )
 
         return f"""<div class="project-card">
-          <h3>{html.escape(project.name)} {_badge(project.status)}
+          <h3>{html.escape(project.name)} {_badge(project.status)}{category_display}
             <span style="color:#555;font-size:11px;font-weight:normal"> · {progress} items done{owner_display}</span>
           </h3>
           <div class="goal">{html.escape(project.goal)}</div>

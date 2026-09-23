@@ -482,6 +482,36 @@ class CapabilityRegistry:
                 }, "required": ["project_id", "git_url", "project_label"]},
             ),
             CapabilityDefinition(
+                name="project_set_category",
+                description=(
+                    "Set a project's portfolio-level classification -- a holistic judgment "
+                    "call (what kind of project is this, who does it serve), not a mechanical "
+                    "status. Starting vocabulary: 'private' | 'public' | 'business' | "
+                    "'goodwill' | 'optional', but any string is accepted -- the judgment about "
+                    "what fits belongs to you, this just records it."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "project_id": {"type": "string"},
+                    "category":   {"type": "string", "description": "e.g. 'private', 'public', 'business', 'goodwill', 'optional'"},
+                }, "required": ["project_id", "category"]},
+            ),
+            CapabilityDefinition(
+                name="project_archive",
+                description=(
+                    "Mark a project archived -- kept for history, not deleted, hidden from "
+                    "the dashboard's active project list. Use when a project is finished, "
+                    "abandoned, or merged into another project (state that in reason)."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "project_id": {"type": "string"},
+                    "reason":     {"type": "string", "description": "Why it's being archived, e.g. 'merged into project X'"},
+                }, "required": ["project_id"]},
+            ),
+            CapabilityDefinition(
                 name="dispatch_subtask",
                 description=(
                     "Dispatch a task to another agent role and WAIT for its result before continuing. "
@@ -894,6 +924,10 @@ class CapabilityRegistry:
                     return await self._project_update_item_status(args)
                 elif name == "project_set_workspace":
                     return await self._project_set_workspace(args)
+                elif name == "project_set_category":
+                    return await self._project_set_category(args)
+                elif name == "project_archive":
+                    return await self._project_archive(args)
                 elif name == "dispatch_subtask":
                     return await self._dispatch_subtask(args)
                 elif name == "reason_tree_audit":
@@ -1385,6 +1419,37 @@ class CapabilityRegistry:
 
         try:
             project = set_workspace(project_id, git_url, project_label)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        return {"success": True, "project": project.to_dict()}
+
+    async def _project_set_category(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Set a project's portfolio-level classification."""
+        from app.scheduler.project_tracker import set_category
+
+        project_id = args.get("project_id")
+        category = args.get("category")
+        if not project_id or not category:
+            return {"success": False, "error": "project_id and category are both required"}
+
+        try:
+            project = set_category(project_id, category)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        return {"success": True, "project": project.to_dict()}
+
+    async def _project_archive(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Mark a project archived."""
+        from app.scheduler.project_tracker import archive_project
+
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"success": False, "error": "project_id is required"}
+
+        try:
+            project = archive_project(project_id, reason=args.get("reason"))
         except ValueError as e:
             return {"success": False, "error": str(e)}
 

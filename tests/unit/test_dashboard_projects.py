@@ -53,6 +53,24 @@ def test_projects_page_shows_project_and_items(client):
     assert "1/2 items done" in resp.text
 
 
+def test_projects_page_shows_category_badge(client):
+    pt.create_project("proj1", "Test Project", "Goal")
+    pt.set_category("proj1", "private")
+
+    resp = client.get("/dashboard/projects")
+    assert resp.status_code == 200
+    assert 'class="badge cat-private"' in resp.text
+    assert ">private<" in resp.text
+
+
+def test_projects_page_no_category_badge_when_unset(client):
+    pt.create_project("proj1", "Test Project", "Goal")
+
+    resp = client.get("/dashboard/projects")
+    assert resp.status_code == 200
+    assert 'class="badge cat-' not in resp.text
+
+
 def test_projects_page_shows_multiple_projects(client):
     pt.create_project("proj1", "First Project", "Goal 1")
     pt.create_project("proj2", "Second Project", "Goal 2")

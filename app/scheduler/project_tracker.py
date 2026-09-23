@@ -70,6 +70,11 @@ class Project:
     # None means this project has no linked coding-agent workspace (e.g. pure research/
     # tracking work) -- dispatch falls back to whatever the dispatcher specifies directly.
     workspace: Optional[Dict[str, Any]] = None
+    # Portfolio-level classification, not a rigid enum -- starting vocabulary:
+    # "private" | "public" | "business" | "goodwill" | "optional". Judged by the
+    # Portfolio Steward role (holistic, cross-project view), not mechanically
+    # derived. None means not yet classified.
+    category: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -175,6 +180,33 @@ def set_workspace(
     if project is None:
         raise ValueError(f"project_tracker: project {project_id!r} not found")
     project.workspace = {"git_url": git_url, "project_label": project_label}
+    save_project(project)
+    return project
+
+
+def set_category(project_id: str, category: str) -> Project:
+    """Set a project's portfolio-level classification. Not a rigid enum --
+    starting vocabulary is "private" | "public" | "business" | "goodwill" |
+    "optional", but any string is accepted; judgment about what fits belongs
+    to whoever calls this (the Portfolio Steward role, or a human), not to
+    validation here."""
+    project = load_project(project_id)
+    if project is None:
+        raise ValueError(f"project_tracker: project {project_id!r} not found")
+    project.category = category
+    save_project(project)
+    return project
+
+
+def archive_project(project_id: str, reason: Optional[str] = None) -> Project:
+    """Mark a project archived (e.g. merged into another project). Kept for
+    history, not deleted, and hidden from the dashboard's active list."""
+    project = load_project(project_id)
+    if project is None:
+        raise ValueError(f"project_tracker: project {project_id!r} not found")
+    project.status = "archived"
+    if reason:
+        project.goal = project.goal + f" [ARCHIVED: {reason}]"
     save_project(project)
     return project
 

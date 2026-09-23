@@ -38,10 +38,53 @@ def registry():
 class TestToolsRegistered:
     def test_all_tools_present_with_orchestration_category(self, registry):
         for name in ("project_list", "project_create", "project_add_item",
-                     "project_update_item_status", "project_set_workspace"):
+                     "project_update_item_status", "project_set_workspace",
+                     "project_set_category", "project_archive"):
             tool = registry.get_tool(name)
             assert tool is not None, f"{name} not registered"
             assert tool.category == "orchestration"
+
+
+class TestProjectSetCategory:
+    @pytest.mark.asyncio
+    async def test_set_category_succeeds(self, registry):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        result = await registry.execute_tool("project_set_category", {"project_id": "p1", "category": "private"})
+        assert result["success"] is True
+        assert result["project"]["category"] == "private"
+
+    @pytest.mark.asyncio
+    async def test_set_category_missing_project_fails(self, registry):
+        result = await registry.execute_tool("project_set_category", {"project_id": "nope", "category": "private"})
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_set_category_missing_field_fails(self, registry):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        result = await registry.execute_tool("project_set_category", {"project_id": "p1"})
+        assert result["success"] is False
+
+
+class TestProjectArchive:
+    @pytest.mark.asyncio
+    async def test_archive_succeeds(self, registry):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        result = await registry.execute_tool("project_archive", {"project_id": "p1", "reason": "done"})
+        assert result["success"] is True
+        assert result["project"]["status"] == "archived"
+        assert "done" in result["project"]["goal"]
+
+    @pytest.mark.asyncio
+    async def test_archive_missing_project_fails(self, registry):
+        result = await registry.execute_tool("project_archive", {"project_id": "nope"})
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_archive_without_reason_succeeds(self, registry):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        result = await registry.execute_tool("project_archive", {"project_id": "p1"})
+        assert result["success"] is True
+        assert result["project"]["status"] == "archived"
 
 
 class TestProjectCreate:
