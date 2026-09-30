@@ -17,8 +17,12 @@ Two transport models are supported:
   http   — The server is already running (started externally, by systemd,
            the user, or another process). MoJo registers how to reach it.
            Required fields: mcp_http_url OR port (fallback: localhost:{port}/mcp).
-           Optional fields: pid (informational), authorization (Bearer token).
-           Example: OpenCode, Google Workspace MCP, any long-running service.
+           Optional fields: pid (informational), authorization (Bearer token,
+           or password when auth_scheme="basic"), auth_scheme ("bearer"
+           default, or "basic" -- username is always "opencode", matching
+           AgentBridge/OpenCodeClient's convention).
+           Example: OpenCode, Google Workspace MCP, AgentBridge (BasicAuth),
+           any long-running service.
 
 The personal layer (~/.memory/config/mcp_servers.json) overrides system
 entries with the same id. Users or internal assistants can add entries there
@@ -51,7 +55,8 @@ class ExternalMCPServer:
     mcp_http_url: Optional[str] = None  # full URL, e.g. http://localhost:3100/mcp
     port: Optional[int] = None          # fallback if mcp_http_url absent → localhost:{port}/mcp
     pid: Optional[int] = None           # informational only — not used for connection
-    authorization: Optional[str] = None # Bearer token or raw API key
+    authorization: Optional[str] = None # Bearer token, API key, or Basic-auth password (see auth_scheme)
+    auth_scheme: str = "bearer"         # "bearer" (default) or "basic" -- see _connect_http
     # common
     category: str = "external"
     enabled: bool = True
@@ -122,6 +127,7 @@ class MCPClientManager:
                     port=srv.get("port"),
                     pid=srv.get("pid"),
                     authorization=srv.get("authorization") or os.environ.get(srv.get("authorization_env", "") or ""),
+                    auth_scheme=srv.get("auth_scheme", "bearer"),
                     category=srv.get("category", "external"),
                     enabled=True,
                     install_hint=srv.get("install_hint", ""),
@@ -205,7 +211,14 @@ class MCPClientManager:
         url = server.mcp_http_url or f"http://localhost:{server.port}/mcp"
         headers: Dict[str, str] = {}
         if server.authorization:
-            headers["Authorization"] = f"Bearer {server.authorization}"
+            if server.auth_scheme == "basic":
+                # Matches AgentBridge/OpenCodeClient's convention: username is
+                # always "opencode", authorization holds just the password.
+                import base64
+                creds = base64.b64encode(f"opencode:{server.authorization}".encode()).decode()
+                headers["Authorization"] = f"Basic {creds}"
+            else:
+                headers["Authorization"] = f"Bearer {server.authorization}"
 
         read, write, _ = await self._exit_stack.enter_async_context(
             streamablehttp_client(url, headers=headers or None)
