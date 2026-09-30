@@ -14,7 +14,10 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 
 from app.scheduler.queue import TaskQueue
-from app.scheduler.models import Task, TaskStatus, TaskType, Schedule, TaskPriority, TaskResources
+from app.scheduler.models import (
+    Task, TaskStatus, TaskType, Schedule, TaskPriority, TaskResources,
+    is_infra_failure_question,
+)
 from app.scheduler.executor import TaskExecutor
 
 
@@ -470,6 +473,34 @@ class Scheduler:
                     "notify_user": True,
                     **self._task_routing_fields(task),
                 })
+                return
+
+            # Infrastructure failures (coding-agent backend unreachable) are
+            # reported via waiting_for_input but nobody "replies" to fix a
+            # dead backend — fail outright instead of leaving a permanent
+            # orphan that also spams Discord as if it were a real question.
+            # dispatch_subtask's own poll loop already special-cases this
+            # signature for sub-tasks it's actively watching (see
+            # capability_registry.py), but that cleanup never runs once the
+            # polling parent itself has died or timed out — exactly what
+            # produced 7 stuck orphan tasks live 2026-09-23. Catching it here,
+            # at the source, covers every task regardless of whether anything
+            # is still polling it.
+            if result.waiting_for_input and is_infra_failure_question(result.waiting_for_input):
+                task.mark_failed(result.waiting_for_input)
+                self.stats["tasks_failed"] += 1
+                self.queue.update(task)
+                await self._broadcast({
+                    "event_type": "task_failed",
+                    "task_id": task.id,
+                    "task_type": task.type.value,
+                    "error": result.waiting_for_input,
+                    "severity": "error",
+                    "title": f"Task {task.id} failed (infrastructure unreachable)",
+                    "notify_user": True,
+                    **self._task_routing_fields(task),
+                })
+                self._log(f"Task {task.id} failed: infra unreachable — {result.waiting_for_input}", "warning")
                 return
 
             # Agent paused — waiting for user input
