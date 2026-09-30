@@ -1,6 +1,6 @@
 # MoJoAssistant — Full Architecture & Vision Overview
 
-**Version:** v1.5.1  
+**Version:** v1.6.0  
 **Author:** Alex Lau  
 **Last updated:** 2026-05-13
 

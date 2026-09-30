@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > have been replaced by unified `agent_*` tools (`agent_start`, `agent_stop`, `agent_status`,
 > `agent_list`, `agent_restart`, `agent_destroy`, `agent_action`, `agent_list_types`).
 
+## [1.6.0] - 2026-09-30
+
+### Added
+- **opencode v1/v2 client compatibility layer** — `OpenCodeClient` now takes an
+  `api_version` param (v1 or v2, validated), unwraps v2's `{"data":...}` envelope,
+  and implements v2's async prompt+poll-until-idle `send_message` plus Form-based
+  question reply/reject. `agent_bridge`'s `HostRegistry` and the coding-session
+  handler both plumb `api_version` through per host instead of always assuming v1.
+- **Basic-auth support for external HTTP MCP servers** — `ExternalMCPServer` gains
+  `auth_scheme` (`bearer` default or `basic`), needed for `agent_bridge`'s
+  password-based auth.
+- **`fleet` and `device_control` capability categories** — `fleet` covers the
+  third-party opencode+herdr workforce (AgentBridge); `device_control` covers
+  remote desktop/mobile automation (`desktop_run`) for reproducing real UI bugs
+  that logs/APIs alone can't show. `network_admin` role gains `fleet`.
+- **`scripts/doctor_opencode.py`** — read-only opencode v2 diagnostic (auth/
+  credential state, MCP server health, the herdr plugin-format error, service
+  reachability), grounded against opencode's own docs rather than guessed.
+
+### Fixed
+- **Infra-unreachable questions no longer sit in the HITL queue forever** —
+  `is_infra_failure_question()` detects the "Coding agent backend not reachable"
+  signature and routes straight to `mark_failed()` instead of waiting on a human
+  who can't answer it.
+- **`Task.to_dict` was silently dropping bookkeeping fields** — the old blanket
+  `_`-prefix strip removed keys like `_hitl_posted_at`, breaking Discord dedup;
+  a `_DURABLE_CONFIG_KEY_PREFIXES` allowlist (`_qm_`, `_hitl_`) keeps them through
+  serialization.
+- **Discord HITL crash on long answer options** — Discord rejects a message if
+  any button label exceeds 80 characters; labels are now truncated with the full
+  text always shown in a new "Options" embed field. Also: infra-failure alerts
+  now render as a grey "System Alert (no reply needed)" embed instead of the
+  orange "Owner Action Required" one, so a glance at the channel shows which
+  messages actually need a reply.
+- **bash safety-gate blocked in-bounds paths** — `_first_blocked_path()` now uses
+  `shlex.split()` and an `allowed_roots` carve-out with exact-root matching for
+  `/`, fixing a bug where the blocklist matched `/` against every path
+  unconditionally (`~/.memory/projects/` was being wrongly blocked).
+- **Workforce dashboard page blocked ~31s by one dead host** — `/workforce` now
+  renders instantly from static config, with live status fetched separately per
+  host, each capped at 6s instead of running serially with a 30s timeout each.
+
 ## [1.4.2-beta] - 2026-05-27
 
 ### Added
