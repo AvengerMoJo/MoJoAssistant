@@ -281,7 +281,7 @@ class TestOpenCodeQuestionHITL(unittest.IsolatedAsyncioTestCase):
             backend.subscribe_events.side_effect = lambda sid: _empty_async_gen()
             result = await handler.execute(task, ctx)
 
-        backend.reply_to_question.assert_awaited_once_with("que_001", "postgres")
+        backend.reply_to_question.assert_awaited_once_with("sess_123", "que_001", "postgres")
 
         self.assertTrue(result.success)
         self.assertNotIn("_mode", task.config)
@@ -321,6 +321,22 @@ class TestOpenCodeTimeoutChain(unittest.IsolatedAsyncioTestCase):
 
         result = await handler._poll_questions(backend, "sess_123")
         self.assertIsNone(result)
+        backend.list_questions.assert_awaited_once_with("sess_123")
+
+    async def test_poll_questions_returns_pending_question(self):
+        """_poll_questions must call the passed-in backend param, not a
+        stray module-level name -- regression test for a bug where the
+        method body referenced an undefined `client` instead of `backend`,
+        silently swallowed by a bare except and always returning None."""
+        from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
+
+        handler = OpenCodeSessionHandler()
+        backend = AsyncMock()
+        pending = {"id": "que_001", "sessionID": "sess_123", "questions": []}
+        backend.list_questions = AsyncMock(return_value=[pending])
+
+        result = await handler._poll_questions(backend, "sess_123")
+        self.assertEqual(result, pending)
 
 
 class TestHelperFunctions(unittest.TestCase):
