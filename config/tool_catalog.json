@@ -9,7 +9,9 @@
     "browser":      { "description": "Headless browser — render pages, interact, screenshot. Primary: Webwright (code-as-action, agent writes Playwright scripts). Alternative: Playwright MCP (step-by-step). Both share the 'browser' category." },
     "terminal":     { "description": "Persistent terminal sessions via tmux — run commands, read output" },
     "orchestration":{ "description": "Agent-to-agent coordination — schedule tasks, hand off work between roles" },
-    "google":       { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (via Google Workspace MCP or gws CLI)" }
+    "google":       { "description": "Google Workspace — Calendar, Gmail, Drive, Contacts (via Google Workspace MCP or gws CLI)" },
+    "fleet":        { "description": "Third-party agent workforce — dispatch/monitor managed opencode+herdr hosts over the tailnet via AgentBridge (agent_run/agent_reply/agent_sessions/agent_status/agent_servers/agent_fleet). Distinct from 'orchestration': that's MoJoAssistant's own internal role-to-role handoff (dispatch_subtask), this is control of a separate managed agent binary on another machine." },
+    "device_control":{ "description": "Remote desktop/mobile device automation (desktop_run) — drives a real device (phone via adb/scrcpy, a desktop UI) through a persistent OpenCode+herdr agent on a registered host. For observing/reproducing real UI behavior (app bugs, screen state) that can't be diagnosed from logs/APIs alone. Never enter real credentials through this; read-only observation and safe UI navigation only unless explicitly asked to go further." }
   },
   "tools": {
     "memory_search":   {

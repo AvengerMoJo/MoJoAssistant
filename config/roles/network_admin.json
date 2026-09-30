@@ -36,6 +36,7 @@
     "web",
     "exec",
     "knowledge",
-    "file"
+    "file",
+    "fleet"
   ]
 }

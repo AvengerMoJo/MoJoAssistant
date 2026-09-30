@@ -230,27 +230,51 @@ class DiscordHITLAdapter(HITLAdapter):
             goal_preview = ctx.get("goal_preview", "") or ctx.get("description", "")
             dashboard_url = ctx.get("dashboard_url", "")
 
-            embed = discord.Embed(
-                title="Owner Action Required",
-                description=question[:4096],
-                color=discord.Color.orange(),
-            )
+            # Alerts (QM escalations, infra-failure questions) are FYI-only --
+            # nobody replies to fix a dead backend or acknowledge a QM
+            # classification. Visually distinct from real questions so a
+            # human scanning the channel can tell at a glance which of N
+            # messages is actually theirs to answer. Found live 2026-09-23:
+            # both kinds rendered identically ("Owner Action Required",
+            # orange), which is exactly what made a 16-message catch-up burst
+            # unreadable.
+            is_alert = self._is_notification_only(task_id)
+            if is_alert:
+                embed = discord.Embed(
+                    title="System Alert (no reply needed)",
+                    description=question[:4096],
+                    color=discord.Color.light_grey(),
+                )
+            else:
+                embed = discord.Embed(
+                    title="Owner Action Required",
+                    description=question[:4096],
+                    color=discord.Color.orange(),
+                )
             if role_id:
                 embed.add_field(name="Role", value=role_id, inline=True)
             if goal_preview:
                 embed.add_field(name="Goal", value=goal_preview[:512], inline=False)
-            if not choices:
+            if not is_alert and not choices:
                 embed.add_field(
                     name="How to reply",
                     value="Type your response in this channel — no buttons needed.",
                     inline=False,
                 )
+            if not is_alert and choices:
+                # Discord button labels are hard-capped at 80 chars (the button
+                # itself truncates the label below) -- a long option would
+                # otherwise be silently unreadable, or reject the whole message
+                # if it ever exceeded that cap before truncation. Spell out the
+                # full text here so nothing is lost either way.
+                options_text = "\n".join(f"{i}. {c}" for i, c in enumerate(choices[:5], 1))
+                embed.add_field(name="Options", value=options_text[:1024], inline=False)
             if dashboard_url:
                 embed.add_field(name="Dashboard", value=dashboard_url, inline=False)
             footer_text = f"task: {task_id}"
             embed.set_footer(text=footer_text)
 
-            view = _HITLView(task_id=task_id, choices=choices, adapter=self)
+            view = _HITLView(task_id=task_id, choices=choices, adapter=self) if not is_alert else None
             msg = await ch.send(embed=embed, view=view if choices else None)
             self._pending[msg.id] = (task_id, choices)
             logger.info("[hitl/discord] HITL posted (task=%s, msg=%s)", task_id, msg.id)
@@ -316,14 +340,25 @@ class DiscordHITLAdapter(HITLAdapter):
         await message.reply("No pending HITL task right now.", mention_author=False)
 
     def _is_notification_only(self, task_id: str) -> bool:
-        """True for tasks posted to Discord purely as notifications (e.g.
-        Quality Monitor alerts) that must never be resumed via a reply."""
+        """True for tasks posted to Discord purely as notifications -- Quality
+        Monitor alerts, or infra-failure questions nobody can "reply" to fix
+        (see app.scheduler.models.is_infra_failure_question) -- that must
+        never consume a real reply or be resumed via one.
+
+        Found live 2026-09-23: infra-failure tasks (coding-agent backend
+        unreachable) weren't covered by this check, only QM alerts were --
+        one could still have silently eaten a genuine reply if it happened
+        to be the most recently posted message."""
         if self._scheduler is None:
             return False
         task = self._scheduler.queue.get(task_id)
         if task is None:
             return False
-        return task.config.get("source") == "quality_monitor"
+        from app.scheduler.models import is_infra_failure_question
+        return (
+            task.config.get("source") == "quality_monitor"
+            or is_infra_failure_question(task.pending_question)
+        )
 
     def _resolve_pending_by_task(self, task_id: str) -> None:
         self._pending = {k: v for k, v in self._pending.items() if v[0] != task_id}
@@ -362,7 +397,13 @@ class _HITLButton:
                     else discord.ButtonStyle.danger if choice.lower() in ("reject", "no", "deny")
                     else discord.ButtonStyle.primary
                 )
-                super().__init__(label=choice, style=style, custom_id=cid)
+                # Discord rejects the whole message if any button label exceeds
+                # 80 chars -- found live 2026-09-27 (400 Invalid Form Body) on
+                # a PM-interview question with a ~110-char option. The full
+                # text still reaches the user via the embed's "Options" field
+                # above; only the button's own label is shortened.
+                label = choice if len(choice) <= 80 else choice[:79] + "…"
+                super().__init__(label=label, style=style, custom_id=cid)
                 self._adapter = adapter
                 self._task_id = task_id
                 self._choice = choice
