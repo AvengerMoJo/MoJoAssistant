@@ -39,6 +39,7 @@ class HostRegistry:
             self._clients[name] = OpenCodeClient(
                 base_url=host["base_url"],
                 password=host.get("password", ""),
+                api_version=host.get("api_version", "v1"),
             )
         return self._clients[name]
 

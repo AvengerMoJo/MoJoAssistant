@@ -21,6 +21,7 @@ Routes:
   POST /dashboard/chat/{role_id}         — send message, redirect back (non-JS fallback)
 """
 
+import asyncio
 import html
 import json
 import os
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from app.dashboard.auth import COOKIE_NAME, check_password, make_token, verify_token
 from app.config.paths import get_memory_path
@@ -138,6 +139,7 @@ a:hover { text-decoration: underline; }
 .s-dreaming   { background: #1a002a; color: #c07ee3; }
 .s-ok         { background: #002a00; color: #7ec87e; }
 .s-unreachable { background: #2a0000; color: #e37e7e; }
+.s-checking    { background: #1a1a1a; color: #888; }
 .s-todo       { background: #1a1a1a; color: #888; }
 .s-in_progress { background: #002a00; color: #7ec87e; }
 .s-done       { background: #001a2a; color: #7ec8e3; }
@@ -706,28 +708,85 @@ async def roles_view(mojo_dash: Optional[str] = Cookie(default=None)):
 # Workforce (third-party agent bridge fleet)
 # ---------------------------------------------------------------------------
 
+def _load_workforce_registry():
+    from app.mcp.agent_bridge.config import load_config
+    from app.mcp.agent_bridge.registry import HostRegistry
+
+    cfg = load_config()
+    reg = HostRegistry(cfg.get("hosts", {}))
+    return reg, list(reg.list_hosts())
+
+
+# Hard cap per host so one dead machine can never hold up the status call.
+# A timeout is reported as what it is -- unreachable -- not hidden.
+_WORKFORCE_CHECK_TIMEOUT_S = 6
+
+
+@router.get("/workforce/status")
+async def workforce_status(mojo_dash: Optional[str] = Cookie(default=None)):
+    """Live per-host status, fetched by the /workforce page after it renders.
+
+    Split from the page so the page itself is instant and never blocked by an
+    offline host (found live 2026-09-28: one down host made /workforce take
+    ~31s because checks ran serially with a 30s connect timeout each).
+    """
+    if not verify_token(mojo_dash):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+    try:
+        from app.mcp.agent_bridge.server import _check_availability
+
+        reg, host_names = _load_workforce_registry()
+    except Exception as e:
+        return JSONResponse({"error": f"could not load agent_bridge config: {e}"}, status_code=500)
+
+    async def _one(name: str) -> tuple[str, dict]:
+        entry = reg.describe(name)
+        backend = entry.get("backend", "opencode_serve")
+
+        async def _check() -> dict:
+            avail = await _check_availability(reg, name)
+            status = avail.get("status", "unreachable")
+            sessions = "—"
+            if backend == "legacy_mcp":
+                sessions = "n/a (legacy)"
+            elif backend == "opencode_serve" and status == "ok":
+                try:
+                    sessions = str(len(await reg.get_client(name).list_sessions()))
+                except Exception:
+                    sessions = "?"
+            return {"status": status, "sessions": sessions}
+
+        try:
+            return name, await asyncio.wait_for(_check(), timeout=_WORKFORCE_CHECK_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return name, {
+                "status": "unreachable",
+                "sessions": "—",
+                "error": f"availability check timed out (>{_WORKFORCE_CHECK_TIMEOUT_S}s)",
+            }
+
+    results = await asyncio.gather(*(_one(n) for n in host_names))
+    return JSONResponse(dict(results))
+
+
 @router.get("/workforce", response_class=HTMLResponse)
 async def workforce_view(mojo_dash: Optional[str] = Cookie(default=None)):
     if redir := _require_auth(mojo_dash):
         return redir
 
     try:
-        from app.mcp.agent_bridge.config import load_config
-        from app.mcp.agent_bridge.registry import HostRegistry
-        from app.mcp.agent_bridge.server import _check_availability
-
-        cfg = load_config()
-        reg = HostRegistry(cfg.get("hosts", {}))
-        host_names = list(reg.list_hosts())
+        reg, host_names = _load_workforce_registry()
     except Exception as e:
         return _page("Workforce", f"""<h1>Workforce</h1>
 <p style="color:#e37e7e">Could not load agent_bridge config: {html.escape(str(e))}</p>""")
 
+    # Static columns come straight from config, so this page renders instantly.
+    # Status + session count are filled in by the script below from
+    # /dashboard/workforce/status.
     rows = ""
     for name in host_names:
         entry = reg.describe(name)
-        avail = await _check_availability(reg, name)
-        status = avail.get("status", "unreachable")
         backend = entry.get("backend", "opencode_serve")
         owner = entry.get("owner", "personal")
         owner_display = ("customer" if owner == "customer" else "personal").upper()
@@ -739,30 +798,22 @@ async def workforce_view(mojo_dash: Optional[str] = Cookie(default=None)):
         caps = ", ".join(profile.get("capabilities", [])) or "—"
         tier = entry.get("tier", {})
         tier_display = f'{tier.get("type", "—")} / {tier.get("backend", "—")}' if tier else "—"
-        session_count = "—"
-        if backend == "opencode_serve" and status == "ok":
-            try:
-                sessions = await reg.get_client(name).list_sessions()
-                session_count = str(len(sessions))
-            except Exception:
-                session_count = "?"
-        elif backend == "legacy_mcp":
-            session_count = "n/a (legacy)"
 
         backend_note = (
             ' <span style="color:#555;font-size:10px">(virtual interface)</span>'
             if backend == "legacy_mcp" else ""
         )
 
-        rows += f"""<tr>
+        hid = html.escape(name, quote=True)
+        rows += f"""<tr data-host="{hid}">
           <td><b>{html.escape(name)}</b><br><span style="color:#555;font-size:10px">{html.escape(backend)}{backend_note}</span></td>
-          <td>{_badge(status)}</td>
+          <td class="wf-status">{_badge("checking")}</td>
           <td {owner_style}>{html.escape(owner_display)}</td>
           <td style="color:#888;font-size:11px">{html.escape(loc_display)}</td>
           <td style="color:#888;font-size:11px">{html.escape(accel)}</td>
           <td style="color:#888;font-size:11px">{html.escape(caps)}</td>
           <td style="color:#888;font-size:11px">{html.escape(tier_display)}</td>
-          <td style="color:#7ec8e3">{session_count}</td>
+          <td class="wf-sessions" style="color:#7ec8e3">…</td>
         </tr>"""
 
     if not rows:
@@ -778,10 +829,34 @@ handshake instead of the opencode REST API, so it still shows a real status inst
 <p style="color:#888;margin-bottom:16px"><span style="color:#7ec87e">PERSONAL</span> = your own
 infrastructure. <span style="color:#e3b07e;font-weight:bold">CUSTOMER</span> = client-owned
 (e.g. Bedrock Memoria) — never used as personal workforce.</p>
-<table>
+<table id="wf-table">
   <tr><th>Host / Backend</th><th>Status</th><th>Owner</th><th>Location</th><th>HW Accel</th><th>Capabilities</th><th>Tier</th><th>Sessions</th></tr>
   {rows}
 </table>
+<p id="wf-note" style="color:#555;font-size:11px;margin-top:10px">Checking hosts…</p>
+<script>
+(async function () {{
+  const note = document.getElementById("wf-note");
+  try {{
+    const resp = await fetch("/dashboard/workforce/status", {{credentials: "same-origin"}});
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    document.querySelectorAll("#wf-table tr[data-host]").forEach(function (tr) {{
+      const r = data[tr.dataset.host];
+      if (!r) return;
+      const badge = tr.querySelector(".wf-status .badge");
+      badge.className = "badge s-" + r.status;
+      badge.textContent = r.status;
+      if (r.error) badge.title = r.error;
+      tr.querySelector(".wf-sessions").textContent = r.sessions;
+    }});
+    note.textContent = "Checked " + new Date().toLocaleTimeString() + " — reload to re-check.";
+  }} catch (e) {{
+    note.style.color = "#e37e7e";
+    note.textContent = "Live status check failed: " + e.message;
+  }}
+}})();
+</script>
 """)
 
 

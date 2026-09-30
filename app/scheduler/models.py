@@ -15,6 +15,28 @@ from enum import Enum
 # is a single source of truth.
 DEFAULT_TIER_PREFERENCE: List[str] = ["free", "free_api"]
 
+# Underscore-prefixed task.config keys are otherwise stripped from disk on
+# every save (see Task.to_dict()) since most are runtime-only (backends,
+# HTTP clients). Prefixes listed here mark durable bookkeeping that must
+# survive serialization -- add a new prefix here whenever a subsystem needs
+# a persistent, restart-safe stamp in task.config.
+_DURABLE_CONFIG_KEY_PREFIXES: tuple = ("_qm_", "_hitl_")
+
+# Substring that marks a pending_question as an infrastructure failure
+# (coding-agent backend unreachable) rather than a genuine question a human
+# will ever answer -- nobody "replies" to fix a missing backend. Single
+# source of truth for this signature: app/scheduler/capability_registry.py
+# (dispatch_subtask's poll-loop cleanup) and app/mcp/adapters/hitl/discord.py
+# (alert-vs-question styling / reply routing) both key off this string, and
+# previously did so via two independently hand-written copies that could
+# drift out of sync.
+INFRA_FAILURE_SIGNATURE = "Coding agent backend not reachable"
+
+
+def is_infra_failure_question(pending_question: Optional[str]) -> bool:
+    """True if pending_question is an infra failure, not a real question."""
+    return bool(pending_question) and INFRA_FAILURE_SIGNATURE in pending_question
+
 
 class TaskStatus(Enum):
     """Task execution status"""
@@ -230,12 +252,18 @@ class Task:
             # Strip non-serializable runtime objects (per-task backends, HTTP clients)
             # from config before serialization. These hold process references that
             # don't survive JSON encoding and aren't needed after task completion.
-            # Quality-Monitor state (_qm_*) is durable bookkeeping (restart counts,
-            # escalation stamps) -- keep it so restart caps and dedup survive daemon
-            # reloads instead of silently resetting.
+            # Underscore-prefixed keys matching a durable-bookkeeping prefix (restart
+            # counts, escalation/post stamps) are kept so caps and dedup survive
+            # daemon reloads instead of silently resetting. Found live 2026-09-23:
+            # DiscordHITLAdapter's _hitl_posted_at dedup stamp (app/mcp/adapters/hitl/
+            # discord.py) was written to task.config and queue.update()'d successfully,
+            # but silently dropped on every single save because only "_qm_" was
+            # allowlisted -- the stamp never actually reached disk, so every restart's
+            # catch-up re-posted every still-open HITL question as a fresh duplicate.
             "config": {
                 k: v for k, v in (self.config or {}).items()
-                if (not k.startswith("_") or k.startswith("_qm_")) and not callable(v)
+                if (not k.startswith("_") or k.startswith(_DURABLE_CONFIG_KEY_PREFIXES))
+                and not callable(v)
             },
             "resources": self.resources.to_dict(),
             "result": self.result.to_dict() if self.result else None,

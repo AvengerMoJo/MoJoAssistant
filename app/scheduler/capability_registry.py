@@ -1658,7 +1658,8 @@ class CapabilityRegistry:
                 # business questions use free-form text and won't match this
                 # specific infra-failure signature, so auto-cleanup here is
                 # narrowly scoped and safe for real HITL questions.
-                is_infra_failure = "Coding agent backend not reachable" in t.pending_question
+                from app.scheduler.models import is_infra_failure_question
+                is_infra_failure = is_infra_failure_question(t.pending_question)
                 if is_infra_failure:
                     self._scheduler.remove_task(task_id)
                 return {

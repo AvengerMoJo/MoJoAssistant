@@ -139,14 +139,62 @@ class SafetyPolicy:
                 }
 
             command = args.get("command", "")
-            for blocked in immutable.get("blocked_paths", []):
-                if blocked in command:
-                    return {
-                        "allowed": False,
-                        "reason": f"Command targets blocked path '{blocked}'",
-                    }
+            blocked = self._first_blocked_path(command, immutable.get("blocked_paths", []), sandbox)
+            if blocked is not None:
+                return {
+                    "allowed": False,
+                    "reason": f"Command targets blocked path '{blocked}'",
+                }
 
         return {"allowed": True}
+
+    def _first_blocked_path(
+        self, command: str, blocked_paths: List[str], sandbox: Dict[str, Any]
+    ) -> Optional[str]:
+        """Return the first blocked path a command genuinely targets, or None.
+
+        Found live 2026-09-23: the previous check was `if blocked in command`
+        with blocked_paths[0] == "/" -- a bare substring test against the
+        single-character root path, which is a substring of virtually every
+        real shell command (any path at all contains "/"). This blocked
+        `ls ~/.memory/projects/*.json` -- a routine, fully in-sandbox read --
+        with "Command targets blocked path '/'", and would have blocked
+        nearly every bash_exec call referencing any path, not just this one.
+
+        Fix: only flag a path argument that actually resolves under a
+        blocked root, and only after confirming it does NOT also resolve
+        under an allowed root (allowed_paths carves out the memory
+        directory from broader blocks like "/home" the same way
+        read_file/write_file already do above)."""
+        try:
+            import shlex
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = command.split()
+
+        allowed_roots = [os.path.abspath(get_memory_path())] + [
+            os.path.abspath(os.path.expanduser(p)) for p in sandbox.get("allowed_paths", [])
+        ]
+        blocked_roots = [
+            os.path.abspath(os.path.expanduser(p)) if p != "/" else "/"
+            for p in blocked_paths
+        ]
+
+        for token in tokens:
+            if not (token.startswith("/") or token.startswith("~")):
+                continue
+            token_abs = os.path.abspath(os.path.expanduser(token))
+            if any(token_abs == ar or token_abs.startswith(ar.rstrip("/") + "/") for ar in allowed_roots):
+                continue  # explicitly allowed — carve-out wins
+            for i, br in enumerate(blocked_roots):
+                is_match = (
+                    token_abs == br
+                    if br == "/"
+                    else token_abs == br or token_abs.startswith(br.rstrip("/") + "/")
+                )
+                if is_match:
+                    return blocked_paths[i]
+        return None
 
     def check_tool_addition(self, tool_definition: Dict) -> Dict[str, Any]:
         """Check if new tool can be added by policy."""

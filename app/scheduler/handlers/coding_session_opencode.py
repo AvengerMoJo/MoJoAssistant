@@ -302,7 +302,7 @@ class OpenCodeSessionHandler(TaskHandler):
         Returns the first Question.Request object, or None.
         """
         try:
-            for q in await client.list_questions(session_id):
+            for q in await backend.list_questions(session_id):
                 return q
         except Exception:
             pass
@@ -521,7 +521,7 @@ class OpenCodeSessionHandler(TaskHandler):
             return TaskResult(success=False, error_message="no reply found in task config")
 
         try:
-            await client.reply_to_question(qid, user_reply)
+            await client.reply_to_question(cfg.get("session_id", ""), qid, user_reply)
         except Exception as e:
             return TaskResult(success=False, error_message=f"question reply failed: {e}")
 
@@ -556,11 +556,12 @@ class OpenCodeSessionHandler(TaskHandler):
 
         cfg = task.config or {}
         password = cfg.get("opencode_password") or ""
+        api_version = cfg.get("opencode_api_version") or "v1"
 
         # 1. Explicit URL wins
         url = (cfg.get("opencode_url") or "").strip()
         if url:
-            client = OpenCodeClient(base_url=url, password=password)
+            client = OpenCodeClient(base_url=url, password=password, api_version=api_version)
             cfg["_opencode_client"] = client
             return client
 
@@ -578,7 +579,7 @@ class OpenCodeSessionHandler(TaskHandler):
                     url = f"http://127.0.0.1:{entry.port}"
                     password = entry.password or ""
                     logger.info("Using sandbox %s at %s", sandbox_key, url)
-                    client = OpenCodeClient(base_url=url, password=password)
+                    client = OpenCodeClient(base_url=url, password=password, api_version=api_version)
                     cfg["_opencode_client"] = client
                     return client
                 if entry and entry.status != "running":
@@ -615,7 +616,7 @@ class OpenCodeSessionHandler(TaskHandler):
                     url = f"http://127.0.0.1:{entry.port}"
                     password = entry.password or ""
                     logger.info("Matched working_dir to sandbox %s at %s", entry.sandbox_id, url)
-                    client = OpenCodeClient(base_url=url, password=password)
+                    client = OpenCodeClient(base_url=url, password=password, api_version=api_version)
                     cfg["_opencode_client"] = client
                     return client
                 if len(matches) > 1:
@@ -678,7 +679,7 @@ class OpenCodeSessionHandler(TaskHandler):
                     "SandboxManager.acquire: %s sandbox for %s (id=%s url=%s role=%s)",
                     handle.backend, task.id, handle.sandbox_id, url, handle.role_id,
                 )
-                client = OpenCodeClient(base_url=url, password=_password)
+                client = OpenCodeClient(base_url=url, password=_password, api_version=api_version)
                 cfg["_opencode_client"] = client
                 return client
             except Exception as e:
@@ -696,7 +697,7 @@ class OpenCodeSessionHandler(TaskHandler):
                 "Pass start_new=True + working_dir to spawn a fresh OpenCode.",
                 url,
             )
-            client = OpenCodeClient(base_url=url, password=password)
+            client = OpenCodeClient(base_url=url, password=password, api_version=api_version)
             cfg["_opencode_client"] = client
             return client
 

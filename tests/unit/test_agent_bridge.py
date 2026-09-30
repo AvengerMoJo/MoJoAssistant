@@ -96,6 +96,25 @@ async def test_registry_close_all_clears(reg):
     assert reg._clients == {}
 
 
+def test_registry_defaults_to_v1_when_unspecified(reg):
+    """Found live 2026-09-24: get_client() never read a host's api_version
+    at all, so every AgentBridge host silently spoke v1 regardless of what
+    agent_bridge.json actually configured -- a v2 host (e.g. siliconnode1,
+    upgraded same day) 404/405'd on agent_run because the client hit v1
+    paths (POST /session) against a v2 server (which only serves
+    POST /api/session)."""
+    client = reg.get_client("orgvm")
+    assert client._v2 is False
+
+
+def test_registry_honors_configured_v2_api_version():
+    reg = HostRegistry({
+        "v2host": {"base_url": "http://v2host:4096", "password": "pw", "api_version": "v2"},
+    })
+    client = reg.get_client("v2host")
+    assert client._v2 is True
+
+
 # ----------------------------------------------------------------------
 # tools (OpenCodeClient mocked at the transport layer)
 # ----------------------------------------------------------------------

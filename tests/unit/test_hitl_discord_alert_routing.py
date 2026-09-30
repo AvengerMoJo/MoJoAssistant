@@ -54,11 +54,11 @@ class _FakeScheduler:
         self.resumed.append((task_id, reply))
 
 
-def _task(source=None):
+def _task(source=None, pending_question=None):
     config = {}
     if source is not None:
         config["source"] = source
-    return SimpleNamespace(config=config)
+    return SimpleNamespace(config=config, pending_question=pending_question)
 
 
 @pytest.fixture
@@ -156,3 +156,41 @@ class TestIsNotificationOnly:
     def test_false_when_task_not_found(self, adapter):
         adapter._scheduler = _FakeScheduler({})
         assert adapter._is_notification_only("t1") is False
+
+    def test_true_for_infra_failure_question(self, adapter):
+        """Found live 2026-09-23: infra-failure questions (coding-agent
+        backend unreachable) weren't covered by this check, only QM alerts
+        were -- one could silently eat a genuine reply."""
+        adapter._scheduler = _FakeScheduler({
+            "t1": _task(pending_question=(
+                "Coding agent backend not reachable and auto-start failed "
+                "(server_id='git@github.com:foo/bar.git')."
+            )),
+        })
+        assert adapter._is_notification_only("t1") is True
+
+    def test_false_for_genuine_question_mentioning_unrelated_text(self, adapter):
+        adapter._scheduler = _FakeScheduler({
+            "t1": _task(pending_question="Which database should I use, postgres or sqlite?"),
+        })
+        assert adapter._is_notification_only("t1") is False
+
+
+class TestInfraFailureRepliesNotConsumed:
+    @pytest.mark.asyncio
+    async def test_skips_infra_failure_and_routes_to_real_pending_task(self, adapter):
+        tasks = {
+            "real-task-1": _task(pending_question="Which PR path do you want?"),
+            "infra-fail-1": _task(pending_question="Coding agent backend not reachable and auto-start failed"),
+        }
+        adapter._scheduler = _FakeScheduler(tasks)
+        adapter._pending = {
+            100: ("real-task-1", []),
+            200: ("infra-fail-1", []),  # posted most recently -- must still be skipped
+        }
+
+        msg = _FakeMessage("deploy and verify first")
+        await adapter.handle_owner_message(msg)
+
+        assert adapter._scheduler.resumed == [("real-task-1", "deploy and verify first")]
+        assert 200 in adapter._pending
