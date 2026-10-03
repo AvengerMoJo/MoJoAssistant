@@ -227,11 +227,40 @@ class RoleDesignSession:
             self.answers["predict_verify"] = answer
 
         elif step == "synthesis":
-            # Synthesis confirmed — mark complete
             self.answers["synthesis_confirmed"] = answer
+            # The synthesis prompt advertises yes / adjust: ... / restart, but
+            # nothing ever checked the actual reply -- ANY answer (including
+            # "no") unconditionally marked complete. Only an affirmative
+            # reply advances; "adjust"/"restart" revision handling isn't
+            # built yet, so anything else just stays at synthesis rather
+            # than silently persisting a draft the caller didn't confirm.
+            if not _strip_think(answer).strip().lower().startswith("yes"):
+                return "synthesis", {
+                    "message": (
+                        "Not confirmed. Reply 'yes' to save this draft as-is. "
+                        "Revision ('adjust'/'restart') isn't implemented yet -- "
+                        "start a new design session with corrected answers instead."
+                    ),
+                    "draft": self._build_role_spec(),
+                }
+
             self.current_step = "complete"
             self.save()
-            return "complete", self._build_role_spec()
+            spec = self._build_role_spec()
+            # Persisting the actual role is this method's responsibility, not
+            # whichever caller happens to drive the session -- found live
+            # 2026-10-03 after two role-creation attempts reached "complete"
+            # with nothing ever written to ~/.memory/roles/, because the only
+            # RoleManager().save() call lived in one specific MCP handler
+            # (_execute_role_design_answer), not here. Any caller now gets
+            # correct persistence automatically.
+            from app.roles.role_manager import RoleManager
+            try:
+                saved_path = RoleManager().save(spec)
+                spec["_persisted"] = {"saved": True, "path": saved_path}
+            except Exception as e:
+                spec["_persisted"] = {"saved": False, "error": str(e)}
+            return "complete", spec
 
         # Advance to next step
         idx = _STEPS.index(step)
@@ -494,9 +523,23 @@ _DEFAULT_CAPABILITIES: Dict[str, list] = {
     "custom":     ["memory"],
 }
 
-_VALID_TOOL_CATEGORIES = {
-    "memory", "knowledge", "file", "exec", "web", "browser", "terminal", "orchestration", "comms",
-}
+def _load_valid_tool_categories() -> set:
+    """Tool categories a role may request, read from the single source of
+    truth (config/tool_catalog.json) instead of a hardcoded list that drifts
+    out of sync as new categories (e.g. 'fleet', 'device_control') are added
+    elsewhere. Personal overrides at ~/.memory/config/tool_catalog.json merge
+    in on top, matching how list_tools() resolves the catalog."""
+    base_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config", "tool_catalog.json")
+    with open(base_path) as f:
+        categories = set(json.load(f)["categories"].keys())
+    override_path = get_memory_subpath("config/tool_catalog.json")
+    if os.path.exists(override_path):
+        with open(override_path) as f:
+            categories |= set(json.load(f).get("categories", {}).keys())
+    return categories
+
+
+_VALID_TOOL_CATEGORIES = _load_valid_tool_categories()
 
 _KNOWN_AGENT_TYPES = {"researcher", "coder", "reviewer", "ops", "analyst", "assistant"}
 
