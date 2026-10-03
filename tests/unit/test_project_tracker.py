@@ -164,6 +164,38 @@ class TestCategory:
         assert project.category is None
 
 
+class TestCurrentState:
+    def test_new_project_has_no_current_state(self):
+        pt.create_project("proj1", "Test", "Goal")
+        assert pt.load_project("proj1").current_state is None
+
+    def test_set_current_state_persists(self):
+        pt.create_project("proj1", "Test", "Goal")
+        project = pt.set_current_state("proj1", "Phase 1 done, Phase 2 in progress")
+        assert project.current_state == "Phase 1 done, Phase 2 in progress"
+        assert pt.load_project("proj1").current_state == "Phase 1 done, Phase 2 in progress"
+
+    def test_set_current_state_missing_project_raises(self):
+        with pytest.raises(ValueError, match="not found"):
+            pt.set_current_state("nope", "summary")
+
+    def test_set_current_state_overwrites_existing(self):
+        pt.create_project("proj1", "Test", "Goal")
+        pt.set_current_state("proj1", "First summary")
+        project = pt.set_current_state("proj1", "Updated summary")
+        assert project.current_state == "Updated summary"
+
+    def test_loads_pre_current_state_project_dict_without_error(self):
+        old_style = {
+            "id": "legacy", "name": "Legacy", "goal": "Goal",
+            "status": "active", "items": [], "owner_role_id": None, "workspace": None,
+            "category": None,
+            "created_at": "2026-09-22T00:00:00", "updated_at": "2026-09-22T00:00:00",
+        }
+        project = pt.Project.from_dict(old_style)
+        assert project.current_state is None
+
+
 class TestArchiveProject:
     def test_archive_sets_status(self):
         pt.create_project("proj1", "Test", "Goal")

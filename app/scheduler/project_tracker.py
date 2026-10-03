@@ -75,6 +75,15 @@ class Project:
     # Portfolio Steward role (holistic, cross-project view), not mechanically
     # derived. None means not yet classified.
     category: Optional[str] = None
+    # Short "as of now" prose summary of where this project actually stands --
+    # distinct from `goal` (static, what done looks like) and `items` (a todo
+    # list that requires reading every entry to synthesize a status). This is
+    # the single thing a human, this assistant, or any other role/agent should
+    # read first to answer "is this ready enough to build on" without
+    # re-deriving it from source each time. Update it as part of Definition of
+    # Done whenever work changes this project's real-world state -- stale is
+    # worse than missing, so don't let it rot silently.
+    current_state: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -194,6 +203,17 @@ def set_category(project_id: str, category: str) -> Project:
     if project is None:
         raise ValueError(f"project_tracker: project {project_id!r} not found")
     project.category = category
+    save_project(project)
+    return project
+
+
+def set_current_state(project_id: str, current_state: str) -> Project:
+    """Set a project's short 'as of now' status summary. See Project.current_state
+    for why this exists separately from `goal` and `items`."""
+    project = load_project(project_id)
+    if project is None:
+        raise ValueError(f"project_tracker: project {project_id!r} not found")
+    project.current_state = current_state
     save_project(project)
     return project
 
