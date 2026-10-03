@@ -37,12 +37,64 @@ def registry():
 
 class TestToolsRegistered:
     def test_all_tools_present_with_orchestration_category(self, registry):
-        for name in ("project_list", "project_create", "project_add_item",
+        for name in ("project_list", "project_get", "project_create", "project_add_item",
                      "project_update_item_status", "project_set_workspace",
                      "project_set_category", "project_archive"):
             tool = registry.get_tool(name)
             assert tool is not None, f"{name} not registered"
             assert tool.category == "orchestration"
+
+
+class TestProjectListIsCompact:
+    """2026-10-03: project_list returning full to_dict() per project (every
+    item, every note) hit 100K+ chars with ~10 real projects. A role calling
+    this as its first tool call in a fresh dispatch burned a huge chunk of
+    its context/iteration budget before any real work happened -- confirmed
+    live: Rebecca's dispatch hit 'iteration budget exhausted (4/12)' with
+    estimated_input_tokens climbing past 30K by iteration 2."""
+
+    @pytest.mark.asyncio
+    async def test_list_omits_items_and_goal(self, registry):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "A" * 5000})
+        for i in range(20):
+            await registry.execute_tool("project_add_item", {
+                "project_id": "p1", "item_id": f"i{i}", "kind": "feature",
+                "title": "Thing", "notes": "x" * 2000,
+            })
+        result = await registry.execute_tool("project_list", {})
+        row = result["projects"][0]
+        assert "items" not in row
+        assert "goal" not in row
+        assert row["items_done"] == "0/20"
+
+    @pytest.mark.asyncio
+    async def test_list_includes_current_state(self, registry):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        await registry.execute_tool("project_set_category", {"project_id": "p1", "category": "private"})
+        result = await registry.execute_tool("project_list", {})
+        assert result["projects"][0]["category"] == "private"
+
+
+class TestProjectGet:
+    @pytest.mark.asyncio
+    async def test_get_returns_full_detail(self, registry):
+        await registry.execute_tool("project_create", {"project_id": "p1", "name": "Test", "goal": "g"})
+        await registry.execute_tool("project_add_item", {
+            "project_id": "p1", "item_id": "i1", "kind": "feature", "title": "Thing", "notes": "detail",
+        })
+        result = await registry.execute_tool("project_get", {"project_id": "p1"})
+        assert result["success"] is True
+        assert result["project"]["items"][0]["notes"] == "detail"
+
+    @pytest.mark.asyncio
+    async def test_get_missing_project_fails(self, registry):
+        result = await registry.execute_tool("project_get", {"project_id": "nope"})
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_missing_project_id_fails(self, registry):
+        result = await registry.execute_tool("project_get", {})
+        assert result["success"] is False
 
 
 class TestProjectSetCategory:

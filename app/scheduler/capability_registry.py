@@ -399,16 +399,30 @@ class CapabilityRegistry:
             CapabilityDefinition(
                 name="project_list",
                 description=(
-                    "List every tracked Project (ongoing, multi-feature work — see "
-                    "app/scheduler/project_tracker.py), each with its id, name, goal, status, "
-                    "owner_role_id, and checklist items. Distinct from a scheduler Task: a Project "
-                    "is not closed by one Done-when clause, it accumulates feature/bug/update items "
-                    "over time, each independently tracked. Call this before project_add_item/"
-                    "project_update_item_status to see what already exists."
+                    "List every tracked Project as a compact index row (id, name, status, "
+                    "category, owner_role_id, current_state, items_done) -- NOT full item/note "
+                    "detail, that would be huge across many projects. Distinct from a scheduler "
+                    "Task: a Project is not closed by one Done-when clause, it accumulates "
+                    "feature/bug/update items over time, each independently tracked. Call this "
+                    "before project_add_item/project_update_item_status to see what already "
+                    "exists, then project_get for one project's full detail."
                 ),
                 danger_level="low",
                 category="orchestration",
                 parameters={"type": "object", "properties": {}, "required": []},
+            ),
+            CapabilityDefinition(
+                name="project_get",
+                description=(
+                    "Full detail for ONE project -- goal, current_state, and every checklist "
+                    "item with its notes. Use this (not project_list) when you need to read "
+                    "what's actually been done/decided on a specific project."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "project_id": {"type": "string"},
+                }, "required": ["project_id"]},
             ),
             CapabilityDefinition(
                 name="project_create",
@@ -916,6 +930,8 @@ class CapabilityRegistry:
                     return await self._list_roles(args)
                 elif name == "project_list":
                     return await self._project_list(args)
+                elif name == "project_get":
+                    return await self._project_get(args)
                 elif name == "project_create":
                     return await self._project_create(args)
                 elif name == "project_add_item":
@@ -1336,7 +1352,14 @@ class CapabilityRegistry:
         }
 
     async def _project_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """List every tracked Project and its checklist items."""
+        """List every tracked Project as a compact index row (id, name,
+        status, category, owner, current_state, items_done) -- not full
+        to_dict() per project. Found live 2026-10-03: full detail (every
+        item, every note) hit 100K+ chars with ~10 real projects, and a
+        role calling this as its FIRST tool call in a fresh dispatch
+        contributed directly to exhausting its iteration budget before any
+        real work happened. Use project_get-shaped access (or the project()
+        MCP hub's action='get') for one project's full detail."""
         from app.scheduler.project_tracker import list_projects
 
         try:
@@ -1344,11 +1367,39 @@ class CapabilityRegistry:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+        rows = []
+        for p in projects:
+            total = len(p.items)
+            done = sum(1 for it in p.items if it.status == "done")
+            rows.append({
+                "id": p.id, "name": p.name, "status": p.status,
+                "category": p.category, "owner_role_id": p.owner_role_id,
+                "current_state": p.current_state,
+                "items_done": f"{done}/{total}",
+            })
+
         return {
             "success": True,
             "count": len(projects),
-            "projects": [p.to_dict() for p in projects],
+            "projects": rows,
         }
+
+    async def _project_get(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Full detail for one project -- goal, current_state, every item+notes."""
+        from app.scheduler.project_tracker import load_project
+
+        project_id = args.get("project_id")
+        if not project_id:
+            return {"success": False, "error": "project_id is required"}
+
+        try:
+            project = load_project(project_id)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        if project is None:
+            return {"success": False, "error": f"Project {project_id!r} not found"}
+
+        return {"success": True, "project": project.to_dict()}
 
     async def _project_create(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new Project checklist."""
