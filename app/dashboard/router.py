@@ -157,6 +157,15 @@ a:hover { text-decoration: underline; }
 .project-card { background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 16px 20px; margin-bottom: 16px; }
 .project-card h3 { font-size: 14px; color: #fff; margin-bottom: 4px; }
 .project-card .goal { color: #888; font-size: 12px; margin-bottom: 10px; }
+.project-card .current-state { color: #ccc; font-size: 12px; margin-bottom: 10px; padding: 8px 10px; background: #0d1a0d; border-left: 2px solid #7ec87e; }
+.tab-bar { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid #333; margin-bottom: 16px; }
+.tab-btn { background: none; border: none; color: #888; font-size: 13px; padding: 8px 14px; cursor: pointer; border-bottom: 2px solid transparent; }
+.tab-btn:hover { color: #ccc; }
+.tab-btn.active { color: #fff; border-bottom-color: #7ec87e; }
+.tab-btn .tab-count { color: #555; font-size: 11px; margin-left: 4px; }
+.tab-btn.active .tab-count { color: #7ec87e; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
 .project-card table { margin-top: 6px; }
 .lvl0 { color: #555; }
 .lvl1 { color: #888; }
@@ -911,11 +920,17 @@ evidence and escalates any gap to Paul.</p>
             if project.category else ""
         )
 
+        current_state_display = (
+            f'<div class="current-state"><b>Current state:</b> {html.escape(project.current_state)}</div>'
+            if getattr(project, "current_state", None) else ""
+        )
+
         return f"""<div class="project-card">
           <h3>{html.escape(project.name)} {_badge(project.status)}{category_display}
             <span style="color:#555;font-size:11px;font-weight:normal"> · {progress} items done{owner_display}</span>
           </h3>
           <div class="goal">{html.escape(project.goal)}</div>
+          {current_state_display}
           <table>
             <tr><th>Kind</th><th>Item</th><th>Status</th><th>Tasks</th><th>Notes</th></tr>
             {item_rows}
@@ -925,18 +940,57 @@ evidence and escalates any gap to Paul.</p>
     active_projects = [p for p in projects if p.status != "archived"]
     archived_projects = [p for p in projects if p.status == "archived"]
 
-    cards = "".join(_render_card(p) for p in active_projects)
-    if not cards:
-        cards = '<p style="color:#555;text-align:center;padding:30px">No active projects — see archived below.</p>'
+    # One tab per project (plus a trailing "Archived" tab) instead of one long
+    # vertically-stacked list of cards -- the item tables make each card tall
+    # enough that >3-4 projects made the page unreadable without this.
+    def _tab_id(project_id: str) -> str:
+        return f"tab-{html.escape(project_id, quote=True)}"
 
-    archived_html = ""
+    tab_buttons = []
+    tab_panels = []
+    for i, project in enumerate(active_projects):
+        total = len(project.items)
+        done = sum(1 for it in project.items if it.status == "done")
+        active_cls = " active" if i == 0 else ""
+        tab_buttons.append(
+            f'<button class="tab-btn{active_cls}" data-tab="{_tab_id(project.id)}" '
+            f'onclick="mojoShowTab(this)">{html.escape(project.name)} '
+            f'<span class="tab-count">{done}/{total}</span></button>'
+        )
+        tab_panels.append(
+            f'<div class="tab-panel{active_cls}" id="{_tab_id(project.id)}">{_render_card(project)}</div>'
+        )
+
     if archived_projects:
-        archived_cards = "".join(_render_card(p) for p in archived_projects)
-        archived_html = f"""
-<details style="margin-top:24px">
-  <summary>Archived ({len(archived_projects)})</summary>
-  {archived_cards}
-</details>"""
+        archived_id = "tab-archived"
+        # If there are no active projects, this is the only tab -- it must
+        # default to visible, or the page loads with nothing shown at all.
+        archived_active_cls = " active" if not active_projects else ""
+        tab_buttons.append(
+            f'<button class="tab-btn{archived_active_cls}" data-tab="{archived_id}" onclick="mojoShowTab(this)">'
+            f'Archived <span class="tab-count">{len(archived_projects)}</span></button>'
+        )
+        tab_panels.append(
+            f'<div class="tab-panel{archived_active_cls}" id="{archived_id}">'
+            + "".join(_render_card(p) for p in archived_projects)
+            + "</div>"
+        )
+
+    if not tab_buttons:
+        body = '<p style="color:#555;text-align:center;padding:30px">No active projects — see archived below.</p>'
+    else:
+        body = f"""
+<div class="tab-bar">{"".join(tab_buttons)}</div>
+{"".join(tab_panels)}
+<script>
+function mojoShowTab(btn) {{
+  const bar = btn.parentElement;
+  bar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const targetId = btn.getAttribute('data-tab');
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === targetId));
+}}
+</script>"""
 
     return _page("Projects", f"""
 <h1>Projects</h1>
@@ -944,8 +998,7 @@ evidence and escalates any gap to Paul.</p>
 than a single bounded task — see <code>app/scheduler/project_tracker.py</code>. Audited nightly by
 the <code>project_sentinel</code> role, which verifies each item's claimed status against real repo/PR
 evidence (not just the status label) and escalates any gap to Paul via <code>dispatch_subtask</code>.</p>
-{cards}
-{archived_html}
+{body}
 """)
 
 
