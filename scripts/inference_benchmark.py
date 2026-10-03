@@ -78,7 +78,7 @@ def fail(message: str) -> None:
 # ---------------------------------------------------------------------------
 
 def stream_benchmark(
-    url: str, model: str, prompt: str, max_tokens: int
+    url: str, model: str, prompt: str, max_tokens: int, headers: dict[str, str] | None = None
 ) -> dict[str, Any]:
     """Stream one completion and time first token + steady decode rate.
 
@@ -97,7 +97,7 @@ def stream_benchmark(
 
     t0 = time.perf_counter()
     try:
-        resp = requests.post(url, json=payload, stream=True, timeout=REQUEST_TIMEOUT)
+        resp = requests.post(url, json=payload, headers=headers, stream=True, timeout=REQUEST_TIMEOUT)
     except requests.exceptions.Timeout:
         fail(f"Request to {url} timed out after {REQUEST_TIMEOUT}s")
     except requests.exceptions.ConnectionError as exc:
@@ -105,7 +105,7 @@ def stream_benchmark(
 
     if resp.status_code == 400 and "stream_options" in resp.text:
         payload.pop("stream_options")
-        resp = requests.post(url, json=payload, stream=True, timeout=REQUEST_TIMEOUT)
+        resp = requests.post(url, json=payload, headers=headers, stream=True, timeout=REQUEST_TIMEOUT)
 
     if resp.status_code != 200:
         body = resp.text[:300]
@@ -139,7 +139,16 @@ def stream_benchmark(
             delta = ""
             choices = data.get("choices") or []
             if choices:
-                delta = (choices[0].get("delta") or {}).get("content") or ""
+                # Reasoning models (e.g. Qwen3.6 MoE) stream their tokens via
+                # reasoning_content first, with 'content' only arriving once
+                # the model exits its thinking phase -- a short max_tokens
+                # benchmark run can end entirely within the reasoning phase,
+                # so counting only 'content' sees zero tokens and fails with
+                # "no streamed tokens arrived" even though generation really
+                # happened. Both are real generated tokens for throughput
+                # purposes.
+                d = choices[0].get("delta") or {}
+                delta = d.get("content") or d.get("reasoning_content") or ""
             if delta:
                 now = time.perf_counter()
                 if first_ts is None:
@@ -322,12 +331,22 @@ def parse_args() -> argparse.Namespace:
         help="stub: prints why MTP engagement cannot be confirmed from the "
         "client side (server-side logs required)",
     )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Bearer token for the endpoint (e.g. LM Studio's headless auth). "
+        "Defaults to the LMSTUDIO_API_KEY env var if set.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
+    import os
+
     args = parse_args()
     url = args.url.rstrip("/")
+    api_key = args.api_key or os.environ.get("LMSTUDIO_API_KEY")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
 
     if args.measure_memory:
         run_remote_memory_check("before")
@@ -335,10 +354,10 @@ def main() -> None:
     if args.check_mtp:
         report_mtp_stub()
 
-    short = stream_benchmark(url, args.model, _SHORT_PROMPT, SHORT_MAX_TOKENS)
+    short = stream_benchmark(url, args.model, _SHORT_PROMPT, SHORT_MAX_TOKENS, headers=headers)
     print_result(f"short prompt (~50 tok ctx), max_tokens={SHORT_MAX_TOKENS}", short)
 
-    long = stream_benchmark(url, args.model, _LONG_PROMPT, LONG_MAX_TOKENS)
+    long = stream_benchmark(url, args.model, _LONG_PROMPT, LONG_MAX_TOKENS, headers=headers)
     print_result(f"long prompt (~300-400 tok ctx), max_tokens={LONG_MAX_TOKENS}", long)
 
     print("\n=== summary ===")
