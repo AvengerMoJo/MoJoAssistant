@@ -149,5 +149,72 @@ class TestLoadedStateAwareAcquire(unittest.TestCase):
         self.assertIsNotNone(meta["loaded_models"]["checked_at"])
 
 
+class TestGetStatusSurfacesLoadedField(unittest.TestCase):
+    """2026-10-03: get_status() never surfaced loaded-state at all, even
+    though acquire() has computed it since the 2026-07-21 fix. A role pinned
+    to a cold model (model_preference bypasses LOAD_PENALTY entirely --
+    acquire_by_id() has no load-awareness) thrashed against 56GB of other
+    already-loaded models with no way to see that in real time."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.tmp_path = Path(self.tmp.name)
+        self.meta_path = self.tmp_path / "resource_pool_meta.json"
+        self.log_path = self.tmp_path / "resource_pool_smoke_log.jsonl"
+        self.config_path = self.tmp_path / "resource_pool.json"
+
+        _write_pool_config(self.config_path, {
+            "local_warm": _local_resource("warm-model", priority=4),
+            "local_cold": _local_resource("cold-model", priority=8),
+            "api_resource": {
+                "type": "api", "provider": "openai", "base_url": "https://api.example.com/v1",
+                "model": "gpt-x", "tier": "free_api", "priority": 5, "enabled": True,
+                "context_limit": 32768, "output_limit": 8192,
+            },
+        })
+
+    def _make_manager(self, lms_ps_stdout: str):
+        patchers = [
+            patch.object(ResourceManager, "META_FILE", self.meta_path),
+            patch.object(ResourceManager, "SMOKE_LOG_FILE", self.log_path),
+        ]
+        for p in patchers:
+            p.start()
+            self.addCleanup(p.stop)
+
+        mock_result = subprocess.CompletedProcess(
+            args=["lms", "ps", "--json"], returncode=0, stdout=lms_ps_stdout, stderr="",
+        )
+        run_patcher = patch("subprocess.run", return_value=mock_result)
+        run_patcher.start()
+        self.addCleanup(run_patcher.stop)
+
+        pool_data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        loader_patcher = patch(
+            "app.config.config_loader.load_layered_json_config",
+            return_value=pool_data,
+        )
+        loader_patcher.start()
+        self.addCleanup(loader_patcher.stop)
+
+        return ResourceManager(config_path=str(self.config_path))
+
+    def test_loaded_local_resource_reports_loaded_true(self):
+        rm = self._make_manager(_lms_ps_json(["warm-model"]))
+        status = rm.get_status()
+        self.assertTrue(status["local_warm"]["loaded"])
+
+    def test_cold_local_resource_reports_loaded_false(self):
+        rm = self._make_manager(_lms_ps_json(["warm-model"]))
+        status = rm.get_status()
+        self.assertFalse(status["local_cold"]["loaded"])
+
+    def test_api_resource_reports_loaded_none(self):
+        rm = self._make_manager(_lms_ps_json(["warm-model"]))
+        status = rm.get_status()
+        self.assertIsNone(status["api_resource"]["loaded"])
+
+
 if __name__ == "__main__":
     unittest.main()

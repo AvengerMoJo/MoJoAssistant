@@ -1350,6 +1350,23 @@ class AgenticExecutor:
                     )
                     self._log(msg, "error")
                     return TaskResult(success=False, error_message=msg)
+                # Pinning bypasses acquire()'s LOAD_PENALTY entirely (that
+                # penalty only applies to tier-preference-driven selection),
+                # so a pin can silently force a cold load / VRAM thrashing
+                # against whatever else is already resident -- found live
+                # 2026-10-03 (rebecca_resource_platform_research_2610's
+                # 1800s timeout, root-caused to exactly this). Pin semantics
+                # are intentionally preserved (always use exactly this
+                # resource) -- this only makes the risk visible in real time
+                # instead of discoverable only by reading the session log
+                # after the fact.
+                if resource.type == "local" and pinned_resource_id not in self._rm.get_loaded_resource_ids():
+                    self._log(
+                        f"Task {task.id}: pinned resource '{pinned_resource_id}' is not "
+                        "currently loaded -- this call may incur a cold model load or "
+                        "VRAM contention with other resident models.",
+                        "warning",
+                    )
             elif role_resource_requirements:
                 resource = self._rm.acquire_by_requirements(role_resource_requirements, exclude_ids=_failed_resource_ids)
                 if resource is None:

@@ -650,6 +650,13 @@ class ResourceManager:
             resources_snapshot = list(self._resources.items())
             usage_snapshot = dict(self._usage)
 
+        # Loaded-state was computed for selection (acquire()'s LOAD_PENALTY)
+        # but never surfaced here -- found live 2026-10-03 when a role pinned
+        # to a cold model (model_preference bypasses LOAD_PENALTY entirely,
+        # see acquire_by_id) thrashed against 56GB of other already-loaded
+        # models with no way to see that from status until after the fact.
+        loaded_ids = self.get_loaded_resource_ids()
+
         # Probe local servers outside the lock to avoid blocking
         result = {}
         for rid, resource in resources_snapshot:
@@ -663,6 +670,10 @@ class ResourceManager:
                 "priority": resource.priority,
                 "enabled": resource.enabled,
                 "status": status.value,
+                # Only meaningful for local backends -- API/paid resources
+                # have no VRAM-residency concept, so this is omitted for them
+                # rather than reported as a misleading False.
+                "loaded": (rid in loaded_ids) if resource.type == "local" else None,
                 "total_calls": usage.total_calls,
                 "consecutive_errors": usage.consecutive_errors,
                 "description": resource.description,
