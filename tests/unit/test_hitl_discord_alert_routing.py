@@ -40,9 +40,14 @@ class _FakeMessage:
 class _FakeQueue:
     def __init__(self, tasks: dict):
         self._tasks = tasks
+        self.updated = []
 
     def get(self, task_id):
         return self._tasks.get(task_id)
+
+    def update(self, task):
+        self.updated.append(task.id)
+        self._tasks[task.id] = task
 
 
 class _FakeScheduler:
@@ -174,6 +179,69 @@ class TestIsNotificationOnly:
             "t1": _task(pending_question="Which database should I use, postgres or sqlite?"),
         })
         assert adapter._is_notification_only("t1") is False
+
+
+class TestCompleteNotificationOnlyTask:
+    """2026-10-03: an alert/infra-failure task must complete right after
+    delivery instead of sitting in WAITING_FOR_INPUT forever -- found live
+    with 11 of 20 waiting_for_input tasks being permanent, unreplyable
+    notification-only entries, some over a week old, burying real pending
+    questions."""
+
+    def _real_task(self, source=None, pending_question=None):
+        from app.scheduler.models import Task, TaskStatus, TaskType
+        config = {"source": source} if source else {}
+        return Task(
+            id="alert-1", type=TaskType.CUSTOM, status=TaskStatus.WAITING_FOR_INPUT,
+            config=config, pending_question=pending_question or "Quality Monitor: ...",
+        )
+
+    def test_qm_alert_marked_completed_after_delivery(self, adapter):
+        from app.scheduler.models import TaskStatus
+
+        task = self._real_task(source="quality_monitor")
+        queue = _FakeQueue({"alert-1": task})
+        adapter._scheduler = _FakeScheduler.__new__(_FakeScheduler)
+        adapter._scheduler.queue = queue
+
+        adapter._complete_notification_only_task("alert-1")
+
+        assert task.status == TaskStatus.COMPLETED
+        assert task.pending_question is None
+        assert task.result.success is True
+        assert "alert-1" in queue.updated
+
+    def test_infra_failure_task_marked_completed_after_delivery(self, adapter):
+        from app.scheduler.models import TaskStatus
+
+        task = self._real_task(pending_question="Coding agent backend not reachable and auto-start failed")
+        queue = _FakeQueue({"alert-1": task})
+        adapter._scheduler = _FakeScheduler.__new__(_FakeScheduler)
+        adapter._scheduler.queue = queue
+
+        adapter._complete_notification_only_task("alert-1")
+
+        assert task.status == TaskStatus.COMPLETED
+
+    def test_missing_scheduler_is_a_noop(self, adapter):
+        adapter._scheduler = None
+        adapter._complete_notification_only_task("alert-1")  # must not raise
+
+    def test_missing_task_is_a_noop(self, adapter):
+        adapter._scheduler = _FakeScheduler({})
+        adapter._complete_notification_only_task("does-not-exist")  # must not raise
+
+    def test_already_completed_task_is_not_touched_again(self, adapter):
+        from app.scheduler.models import TaskStatus
+
+        task = self._real_task(source="quality_monitor")
+        task.status = TaskStatus.COMPLETED
+        queue = _FakeQueue({"alert-1": task})
+        adapter._scheduler = _FakeScheduler.__new__(_FakeScheduler)
+        adapter._scheduler.queue = queue
+
+        adapter._complete_notification_only_task("alert-1")
+        assert "alert-1" not in queue.updated
 
 
 class TestInfraFailureRepliesNotConsumed:

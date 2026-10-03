@@ -279,8 +279,39 @@ class DiscordHITLAdapter(HITLAdapter):
             self._pending[msg.id] = (task_id, choices)
             logger.info("[hitl/discord] HITL posted (task=%s, msg=%s)", task_id, msg.id)
             self._stamp_hitl_posted(task_id)
+            if is_alert:
+                self._complete_notification_only_task(task_id)
         except Exception as exc:
             logger.error("[hitl/discord] failed to send HITL: %s", exc, exc_info=True)
+
+    def _complete_notification_only_task(self, task_id: str) -> None:
+        """A notification-only task (QM alert, infra-failure question) has
+        now done its one job -- delivering the notification. Nothing will
+        ever 'reply' to it, so leaving it in WAITING_FOR_INPUT just
+        accumulates forever in the same queue as real pending questions.
+
+        Found live 2026-10-03: 11 of 20 waiting_for_input tasks were these
+        permanent notification-only entries, some over a week old, burying
+        genuinely actionable ones (a real prioritization question sat
+        unanswered the whole time, lost in the noise). Complete it right
+        after delivery instead -- it already did the only thing it was
+        for. Best-effort: a failure here must not unwind the post that
+        already succeeded."""
+        if not self._scheduler:
+            return
+        try:
+            from app.scheduler.models import TaskResult, TaskStatus
+            task = self._scheduler.queue.get(task_id)
+            if task is None or task.status != TaskStatus.WAITING_FOR_INPUT:
+                return
+            task.pending_question = None
+            task.mark_completed(TaskResult(success=True, metrics={"delivered_via": "discord_hitl_alert"}))
+            self._scheduler.queue.update(task)
+        except Exception as exc:
+            logger.warning(
+                "[hitl/discord] could not complete notification-only task %s: %s",
+                task_id, exc, exc_info=True,
+            )
 
     async def send_notification(self, title: str, body: str, severity: str = "info") -> None:
         await self._run_on_client_loop(self._send_notification_impl(title, body, severity))
