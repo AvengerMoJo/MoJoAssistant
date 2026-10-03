@@ -1,0 +1,9 @@
+[
+  {
+    "path": "C:\\Program Files\\LM Studio\\LM Studio.exe",
+    "sha256": "REPLACE_WITH_SHA256_OF_LMSTUDIO_EXE_OR_OMIT"
+  },
+  {
+    "path": "C:\\Tools\\obs\\bin\\64bit\\obs64.exe"
+  }
+]
