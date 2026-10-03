@@ -860,6 +860,55 @@ class ToolRegistry:
                     "required": [],
                 },
             },
+            # Project Hub — ongoing, multi-feature work tracked outside the
+            # single-Task shape (see app/scheduler/project_tracker.py). Exposed
+            # here (not just via CapabilityRegistry) so any MCP client on this
+            # server's HTTP endpoint — including an opencode/herdr agent
+            # session on another tailnet node — can read or update a
+            # project's status without being a role dispatched inside this
+            # scheduler's own loop.
+            {
+                "name": "project",
+                "description": (
+                    "Track ongoing, multi-feature work (a Project) that isn't closed by one "
+                    "Done-when clause. Call with no action for help menu.\n\n"
+                    "action='list'                                             — list every project\n"
+                    "action='get', project_id                                  — full detail for one project\n"
+                    "action='create', project_id, name, goal, owner_role_id?   — create a project\n"
+                    "action='add_item', project_id, item_id, kind, title, status?, notes?        — add a checklist item\n"
+                    "action='update_item_status', project_id, item_id, status, notes?, task_id?   — update a checklist item\n"
+                    "action='set_current_state', project_id, current_state    — set the short 'as of now' status summary\n"
+                    "action='set_category', project_id, category              — set portfolio classification\n"
+                    "action='set_workspace', project_id, git_url, project_label — link a coding-agent workspace\n"
+                    "action='archive', project_id, reason?                    — mark a project archived"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "get", "create", "add_item", "update_item_status", "set_current_state", "set_category", "set_workspace", "archive"],
+                            "description": "Operation to perform. Omit for help menu.",
+                        },
+                        "project_id": {"type": "string", "description": "Unique, stable snake_case id."},
+                        "name": {"type": "string", "description": "Human-readable project name (create)."},
+                        "goal": {"type": "string", "description": "What 'done' looks like for the project as a whole (create)."},
+                        "owner_role_id": {"type": "string", "description": "Role accountable for gaps found on this project (create)."},
+                        "item_id": {"type": "string", "description": "Unique, stable snake_case id within the project (add_item, update_item_status)."},
+                        "kind": {"type": "string", "enum": ["feature", "bug", "update"], "description": "add_item."},
+                        "title": {"type": "string", "description": "add_item."},
+                        "status": {"type": "string", "enum": ["todo", "in_progress", "done", "blocked"], "description": "add_item (default 'todo'), update_item_status."},
+                        "notes": {"type": "string", "description": "add_item, update_item_status — replaces existing notes if provided."},
+                        "task_id": {"type": "string", "description": "update_item_status — scheduler Task id to append to this item's linked task_ids."},
+                        "current_state": {"type": "string", "description": "set_current_state — short prose summary of where this project actually stands right now."},
+                        "category": {"type": "string", "description": "set_category — e.g. 'private', 'public', 'business', 'goodwill', 'optional'."},
+                        "git_url": {"type": "string", "description": "set_workspace."},
+                        "project_label": {"type": "string", "description": "set_workspace, e.g. 'opencode+MoJoAssistant'."},
+                        "reason": {"type": "string", "description": "archive — appended to the project's goal."},
+                    },
+                    "required": [],
+                },
+            },
             # Scheduler Hub
             {
                 "name": "scheduler",
@@ -1193,9 +1242,14 @@ class ToolRegistry:
             {
                 "name": "task_session_read",
                 "description": (
-                    "Read a scheduler task session by task_id. "
-                    "Returns the full message trail, final answer, status, and metadata "
-                    "from ~/.memory/task_sessions/<task_id>.json."
+                    "Read a scheduler task session by task_id -- prefer the returned "
+                    "final_answer for the outcome; the message trail is for diagnosing "
+                    "HOW it got there, not a substitute for final_answer. "
+                    "Always returns only the most recent messages (last_n, capped at 30) "
+                    "with each message's content capped at max_content_chars (capped at "
+                    "2000) -- there is no 'read everything' option, by design: a prior "
+                    "incident had one of these calls return 328KB and choke the caller's "
+                    "own context, contributing to an unrelated task timing out."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -1205,6 +1259,16 @@ class ToolRegistry:
                             "type": "boolean",
                             "description": "Include per-message metadata when true",
                             "default": False,
+                        },
+                        "last_n": {
+                            "type": "integer",
+                            "description": "How many of the most recent messages to return. Hard-capped at 30 regardless of value.",
+                            "default": 20,
+                        },
+                        "max_content_chars": {
+                            "type": "integer",
+                            "description": "Max characters per message's content before truncation. Hard-capped at 2000 regardless of value.",
+                            "default": 1000,
                         },
                     },
                     "required": ["task_id"],
@@ -2042,6 +2106,8 @@ Agent resumes within seconds.
             return await self._execute_memory(args)
         elif name == "knowledge":
             return await self._execute_knowledge(args)
+        elif name == "project":
+            return await self._execute_project(args)
         elif name == "scheduler":
             return await self._execute_scheduler_hub(args)
         elif name == "dream":
@@ -3954,8 +4020,29 @@ Agent resumes within seconds.
 
             task_id = args.get("task_id")
             include_metadata = args.get("include_metadata", False)
-            last_n = int(args.get("last_n") or 20)
-            max_content_chars = int(args.get("max_content_chars") or 1000)
+            # Found live 2026-10-03: Paul's own task_session_read call on another
+            # task's session returned 328,623 chars -- choked his own context and
+            # contributed to a 1800s timeout with zero checkpointed progress. These
+            # two params were never size-ceilinged (nor exposed in the published
+            # schema, so a model could only reach a huge value by guessing), and
+            # `x = int(args.get(k) or default)` silently coerces an explicit 0 back
+            # to the default rather than honoring "no limit" as the tool's own hint
+            # text claims -- neither bug alone explains a value *larger* than
+            # default, but together they show these params were never actually
+            # safe to tune. Hard-cap both regardless of what's requested.
+            _MAX_LAST_N = 30
+            _MAX_CONTENT_CHARS = 2000
+            last_n_raw = args.get("last_n")
+            last_n = _MAX_LAST_N if last_n_raw is None else min(int(last_n_raw) or _MAX_LAST_N, _MAX_LAST_N)
+            if last_n <= 0:
+                last_n = _MAX_LAST_N
+            max_chars_raw = args.get("max_content_chars")
+            max_content_chars = (
+                _MAX_CONTENT_CHARS if max_chars_raw is None
+                else min(int(max_chars_raw) or _MAX_CONTENT_CHARS, _MAX_CONTENT_CHARS)
+            )
+            if max_content_chars <= 0:
+                max_content_chars = _MAX_CONTENT_CHARS
 
             storage = SessionStorage()
             session = storage.load_session(task_id)
@@ -4008,8 +4095,12 @@ Agent resumes within seconds.
             }
             if total_messages > last_n:
                 result["hint"] = (
-                    f"Showing last {last_n} of {total_messages} messages. "
-                    f"Pass last_n=N or last_n=0 for all."
+                    f"Showing last {last_n} of {total_messages} messages "
+                    f"(content capped at {max_content_chars} chars each). "
+                    f"last_n and max_content_chars are hard-capped at {_MAX_LAST_N}/"
+                    f"{_MAX_CONTENT_CHARS} regardless of what's requested -- there is "
+                    f"no 'read everything' option; use final_answer for the outcome "
+                    f"or read specific messages by iteration if you need more detail."
                 )
             return result
 
@@ -5346,7 +5437,12 @@ Agent resumes within seconds.
                     "context_limit  — total context window in tokens (check model card)\n"
                     "output_limit   — max tokens the model can generate per response\n"
                     "input_limit    — max input tokens per request if asymmetric (e.g. free-tier APIs)\n"
-                    "                 Leave null to derive from context_limit - output_limit."
+                    "                 Leave null to derive from context_limit - output_limit.\n"
+                    "rate_limit     — optional {max_calls_per_window, window_seconds, min_interval_seconds}\n"
+                    "                 to cap call frequency against a provider's real limit.\n"
+                    "budget         — optional {max_calls_per_window, window_seconds, reserved_for_user_pct}\n"
+                    "                 agents get (100 - reserved_for_user_pct)% of the window; default 20%\n"
+                    "                 reserved for the user's own direct use of this resource."
                 ),
             }
 
@@ -5407,6 +5503,13 @@ Agent resumes within seconds.
             "context_limit", "output_limit", "input_limit",
             "agentic_capable", "dynamic_discovery",
             "message_format", "completions_path", "timeout",
+            # rate_limit: {"max_calls_per_window", "window_seconds", "min_interval_seconds"}
+            # budget: {"max_calls_per_window", "window_seconds", "reserved_for_user_pct"}
+            # Both are nested dicts already understood by ResourceManager._parse_resource
+            # (app/scheduler/resource_pool.py) — this tool just never passed them through,
+            # which is why zero resources ever had a budget/rate_limit configured despite
+            # the enforcement mechanism (_is_budget_available/_is_rate_limited) existing.
+            "rate_limit", "budget",
         ]
         entry = dict(existing)
         for f in FIELDS:
@@ -5868,11 +5971,13 @@ Agent resumes within seconds.
         }
         result.update(payload)
         if next_step == "complete":
-            # Auto-save — design is confirmed, persist immediately
-            try:
-                role_data = result.get("id") and result or payload
-                # payload IS the role_spec when step=complete
-                saved_path = self._role_manager.save(payload)
+            # RoleDesignSession.submit_answer() now persists the role itself
+            # (see role_designer.py) -- it's the session's own responsibility,
+            # not this one caller's. Just report what it already did rather
+            # than saving a second time here.
+            persisted = payload.get("_persisted") or {}
+            if persisted.get("saved"):
+                saved_path = persisted["path"]
                 result["saved"] = True
                 result["path"] = saved_path
                 result["role_id"] = payload.get("id")
@@ -5880,11 +5985,11 @@ Agent resumes within seconds.
                     f"Role '{payload.get('name')}' saved to {saved_path}. "
                     "It is now available in the role library."
                 )
-            except Exception as e:
+            else:
                 result["saved"] = False
-                result["save_error"] = str(e)
+                result["save_error"] = persisted.get("error", "unknown")
                 result["next_action"] = (
-                    f"Auto-save failed ({e}). Call role_create with "
+                    f"Auto-save failed ({result['save_error']}). Call role_create with "
                     f"session_id='{session_id}' to save manually."
                 )
         return result
@@ -6992,6 +7097,119 @@ Agent resumes within seconds.
             })
         else:
             return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+
+    async def _execute_project(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Project hub dispatcher. Thin wrapper over app/scheduler/project_tracker.py
+        — the single implementation also used by CapabilityRegistry's
+        project_* tools (reachable only from inside this scheduler's own
+        dispatch loop). This hub is the externally-reachable twin, so a
+        human, this assistant, or any MCP client (including a remote
+        opencode/herdr session) sees the same project state."""
+        from app.scheduler import project_tracker as pt
+
+        action = args.get("action")
+
+        HELP = {
+            "tool": "project",
+            "actions": {
+                "list": "List every tracked project",
+                "get": "Full detail for one project — params: project_id",
+                "create": "Create a project — params: project_id, name, goal, owner_role_id?",
+                "add_item": "Add a checklist item — params: project_id, item_id, kind, title, status?, notes?",
+                "update_item_status": "Update a checklist item — params: project_id, item_id, status, notes?, task_id?",
+                "set_current_state": "Set the short 'as of now' status summary — params: project_id, current_state",
+                "set_category": "Set portfolio classification — params: project_id, category",
+                "set_workspace": "Link a coding-agent workspace — params: project_id, git_url, project_label",
+                "archive": "Mark a project archived — params: project_id, reason?",
+            },
+            "example": 'project(action="list")',
+        }
+
+        if not action or action == "help":
+            return HELP
+
+        try:
+            if action == "list":
+                # Compact index rows only -- the full to_dict() per project
+                # (every item, every note) hit 96-109K chars with just 10
+                # projects in real use 2026-10-03, contributing to a
+                # calling task choking its own context and timing out.
+                # Use action='get' for one project's full detail, same
+                # convention as RoleManager.list_roles() vs .get(role_id).
+                projects = []
+                for p in pt.list_projects():
+                    total = len(p.items)
+                    done = sum(1 for it in p.items if it.status == "done")
+                    projects.append({
+                        "id": p.id, "name": p.name, "status": p.status,
+                        "category": p.category, "owner_role_id": p.owner_role_id,
+                        "current_state": p.current_state,
+                        "items_done": f"{done}/{total}",
+                    })
+                return {"projects": projects}
+            elif action == "get":
+                project_id = args.get("project_id")
+                if not project_id:
+                    return {"status": "error", "message": "Parameter 'project_id' is required."}
+                project = pt.load_project(project_id)
+                if project is None:
+                    return {"status": "error", "message": f"Project {project_id!r} not found."}
+                return project.to_dict()
+            elif action == "create":
+                for param in ("project_id", "name", "goal"):
+                    if not args.get(param):
+                        return {"status": "error", "message": f"Parameter '{param}' is required."}
+                project = pt.create_project(
+                    args["project_id"], args["name"], args["goal"],
+                    owner_role_id=args.get("owner_role_id"),
+                )
+                return project.to_dict()
+            elif action == "add_item":
+                for param in ("project_id", "item_id", "kind", "title"):
+                    if not args.get(param):
+                        return {"status": "error", "message": f"Parameter '{param}' is required."}
+                project = pt.add_item(
+                    args["project_id"], args["item_id"], args["kind"], args["title"],
+                    status=args.get("status", "todo"), notes=args.get("notes"),
+                )
+                return project.to_dict()
+            elif action == "update_item_status":
+                for param in ("project_id", "item_id", "status"):
+                    if not args.get(param):
+                        return {"status": "error", "message": f"Parameter '{param}' is required."}
+                project = pt.update_item_status(
+                    args["project_id"], args["item_id"], args["status"],
+                    notes=args.get("notes"), task_id=args.get("task_id"),
+                )
+                return project.to_dict()
+            elif action == "set_current_state":
+                for param in ("project_id", "current_state"):
+                    if not args.get(param):
+                        return {"status": "error", "message": f"Parameter '{param}' is required."}
+                project = pt.set_current_state(args["project_id"], args["current_state"])
+                return project.to_dict()
+            elif action == "set_category":
+                for param in ("project_id", "category"):
+                    if not args.get(param):
+                        return {"status": "error", "message": f"Parameter '{param}' is required."}
+                project = pt.set_category(args["project_id"], args["category"])
+                return project.to_dict()
+            elif action == "set_workspace":
+                for param in ("project_id", "git_url", "project_label"):
+                    if not args.get(param):
+                        return {"status": "error", "message": f"Parameter '{param}' is required."}
+                project = pt.set_workspace(args["project_id"], args["git_url"], args["project_label"])
+                return project.to_dict()
+            elif action == "archive":
+                project_id = args.get("project_id")
+                if not project_id:
+                    return {"status": "error", "message": "Parameter 'project_id' is required."}
+                project = pt.archive_project(project_id, reason=args.get("reason"))
+                return project.to_dict()
+            else:
+                return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
 
     async def _execute_scheduler_hub(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Scheduler hub dispatcher."""
