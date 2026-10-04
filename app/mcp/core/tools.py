@@ -7580,7 +7580,7 @@ Agent resumes within seconds.
             return HELP
 
         if action == "ask_user":
-            return self._execute_external_agent_ask_user(args)
+            return await self._execute_external_agent_ask_user(args)
 
         if action == "check_reply":
             return self._execute_external_agent_check_reply(args)
@@ -7606,13 +7606,46 @@ Agent resumes within seconds.
 
         return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
 
-    def _execute_external_agent_ask_user(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_external_agent_ask_user(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Inject a question from an external coding agent into the HITL inbox."""
         from app.scheduler.hitl_bridge import ask_user as hitl_ask_user
         task_id = (args.get("task_id") or "").strip()
         question = (args.get("question") or "").strip()
         options = args.get("options")
-        return hitl_ask_user(self.scheduler.queue, task_id, question, options)
+        result = hitl_ask_user(self.scheduler.queue, task_id, question, options)
+
+        # hitl_bridge.ask_user() only writes the task into WAITING_FOR_INPUT in
+        # the queue — it does not log a task_waiting_for_input event, so this
+        # never reached attention.blocking or any push adapter (Discord, etc.)
+        # Mirror the broadcast core.py's own agent-pause path sends, so an
+        # external agent's ask_user is indistinguishable from an internal
+        # role's ask_user from the user's side.
+        if result.get("status") == "waiting":
+            try:
+                await self.scheduler._broadcast({
+                    "event_type": "task_waiting_for_input",
+                    "task_id": task_id,
+                    "task_type": "external_agent",
+                    "question": question,
+                    "choices": options,
+                    "severity": "warning",
+                    "title": f"Agent is waiting for your input on task {task_id}",
+                    "notify_user": True,
+                    "context": {
+                        "role_id": "",
+                        "goal_preview": question[:300],
+                        "dashboard_url": "",
+                        "description": question,
+                    },
+                    "data": {
+                        "task_id": task_id,
+                        "question": question,
+                    },
+                })
+            except Exception:
+                pass  # non-critical — the task is still visible via task_sessions either way
+
+        return result
 
     def _execute_external_agent_check_reply(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Poll for user reply to a previous ask_user call."""
