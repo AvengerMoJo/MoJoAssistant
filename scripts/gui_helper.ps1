@@ -59,19 +59,25 @@ function Get-Or-Create-Token {
     if ($env:MOJO_GUI_TOKEN) {
         return @{ token = $env:MOJO_GUI_TOKEN; generated = $false }
     }
+    # $env:USERNAME can fail to resolve as a SID source for a service/RDP
+    # account ("identity references could not be translated"); the current
+    # WindowsIdentity's Name is always resolvable for the running process.
+    $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        # Best-effort ACL: only the current user can read the token file.
-        try {
-            $acl = Get-Acl -Path $dir
-            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                $env:USERNAME, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-            $acl.SetAccessRule($rule)
-            Set-Acl -Path $dir -AclObject $acl
-        } catch {
-            Write-Warning "Could not tighten ACL on $dir : $_"
-        }
+    }
+    # Apply unconditionally, not just on first creation -- a pre-existing
+    # directory (e.g. created by a different account/process) may not grant
+    # this account write access yet.
+    try {
+        $acl = Get-Acl -Path $dir
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $currentIdentity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        $acl.SetAccessRule($rule)
+        Set-Acl -Path $dir -AclObject $acl
+    } catch {
+        Write-Warning "Could not tighten ACL on $dir : $_"
     }
     if (Test-Path -LiteralPath $Path) {
         $existing = (Get-Content -LiteralPath $Path -Raw -Encoding UTF8).Trim()
@@ -87,7 +93,7 @@ function Get-Or-Create-Token {
     try {
         $fileAcl = Get-Acl -Path $Path
         $fileRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $env:USERNAME, 'FullControl', 'None', 'None', 'Allow')
+            $currentIdentity, 'FullControl', 'None', 'None', 'Allow')
         $fileAcl.SetAccessRule($fileRule)
         Set-Acl -Path $Path -AclObject $fileAcl
     } catch {
@@ -155,10 +161,12 @@ function Write-JsonResponse {
 
 function Test-Auth {
     param([System.Net.HttpListenerRequest]$Request, [string]$ExpectedToken)
-    $header = $Request.Headers['Authorization']
-    if (-not $header) { return $false }
-    if ($header.Count -lt 1) { return $false }
-    $value = [string]$header[0]
+    # Headers['Authorization'] returns the combined header value as a plain
+    # System.String (WebHeaderCollection semantics), not a collection -- do
+    # not .Count/[0] into it, that indexes the string's first character.
+    $value = $Request.Headers['Authorization']
+    if (-not $value) { return $false }
+    $value = [string]$value
     if (-not $value.StartsWith('Bearer ', [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
     $presented = $value.Substring(7).Trim()
     if ($presented.Length -ne $ExpectedToken.Length) { return $false }
@@ -296,7 +304,10 @@ function Handle-Screenshot {
 
 $tokenInfo = Get-Or-Create-Token -Path $TokenPath
 $Token = $tokenInfo.token
-$Allowlist = Load-Allowlist -Path $AllowlistPath
+# Wrap in @() -- PowerShell unrolls a 1-element array returned through the
+# output stream into its bare element, which breaks .Count below for an
+# allowlist with exactly one entry.
+$Allowlist = @(Load-Allowlist -Path $AllowlistPath)
 
 if ($tokenInfo.generated) {
     Write-Host ("[gui_helper] Generated new bearer token and wrote it to {0}" -f $TokenPath)
