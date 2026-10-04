@@ -221,7 +221,13 @@ function Handle-Launch {
     }
     try {
         # Use ArgumentList (array) - never `cmd /c`, never a joined string.
-        $proc = Start-Process -FilePath $path -ArgumentList $args -PassThru
+        # An EMPTY array still has to be omitted: -ArgumentList @() fails
+        # parameter validation ("argument is null, empty, or ... null value").
+        if ($args.Count -gt 0) {
+            $proc = Start-Process -FilePath $path -ArgumentList $args -PassThru
+        } else {
+            $proc = Start-Process -FilePath $path -PassThru
+        }
         Write-JsonResponse -Response $Response -Status 200 -Body @{
             ok     = $true
             pid    = $proc.Id
