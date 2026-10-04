@@ -121,6 +121,12 @@ def cmd_screenshot(args, token):
     print(f"wrote {out} ({body.get('width')}x{body.get('height')})")
 
 
+def cmd_describe(args, token):
+    code, body = request("POST", args.host, args.port, "/describe", token, body={"prompt": args.prompt})
+    print(json.dumps(body, indent=2))
+    sys.exit(0 if code == 200 else 1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="gui_helper.ps1 client")
     p.add_argument("--host", default=DEFAULT_HOST)
@@ -148,6 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("screenshot")
     sp.add_argument("output")
     sp.set_defaults(func=cmd_screenshot)
+
+    sp = sub.add_parser("describe")
+    sp.add_argument("prompt")
+    sp.set_defaults(func=cmd_describe)
 
     return p
 

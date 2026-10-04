@@ -92,3 +92,45 @@ def test_health_against_local_stub(tmp_path, monkeypatch):
     assert parsed == {"ok": True, "pid": 4242}
     assert received["auth"] == "Bearer supersecrettoken"
     assert received["path"] == "/health"
+
+
+def test_describe_posts_prompt_to_describe_endpoint(tmp_path):
+    """describe must POST {"prompt": ...} to /describe and print only the text reply."""
+    import http.server
+    import threading
+
+    received: dict = {}
+
+    class Stub(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            received["path"] = self.path
+            length = int(self.headers.get("Content-Length", "0"))
+            received["body"] = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = json.dumps({"ok": True, "text": "top-right, (150, 50)", "width": 1470, "height": 924}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args, **kwargs):
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Stub)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        env = os.environ.copy()
+        env["MOJO_GUI_TOKEN"] = "supersecrettoken"
+        result = subprocess.run(
+            [sys.executable, str(CLIENT), "--port", str(port), "describe", "where is the green quadrant?"],
+            capture_output=True, text=True, env=env, timeout=10,
+        )
+    finally:
+        server.shutdown()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert received["path"] == "/describe"
+    assert received["body"] == {"prompt": "where is the green quadrant?"}
+    assert json.loads(result.stdout)["text"] == "top-right, (150, 50)"

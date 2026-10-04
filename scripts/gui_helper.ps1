@@ -34,6 +34,10 @@
 #   POST /click        body: { x: 100, y: 200, button: "left" }
 #   POST /type         body: { text: "hello" }
 #   GET  /screenshot   -> { bytes_base64: "...", width: ..., height: ... }
+#   POST /describe     body: { prompt: "..." } -> { text: "...", width, height }
+#                      Screenshot goes to the local vision server (-VisionUrl /
+#                      -VisionModel, or MOJO_VISION_URL / MOJO_VISION_MODEL);
+#                      only the model's text reply is returned, never image bytes.
 #
 # LAUNCH
 # ------
@@ -46,7 +50,9 @@ param(
     [int]   $Port           = 8766,
     [string]$TokenPath      = (Join-Path $HOME '.memory\config\gui_helper.token'),
     [string]$AllowlistPath  = (Join-Path $HOME '.memory\config\gui_helper.allowlist.json'),
-    [int]   $MaxBodyBytes   = 1MB
+    [int]   $MaxBodyBytes   = 1MB,
+    [string]$VisionUrl      = $env:MOJO_VISION_URL,
+    [string]$VisionModel    = $env:MOJO_VISION_MODEL
 )
 
 $ErrorActionPreference = 'Stop'
@@ -279,8 +285,7 @@ function Handle-Type {
     Write-JsonResponse -Response $Response -Status 200 -Body @{ ok = $true; length = $text.Length }
 }
 
-function Handle-Screenshot {
-    param([System.Net.HttpListenerResponse]$Response)
+function Get-ScreenshotPng {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
@@ -292,17 +297,62 @@ function Handle-Screenshot {
         $ms = New-Object System.IO.MemoryStream
         try {
             $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-            $bytes = $ms.ToArray()
+            return @{ bytes = $ms.ToArray(); width = $bounds.Width; height = $bounds.Height }
         } finally { $ms.Dispose() }
     } finally {
         $bmp.Dispose()
     }
-    $b64 = [Convert]::ToBase64String($bytes)
+}
+
+function Handle-Screenshot {
+    param([System.Net.HttpListenerResponse]$Response)
+    $shot = Get-ScreenshotPng
     Write-JsonResponse -Response $Response -Status 200 -Body @{
         ok      = $true
-        width   = $bounds.Width
-        height  = $bounds.Height
-        bytes_base64 = $b64
+        width   = $shot.width
+        height  = $shot.height
+        bytes_base64 = [Convert]::ToBase64String($shot.bytes)
+    }
+}
+
+function Handle-Describe {
+    param([System.Net.HttpListenerResponse]$Response, $Body)
+    if (-not $VisionUrl -or -not $VisionModel) {
+        Write-JsonResponse -Response $Response -Status 503 -Body @{ error = 'vision not configured: set -VisionUrl and -VisionModel (or MOJO_VISION_URL / MOJO_VISION_MODEL)' }
+        return
+    }
+    $prompt = if ($Body -and $Body.PSObject.Properties['prompt']) { [string]$Body.prompt } else { '' }
+    if (-not $prompt) {
+        Write-JsonResponse -Response $Response -Status 400 -Body @{ error = 'missing prompt' }
+        return
+    }
+    $shot = Get-ScreenshotPng
+    $b64 = [Convert]::ToBase64String($shot.bytes)
+    $payload = @{
+        model       = $VisionModel
+        temperature = 0
+        max_tokens  = 800
+        messages    = @(@{
+            role    = 'user'
+            content = @(
+                @{ type = 'text'; text = $prompt },
+                @{ type = 'image_url'; image_url = @{ url = "data:image/png;base64,$b64" } }
+            )
+        })
+    } | ConvertTo-Json -Depth 10 -Compress
+    try {
+        $reply = Invoke-RestMethod -Uri ($VisionUrl.TrimEnd('/') + '/chat/completions') -Method Post `
+            -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($payload)) `
+            -TimeoutSec 300
+    } catch {
+        Write-JsonResponse -Response $Response -Status 502 -Body @{ error = "vision server call failed: $($_.Exception.Message)" }
+        return
+    }
+    Write-JsonResponse -Response $Response -Status 200 -Body @{
+        ok     = $true
+        width  = $shot.width
+        height = $shot.height
+        text   = [string]$reply.choices[0].message.content
     }
 }
 
@@ -362,6 +412,7 @@ try {
                 '/click'      { Handle-Click     -Response $resp -Body $body }
                 '/type'       { Handle-Type      -Response $resp -Body $body }
                 '/screenshot' { Handle-Screenshot -Response $resp }
+                '/describe'   { Handle-Describe    -Response $resp -Body $body }
                 default       { Write-JsonResponse -Response $resp -Status 404 -Body @{ error = 'not found'; path = $path } }
             }
         } catch {
