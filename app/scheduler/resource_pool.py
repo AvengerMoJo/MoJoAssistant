@@ -67,6 +67,13 @@ class LLMResource:
     capabilities: List[str] = field(default_factory=list)
     rate_limit: Optional[RateLimit] = None
     budget: Optional[Budget] = None
+    # Profile: lets the pool pick the right brain for a task, not just by priority.
+    size_gb: Optional[float] = None  # model file size on disk
+    vram_gb: Optional[float] = None  # estimated GPU memory when loaded (lms --estimate-only)
+    task_types: List[str] = field(default_factory=list)  # e.g. agentic, small, vision, code
+    load_mode: str = "cloud"  # resident (kept loaded), on_demand (needs approval), cloud
+    approval: str = "none"  # none, hitl (ask the user before loading or paying)
+    credential_route: Optional[str] = None  # route id in the credential service, when keys come from there
 
 
 @dataclass
@@ -401,6 +408,12 @@ class ResourceManager:
             model=conf.get("model", ""),
             tier=self._parse_tier(conf.get("tier", "free")),
             priority=conf.get("priority", 1),
+            size_gb=conf.get("size_gb"),
+            vram_gb=conf.get("vram_gb"),
+            task_types=conf.get("task_types", []),
+            load_mode=conf.get("load_mode", "cloud"),
+            approval=conf.get("approval", "none"),
+            credential_route=conf.get("credential_route"),
             enabled=conf.get("enabled", True),
             api_key=api_key,
             api_key_env=api_key_env,
