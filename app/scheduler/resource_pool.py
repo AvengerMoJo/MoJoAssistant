@@ -502,6 +502,38 @@ class ResourceManager:
 
             return best
 
+    def find_tier_restriction_conflict(self, tiers: List[ResourceTier]) -> Optional[str]:
+        """
+        Describe how an explicit tier restriction hides better-priority resources.
+
+        acquire() filters strictly on tier, so a task pinned to ['free_api']
+        never sees a higher-priority local model (found 2026-10-07: the
+        sentinel burned through every cloud account and died while the two
+        resident local models sat idle). Returns None when the restriction
+        costs nothing; otherwise a message naming the hidden resources.
+        Paid resources are ignored: they are gated by approval, not priority.
+        """
+        with self._lock:
+            enabled = [
+                r for r in self._resources.values()
+                if r.enabled and r.tier != ResourceTier.PAID
+            ]
+            allowed = [r for r in enabled if r.tier in tiers]
+            best_allowed = min((r.priority for r in allowed), default=None)
+            hidden = [
+                r for r in enabled
+                if r.tier not in tiers and (best_allowed is None or r.priority < best_allowed)
+            ]
+            if not hidden:
+                return None
+            hidden.sort(key=lambda r: r.priority)
+            hidden_desc = ", ".join(f"{r.id} (priority {r.priority}, tier {r.tier.value})" for r in hidden)
+            best_desc = f"priority {best_allowed}" if best_allowed is not None else "no enabled resource"
+            return (
+                f"tier_preference {[t.value for t in tiers]} hides higher-priority resources: "
+                f"{hidden_desc}; best allowed has {best_desc}"
+            )
+
     def acquire_by_id(self, resource_id: str) -> Optional[LLMResource]:
         """
         Acquire a specific resource by ID, applying the same availability checks as acquire().

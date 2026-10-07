@@ -1377,6 +1377,19 @@ class AgenticExecutor:
                     self._log(msg, "error")
                     return TaskResult(success=False, error_message=msg)
             else:
+                # An explicit task-level tier pin that hides better-priority
+                # resources must be justified (tier_restriction_reason) or the
+                # task fails up front -- not after burning through the
+                # resources the pin left visible.
+                if "tier_preference" in config and not config.get("tier_restriction_reason"):
+                    conflict = self._rm.find_tier_restriction_conflict(tier_preference)
+                    if conflict:
+                        msg = (
+                            f"Task {task.id}: {conflict}. Fix the task's tier_preference, or set "
+                            "config.tier_restriction_reason if the restriction is intentional."
+                        )
+                        self._log(msg, "error")
+                        return TaskResult(success=False, error_message=msg)
                 resource = self._rm.acquire(tier_preference=iter_tiers, exclude_ids=_failed_resource_ids)
             if resource is None:
                 msg = (
