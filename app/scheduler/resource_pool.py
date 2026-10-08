@@ -191,6 +191,42 @@ class ResourceManager:
         self._load_usage()
         self._load_meta()
         self._load_config()
+        self.prune_orphan_usage()
+
+    PRUNED_USAGE_FILE_NAME = "resource_pool_usage_pruned.json"
+
+    def prune_orphan_usage(self) -> List[str]:
+        """Drop usage records for resources that are no longer in the config.
+
+        Removed or renamed resources left records behind (72 usage keys against 31 live
+        resources on 2026-10-08), which skews any usage or cost analysis. Pruned records
+        are appended to a sidecar file with a timestamp, never discarded. Nothing is
+        pruned when no resources loaded (a failed config read must not wipe history).
+        """
+        with self._lock:
+            if not self._resources:
+                return []
+            orphans = [rid for rid in self._usage if rid not in self._resources]
+            if not orphans:
+                return []
+            archive_path = self.USAGE_FILE.parent / self.PRUNED_USAGE_FILE_NAME
+            try:
+                archive = json.loads(archive_path.read_text(encoding="utf-8")) if archive_path.exists() else {}
+            except ValueError:
+                archive = {}
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+            for rid in orphans:
+                u = self._usage[rid]
+                archive.setdefault(rid, []).append({
+                    "pruned_at": stamp, "total_calls": u.total_calls, "last_call_at": u.last_call_at,
+                    "rate_limited_until": u.rate_limited_until,
+                })
+            archive_path.write_text(json.dumps(archive, indent=2), encoding="utf-8")
+            for rid in orphans:
+                del self._usage[rid]
+            self._persist_usage()
+        self._log(f"Pruned {len(orphans)} orphan usage record(s) (archived in {self.PRUNED_USAGE_FILE_NAME}): {sorted(orphans)}")
+        return orphans
 
     def _load_sandbox_env(self):
         """Load API keys from the sandbox env file (~/.memory/resource_pool.env)."""
