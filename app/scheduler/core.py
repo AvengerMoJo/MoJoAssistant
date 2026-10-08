@@ -6,6 +6,7 @@ Persistent ticker that continuously checks for work and executes tasks.
 # [mojo-integration]
 
 import asyncio
+import time
 import json
 import signal
 import sys
@@ -238,6 +239,35 @@ class Scheduler:
         3. Update statistics
         4. Sleep until next tick
         """
+        lag_monitor = asyncio.create_task(self._loop_lag_monitor(), name="loop-lag-monitor")
+        try:
+            await self._ticker_loop_body()
+        finally:
+            lag_monitor.cancel()
+
+    async def _loop_lag_monitor(self, interval: float = 1.0, warn_after: float = 5.0) -> None:
+        """Name any stall of the scheduler's event loop and what was running during it.
+
+        A blocking call on this loop silently freezes ticks, wall-clock timeouts,
+        probes and notifications (bash_exec did, 2026-10-08; a dreaming run did for
+        2m38s). The loop cannot report a stall while it is stalled, so this reports
+        it the moment it recovers.
+        """
+        last = time.monotonic()
+        while True:
+            await asyncio.sleep(interval)
+            now = time.monotonic()
+            lag = now - last - interval
+            last = now
+            if lag > warn_after:
+                running = sorted(t.get_name() for t in self._running_tasks)
+                self._log(
+                    f"Event loop stalled for {lag:.1f}s while running {running or 'nothing'} -- "
+                    "a blocking call on the scheduler loop",
+                    "warning",
+                )
+
+    async def _ticker_loop_body(self):
         while self.running:
             try:
                 self.tick_count += 1
