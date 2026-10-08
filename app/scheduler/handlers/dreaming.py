@@ -166,6 +166,19 @@ class DreamingHandler(TaskHandler):
                     "automatic": automatic,
                 }
 
+                # Result contract: real input must yield real output. The pipeline archives empty
+                # results "with flags" and reports success, so an unusable LLM answer used to look
+                # like a good night (2026-10-08).
+                violation = self._output_contract_violation(
+                    conversation_text, metrics["b_chunks_count"], metrics["c_clusters_count"]
+                )
+                if violation:
+                    ctx.log(f"Dreaming task {task.id}: {violation}", "error")
+                    return TaskResult(success=False, error_message=violation)
+
+                if auto_metadata.get("watermark_candidate"):
+                    self._commit_global_watermark(auto_metadata["watermark_candidate"])
+
                 if ctx._memory_service:
                     indexed = self._index_clusters_to_knowledge_base(
                         ctx=ctx,
@@ -591,6 +604,38 @@ class DreamingHandler(TaskHandler):
             return start_minutes <= now_minutes <= end_minutes
         return now_minutes >= start_minutes or now_minutes <= end_minutes
 
+    MIN_INPUT_CHARS_FOR_OUTPUT = 400
+
+    @classmethod
+    def _output_contract_violation(cls, input_text: str, chunks: int, clusters: int) -> Optional[str]:
+        """Message if non-trivial input produced no usable output, else None."""
+        if len(input_text or "") >= cls.MIN_INPUT_CHARS_FOR_OUTPUT and (chunks == 0 or clusters == 0):
+            return (
+                f"dreaming produced {chunks} chunks and {clusters} clusters from {len(input_text)} chars of "
+                "input; the LLM output was unusable and nothing was consolidated"
+            )
+        return None
+
+    @staticmethod
+    def _global_watermark_path() -> Path:
+        return Path(get_memory_subpath("state", "global_dream_watermark.json"))
+
+    @classmethod
+    def _read_global_watermark(cls) -> Optional[str]:
+        try:
+            return json.loads(cls._global_watermark_path().read_text(encoding="utf-8")).get("created_at")
+        except FileNotFoundError:
+            return None
+
+    @classmethod
+    def _commit_global_watermark(cls, created_at: str) -> None:
+        """Record the newest message that has been dreamed. Written only after a successful run."""
+        path = cls._global_watermark_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"created_at": created_at, "updated_at": datetime.now().isoformat()}), encoding="utf-8")
+        tmp.replace(path)
+
     @staticmethod
     def _build_automatic_dreaming_input(config: dict) -> Optional[dict]:
         lookback = int(config.get("lookback_messages", 200))
@@ -622,13 +667,25 @@ class DreamingHandler(TaskHandler):
         if not data:
             return None
 
-        recent = data[-lookback:] if len(data) > lookback else data
+        # Only messages newer than the last successful run are dreamed (oldest first, so a backlog is
+        # worked off over several nights). Before this the job re-dreamed the same last-N messages
+        # every night and never reached anything older. No watermark yet -> start from the latest N.
+        watermark = DreamingHandler._read_global_watermark()
+        if watermark:
+            fresh = [m for m in data if str(m.get("created_at") or "") > watermark]
+            recent = fresh[:lookback]
+        else:
+            recent = data[-lookback:] if len(data) > lookback else data
         lines = []
+        newest = watermark
         for msg in recent:
             role = msg.get("message_type", "unknown")
             content = str(msg.get("text_content", "")).strip()
             if content:
                 lines.append(f"[{role}] {content}")
+            created = str(msg.get("created_at") or "")
+            if created and (newest is None or created > newest):
+                newest = created
 
         if not lines:
             return None
@@ -642,6 +699,7 @@ class DreamingHandler(TaskHandler):
                 "trigger": "scheduler_automatic",
                 "source": str(used_path) if used_path else "unknown",
                 "message_count": len(lines),
+                "watermark_candidate": newest,
                 "generated_at": now.isoformat(),
                 "original_text": "\n".join(lines),
             },

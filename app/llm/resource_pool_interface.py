@@ -23,6 +23,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class DreamingLLMError(RuntimeError):
+    """An LLM call made for the dreaming pipeline failed or returned nothing usable.
+
+    generate_response() used to log such failures and return "" -- which the pipeline cannot
+    tell from an empty answer, so a run with no working LLM archived empty results and
+    reported success (2026-10-08: global dreaming "completed" for a week with no new archive).
+    """
+
+
 class ResourcePoolLLMInterface:
     """
     LLM interface for the dreaming pipeline backed by ResourceManager.
@@ -65,9 +74,11 @@ class ResourcePoolLLMInterface:
                     return future.result(timeout=120)
             else:
                 return loop.run_until_complete(self._generate(query))
+        except DreamingLLMError:
+            raise
         except (TimeoutError, RuntimeError, OSError) as e:
             logger.error(f"ResourcePoolLLMInterface.generate_response failed: {e}")
-            return ""
+            raise DreamingLLMError(f"LLM call failed: {type(e).__name__}: {e}") from e
 
     async def _generate(self, query: str) -> str:
         from app.llm.unified_client import UnifiedLLMClient
@@ -82,8 +93,7 @@ class ResourcePoolLLMInterface:
             resource = self._rm.acquire()
 
         if resource is None:
-            logger.warning("ResourcePoolLLMInterface: no resource available")
-            return ""
+            raise DreamingLLMError("no LLM resource available for dreaming")
 
         resource_config = {
             "base_url": resource.base_url,
@@ -104,10 +114,11 @@ class ResourcePoolLLMInterface:
         except (TimeoutError, ConnectionError, OSError) as e:
             self._rm.record_usage(resource.id, success=False, error_message=str(e))
             logger.error(f"ResourcePoolLLMInterface._generate failed: {e}")
-            return ""
+            raise DreamingLLMError(f"{resource.id}: {type(e).__name__}: {e}") from e
 
         self._rm.record_usage(resource.id, success=True)
         choices = data.get("choices", [])
-        if not choices:
-            return ""
-        return choices[0].get("message", {}).get("content", "") or ""
+        content = (choices[0].get("message", {}).get("content", "") or "") if choices else ""
+        if not content.strip():
+            raise DreamingLLMError(f"{resource.id} returned an empty completion")
+        return content

@@ -502,6 +502,7 @@ class Scheduler:
             "iterations": metrics.get("iterations"),
             "session_file": metrics.get("session_file"),
             "final_answer_chars": len(str(metrics.get("final_answer") or "")),
+            "skipped_reason": metrics.get("reason") if metrics.get("skipped") else None,
         }
         try:
             self._run_ledger.append(entry)
