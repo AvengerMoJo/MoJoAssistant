@@ -18,7 +18,7 @@ from app.config.paths import get_memory_subpath
 from app.scheduler.log_util import emit
 from app.scheduler.models import DEFAULT_TIER_PREFERENCE
 from app.scheduler.model_registry import get_registry, lookup_model
-from app.scheduler import resource_health
+from app.scheduler import resource_health, resource_quota
 
 
 class ResourceTier(Enum):
@@ -77,6 +77,8 @@ class LLMResource:
     load_mode: str = "cloud"  # resident (kept loaded), on_demand (needs approval), cloud
     approval: str = "none"  # none, hitl (ask the user before loading or paying)
     credential_route: Optional[str] = None  # route id in the credential service, when keys come from there
+    quotas: List["resource_quota.QuotaWindow"] = field(default_factory=list)  # renewing allowance windows; ALL must have room
+    config_error: Optional[str] = None  # set (and the resource disabled) when its config could not be applied
     health_check: bool = True  # False: provider has no usable listing endpoint; never probe it
     health_path: str = "/models"  # endpoint under base_url the liveness probe GETs
 
@@ -93,6 +95,10 @@ class UsageRecord:
     # _compute_status() — a provider that says "resets at 15:04:03" should be
     # trusted over a flat 5-minute guess.
     rate_limited_until: Optional[float] = None
+    # Timestamps of calls the provider served, for renewing quota windows.
+    # Unlike call_timestamps (in-memory, all attempts, resets on restart) this
+    # is persisted: a weekly or monthly allowance must survive a restart.
+    quota_calls: Deque[float] = field(default_factory=deque)
 
 
 class ResourceManager:
@@ -191,6 +197,7 @@ class ResourceManager:
                     # mojoassistant should not un-rate-limit a still-exhausted
                     # provider.
                     rate_limited_until=rec.get("rate_limited_until"),
+                    quota_calls=deque(rec.get("quota_calls", [])),
                 )
             self._log(f"Loaded usage stats for {len(data)} resource(s)")
         except Exception as e:
@@ -206,6 +213,7 @@ class ResourceManager:
                     "last_call_at": usage.last_call_at,
                     "consecutive_errors": usage.consecutive_errors,
                     "rate_limited_until": usage.rate_limited_until,
+                    "quota_calls": list(usage.quota_calls),
                 }
             self.USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.USAGE_FILE.write_text(
@@ -409,6 +417,17 @@ class ResourceManager:
                 reserved_for_user_pct=b.get("reserved_for_user_pct", 20.0),
             )
 
+        quotas: List[resource_quota.QuotaWindow] = []
+        config_error: Optional[str] = None
+        try:
+            quotas = resource_quota.parse_windows(conf.get("quotas"))
+        except (ValueError, TypeError) as e:
+            # A quota that cannot be read must not be ignored (the resource
+            # could overspend its plan), and must not take the whole pool down:
+            # this one resource is disabled and the reason is surfaced.
+            config_error = f"invalid quotas: {e}"
+            self._log(f"Resource '{rid}' disabled: {config_error}", "error")
+
         return LLMResource(
             id=rid,
             type=conf.get("type", "local"),
@@ -425,7 +444,9 @@ class ResourceManager:
             credential_route=conf.get("credential_route"),
             health_check=conf.get("health_check", True),
             health_path=conf.get("health_path", "/models"),
-            enabled=conf.get("enabled", True),
+            enabled=conf.get("enabled", True) and config_error is None,
+            quotas=quotas,
+            config_error=config_error,
             api_key=api_key,
             api_key_env=api_key_env,
             context_limit=conf.get("context_limit", 32768),
@@ -761,6 +782,12 @@ class ResourceManager:
             if success:
                 usage.consecutive_errors = 0
                 usage.rate_limited_until = None
+                resource = self._resources.get(resource_id)
+                if resource is not None and resource.quotas:
+                    usage.quota_calls.append(now)
+                    horizon = now - resource_quota.lookback_seconds(resource.quotas)
+                    while usage.quota_calls and usage.quota_calls[0] < horizon:
+                        usage.quota_calls.popleft()
             else:
                 usage.consecutive_errors += 1
                 if error_message:
@@ -820,6 +847,8 @@ class ResourceManager:
                 "enabled": resource.enabled,
                 "status": status.value,
                 "health": self._health[rid].to_dict() if rid in self._health else None,
+                "quota": [w.to_dict() for w in self.quota_status(rid)],
+                "config_error": resource.config_error,
                 # Only meaningful for local backends -- API/paid resources
                 # have no VRAM-residency concept, so this is omitted for them
                 # rather than reported as a misleading False.
@@ -1252,6 +1281,23 @@ class ResourceManager:
         return False
 
     def _is_budget_available(self, resource: LLMResource) -> bool:
+        """Usable only while the legacy single-window budget AND every renewing
+        quota window still have room."""
+        if not self._legacy_budget_available(resource):
+            return False
+        return not any(w.exhausted for w in self.quota_status(resource.id))
+
+    def quota_status(self, resource_id: str) -> List["resource_quota.WindowStatus"]:
+        """Per-window usage for a resource's renewing quotas (empty when none are configured)."""
+        with self._lock:
+            resource = self._resources.get(resource_id)
+            if resource is None or not resource.quotas:
+                return []
+            usage = self._usage.get(resource_id)
+            stamps = list(usage.quota_calls) if usage else []
+        return resource_quota.evaluate(resource.quotas, stamps, time.time())
+
+    def _legacy_budget_available(self, resource: LLMResource) -> bool:
         budget = resource.budget
         if budget is None:
             return True  # No budget constraint
