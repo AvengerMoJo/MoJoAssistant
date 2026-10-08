@@ -8,6 +8,7 @@ call history out of -- the live files (found 2026-10-08).
 import pytest
 
 from app.scheduler.resource_pool import ResourceManager
+from app.scheduler.run_ledger import RunLedger
 
 
 @pytest.fixture(autouse=True)
@@ -16,4 +17,12 @@ def _isolate_resource_manager_files(tmp_path, monkeypatch):
     monkeypatch.setattr(ResourceManager, "META_FILE", tmp_path / "resource_pool_meta.json")
     monkeypatch.setattr(ResourceManager, "SMOKE_LOG_FILE", tmp_path / "resource_pool_smoke_log.jsonl")
     monkeypatch.setattr(ResourceManager, "KNOWN_IDS_FILE", tmp_path / "resource_pool_known_ids.json")
+
+    # A real Scheduler(...) built by a test writes run-ledger lines; keep them out of ~/.memory/runs.
+    original_init = RunLedger.__init__
+
+    def isolated_init(self, directory=None):
+        original_init(self, directory if directory is not None else tmp_path / "runs")
+
+    monkeypatch.setattr(RunLedger, "__init__", isolated_init)
     yield

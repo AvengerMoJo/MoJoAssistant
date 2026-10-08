@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
 from app.scheduler.core import Scheduler
+from tests.unit.sched_test_support import wire_run_tracking
 from app.scheduler.models import Task, TaskResult, TaskStatus, TaskType, clear_run_state
 
 STALE = {
@@ -27,6 +28,7 @@ def _task(cron="0 6 * * *", **cfg):
 
 def _sched(tasks):
     s = Scheduler.__new__(Scheduler)
+    wire_run_tracking(s)
     s._log = MagicMock()
     s.queue = MagicMock()
     s.queue.tasks = {t.id: t for t in tasks}
@@ -66,6 +68,7 @@ class TestRescheduleClearsState(unittest.TestCase):
     def test_successful_cron_cycle_clears_it(self):
         async def run():
             s = Scheduler.__new__(Scheduler)
+            wire_run_tracking(s)
             s._log = MagicMock()
             s.stats = {"tasks_failed": 0, "tasks_completed": 0, "tasks_executed": 0}
             s.queue = MagicMock()

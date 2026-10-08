@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 from app.scheduler import resource_quota as rq
 from app.scheduler.core import Scheduler
+from tests.unit.sched_test_support import wire_run_tracking
 from app.scheduler.models import Task, TaskStatus, TaskType
 from app.scheduler.resource_pool import ResourceManager
 
@@ -78,6 +79,7 @@ class TestHarvestCandidates(unittest.TestCase):
 class TestSchedulerHarvest(unittest.TestCase):
     def _sched(self, tasks, candidates, cfg=None):
         s = Scheduler.__new__(Scheduler)
+        wire_run_tracking(s)
         s._log = MagicMock()
         s._broadcast = MagicMock(side_effect=lambda *a, **k: asyncio.sleep(0))
         s.queue = MagicMock()

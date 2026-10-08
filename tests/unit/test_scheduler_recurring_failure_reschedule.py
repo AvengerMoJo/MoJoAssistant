@@ -10,6 +10,7 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 from app.scheduler.core import Scheduler
+from tests.unit.sched_test_support import wire_run_tracking
 from app.scheduler.models import Task, TaskResult, TaskStatus, TaskType
 
 
@@ -22,6 +23,7 @@ def _task(cron=None):
 class TestRescheduleHelper(unittest.TestCase):
     def _sched(self):
         s = Scheduler.__new__(Scheduler)
+        wire_run_tracking(s)
         s._log = MagicMock()
         return s
 
@@ -46,6 +48,7 @@ class TestRescheduleHelper(unittest.TestCase):
 class TestFailureExitsReschedule(unittest.TestCase):
     def _run(self, task, execute):
         s = Scheduler.__new__(Scheduler)
+        wire_run_tracking(s)
         s._log = MagicMock()
         s.stats = {"tasks_failed": 0, "tasks_completed": 0, "tasks_executed": 0}
         s.queue = MagicMock()

@@ -3295,6 +3295,22 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"Failed to list tasks: {str(e)}"}
 
+    async def _execute_scheduler_runs(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read the run ledger: recent runs, or a per-task summary with last success / last error."""
+        from datetime import datetime as _dt, timedelta as _td
+        from app.scheduler.run_ledger import RunLedger
+        ledger = getattr(getattr(self, "scheduler", None), "_run_ledger", None) or RunLedger()
+        try:
+            if args.get("summary"):
+                hours = int(args.get("hours", 168))
+                return {"status": "success", "window_hours": hours,
+                        "tasks": ledger.summary(_dt.now() - _td(hours=hours))}
+            limit = int(args.get("limit", 20))
+            runs = ledger.recent(args.get("task_id"), limit=limit)
+            return {"status": "success", "count": len(runs), "runs": runs}
+        except (ValueError, OSError) as e:
+            return {"status": "error", "message": f"Could not read the run ledger: {e}"}
+
     async def _execute_scheduler_get_status(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -7235,6 +7251,7 @@ Agent resumes within seconds.
                 "daemon_stop":    "Stop the scheduler daemon",
                 "daemon_restart": "Restart the scheduler daemon — reloads core .py modules by default so code changes take effect (pass reload_modules=false for fast restart without reload)",
                 "list_tools":     "Tools available to scheduled agents",
+                "runs":           "Run history ledger (every run, any outcome) — params: task_id?, limit?(default 20), summary?(true = per-task counts, last success, last error), hours?(summary window, default 168)",
             },
             "note": "To reply to a waiting task use reply_to_task(task_id=..., reply=...) directly.",
             "example": 'scheduler(action="list", status="waiting_for_input")',
@@ -7323,6 +7340,8 @@ Agent resumes within seconds.
             return await self._execute_scheduler_restart_daemon({})
         elif action == "list_tools":
             return await self._execute_scheduler_list_assistant_tools({})
+        elif action == "runs":
+            return await self._execute_scheduler_runs(args)
         else:
             return {**HELP, "error": f"Unknown action '{action}'. See 'actions' above."}
 

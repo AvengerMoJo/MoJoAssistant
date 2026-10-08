@@ -68,8 +68,14 @@ class EventLog:
     # Public API
     # ------------------------------------------------------------------
 
+    # Heartbeat-style events are for live SSE clients only. They were 69% of the 500-event
+    # store (346/500), leaving ~2 days of real history (found 2026-10-08).
+    EPHEMERAL_EVENT_TYPES = frozenset({"scheduler_tick"})
+
     async def append(self, event: Dict[str, Any]) -> None:
-        """Add an event to the log and persist atomically."""
+        """Add an event to the log and persist atomically (ephemeral events are not persisted)."""
+        if event.get("event_type") in self.EPHEMERAL_EVENT_TYPES:
+            return
         # Ensure required fields
         if "id" not in event:
             event = dict(event)

@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 
 from app.scheduler.queue import TaskQueue
+from app.scheduler.run_ledger import RunLedger, classify_error
 from app.scheduler.models import (
     Task, TaskStatus, TaskType, Schedule, TaskPriority, TaskResources, clear_run_state,
     is_infra_failure_question,
@@ -93,6 +94,9 @@ class Scheduler:
         self._benchmark_store = BenchmarkStore()
         self._idle_since: Optional[datetime] = None
         self._probing_resources = False
+        self._run_ledger = RunLedger()
+        self._run_notes: Dict[str, Dict[str, Any]] = {}
+        self._harvested_task_ids: set = set()
         # How long the queue must be empty before triggering a benchmark rerun (seconds)
         self._benchmark_idle_threshold: int = 600  # 10 minutes
 
@@ -458,7 +462,80 @@ class Scheduler:
             except Exception:
                 pass  # non-critical
 
+    def _note_outcome(self, task: Task, outcome: str, error: Optional[str] = None, result: Optional[Any] = None) -> None:
+        """Declare how this run ended; _execute_task turns it into a ledger record."""
+        self._run_notes[task.id] = {"outcome": outcome, "error": error, "result": result}
+
+    def _finish_run(self, task: Task, started: datetime, attempt: int) -> None:
+        """Write the run ledger entry and close any session still marked running."""
+        note = self._run_notes.pop(task.id, None)
+        if note is None:
+            note = {"outcome": "error", "error": "run exited without declaring an outcome", "result": None}
+        ended = datetime.now()
+        result = note.get("result")
+        metrics = (getattr(result, "metrics", None) or {}) if result is not None else {}
+        resources = list(dict.fromkeys(
+            it.get("resource") for it in (metrics.get("iteration_log") or []) if it.get("resource")
+        ))
+        if task.id in self._harvested_task_ids:
+            self._harvested_task_ids.discard(task.id)
+            trigger = "harvest"
+        elif task.cron_expression:
+            trigger = "cron"
+        else:
+            trigger = "retry" if attempt > 1 else "one_shot"
+        error = note.get("error")
+        entry = {
+            "run_id": f"{task.id}@{started.isoformat(timespec='seconds')}",
+            "task_id": task.id,
+            "task_type": task.type.value,
+            "role_id": (task.config or {}).get("role_id"),
+            "trigger": trigger,
+            "attempt": attempt,
+            "started_at": started.isoformat(timespec="seconds"),
+            "ended_at": ended.isoformat(timespec="seconds"),
+            "duration_s": round((ended - started).total_seconds(), 1),
+            "outcome": note["outcome"],
+            "error": (str(error)[:500] if error else None),
+            "error_class": classify_error(error),
+            "resources": resources,
+            "iterations": metrics.get("iterations"),
+            "session_file": metrics.get("session_file"),
+            "final_answer_chars": len(str(metrics.get("final_answer") or "")),
+        }
+        try:
+            self._run_ledger.append(entry)
+        except Exception as e:
+            self._log(f"Run ledger write failed for {task.id}: {type(e).__name__}: {e}", "error")
+
+        # A run that ended badly must not leave its session reading "running".
+        if note["outcome"] in ("failed", "timed_out", "failed_infra", "error"):
+            try:
+                from app.scheduler.session_storage import SessionStorage
+                storage = SessionStorage()
+                session = storage.load_session(task.id)
+                if session is not None and session.status == "running":
+                    storage.update_status(
+                        task.id, "timed_out" if note["outcome"] == "timed_out" else "failed",
+                        error_message=str(error)[:500] if error else None,
+                    )
+            except Exception as e:
+                self._log(f"Could not finalize session for {task.id}: {type(e).__name__}: {e}", "error")
+
     async def _execute_task(self, task: Task):
+        """Run one task, then record how it ended in the run ledger (any task type, any outcome)."""
+        started = datetime.now()
+        attempt = (task.retry_count or 0) + 1
+        self._run_notes.pop(task.id, None)
+        try:
+            await self._execute_task_body(task)
+        except asyncio.CancelledError:
+            self._note_outcome(task, "error", "cancelled")
+            raise
+        finally:
+            self._finish_run(task, started, attempt)
+
+    async def _execute_task_body(self, task: Task):
         """
         Execute a single task
 
@@ -501,6 +578,7 @@ class Scheduler:
                     "error",
                 )
                 task.mark_failed(f"Task timed out after {max_duration}s")
+                self._note_outcome(task, "timed_out", task.last_error)
                 self.stats["tasks_failed"] += 1
                 self._reschedule_recurring_after_failure(task, task.last_error)
                 self.queue.update(task)
@@ -529,6 +607,7 @@ class Scheduler:
             # is still polling it.
             if result.waiting_for_input and is_infra_failure_question(result.waiting_for_input):
                 task.mark_failed(result.waiting_for_input)
+                self._note_outcome(task, "failed_infra", task.last_error, result)
                 self.stats["tasks_failed"] += 1
                 self._reschedule_recurring_after_failure(task, task.last_error)
                 self.queue.update(task)
@@ -549,6 +628,7 @@ class Scheduler:
             if result.waiting_for_input:
                 task.status = TaskStatus.WAITING_FOR_INPUT
                 task.pending_question = result.waiting_for_input
+                self._note_outcome(task, "waiting_for_input", str(result.waiting_for_input)[:300], result)
                 task.config["resume_from_task_id"] = task.id
                 if result.waiting_for_input_choices:
                     task.config["pending_options"] = result.waiting_for_input_choices
@@ -590,6 +670,7 @@ class Scheduler:
 
             if result.success:
                 task.mark_completed(result)
+                self._note_outcome(task, "completed", None, result)
                 self.stats["tasks_succeeded"] += 1
                 self._log(f"Task {task.id} completed successfully")
                 # Record execution metrics (non-blocking, errors are swallowed)
@@ -649,12 +730,14 @@ class Scheduler:
             else:
                 # Check if can retry
                 if task.can_retry():
+                    self._note_outcome(task, "failed_will_retry", result.error_message, result)
                     task.retry_count += 1
                     task.status = TaskStatus.PENDING  # Re-queue for retry
                     self._log(
                         f"Task {task.id} failed, will retry ({task.retry_count}/{task.max_retries})"
                     )
                 else:
+                    self._note_outcome(task, "failed", result.error_message, result)
                     task.status = TaskStatus.FAILED
                     task.completed_at = datetime.now()
                     task.result = result
@@ -687,6 +770,7 @@ class Scheduler:
         except Exception as e:
             self._log(f"Error executing task {task.id}: {e}", "error")
             task.mark_failed(str(e))
+            self._note_outcome(task, "error", task.last_error)
             self.stats["tasks_failed"] += 1
             self._reschedule_recurring_after_failure(task, task.last_error)
             self.queue.update(task)
@@ -794,6 +878,7 @@ class Scheduler:
             original = task.schedule
             task.schedule = now
             self.queue.update(task)
+            self._harvested_task_ids.add(task.id)
             self._last_harvest_at = now
             self._log(
                 f"Quota harvest: '{c['resource_id']}' {c['window']} window renews in {c['resets_in_s']}s with "
