@@ -51,13 +51,19 @@ class TestPrune(unittest.TestCase):
         self.assertIn("gone", rm._usage)                                       # failed/empty config must not wipe history
         self.assertFalse((self.base / "resource_pool_usage_pruned.json").exists())
 
+    def test_recently_active_unconfigured_resource_is_kept(self):
+        rm = self._setup({"live": _res(1)}, self.USAGE)
+        rm.record_usage("recent_orphan")            # just used: absent from config but not idle
+        self.assertEqual(rm.prune_orphan_usage(), [])
+        self.assertIn("recent_orphan", rm._usage)
+
     def test_repeat_prunes_append_to_the_archive(self):
         rm = self._setup({"live": _res(1)}, self.USAGE)
         rm.record_usage("late_orphan")
+        rm._usage["late_orphan"].last_call_at = 5.0  # long idle
         self.assertEqual(rm.prune_orphan_usage(), ["late_orphan"])
         archive = json.loads((self.base / "resource_pool_usage_pruned.json").read_text())
         self.assertEqual(set(archive), {"gone", "late_orphan"})
-
 
 if __name__ == "__main__":
     unittest.main()

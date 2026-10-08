@@ -194,9 +194,12 @@ class ResourceManager:
         self.prune_orphan_usage()
 
     PRUNED_USAGE_FILE_NAME = "resource_pool_usage_pruned.json"
+    # A record is pruned only if its resource is unconfigured AND it has been idle this long, so a
+    # resource that is briefly absent from a config (an edit, a partial layer) keeps its history.
+    PRUNE_MIN_IDLE_SECONDS = 14 * 86400
 
     def prune_orphan_usage(self) -> List[str]:
-        """Drop usage records for resources that are no longer in the config.
+        """Drop usage records for resources that are no longer in the config and have been idle 14+ days.
 
         Removed or renamed resources left records behind (72 usage keys against 31 live
         resources on 2026-10-08), which skews any usage or cost analysis. Pruned records
@@ -206,7 +209,11 @@ class ResourceManager:
         with self._lock:
             if not self._resources:
                 return []
-            orphans = [rid for rid in self._usage if rid not in self._resources]
+            cutoff = time.time() - self.PRUNE_MIN_IDLE_SECONDS
+            orphans = [
+                rid for rid, u in self._usage.items()
+                if rid not in self._resources and (u.last_call_at is None or u.last_call_at < cutoff)
+            ]
             if not orphans:
                 return []
             archive_path = self.USAGE_FILE.parent / self.PRUNED_USAGE_FILE_NAME
