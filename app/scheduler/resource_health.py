@@ -35,13 +35,15 @@ class ProbeResult:
         return asdict(self)
 
 
-def probe_endpoint(base_url: str, api_key: str = "", timeout: float = 5.0) -> ProbeResult:
-    """GET {base_url}/models and classify the answer. Never raises."""
+def probe_endpoint(
+    base_url: str, api_key: str = "", timeout: float = 5.0, path: str = "/models"
+) -> ProbeResult:
+    """GET {base_url}{path} and classify the answer. Never raises."""
     now = time.time()
     if not base_url:
         return ProbeResult(ERROR, "no base_url configured", now)
 
-    url = base_url.rstrip("/") + "/models"
+    url = base_url.rstrip("/") + "/" + path.lstrip("/")
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

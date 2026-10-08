@@ -99,11 +99,62 @@ class TestPoolUsesHealth(unittest.TestCase):
         self.rm.probe_all()
         self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE]).id, "live_low")
 
-    def test_transitions_reported_once(self):
+    def test_first_failed_probe_gates_routing_but_is_not_reported(self):
         first = {t["resource_id"]: t for t in self.rm.probe_all()}
-        self.assertEqual(first["dead_top"]["to"], resource_health.UNREACHABLE)
-        self.assertEqual(first["live_low"]["from"], None)
+        self.assertNotIn("dead_top", first)  # one failed probe is not news yet
+        self.assertEqual(first["live_low"]["to"], resource_health.LIVE)
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE]).id, "live_low")
+
+    def test_failure_reported_once_after_confirmation(self):
+        self.rm.probe_all()
+        second = {t["resource_id"]: t for t in self.rm.probe_all()}
+        self.assertEqual(second["dead_top"]["to"], resource_health.UNREACHABLE)
+        self.assertIsNone(second["dead_top"]["from"])
         self.assertEqual(self.rm.probe_all(), [])
+
+    def test_blip_that_recovers_is_never_reported(self):
+        self.rm.probe_all()  # live_low live; dead_top failed once
+        live_url = self.cfg["resources"]["live_low"]["base_url"]
+        self.cfg["resources"]["dead_top"]["base_url"] = live_url  # dead_top comes back
+        self.rm._resources["dead_top"].base_url = live_url
+        reported = {t["resource_id"]: t for t in self.rm.probe_all()}
+        self.assertEqual(reported["dead_top"]["to"], resource_health.LIVE)
+
+    def test_recovery_reported_after_a_reported_failure(self):
+        self.rm.probe_all()
+        self.rm.probe_all()  # failure now confirmed and reported
+        live_url = self.cfg["resources"]["live_low"]["base_url"]
+        self.rm._resources["dead_top"].base_url = live_url
+        reported = {t["resource_id"]: t for t in self.rm.probe_all()}
+        self.assertEqual(reported["dead_top"]["from"], resource_health.UNREACHABLE)
+        self.assertEqual(reported["dead_top"]["to"], resource_health.LIVE)
+
+    def test_health_check_false_resource_is_never_probed_or_gated(self):
+        self.rm._resources["dead_top"].health_check = False
+        self.rm.probe_all()
+        self.rm.probe_all()
+        self.assertNotIn("dead_top", self.rm.get_health())
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE]).id, "dead_top")
+
+    def test_health_path_is_used(self):
+        seen = []
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        res = resource_health.probe_endpoint(f"http://127.0.0.1:{srv.server_port}/v1", path="/health")
+        self.assertEqual(res.state, resource_health.LIVE)
+        self.assertEqual(seen, ["/v1/health"])
 
     def test_status_reports_unreachable_with_health_detail(self):
         self.rm.probe_all()

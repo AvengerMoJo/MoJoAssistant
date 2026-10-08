@@ -76,6 +76,8 @@ class LLMResource:
     load_mode: str = "cloud"  # resident (kept loaded), on_demand (needs approval), cloud
     approval: str = "none"  # none, hitl (ask the user before loading or paying)
     credential_route: Optional[str] = None  # route id in the credential service, when keys come from there
+    health_check: bool = True  # False: provider has no usable listing endpoint; never probe it
+    health_path: str = "/models"  # endpoint under base_url the liveness probe GETs
 
 
 @dataclass
@@ -132,6 +134,9 @@ class ResourceManager:
         # Round-robin counters per account_group
         self._group_counters: Dict[str, int] = {}
         self._health: Dict[str, "resource_health.ProbeResult"] = {}
+        # State the user was last told about, and how many consecutive probes agree on the latest state.
+        self._notified_state: Dict[str, str] = {}
+        self._probe_streak: Dict[str, tuple] = {}
         self._sandbox_env: Dict[str, str] = {}
         self._config_mtime_ns: Optional[int] = None
         self._runtime_mtime_ns: Optional[int] = None
@@ -418,6 +423,8 @@ class ResourceManager:
             load_mode=conf.get("load_mode", "cloud"),
             approval=conf.get("approval", "none"),
             credential_route=conf.get("credential_route"),
+            health_check=conf.get("health_check", True),
+            health_path=conf.get("health_path", "/models"),
             enabled=conf.get("enabled", True),
             api_key=api_key,
             api_key_env=api_key_env,
@@ -524,34 +531,52 @@ class ResourceManager:
         self.KNOWN_IDS_FILE.write_text(json.dumps(sorted(known | set(current))), encoding="utf-8")
         return new
 
-    def probe_resource(self, resource_id: str) -> Optional[Dict[str, Any]]:
-        """Probe one resource's endpoint; return a transition dict if its state changed.
+    # Probes in a row that must agree before a failure is worth telling the user
+    # about. Routing reacts to the first failed probe; notification does not -- a
+    # single provider 500 (seen 2026-10-08, Google /models) is not an outage.
+    FAILURE_CONFIRM_PROBES = 2
 
-        Network I/O happens outside the lock. The first probe of a resource
-        counts as a transition from None, so a newly appearing resource is
-        reported exactly once.
+    def probe_resource(self, resource_id: str) -> Optional[Dict[str, Any]]:
+        """Probe one resource's endpoint; return a transition when the user should hear of one.
+
+        Network I/O happens outside the lock. The health state used for routing
+        updates on every probe. A transition is returned only once the state has
+        been confirmed (failures need FAILURE_CONFIRM_PROBES agreeing probes) and
+        differs from what the user was last told, so a blip that recovers on its
+        own is never reported, and a recovery is only reported after a failure was.
         """
         with self._lock:
             resource = self._resources.get(resource_id)
-            if resource is None or not resource.enabled:
+            if resource is None or not resource.enabled or not resource.health_check:
                 self._health.pop(resource_id, None)
+                self._probe_streak.pop(resource_id, None)
+                self._notified_state.pop(resource_id, None)
                 return None
-            base_url, api_key = resource.base_url, resource.api_key or ""
-        result = resource_health.probe_endpoint(base_url, api_key)
+            base_url, api_key, path = resource.base_url, resource.api_key or "", resource.health_path
+        result = resource_health.probe_endpoint(base_url, api_key, path=path)
         with self._lock:
             previous = self._health.get(resource_id)
-            old_state = previous.state if previous else None
             result.since = previous.since if previous and previous.state == result.state else result.checked_at
             self._health[resource_id] = result
-        if old_state == result.state:
-            return None
-        return {
-            "resource_id": resource_id,
-            "from": old_state,
-            "to": result.state,
-            "detail": result.detail,
-            "since": result.since,
-        }
+
+            last_state, count = self._probe_streak.get(resource_id, (None, 0))
+            count = count + 1 if last_state == result.state else 1
+            self._probe_streak[resource_id] = (result.state, count)
+
+            needed = 1 if result.state == resource_health.LIVE else self.FAILURE_CONFIRM_PROBES
+            if count < needed:
+                return None
+            told = self._notified_state.get(resource_id)
+            if told == result.state:
+                return None
+            self._notified_state[resource_id] = result.state
+            return {
+                "resource_id": resource_id,
+                "from": told,
+                "to": result.state,
+                "detail": result.detail,
+                "since": result.since,
+            }
 
     def probe_all(self) -> List[Dict[str, Any]]:
         """Probe every enabled resource; return the state transitions observed."""
