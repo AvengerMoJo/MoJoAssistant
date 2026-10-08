@@ -140,8 +140,8 @@ def waiting_for_human(
 ) -> List[Dict[str, Any]]:
     """Tasks paused on a human answer, oldest first, with how long they have waited.
 
-    Waiting began at the latest 'waiting_for_input' ledger entry, else the HITL post stamp, else the
-    task's start. A task whose parent is no longer waiting or running is flagged `orphaned`: nobody is
+    Waiting began at the latest 'waiting_for_input' ledger entry, else the task's start (never the HITL
+    post stamp: the adapter restamps it on every restart). A task whose parent is no longer waiting or running is flagged `orphaned`: nobody is
     left to use the answer, so the useful action is to cancel it. Nothing is cancelled automatically.
     """
     by_id = {t.id: t for t in tasks}
@@ -150,9 +150,11 @@ def waiting_for_human(
         if getattr(t.status, "value", t.status) != "waiting_for_input":
             continue
         entry = next((e for e in ledger.recent(t.id, limit=20) if e.get("outcome") == "waiting_for_input"), None)
+        # _hitl_posted_at is the LAST (re)post, restamped by the HITL adapter on every service restart,
+        # so it can make a weeks-old question look minutes old. The run's own start is the honest anchor.
         since = (_parse((entry or {}).get("ended_at"))
-                 or _parse((t.config or {}).get("_hitl_posted_at"))
-                 or _parse(getattr(t, "started_at", None)) or _parse(getattr(t, "created_at", None)))
+                 or _parse(getattr(t, "started_at", None)) or _parse(getattr(t, "created_at", None))
+                 or _parse((t.config or {}).get("_hitl_posted_at")))
         if since is None:
             continue
         hours = (now - since).total_seconds() / 3600

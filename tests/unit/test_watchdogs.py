@@ -188,6 +188,13 @@ class TestWaitingForHuman(unittest.TestCase):
                             "ended_at": (NOW - timedelta(hours=3)).isoformat(timespec="seconds")})
         self.assertEqual(watchdogs.waiting_for_human([t], self.ledger, NOW), [])
 
+    def test_restamped_hitl_post_time_does_not_hide_an_old_question(self):
+        t = self._waiting("old", 15 * 24)
+        t.config["_hitl_posted_at"] = (NOW - timedelta(minutes=45)).isoformat()    # re-posted after a restart
+        got = watchdogs.waiting_for_human([t], self.ledger, NOW)
+        self.assertEqual((len(got), got[0]["level"]), (1, "escalated"))
+        self.assertAlmostEqual(got[0]["hours_waiting"], 360, delta=1)
+
     def test_sub_task_whose_parent_is_gone_is_orphaned_but_not_cancelled(self):
         parent_done = Task(id="parent", type=TaskType.INTERNAL_ASSIGNMENT, config={})
         parent_done.status = TaskStatus.COMPLETED
