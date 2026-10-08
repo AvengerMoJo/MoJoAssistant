@@ -77,6 +77,11 @@ class LLMResource:
     load_mode: str = "cloud"  # resident (kept loaded), on_demand (needs approval), cloud
     approval: str = "none"  # none, hitl (ask the user before loading or paying)
     credential_route: Optional[str] = None  # route id in the credential service, when keys come from there
+    # Use-it-or-lose-it: rank at this priority while every quota window has room.
+    # Renewing quota that goes unspent is simply lost, so a subscription should be
+    # spent before alternatives; once any window is exhausted the resource is out
+    # of rotation entirely and this no longer matters.
+    priority_while_quota: Optional[int] = None
     quota_source: Optional[Dict[str, Any]] = None  # read the provider's own quota (percent-metered plans)
     quotas: List["resource_quota.QuotaWindow"] = field(default_factory=list)  # renewing allowance windows; ALL must have room
     config_error: Optional[str] = None  # set (and the resource disabled) when its config could not be applied
@@ -451,6 +456,7 @@ class ResourceManager:
             enabled=conf.get("enabled", True) and config_error is None,
             quotas=quotas,
             quota_source=conf.get("quota_source"),
+            priority_while_quota=conf.get("priority_while_quota"),
             config_error=config_error,
             api_key=api_key,
             api_key_env=api_key_env,
@@ -523,7 +529,7 @@ class ResourceManager:
             def _effective_priority(r: LLMResource) -> tuple:
                 is_cold_local = r.type == "local" and r.id not in loaded_ids
                 penalty = self.LOAD_PENALTY if is_cold_local else 0
-                return (r.priority + penalty, 1 if is_cold_local else 0)
+                return (self._rank_priority(r) + penalty, 1 if is_cold_local else 0)
 
             candidates.sort(key=_effective_priority)
 
@@ -632,6 +638,15 @@ class ResourceManager:
     def get_health(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             return {rid: h.to_dict() for rid, h in self._health.items()}
+
+    @staticmethod
+    def _rank_priority(r: LLMResource) -> int:
+        """Selection rank (lower wins). Callers only rank resources that already
+        passed the availability filters, so a quota-bearing resource that reaches
+        this point has headroom in every window."""
+        if r.priority_while_quota is not None and (r.quotas or r.quota_source):
+            return r.priority_while_quota
+        return r.priority
 
     def find_tier_restriction_conflict(self, tiers: List[ResourceTier]) -> Optional[str]:
         """
@@ -748,7 +763,7 @@ class ResourceManager:
             if not candidates:
                 return None
 
-            candidates.sort(key=lambda r: r.priority)
+            candidates.sort(key=self._rank_priority)
             best = candidates[0]
             group = best.account_group
             if group:

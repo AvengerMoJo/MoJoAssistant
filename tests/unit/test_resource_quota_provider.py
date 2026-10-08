@@ -159,3 +159,32 @@ class TestPoolUsesProviderQuota(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUseItOrLoseIt(TestPoolUsesProviderQuota):
+    """Spend renewing quota first: it is lost if unspent."""
+
+    def _with_boost(self, boost):
+        self.rm._resources["sub"].priority = 50          # normally behind 'other' (9)
+        self.rm._resources["sub"].priority_while_quota = boost
+        self.rm.probe_all()
+
+    def test_subscription_ranks_first_while_it_has_headroom(self):
+        self._with_boost(-10)
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE_API]).id, "sub")
+        self.assertEqual(self.rm.acquire_by_requirements({"tier": ["free_api"]}).id, "sub")
+
+    def test_falls_back_to_normal_order_when_exhausted(self):
+        self.server.body = payload("97%")
+        self._with_boost(-10)
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE_API]).id, "other")
+        self.assertEqual(self.rm.acquire_by_requirements({"tier": ["free_api"]}).id, "other")
+
+    def test_unset_boost_changes_nothing(self):
+        self._with_boost(None)
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE_API]).id, "other")
+
+    def test_boost_ignored_for_resource_without_any_quota(self):
+        self.rm._resources["other"].priority_while_quota = -99   # 'other' has no quota config
+        self._with_boost(None)
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE_API]).id, "other")
