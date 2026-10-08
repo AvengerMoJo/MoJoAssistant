@@ -1,3 +1,4 @@
+import time
 """
 v1.2.3 Smoke Tests — Resource Pool Unification + Tool Catalog
 
@@ -54,6 +55,11 @@ class TestResourceManagerFlatFormat(unittest.TestCase):
         rm._group_counters = {}
         rm._health = {}
         rm._provider_quota = {}
+        rm._loaded_models_checked_at = time.time()
+        rm._loaded_resource_ids = set()
+        rm._busy_resource_ids = set()
+        rm._busy_checked_at = time.time()
+        rm._lms_ps_cache = None
         rm._config_mtime_ns = None
         rm._runtime_mtime_ns = None
         rm._env_mtime_ns = None
@@ -143,6 +149,11 @@ class TestResourceManagerLegacyFallback(unittest.TestCase):
         rm._group_counters = {}
         rm._health = {}
         rm._provider_quota = {}
+        rm._loaded_models_checked_at = time.time()
+        rm._loaded_resource_ids = set()
+        rm._busy_resource_ids = set()
+        rm._busy_checked_at = time.time()
+        rm._lms_ps_cache = None
         rm._config_mtime_ns = None
         rm._runtime_mtime_ns = None
         rm._env_mtime_ns = None
@@ -176,6 +187,11 @@ class TestResourceManagerLegacyFallback(unittest.TestCase):
         rm._group_counters = {}
         rm._health = {}
         rm._provider_quota = {}
+        rm._loaded_models_checked_at = time.time()
+        rm._loaded_resource_ids = set()
+        rm._busy_resource_ids = set()
+        rm._busy_checked_at = time.time()
+        rm._lms_ps_cache = None
         rm._sandbox_env = {}
         rm._tier_policy = {}
         rm._log = lambda msg, level="info": None
@@ -214,6 +230,11 @@ class TestAcquireByRequirements(unittest.TestCase):
         rm._group_counters = {}
         rm._health = {}
         rm._provider_quota = {}
+        rm._loaded_models_checked_at = time.time()
+        rm._loaded_resource_ids = set()
+        rm._busy_resource_ids = set()
+        rm._busy_checked_at = time.time()
+        rm._lms_ps_cache = None
         rm._config_mtime_ns = None
         rm._runtime_mtime_ns = None
         rm._env_mtime_ns = None
@@ -295,9 +316,18 @@ class TestAcquireByRequirements(unittest.TestCase):
             "r1": {"type": "local", "tier": "free", "priority": 1},
             "r2": {"type": "api",   "tier": "free_api", "priority": 5},
         })
+        rm._loaded_resource_ids = {"r1"}  # resident, so no cold-load penalty
         result = rm.acquire_by_requirements({})
         self.assertIsNotNone(result)
         self.assertEqual(result.id, "r1")  # priority 1 wins
+
+    def test_cold_local_ranks_behind_api_on_requirements_path(self):
+        # The requirements path used to ignore residency; now it shares acquire()'s ranking.
+        rm = self._make_rm({
+            "r1": {"type": "local", "tier": "free", "priority": 1},
+            "r2": {"type": "api",   "tier": "free_api", "priority": 5},
+        })
+        self.assertEqual(rm.acquire_by_requirements({}).id, "r2")
 
     def test_unknown_tier_string_warns_and_falls_back(self):
         rm = self._make_rm({

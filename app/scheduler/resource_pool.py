@@ -131,6 +131,11 @@ class ResourceManager:
     # win if its real priority is far enough ahead, since unloading/reloading
     # is a legitimate outcome, not something to prevent outright.
     LOAD_PENALTY = 10
+    # A local model that is generating or has queued requests (from ANY client of
+    # the server, not just this process) is busy: rank it behind idle alternatives so
+    # overflow goes elsewhere. Large enough to put busy locals behind cloud resources.
+    BUSY_PENALTY = 100
+    BUSY_CACHE_TTL_SECONDS = 3.0
     # Loaded-state is checked via `lms ps` (LMStudio CLI), which is cheap but
     # not free — don't shell out on every acquire() call. Refresh lazily,
     # at most once per this TTL, or on-demand via refresh_loaded_models_now()
@@ -149,6 +154,9 @@ class ResourceManager:
         # Round-robin counters per account_group
         self._group_counters: Dict[str, int] = {}
         self._health: Dict[str, "resource_health.ProbeResult"] = {}
+        self._busy_resource_ids: set = set()
+        self._lms_ps_cache = None
+        self._busy_checked_at: Optional[float] = None
         # State the user was last told about, and how many consecutive probes agree on the latest state.
         # Latest provider-reported quota per resource: {"windows": [...], "fetched_at": ts, "error": str|None}
         self._provider_quota: Dict[str, Dict[str, Any]] = {}
@@ -512,7 +520,8 @@ class ResourceManager:
             # something for local backends.
             loaded_ids = self.get_loaded_resource_ids()
 
-            candidates.sort(key=lambda r: self._effective_priority(r, loaded_ids))
+            busy_ids = self.get_busy_resource_ids()
+            candidates.sort(key=lambda r: self._effective_priority(r, loaded_ids, busy_ids))
 
             # For resources in the same account_group, apply round-robin
             best = candidates[0]
@@ -627,6 +636,7 @@ class ResourceManager:
         min_context: int = 0,
         min_output: int = 0,
         exclude_ids: Optional[set] = None,
+        required_caps: Optional[set] = None,
     ) -> Optional[str]:
         """Why acquire() would skip this resource, or None if it is a candidate.
 
@@ -646,6 +656,8 @@ class ResourceManager:
             return f"context {resource.context_limit} < required {min_context}"
         if resource.output_limit < min_output:
             return f"output limit {resource.output_limit} < required {min_output}"
+        if required_caps and not required_caps.issubset(set(resource.capabilities)):
+            return f"missing capabilities {sorted(required_caps - set(resource.capabilities))}"
         if self._is_rate_limited(resource):
             return "rate limited"
         if not self._is_budget_available(resource):
@@ -657,11 +669,15 @@ class ResourceManager:
             return f"{status.value}" + (f": {health.detail}" if health else "")
         return None
 
-    def _effective_priority(self, r: LLMResource, loaded_ids: set) -> tuple:
+    def _effective_priority(self, r: LLMResource, loaded_ids: set, busy_ids: Optional[set] = None) -> tuple:
         """Selection rank: configured/quota-aware priority, plus LOAD_PENALTY for a
-        local model that is not resident in VRAM (a penalty, not a filter)."""
+        local model that is not resident in VRAM and BUSY_PENALTY for one that is
+        generating or queued (penalties, not filters: a busy local can still win
+        when nothing else is eligible)."""
         is_cold_local = r.type == "local" and r.id not in loaded_ids
         penalty = self.LOAD_PENALTY if is_cold_local else 0
+        if busy_ids and r.id in busy_ids:
+            penalty += self.BUSY_PENALTY
         return (self._rank_priority(r) + penalty, 1 if is_cold_local else 0)
 
     def selection_order(
@@ -674,16 +690,18 @@ class ResourceManager:
         """Every resource in the order acquire() would pick them, then the ones it would not, with reasons."""
         tiers = tier_preference or [ResourceTier.FREE, ResourceTier.FREE_API]
         loaded_ids = self.get_loaded_resource_ids()
+        busy_ids = self.get_busy_resource_ids()
         with self._lock:
             rows = []
             for r in self._resources.values():
                 reason = self._exclusion_reason(r, tiers, min_context, min_output, exclude_ids)
-                key = self._effective_priority(r, loaded_ids)
+                key = self._effective_priority(r, loaded_ids, busy_ids)
                 rows.append({
                     "id": r.id, "tier": r.tier.value, "model": r.model,
                     "configured_priority": r.priority,
                     "rank_priority": self._rank_priority(r),
                     "cold_load_penalty": key[1] == 1,
+                    "busy": r.id in busy_ids,
                     "effective_priority": key[0],
                     "eligible": reason is None,
                     "excluded_because": reason,
@@ -795,34 +813,19 @@ class ResourceManager:
 
         with self._lock:
             self._maybe_reload_runtime_state()
-            candidates = []
-            for resource in self._resources.values():
-                if not resource.enabled:
-                    continue
-                if exclude_ids and resource.id in exclude_ids:
-                    continue
-                if resource.tier not in tier_preference:
-                    continue
-                if resource.tier == ResourceTier.PAID and resource.id not in self._approved_paid:
-                    continue
-                if resource.context_limit < min_context:
-                    continue
-                if resource.output_limit < min_output:
-                    continue
-                if required_caps and not required_caps.issubset(set(resource.capabilities)):
-                    continue
-                if self._is_rate_limited(resource):
-                    continue
-                if not self._is_budget_available(resource):
-                    continue
-                if self._compute_status(resource) in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED):
-                    continue
-                candidates.append(resource)
+            candidates = [
+                r for r in self._resources.values()
+                if self._exclusion_reason(r, tier_preference, min_context, min_output, exclude_ids, required_caps) is None
+            ]
 
             if not candidates:
                 return None
 
-            candidates.sort(key=self._rank_priority)
+            # Same ranking as acquire(): this path used to sort on raw priority and
+            # so ignored cold-load and busy state for every role with resource_requirements.
+            loaded_ids = self.get_loaded_resource_ids()
+            busy_ids = self.get_busy_resource_ids()
+            candidates.sort(key=lambda r: self._effective_priority(r, loaded_ids, busy_ids))
             best = candidates[0]
             group = best.account_group
             if group:
@@ -1111,6 +1114,29 @@ class ResourceManager:
         except Exception:
             pass
 
+    def _lms_ps_entries(self, max_age: float) -> list:
+        """`lms ps --json` entries, reused if read less than max_age seconds ago.
+
+        One shell-out feeds both the residency check (slow-changing) and the busy
+        check (fast-changing). Raises on failure; callers decide how to report it.
+        """
+        import subprocess
+
+        now = time.time()
+        cached = getattr(self, "_lms_ps_cache", None)
+        if cached is not None and max_age > 0 and now - cached[1] < max_age:
+            return cached[0]
+        proc = subprocess.run(
+            ["lms", "ps", "--json"],
+            capture_output=True, text=True, timeout=self.LMS_PS_TIMEOUT_SECONDS,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"`lms ps` exited {proc.returncode}: {proc.stderr[:200]}")
+        entries = json.loads(proc.stdout)
+        entries = entries if isinstance(entries, list) else []
+        self._lms_ps_cache = (entries, now)
+        return entries
+
     def _refresh_loaded_models(self, force: bool = False) -> None:
         """Refresh which LOCAL resources are currently loaded in LMStudio.
 
@@ -1131,17 +1157,8 @@ class ResourceManager:
             if now - self._loaded_models_checked_at < self.LOADED_MODEL_CACHE_TTL_SECONDS:
                 return
 
-        import subprocess
-
         try:
-            proc = subprocess.run(
-                ["lms", "ps", "--json"],
-                capture_output=True, text=True, timeout=self.LMS_PS_TIMEOUT_SECONDS,
-            )
-            if proc.returncode != 0:
-                self._log(f"_refresh_loaded_models: `lms ps` exited {proc.returncode}: {proc.stderr[:200]}", "warning")
-                return
-            loaded = json.loads(proc.stdout)
+            loaded = self._lms_ps_entries(max_age=self.BUSY_CACHE_TTL_SECONDS if not force else 0)
         except Exception as e:
             self._log(f"_refresh_loaded_models: failed to query loaded models: {e}", "warning")
             return
@@ -1167,6 +1184,34 @@ class ResourceManager:
         self._loaded_models_checked_at = now
         self._save_meta()
         self._log(f"_refresh_loaded_models: {len(loaded_resource_ids)} local resource(s) currently loaded: {sorted(loaded_resource_ids)}")
+
+    def get_busy_resource_ids(self) -> set:
+        """Local resources whose model is generating or has queued requests right now.
+
+        Reads `lms ps --json` (status / queued), so load from any client of the
+        server counts. Cached for BUSY_CACHE_TTL_SECONDS. On a failed query the
+        busy set is empty (selection proceeds on priority) and the failure is logged.
+        """
+        now = time.time()
+        with self._lock:
+            if self._busy_checked_at is not None and now - self._busy_checked_at < self.BUSY_CACHE_TTL_SECONDS:
+                return set(self._busy_resource_ids)
+            local = {r.id: r.model for r in self._resources.values() if r.type == "local"}
+        if not local:
+            return set()
+        try:
+            entries = self._lms_ps_entries(max_age=self.BUSY_CACHE_TTL_SECONDS)
+        except Exception as e:
+            self._log(f"get_busy_resource_ids: cannot read local load ({type(e).__name__}: {e}); busy state unknown", "warning")
+            entries = None
+        busy_keys = set()
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict) and (entry.get("status", "idle") != "idle" or (entry.get("queued") or 0) > 0):
+                busy_keys.update(v for v in (entry.get("identifier"), entry.get("modelKey"), entry.get("path")) if v)
+        busy = {rid for rid, model in local.items() if model in busy_keys}
+        with self._lock:
+            self._busy_resource_ids, self._busy_checked_at = busy, now
+        return set(busy)
 
     def get_loaded_resource_ids(self) -> set:
         """Return the set of resource IDs currently loaded in VRAM (lazy-refreshed)."""
