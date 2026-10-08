@@ -559,6 +559,19 @@ class ResourceManager:
             result.since = previous.since if previous and previous.state == result.state else result.checked_at
             self._health[resource_id] = result
 
+            # A live endpoint outranks the call-error breaker: errors counted
+            # while the endpoint was down (or before we had ever probed it) say
+            # nothing about its health now, and would otherwise keep a recovered
+            # resource out of rotation until the idle timeout expires.
+            usage = self._usage.get(resource_id)
+            if (
+                result.state == resource_health.LIVE
+                and usage and usage.consecutive_errors > 0
+                and (previous is None or previous.state != resource_health.LIVE)
+            ):
+                usage.consecutive_errors = 0
+                self._persist_usage()
+
             last_state, count = self._probe_streak.get(resource_id, (None, 0))
             count = count + 1 if last_state == result.state else 1
             self._probe_streak[resource_id] = (result.state, count)

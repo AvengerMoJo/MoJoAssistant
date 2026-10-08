@@ -129,6 +129,20 @@ class TestPoolUsesHealth(unittest.TestCase):
         self.assertEqual(reported["dead_top"]["from"], resource_health.UNREACHABLE)
         self.assertEqual(reported["dead_top"]["to"], resource_health.LIVE)
 
+    def test_live_probe_clears_stale_breaker_errors_after_outage(self):
+        from app.scheduler.resource_pool import UsageRecord
+        self.rm._usage["live_low"] = UsageRecord(consecutive_errors=5)
+        self.rm.probe_all()
+        self.assertEqual(self.rm._usage["live_low"].consecutive_errors, 0)
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE]).id, "live_low")
+
+    def test_live_probe_does_not_clear_errors_of_an_already_live_resource(self):
+        from app.scheduler.resource_pool import UsageRecord
+        self.rm.probe_all()  # live_low is now known live
+        self.rm._usage["live_low"] = UsageRecord(consecutive_errors=3)
+        self.rm.probe_all()
+        self.assertEqual(self.rm._usage["live_low"].consecutive_errors, 3)
+
     def test_health_check_false_resource_is_never_probed_or_gated(self):
         self.rm._resources["dead_top"].health_check = False
         self.rm.probe_all()
