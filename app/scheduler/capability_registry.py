@@ -1,6 +1,7 @@
 """Dynamic Tool Registry with Sandbox Security."""
 # [mojo-integration]
 
+import asyncio
 import json
 import os
 import subprocess
@@ -1119,7 +1120,8 @@ class CapabilityRegistry:
 
         path = os.path.expanduser(path)
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["rg", "--json", query, path],
                 capture_output=True,
                 text=True,
@@ -2054,7 +2056,8 @@ class CapabilityRegistry:
                 }
 
             try:
-                result = subprocess.run(
+                result = await asyncio.to_thread(
+                    subprocess.run,
                     command,
                     shell=True,
                     capture_output=True,
@@ -2337,7 +2340,8 @@ class CapabilityRegistry:
         command = os.path.expanduser(command)
 
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 command,
                 shell=True,
                 input=json.dumps(args),
