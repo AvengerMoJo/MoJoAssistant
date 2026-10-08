@@ -2,6 +2,7 @@
 # [mojo-integration]
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -13,6 +14,18 @@ from app.scheduler.models import Task, TaskResult
 from app.config.paths import get_memory_subpath
 
 logger = logging.getLogger(__name__)
+
+
+async def _run_pipeline_off_loop(coro):
+    """Run a dreaming-pipeline coroutine on its own thread and event loop.
+
+    The pipeline is `async` only in name: its chunker and synthesizer call
+    ResourcePoolLLMInterface.generate_response(), which blocks the calling thread until
+    the LLM answers. Awaited directly, that blocked the scheduler's event loop for the
+    whole run (2m38s observed 2026-10-08; sampled: 158s inside generate_response), freezing
+    ticks, timeouts, probes and notifications. On its own thread the blocking is harmless.
+    """
+    return await asyncio.to_thread(asyncio.run, coro)
 
 
 class DreamingHandler(TaskHandler):
@@ -95,11 +108,11 @@ class DreamingHandler(TaskHandler):
                 pipeline.storage = resolve_storage_backend(storage_path=storage_path)
 
                 doc_id = task.config.get("doc_id") or conversation_id
-                results = await pipeline.process_document(
+                results = await _run_pipeline_off_loop(pipeline.process_document(
                     doc_id=doc_id,
                     document_text=conversation_text,
                     metadata=metadata,
-                )
+                ))
 
                 if results.get("status") == "success":
                     ku_stage = results["stages"]["knowledge_units"]
@@ -136,11 +149,11 @@ class DreamingHandler(TaskHandler):
                         f"Could not set role-scoped storage for dreaming: {_e}", "warning"
                     )
 
-            results = await pipeline.process_conversation(
+            results = await _run_pipeline_off_loop(pipeline.process_conversation(
                 conversation_id=conversation_id,
                 conversation_text=conversation_text,
                 metadata=metadata,
-            )
+            ))
 
             if results.get("status") == "success":
                 archive = results["stages"]["D_archive"]
@@ -365,11 +378,11 @@ class DreamingHandler(TaskHandler):
                     "original_text": conversation_text,
                 }
 
-                results = await pipeline.process_conversation(
+                results = await _run_pipeline_off_loop(pipeline.process_conversation(
                     conversation_id=conversation_id,
                     conversation_text=conversation_text,
                     metadata=metadata,
-                )
+                ))
 
                 if results.get("status") == "success":
                     total_sessions += 1
