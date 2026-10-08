@@ -82,6 +82,8 @@ class LLMResource:
     # spent before alternatives; once any window is exhausted the resource is out
     # of rotation entirely and this no longer matters.
     priority_while_quota: Optional[int] = None
+    # Opt-in: {"min_headroom_pct": N, "horizon_seconds": S} -- see harvest_candidates().
+    harvest: Optional[Dict[str, Any]] = None
     quota_source: Optional[Dict[str, Any]] = None  # read the provider's own quota (percent-metered plans)
     quotas: List["resource_quota.QuotaWindow"] = field(default_factory=list)  # renewing allowance windows; ALL must have room
     config_error: Optional[str] = None  # set (and the resource disabled) when its config could not be applied
@@ -457,6 +459,7 @@ class ResourceManager:
             quotas=quotas,
             quota_source=conf.get("quota_source"),
             priority_while_quota=conf.get("priority_while_quota"),
+            harvest=conf.get("harvest"),
             config_error=config_error,
             api_key=api_key,
             api_key_env=api_key_env,
@@ -1327,6 +1330,32 @@ class ResourceManager:
                 # period that is over. Not exhausted until the next refresh says so.
                 w = resource_quota.WindowStatus(**{**w.to_dict(), "used": 0, "exhausted": False})
             out.append(w)
+        return out
+
+    def harvest_candidates(self, now: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Resources whose renewing quota is about to expire largely unspent.
+
+        A resource qualifies when it opts in (`harvest`), every quota window has
+        room, and its soonest-renewing window still has at least min_headroom_pct
+        of its usable allowance left with the renewal within horizon_seconds.
+        The caller decides what deferred work to run with it.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            opted = [r for r in self._resources.values() if r.enabled and r.harvest]
+        out = []
+        for r in opted:
+            windows = self.quota_status(r.id)
+            if not windows or any(w.exhausted for w in windows):
+                continue
+            soonest = min((w for w in windows if w.resets_at is not None), key=lambda w: w.resets_at, default=None)
+            if soonest is None or soonest.agent_limit <= 0:
+                continue
+            headroom = (soonest.agent_limit - soonest.used) / soonest.agent_limit * 100
+            resets_in = soonest.resets_at - now
+            if headroom >= r.harvest.get("min_headroom_pct", 50) and 0 < resets_in <= r.harvest.get("horizon_seconds", 3600):
+                out.append({"resource_id": r.id, "window": soonest.name,
+                            "headroom_pct": round(headroom, 1), "resets_in_s": int(resets_in)})
         return out
 
     def refresh_provider_quota(self, resource_id: str) -> Optional[str]:

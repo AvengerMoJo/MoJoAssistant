@@ -274,6 +274,10 @@ class Scheduler:
                 else:
                     self._idle_since = None  # work is running — not idle
 
+                # Quota harvesting: spend renewing quota that is about to expire unspent
+                if dispatched == 0 and not self._running_tasks:
+                    await self._maybe_harvest_quota()
+
                 # Resource liveness: probe every 5th tick (and the first), off the event loop
                 if (self.tick_count == 1 or self.tick_count % 5 == 0) and not self._probing_resources:
                     asyncio.create_task(self._probe_resources_and_notify(), name="resource-probe")
@@ -720,6 +724,56 @@ class Scheduler:
 
         # 3. Fallback: user-initiated tasks get a notification; system/cron do not
         return task.created_by == "user"
+
+    async def _maybe_harvest_quota(self) -> None:
+        """When a quota-bearing resource would let allowance expire unspent, pull
+        forward a task that is about to be due anyway so the quota does the work.
+
+        Config (scheduler_config.json "harvest"): {"enabled", "task_ids",
+        "pull_forward_seconds" (only tasks due within this long are eligible, so
+        a task that already ran this cycle is never repeated), "cooldown_seconds"}.
+        One task per cooldown, and only while the scheduler is otherwise idle.
+        """
+        try:
+            from app.config.config_loader import load_layered_json_config
+            cfg = (load_layered_json_config("config/scheduler_config.json") or {}).get("harvest") or {}
+            if not cfg.get("enabled"):
+                return
+            now = datetime.now()
+            last = getattr(self, "_last_harvest_at", None)
+            if last and (now - last).total_seconds() < cfg.get("cooldown_seconds", 600):
+                return
+            rm = self.executor._get_agentic_executor()._rm
+            candidates = await asyncio.to_thread(rm.harvest_candidates)
+            if not candidates:
+                return
+            horizon = cfg.get("pull_forward_seconds", 21600)
+            allowed = set(cfg.get("task_ids", []))
+            eligible = [
+                t for t in self.queue.list_tasks()
+                if t.id in allowed and t.status == TaskStatus.PENDING and t.schedule
+                and 0 < (t.schedule - now).total_seconds() <= horizon
+            ]
+            if not eligible:
+                return
+            task = min(eligible, key=lambda t: t.schedule)
+            c = candidates[0]
+            original = task.schedule
+            task.schedule = now
+            self.queue.update(task)
+            self._last_harvest_at = now
+            self._log(
+                f"Quota harvest: '{c['resource_id']}' {c['window']} window renews in {c['resets_in_s']}s with "
+                f"{c['headroom_pct']}% headroom -> running '{task.id}' now (was due {original.isoformat()})"
+            )
+            await self._broadcast({
+                "event_type": "quota_harvest",
+                "severity": "info",
+                "title": f"Quota harvest: running {task.id} early",
+                "data": {**c, "task_id": task.id, "was_due": original.isoformat()},
+            })
+        except Exception as e:
+            self._log(f"Quota harvest check failed: {type(e).__name__}: {e}", "error")
 
     async def _probe_resources_and_notify(self) -> None:
         """Probe resource endpoints and tell the user about failures, recoveries and new resources.
