@@ -17,6 +17,7 @@ from typing import Any, Deque, Dict, List, Optional
 from app.config.paths import get_memory_subpath
 from app.scheduler.models import DEFAULT_TIER_PREFERENCE
 from app.scheduler.model_registry import get_registry, lookup_model
+from app.scheduler import resource_health
 
 
 class ResourceTier(Enum):
@@ -31,6 +32,7 @@ class ResourceStatus(Enum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     DISABLED = "disabled"
     UNREACHABLE = "unreachable"
+    AUTH_FAILED = "auth_failed"
 
 
 @dataclass
@@ -96,6 +98,7 @@ class ResourceManager:
     SANDBOX_ENV_FILE = Path(get_memory_subpath("resource_pool.env"))
     USAGE_FILE = Path(get_memory_subpath("resource_pool_usage.json"))
     META_FILE = Path(get_memory_subpath("resource_pool_meta.json"))
+    KNOWN_IDS_FILE = Path(get_memory_subpath("resource_pool_known_ids.json"))
     SMOKE_LOG_FILE = Path(get_memory_subpath("resource_pool_smoke_log.jsonl"))
 
     # Bug found live 2026-07-21: acquire() sorted candidates by static
@@ -128,6 +131,7 @@ class ResourceManager:
         self._approved_paid: set = set()
         # Round-robin counters per account_group
         self._group_counters: Dict[str, int] = {}
+        self._health: Dict[str, "resource_health.ProbeResult"] = {}
         self._sandbox_env: Dict[str, str] = {}
         self._config_mtime_ns: Optional[int] = None
         self._runtime_mtime_ns: Optional[int] = None
@@ -465,7 +469,7 @@ class ResourceManager:
                     continue
                 if not self._is_budget_available(resource):
                     continue
-                if self._compute_status(resource) == ResourceStatus.UNREACHABLE:
+                if self._compute_status(resource) in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED):
                     continue
                 candidates.append(resource)
 
@@ -501,6 +505,68 @@ class ResourceManager:
                     self._group_counters[group] = idx + 1
 
             return best
+
+    def detect_new_resources(self) -> List[str]:
+        """Return enabled resource ids not seen before, then remember them.
+
+        With no remembered set yet, the current resources are recorded silently:
+        telling the user about every pre-existing resource is noise, not news.
+        """
+        with self._lock:
+            current = sorted(r.id for r in self._resources.values() if r.enabled)
+        try:
+            known = set(json.loads(self.KNOWN_IDS_FILE.read_text(encoding="utf-8")))
+            first_run = False
+        except FileNotFoundError:
+            known, first_run = set(), True
+        new = [] if first_run else [rid for rid in current if rid not in known]
+        self.KNOWN_IDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self.KNOWN_IDS_FILE.write_text(json.dumps(sorted(known | set(current))), encoding="utf-8")
+        return new
+
+    def probe_resource(self, resource_id: str) -> Optional[Dict[str, Any]]:
+        """Probe one resource's endpoint; return a transition dict if its state changed.
+
+        Network I/O happens outside the lock. The first probe of a resource
+        counts as a transition from None, so a newly appearing resource is
+        reported exactly once.
+        """
+        with self._lock:
+            resource = self._resources.get(resource_id)
+            if resource is None or not resource.enabled:
+                self._health.pop(resource_id, None)
+                return None
+            base_url, api_key = resource.base_url, resource.api_key or ""
+        result = resource_health.probe_endpoint(base_url, api_key)
+        with self._lock:
+            previous = self._health.get(resource_id)
+            old_state = previous.state if previous else None
+            result.since = previous.since if previous and previous.state == result.state else result.checked_at
+            self._health[resource_id] = result
+        if old_state == result.state:
+            return None
+        return {
+            "resource_id": resource_id,
+            "from": old_state,
+            "to": result.state,
+            "detail": result.detail,
+            "since": result.since,
+        }
+
+    def probe_all(self) -> List[Dict[str, Any]]:
+        """Probe every enabled resource; return the state transitions observed."""
+        with self._lock:
+            ids = [r.id for r in self._resources.values() if r.enabled]
+        transitions = []
+        for rid in ids:
+            t = self.probe_resource(rid)
+            if t:
+                transitions.append(t)
+        return transitions
+
+    def get_health(self) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            return {rid: h.to_dict() for rid, h in self._health.items()}
 
     def find_tier_restriction_conflict(self, tiers: List[ResourceTier]) -> Optional[str]:
         """
@@ -549,7 +615,7 @@ class ResourceManager:
                 return None
             if not self._is_budget_available(resource):
                 return None
-            if self._compute_status(resource) == ResourceStatus.UNREACHABLE:
+            if self._compute_status(resource) in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED):
                 return None
             return resource
 
@@ -610,7 +676,7 @@ class ResourceManager:
                     continue
                 if not self._is_budget_available(resource):
                     continue
-                if self._compute_status(resource) == ResourceStatus.UNREACHABLE:
+                if self._compute_status(resource) in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED):
                     continue
                 candidates.append(resource)
 
@@ -715,6 +781,7 @@ class ResourceManager:
                 "priority": resource.priority,
                 "enabled": resource.enabled,
                 "status": status.value,
+                "health": self._health[rid].to_dict() if rid in self._health else None,
                 # Only meaningful for local backends -- API/paid resources
                 # have no VRAM-residency concept, so this is omitted for them
                 # rather than reported as a misleading False.
@@ -1173,6 +1240,15 @@ class ResourceManager:
     def _compute_status(self, resource: LLMResource) -> ResourceStatus:
         if not resource.enabled:
             return ResourceStatus.DISABLED
+
+        # A failed liveness probe is a fact about the endpoint, not a guess from
+        # recent call outcomes: it gates the resource until a later probe passes.
+        health = self._health.get(resource.id)
+        if health:
+            if health.state == resource_health.UNREACHABLE:
+                return ResourceStatus.UNREACHABLE
+            if health.state == resource_health.AUTH_FAILED:
+                return ResourceStatus.AUTH_FAILED
 
         usage = self._usage.get(resource.id)
 

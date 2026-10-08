@@ -1,0 +1,124 @@
+"""Tests for endpoint liveness probing and its effect on resource selection.
+
+Incident 2026-10-08: LM Studio rebound from loopback to the Tailscale address
+while every local resource still pointed at localhost; nothing noticed until
+tasks failed on it.
+"""
+import json
+import tempfile
+import threading
+import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from unittest.mock import patch
+
+from app.scheduler import resource_health
+from app.scheduler.resource_pool import ResourceManager, ResourceStatus, ResourceTier
+
+
+def _serve(status: int, body: bytes = b'{"data": []}'):
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_port}/v1"
+
+
+class TestProbeEndpoint(unittest.TestCase):
+    def _probe(self, status, body=b'{"data": []}'):
+        srv, url = _serve(status, body)
+        self.addCleanup(srv.shutdown)
+        return resource_health.probe_endpoint(url, "k", timeout=2)
+
+    def test_200_json_is_live(self):
+        self.assertEqual(self._probe(200).state, resource_health.LIVE)
+
+    def test_401_is_auth_failed(self):
+        self.assertEqual(self._probe(401).state, resource_health.AUTH_FAILED)
+
+    def test_429_is_live_because_quota_is_not_reachability(self):
+        self.assertEqual(self._probe(429).state, resource_health.LIVE)
+
+    def test_non_json_200_is_error(self):
+        self.assertEqual(self._probe(200, b"<html>").state, resource_health.ERROR)
+
+    def test_refused_connection_is_unreachable(self):
+        srv, url = _serve(200)
+        srv.shutdown()
+        srv.server_close()
+        self.assertEqual(resource_health.probe_endpoint(url, timeout=2).state, resource_health.UNREACHABLE)
+
+    def test_empty_base_url_is_error(self):
+        self.assertEqual(resource_health.probe_endpoint("").state, resource_health.ERROR)
+
+
+class TestPoolUsesHealth(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+        for name, attr in (("meta.json", "META_FILE"), ("smoke.jsonl", "SMOKE_LOG_FILE"),
+                           ("known.json", "KNOWN_IDS_FILE")):
+            p = patch.object(ResourceManager, attr, self.base / name)
+            p.start()
+            self.addCleanup(p.stop)
+        p = patch.object(ResourceManager, "get_loaded_resource_ids", return_value=set())
+        p.start()
+        self.addCleanup(p.stop)
+        self.live, live_url = _serve(200)
+        self.addCleanup(self.live.shutdown)
+        dead, dead_url = _serve(200)
+        dead.shutdown()
+        dead.server_close()
+        self.cfg = {"resources": {
+            "dead_top": self._res(0, dead_url),
+            "live_low": self._res(5, live_url),
+        }}
+        l = patch("app.config.config_loader.load_layered_json_config", side_effect=lambda *a, **k: self.cfg)
+        l.start()
+        self.addCleanup(l.stop)
+        path = self.base / "pool.json"
+        path.write_text(json.dumps(self.cfg), encoding="utf-8")
+        self.rm = ResourceManager(config_path=str(path))
+
+    @staticmethod
+    def _res(priority, url):
+        return {"type": "local", "provider": "openai", "base_url": url, "model": f"m{priority}",
+                "tier": "free", "priority": priority, "enabled": True,
+                "context_limit": 32768, "output_limit": 8192}
+
+    def test_acquire_skips_unreachable_and_fails_over(self):
+        self.rm.probe_all()
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE]).id, "live_low")
+
+    def test_transitions_reported_once(self):
+        first = {t["resource_id"]: t for t in self.rm.probe_all()}
+        self.assertEqual(first["dead_top"]["to"], resource_health.UNREACHABLE)
+        self.assertEqual(first["live_low"]["from"], None)
+        self.assertEqual(self.rm.probe_all(), [])
+
+    def test_status_reports_unreachable_with_health_detail(self):
+        self.rm.probe_all()
+        status = self.rm.get_status()
+        self.assertEqual(status["dead_top"]["status"], ResourceStatus.UNREACHABLE.value)
+        self.assertEqual(status["dead_top"]["health"]["state"], resource_health.UNREACHABLE)
+
+    def test_detect_new_resources_seeds_silently_then_reports_additions(self):
+        self.assertEqual(self.rm.detect_new_resources(), [])
+        self.cfg["resources"]["added"] = self._res(9, "http://127.0.0.1:1/v1")
+        self.rm._resources = {}
+        self.rm._load_config()
+        self.assertEqual(self.rm.detect_new_resources(), ["added"])
+        self.assertEqual(self.rm.detect_new_resources(), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

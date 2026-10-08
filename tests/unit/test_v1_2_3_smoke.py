@@ -52,6 +52,7 @@ class TestResourceManagerFlatFormat(unittest.TestCase):
         rm._usage = {}
         rm._approved_paid = set()
         rm._group_counters = {}
+        rm._health = {}
         rm._config_mtime_ns = None
         rm._runtime_mtime_ns = None
         rm._env_mtime_ns = None
@@ -139,6 +140,7 @@ class TestResourceManagerLegacyFallback(unittest.TestCase):
         rm._usage = {}
         rm._approved_paid = set()
         rm._group_counters = {}
+        rm._health = {}
         rm._config_mtime_ns = None
         rm._runtime_mtime_ns = None
         rm._env_mtime_ns = None
@@ -170,6 +172,7 @@ class TestResourceManagerLegacyFallback(unittest.TestCase):
         rm._usage = {}
         rm._approved_paid = set()
         rm._group_counters = {}
+        rm._health = {}
         rm._sandbox_env = {}
         rm._tier_policy = {}
         rm._log = lambda msg, level="info": None
@@ -206,6 +209,7 @@ class TestAcquireByRequirements(unittest.TestCase):
         rm._usage = {}
         rm._approved_paid = set()
         rm._group_counters = {}
+        rm._health = {}
         rm._config_mtime_ns = None
         rm._runtime_mtime_ns = None
         rm._env_mtime_ns = None

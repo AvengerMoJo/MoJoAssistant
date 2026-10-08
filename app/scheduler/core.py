@@ -91,6 +91,7 @@ class Scheduler:
         from app.scheduler.benchmark_store import BenchmarkStore
         self._benchmark_store = BenchmarkStore()
         self._idle_since: Optional[datetime] = None
+        self._probing_resources = False
         # How long the queue must be empty before triggering a benchmark rerun (seconds)
         self._benchmark_idle_threshold: int = 600  # 10 minutes
 
@@ -272,6 +273,10 @@ class Scheduler:
                         self._idle_since = datetime.now()  # reset after each trigger
                 else:
                     self._idle_since = None  # work is running — not idle
+
+                # Resource liveness: probe every 5th tick (and the first), off the event loop
+                if (self.tick_count == 1 or self.tick_count % 5 == 0) and not self._probing_resources:
+                    asyncio.create_task(self._probe_resources_and_notify(), name="resource-probe")
 
                 # Daily AutoTuner: analyze benchmark log and update resource priorities
                 # 1440 ticks × 60s = 24 hours. Only runs when enough data has accumulated.
@@ -701,6 +706,51 @@ class Scheduler:
 
         # 3. Fallback: user-initiated tasks get a notification; system/cron do not
         return task.created_by == "user"
+
+    async def _probe_resources_and_notify(self) -> None:
+        """Probe resource endpoints and tell the user about failures, recoveries and new resources.
+
+        Failures name the best live replacement from the same tier as a proposal only;
+        the pool's normal priority walk already skips the dead resource, and any
+        config change stays a human decision.
+        """
+        self._probing_resources = True
+        try:
+            rm = self.executor._get_agentic_executor()._rm
+            transitions = await asyncio.to_thread(rm.probe_all)
+            new_ids = await asyncio.to_thread(rm.detect_new_resources)
+            for rid in new_ids:
+                res = rm._resources.get(rid)
+                await self._broadcast({
+                    "event_type": "resource_new",
+                    "severity": "info",
+                    "notify_user": True,
+                    "title": f"New resource: {rid}",
+                    "data": {"resource_id": rid, "model": getattr(res, "model", ""),
+                             "tier": res.tier.value if res else None,
+                             "base_url": getattr(res, "base_url", "")},
+                })
+            for t in transitions:
+                rid, new = t["resource_id"], t["to"]
+                if new == "live" and t["from"] is None:
+                    continue  # first sighting of a healthy resource is not news
+                failed = new in ("unreachable", "auth_failed", "error")
+                data = dict(t)
+                if failed:
+                    res = rm._resources.get(rid)
+                    repl = rm.acquire(tier_preference=[res.tier], exclude_ids={rid}) if res else None
+                    data["proposed_replacement"] = repl.id if repl else None
+                await self._broadcast({
+                    "event_type": "resource_health",
+                    "severity": "warning" if failed else "info",
+                    "notify_user": True,
+                    "title": f"Resource {rid}: {t['from'] or 'unknown'} -> {new}",
+                    "data": data,
+                })
+        except Exception as e:
+            self._log(f"Resource probe failed: {type(e).__name__}: {e}", "error")
+        finally:
+            self._probing_resources = False
 
     async def _maybe_run_benchmark_rerun(self) -> None:
         """
