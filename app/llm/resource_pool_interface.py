@@ -64,16 +64,19 @@ class ResourcePoolLLMInterface:
         (which calls us synchronously) works without modification.
         """
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're inside an async context — run in a thread to avoid
-                # blocking the event loop.
+            try:
+                asyncio.get_running_loop()
+                in_async_context = True
+            except RuntimeError:
+                in_async_context = False
+            if in_async_context:
+                # We're inside a running loop -- run in a worker thread with its own loop so this
+                # call can wait for the answer without deadlocking that loop.
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(asyncio.run, self._generate(query))
                     return future.result(timeout=120)
-            else:
-                return loop.run_until_complete(self._generate(query))
+            return asyncio.run(self._generate(query))
         except DreamingLLMError:
             raise
         except (TimeoutError, RuntimeError, OSError) as e:
