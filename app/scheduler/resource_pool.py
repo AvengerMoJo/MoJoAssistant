@@ -1144,6 +1144,13 @@ class ResourceManager:
         except Exception:
             pass
 
+    def _lms_command(self) -> str:
+        """Path of the LM Studio CLI. Config key `lms_command` (resource_pool.json), else `lms`
+        from PATH. The systemd service does not have ~/.lmstudio/bin on PATH, so without the
+        key the residency and busy checks failed on every call (found 2026-10-08)."""
+        configured = (getattr(self, "_loaded_config", None) or {}).get("lms_command")
+        return str(Path(configured).expanduser()) if configured else "lms"
+
     def _lms_ps_entries(self, max_age: float) -> list:
         """`lms ps --json` entries, reused if read less than max_age seconds ago.
 
@@ -1157,7 +1164,7 @@ class ResourceManager:
         if cached is not None and max_age > 0 and now - cached[1] < max_age:
             return cached[0]
         proc = subprocess.run(
-            ["lms", "ps", "--json"],
+            [self._lms_command(), "ps", "--json"],
             capture_output=True, text=True, timeout=self.LMS_PS_TIMEOUT_SECONDS,
         )
         if proc.returncode != 0:

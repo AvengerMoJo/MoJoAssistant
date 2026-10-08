@@ -87,3 +87,44 @@ class TestBusyOverflow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLmsCommandIsConfigurable(unittest.TestCase):
+    """The systemd service has no ~/.lmstudio/bin on PATH: residency and busy checks
+    silently never worked there until the CLI path became config (2026-10-08)."""
+
+    def test_configured_path_is_used_and_default_is_plain_lms(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        for name, attr in (("meta.json", "META_FILE"), ("smoke.jsonl", "SMOKE_LOG_FILE"),
+                           ("known.json", "KNOWN_IDS_FILE"), ("usage.json", "USAGE_FILE")):
+            p = patch.object(ResourceManager, attr, base / name)
+            p.start()
+            self.addCleanup(p.stop)
+        seen = []
+
+        def fake(cmd, **kw):
+            seen.append(cmd[0])
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+        p = patch("subprocess.run", side_effect=fake)
+        p.start()
+        self.addCleanup(p.stop)
+        for conf, expected in (({}, "lms"), ({"lms_command": "~/.lmstudio/bin/lms"}, str(Path("~/.lmstudio/bin/lms").expanduser()))):
+            data = {"resources": {"big": _local("big-model", 0)}, **conf}
+            l = patch("app.config.config_loader.load_layered_json_config", return_value=data)
+            l.start()
+            self.addCleanup(l.stop)
+            cfg = base / "pool.json"
+            cfg.write_text(json.dumps(data), encoding="utf-8")
+            rm = ResourceManager(config_path=str(cfg))
+            seen.clear()
+            rm._lms_ps_cache = None
+            rm._lms_ps_entries(max_age=0)
+            self.assertEqual(seen, [expected])
+            l.stop()
+
+
+if __name__ == "__main__":
+    unittest.main()
