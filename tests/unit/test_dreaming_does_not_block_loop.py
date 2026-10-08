@@ -73,3 +73,38 @@ class TestDreamingOffLoop(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAutomaticInputIsBuiltOffLoop(unittest.TestCase):
+    """Building the nightly input parses the whole 171MB conversation store; the watchdog logged a 5.5s stall."""
+
+    def test_slow_input_builder_does_not_stall_the_loop(self):
+        from unittest.mock import patch
+
+        def slow_builder(config):
+            time.sleep(1.0)    # stands in for json.load of the store
+            return {"conversation_id": "a", "conversation_text": "hello", "metadata": {}}
+        ctx = MagicMock()
+        ctx._memory_service = None
+        ctx.get_dreaming_pipeline.return_value = _BlockingPipeline()
+        task = Task(id="t", type=TaskType.DREAMING, config={"automatic": True, "enforce_off_peak": False})
+
+        async def go():
+            beats = []
+
+            async def heartbeat():
+                while True:
+                    beats.append(time.monotonic())
+                    await asyncio.sleep(0.05)
+            hb = asyncio.create_task(heartbeat())
+            await asyncio.sleep(0.15)
+            with patch.object(DreamingHandler, "_build_automatic_dreaming_input", staticmethod(slow_builder)):
+                await DreamingHandler().execute(task, ctx)
+            await asyncio.sleep(0.15)
+            hb.cancel()
+            return beats
+        beats = asyncio.run(go())
+        # the pipeline stub itself blocks 1.2s on its own (thread); only the builder phase is under test,
+        # so require that the loop kept ticking during the first second
+        first_second = [b for b in beats if b - beats[0] < 1.0]
+        self.assertGreater(len(first_second), 10, "loop did not tick while the input builder ran")

@@ -57,7 +57,8 @@ class DreamingHandler(TaskHandler):
                 )
 
             if automatic and (not conversation_id or not conversation_text):
-                auto_input = self._build_automatic_dreaming_input(task.config)
+                # Parses the whole conversation store (171MB, ~2s+ of CPU): off the scheduler's loop.
+                auto_input = await asyncio.to_thread(self._build_automatic_dreaming_input, task.config)
                 if auto_input is None:
                     return TaskResult(
                         success=True,
