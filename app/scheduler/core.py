@@ -16,7 +16,7 @@ from pathlib import Path
 
 from app.scheduler.queue import TaskQueue
 from app.scheduler.models import (
-    Task, TaskStatus, TaskType, Schedule, TaskPriority, TaskResources,
+    Task, TaskStatus, TaskType, Schedule, TaskPriority, TaskResources, clear_run_state,
     is_infra_failure_question,
 )
 from app.scheduler.executor import TaskExecutor
@@ -186,6 +186,7 @@ class Scheduler:
         self.stats["started_at"] = datetime.now()
         self._log(f"Scheduler started (max_concurrent={self.max_concurrent})")
         self._recover_stuck_running_tasks()
+        self._sanitize_recurring_run_state()
         self._seed_tasks_from_config()
 
         # Eagerly connect external MCP servers so agent(action="list/status")
@@ -641,6 +642,7 @@ class Scheduler:
                     task.completed_at = None
                     task.last_error = None  # clear stale error from a previous failed run
                     task.pending_question = None  # clear stale HITL state between cron cycles
+                    self._clear_run_state_logged(task, "rescheduled after completion")
                     self._log(f"Task {task.id} rescheduled for {next_run.isoformat()}")
                 else:
                     self._log(f"Task {task.id} completed (non-recurring)")
@@ -724,6 +726,7 @@ class Scheduler:
         task.completed_at = None
         task.result = None
         task.pending_question = None  # clear stale HITL state between cron cycles
+        self._clear_run_state_logged(task, "rescheduled after failure")
         self._log(f"Task {task.id} failed but rescheduled (cron) for {next_run.isoformat()}")
         return True
 
@@ -1157,6 +1160,38 @@ class Scheduler:
                     + (f" scheduled at {first_run.isoformat()}" if first_run else "")
                 )
 
+    def _clear_run_state_logged(self, task: Task, why: str) -> None:
+        """Drop per-run bookkeeping from a recurring task's config and say so."""
+        removed = clear_run_state(task.config)
+        if removed:
+            self._log(f"Task {task.id}: cleared per-run state {sorted(removed)} ({why})")
+
+    def _sanitize_recurring_run_state(self) -> None:
+        """Repair recurring tasks that already carry per-run state from an earlier cycle.
+
+        A PENDING cron task with no retry in progress and no waiting HITL reply is between
+        runs, so any resume/HITL bookkeeping on it is stale and would make the next run
+        resume an old session. Tasks mid-retry (retry_count > 0) or holding a reply
+        (reply_to_question) legitimately keep it.
+        """
+        repaired = 0
+        for task in list(self.queue.tasks.values()):
+            between_runs = (
+                task.cron_expression
+                and task.status == TaskStatus.PENDING
+                and task.retry_count == 0
+                and "reply_to_question" not in task.config
+            )
+            if not between_runs:
+                continue
+            removed = clear_run_state(task.config)
+            if removed:
+                repaired += 1
+                self._log(f"Startup repair: recurring task {task.id} cleared stale per-run state {sorted(removed)}")
+                self.queue.update(task)
+        if repaired:
+            self._log(f"Startup repair: {repaired} recurring task(s) no longer resume a stale session")
+
     def _recover_stuck_running_tasks(self) -> None:
         """
         Startup recovery: reset any task left in RUNNING state from a previous
@@ -1197,6 +1232,7 @@ class Scheduler:
                 task.started_at = None
                 task.completed_at = None
                 task.pending_question = None  # clear stale HITL state on restart
+                self._clear_run_state_logged(task, "zombie recovery")
                 # NOTE: task.result is intentionally kept — it reflects the last
                 # successful run and is valuable for history / debug.
                 self._log(

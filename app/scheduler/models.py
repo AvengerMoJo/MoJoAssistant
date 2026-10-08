@@ -145,6 +145,23 @@ class TaskResult:
         return cls(**data)
 
 
+# Per-run bookkeeping the scheduler and executors write into task.config while ONE run is in
+# flight (a pause awaiting a reply, a HITL post, an escalation stamp). It describes that run,
+# so it must never survive into the next scheduled run: 6 of 15 recurring jobs carried
+# resume_from_task_id forever and resumed a 437KB / 270-message session on every run
+# (found 2026-10-08).
+RUN_STATE_CONFIG_KEYS = ("resume_from_task_id", "pending_options", "reply_to_question")
+RUN_STATE_CONFIG_PREFIXES = ("_hitl_posted_at", "_qm_escalated_at")
+
+
+def clear_run_state(config: Dict[str, Any]) -> List[str]:
+    """Remove per-run bookkeeping from a task config; return the keys removed."""
+    stale = [k for k in config if k in RUN_STATE_CONFIG_KEYS or k.startswith(RUN_STATE_CONFIG_PREFIXES)]
+    for k in stale:
+        del config[k]
+    return stale
+
+
 @dataclass
 class Task:
     """Scheduled task with metadata and execution state.
