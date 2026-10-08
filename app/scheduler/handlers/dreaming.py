@@ -669,20 +669,44 @@ class DreamingHandler(TaskHandler):
 
         # Only messages newer than the last successful run are dreamed (oldest first, so a backlog is
         # worked off over several nights). Before this the job re-dreamed the same last-N messages
-        # every night and never reached anything older. No watermark yet -> start from the latest N.
+        # every night and never reached anything older. No watermark yet -> start from the latest window.
+        #
+        # The window is bounded by SIZE as well as count: 200 messages were 288,072 characters (~70k
+        # tokens) in one prompt, far more than the chunker can answer within its output limit, so every
+        # run produced 0 chunks (found 2026-10-09 on the first honest-failure run).
+        max_chars = int(config.get("max_input_chars", 24000))
+        max_msg_chars = int(config.get("max_message_chars", 4000))
+
+        def line_for(msg):
+            content = str(msg.get("text_content", "")).strip()
+            if not content:
+                return None
+            if len(content) > max_msg_chars:
+                content = content[:max_msg_chars] + " …[truncated]"
+            return f"[{msg.get('message_type', 'unknown')}] {content}"
+
+        def within_budget(messages):
+            picked, used = [], 0
+            for m in messages:
+                line = line_for(m)
+                if line is None:
+                    continue
+                if picked and used + len(line) + 1 > max_chars:
+                    break
+                picked.append((m, line))
+                used += len(line) + 1
+            return picked
+
         watermark = DreamingHandler._read_global_watermark()
         if watermark:
             fresh = [m for m in data if str(m.get("created_at") or "") > watermark]
-            recent = fresh[:lookback]
+            chosen = within_budget(fresh[:lookback])
         else:
-            recent = data[-lookback:] if len(data) > lookback else data
-        lines = []
+            tail = data[-lookback:] if len(data) > lookback else data
+            chosen = list(reversed(within_budget(reversed(tail))))
+        lines = [line for _, line in chosen]
         newest = watermark
-        for msg in recent:
-            role = msg.get("message_type", "unknown")
-            content = str(msg.get("text_content", "")).strip()
-            if content:
-                lines.append(f"[{role}] {content}")
+        for msg, _ in chosen:
             created = str(msg.get("created_at") or "")
             if created and (newest is None or created > newest):
                 newest = created

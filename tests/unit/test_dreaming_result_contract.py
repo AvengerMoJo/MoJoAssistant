@@ -189,3 +189,45 @@ class TestConfigurableTimeout(unittest.TestCase):
     def test_timeout_errors_are_classified_as_timeouts(self):
         from app.scheduler.run_ledger import classify_error
         self.assertEqual(classify_error("LLM call failed after waiting up to 120s: TimeoutError: "), "timeout")
+
+
+class TestInputBudget(TestWatermark):
+    """The nightly window is bounded by size: 200 messages were 288,072 chars in one prompt and every
+    run produced 0 chunks (2026-10-09)."""
+
+    def _write_sized(self, n, size, start=0):
+        msgs = [{"message_type": "user", "text_content": f"m{i} " + "x" * size, "created_at": f"2026-10-08T10:{i:02d}:00"}
+                for i in range(start, start + n)]
+        self.store.write_text(json.dumps(msgs), encoding="utf-8")
+
+    def test_first_run_takes_the_newest_messages_that_fit_in_chronological_order(self):
+        self._write_sized(30, 1000)
+        r = self._build(max_input_chars=5000)
+        self.assertLessEqual(len(r["conversation_text"]), 5000)
+        self.assertIn("m29 ", r["conversation_text"])                       # newest included
+        self.assertNotIn("m0 ", r["conversation_text"])
+        text = r["conversation_text"]
+        self.assertLess(text.index("m26 "), text.index("m29 "))             # still oldest -> newest
+        self.assertEqual(r["metadata"]["watermark_candidate"], "2026-10-08T10:29:00")
+
+    def test_backlog_window_is_oldest_first_and_watermark_stops_at_the_last_included(self):
+        self._write_sized(30, 1000)
+        DreamingHandler._commit_global_watermark("2026-10-08T10:09:00")
+        r = self._build(max_input_chars=5000)
+        self.assertIn("m10 ", r["conversation_text"])
+        self.assertNotIn("m29 ", r["conversation_text"])
+        n = r["metadata"]["message_count"]
+        self.assertEqual(r["metadata"]["watermark_candidate"], f"2026-10-08T10:{9 + n:02d}:00")
+
+    def test_one_oversized_message_is_truncated_but_never_blocks_the_run(self):
+        self._write_sized(1, 50_000)
+        r = self._build(max_input_chars=2000, max_message_chars=1500)
+        self.assertEqual(r["metadata"]["message_count"], 1)
+        self.assertIn("…[truncated]", r["conversation_text"])
+        self.assertLess(len(r["conversation_text"]), 1700)
+
+    def test_default_budget_keeps_a_busy_store_under_the_limit(self):
+        self._write_sized(200, 1400)
+        r = self._build()
+        self.assertLessEqual(len(r["conversation_text"]), 24000)
+        self.assertGreater(r["metadata"]["message_count"], 10)
