@@ -34,6 +34,7 @@ class ResourceStatus(Enum):
     DISABLED = "disabled"
     UNREACHABLE = "unreachable"
     AUTH_FAILED = "auth_failed"
+    MODEL_MISSING = "model_missing"
 
 
 @dataclass
@@ -90,6 +91,7 @@ class LLMResource:
     quota_source: Optional[Dict[str, Any]] = None  # read the provider's own quota (percent-metered plans)
     quotas: List["resource_quota.QuotaWindow"] = field(default_factory=list)  # renewing allowance windows; ALL must have room
     config_error: Optional[str] = None  # set (and the resource disabled) when its config could not be applied
+    health_check_model: bool = True  # False: this provider's listing does not use the configured model id
     health_check: bool = True  # False: provider has no usable listing endpoint; never probe it
     health_path: str = "/models"  # endpoint under base_url the liveness probe GETs
 
@@ -144,7 +146,9 @@ class ResourceManager:
     # at most once per this TTL, or on-demand via refresh_loaded_models_now()
     # (wired into doctor_health, which is an inherently manual/infrequent
     # diagnostic call so an unconditional refresh there is fine).
-    LOADED_MODEL_CACHE_TTL_SECONDS = 86400  # 24h
+    # Residency feeds the memory gate and the cold-load penalty, so it must be fresh;
+    # a shared 3s `lms ps` read keeps the cost to one cheap call per few seconds.
+    LOADED_MODEL_CACHE_TTL_SECONDS = 5
     LMS_PS_TIMEOUT_SECONDS = 8.0
 
     def __init__(self, config_path: str = "config/resource_pool.json", logger=None):
@@ -158,6 +162,7 @@ class ResourceManager:
         self._group_counters: Dict[str, int] = {}
         self._health: Dict[str, "resource_health.ProbeResult"] = {}
         self._busy_resource_ids: set = set()
+        self._memory_ceiling_gb: Optional[float] = None
         self._quota_pools: Dict[str, List["resource_quota.QuotaWindow"]] = {}
         self._quota_pool_errors: Dict[str, str] = {}
         self._pool_calls: Dict[str, Deque[float]] = {}
@@ -275,6 +280,8 @@ class ResourceManager:
         self._runtime_mtime_ns = runtime_path.stat().st_mtime_ns if runtime_path.exists() else None
 
         self._loaded_config = data  # keep reference for model_registry lookups
+        ceiling = data.get("memory_ceiling_gb")
+        self._memory_ceiling_gb = float(ceiling) if ceiling else None
         if use_flat:
             self._parse_flat_resources(data)
             self._auto_sync_flat_servers(data)
@@ -485,6 +492,7 @@ class ResourceManager:
             approval=conf.get("approval", "none"),
             credential_route=conf.get("credential_route"),
             health_check=conf.get("health_check", True),
+            health_check_model=conf.get("health_check_model", True),
             health_path=conf.get("health_path", "/models"),
             enabled=conf.get("enabled", True) and config_error is None,
             quotas=quotas,
@@ -599,7 +607,8 @@ class ResourceManager:
                 self._notified_state.pop(resource_id, None)
                 return None
             base_url, api_key, path = resource.base_url, resource.api_key or "", resource.health_path
-        result = resource_health.probe_endpoint(base_url, api_key, path=path)
+            expect = resource.model if resource.health_check_model and resource.model else None
+        result = resource_health.probe_endpoint(base_url, api_key, path=path, expect_model=expect)
         with self._lock:
             previous = self._health.get(resource_id)
             result.since = previous.since if previous and previous.state == result.state else result.checked_at
@@ -688,9 +697,33 @@ class ResourceManager:
             exhausted = [w.name for w in self.quota_status(resource.id) if w.exhausted]
             return f"quota exhausted ({', '.join(exhausted)})" if exhausted else "budget exhausted"
         status = self._compute_status(resource)
-        if status in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED):
+        if status in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED, ResourceStatus.MODEL_MISSING):
             health = self._health.get(resource.id)
             return f"{status.value}" + (f": {health.detail}" if health else "")
+        return self._memory_fit_reason(resource)
+
+    def _memory_fit_reason(self, resource: LLMResource) -> Optional[str]:
+        """Why loading this local model would be unsafe, or None.
+
+        Cumulative memory of loaded local models caused a whole-machine crash
+        (2026-10-03). A local model that is not resident may be routed to only if
+        its estimated VRAM fits under memory_ceiling_gb together with what is already
+        loaded. An unknown size fails closed: we cannot verify the fit. Resident
+        models are never gated, and no ceiling configured means no gate.
+        """
+        ceiling = self._memory_ceiling_gb
+        if ceiling is None or resource.type != "local":
+            return None
+        loaded_ids = self.get_loaded_resource_ids()
+        if resource.id in loaded_ids:
+            return None
+        if resource.vram_gb is None:
+            return f"memory fit unknown: vram_gb not set for a cold local model (ceiling {ceiling:g} GB)"
+        resident = sum((self._resources[i].vram_gb or self._resources[i].size_gb or 0.0)
+                       for i in loaded_ids if i in self._resources)
+        if resident + resource.vram_gb > ceiling:
+            return (f"loading would exceed the memory ceiling "
+                    f"({resident:.1f} GB resident + {resource.vram_gb:.1f} GB > {ceiling:g} GB)")
         return None
 
     def _effective_priority(self, r: LLMResource, loaded_ids: set, busy_ids: Optional[set] = None) -> tuple:
@@ -796,9 +829,39 @@ class ResourceManager:
                 return None
             if not self._is_budget_available(resource):
                 return None
-            if self._compute_status(resource) in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED):
+            if self._compute_status(resource) in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED, ResourceStatus.MODEL_MISSING):
+                return None
+            fit = self._memory_fit_reason(resource)
+            if fit:
+                self._log(f"acquire_by_id('{resource_id}') refused: {fit}", "error")
                 return None
             return resource
+
+    def _parse_requirements(self, requirements: Dict[str, Any]):
+        tier_strs = requirements.get("tier", DEFAULT_TIER_PREFERENCE)
+        if isinstance(tier_strs, str):
+            tier_strs = [tier_strs]
+        tier_preference = []
+        for t in tier_strs:
+            try:
+                tier_preference.append(ResourceTier(t))
+            except ValueError:
+                self._log(f"acquire_by_requirements: unknown tier '{t}', skipping", "warning")
+        if not tier_preference:
+            tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
+        return (tier_preference, requirements.get("min_context", 0), requirements.get("min_output", 0),
+                set(requirements.get("capabilities", [])))
+
+    def requirements_rejection_summary(self, requirements: Dict[str, Any], exclude_ids: Optional[set] = None) -> str:
+        """Per-resource reasons nothing satisfied these requirements (same checks as acquire_by_requirements)."""
+        tiers, min_ctx, min_out, caps = self._parse_requirements(requirements)
+        with self._lock:
+            parts = []
+            for r in self._resources.values():
+                reason = self._exclusion_reason(r, tiers, min_ctx, min_out, exclude_ids, caps)
+                if reason:
+                    parts.append(f"{r.id}: {reason}")
+        return "; ".join(parts) or "no resources configured"
 
     def acquire_by_requirements(
         self,
@@ -819,21 +882,7 @@ class ResourceManager:
 
         Returns None if nothing satisfies the requirements.
         """
-        tier_strs = requirements.get("tier", DEFAULT_TIER_PREFERENCE)
-        if isinstance(tier_strs, str):
-            tier_strs = [tier_strs]
-        tier_preference = []
-        for t in tier_strs:
-            try:
-                tier_preference.append(ResourceTier(t))
-            except ValueError:
-                self._log(f"acquire_by_requirements: unknown tier '{t}', skipping", "warning")
-        if not tier_preference:
-            tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
-
-        min_context = requirements.get("min_context", 0)
-        min_output = requirements.get("min_output", 0)
-        required_caps = set(requirements.get("capabilities", []))
+        tier_preference, min_context, min_output, required_caps = self._parse_requirements(requirements)
 
         with self._lock:
             self._maybe_reload_runtime_state()
@@ -1566,6 +1615,8 @@ class ResourceManager:
                 return ResourceStatus.UNREACHABLE
             if health.state == resource_health.AUTH_FAILED:
                 return ResourceStatus.AUTH_FAILED
+            if health.state == resource_health.MODEL_MISSING:
+                return ResourceStatus.MODEL_MISSING
 
         usage = self._usage.get(resource.id)
 

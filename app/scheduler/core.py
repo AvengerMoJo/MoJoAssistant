@@ -832,7 +832,7 @@ class Scheduler:
                 rid, new = t["resource_id"], t["to"]
                 if new == "live" and t["from"] is None:
                     continue  # first sighting of a healthy resource is not news
-                failed = new in ("unreachable", "auth_failed", "error")
+                failed = new in ("unreachable", "auth_failed", "error", "model_missing")
                 data = dict(t)
                 if failed:
                     res = rm._resources.get(rid)

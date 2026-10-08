@@ -187,3 +187,49 @@ class TestPoolUsesHealth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestModelMissing(unittest.TestCase):
+    """OpenRouter withdrew a :free model while /models kept answering 200 (hy3, 2026-10-08)."""
+
+    def _probe(self, listing, model):
+        srv, url = _serve(200, json.dumps(listing).encode())
+        self.addCleanup(srv.shutdown)
+        return resource_health.probe_endpoint(url, "k", timeout=2, expect_model=model)
+
+    def test_model_in_listing_is_live(self):
+        self.assertEqual(self._probe({"data": [{"id": "a/b:free"}, {"id": "c"}]}, "a/b:free").state, resource_health.LIVE)
+
+    def test_model_absent_from_listing_is_model_missing(self):
+        r = self._probe({"data": [{"id": "x"}, {"id": "y"}]}, "a/b:free")
+        self.assertEqual(r.state, resource_health.MODEL_MISSING)
+        self.assertIn("a/b:free", r.detail)
+
+    def test_provider_namespaced_ids_match(self):
+        self.assertEqual(self._probe({"data": [{"id": "models/gemini-2.5-flash"}]}, "gemini-2.5-flash").state, resource_health.LIVE)
+        self.assertEqual(self._probe({"data": [{"id": "org/model-7"}]}, "model-7").state, resource_health.LIVE)
+
+    def test_unrecognised_listing_shape_is_not_judged(self):
+        self.assertEqual(self._probe({"models": ["a"]}, "a/b").state, resource_health.LIVE)
+        self.assertEqual(self._probe({"data": []}, "a/b").state, resource_health.LIVE)
+
+    def test_pool_stops_routing_to_a_resource_whose_model_vanished(self):
+        from app.scheduler.resource_pool import ResourceManager as RM
+        live, live_url = _serve(200, json.dumps({"data": [{"id": "present"}]}).encode())
+        self.addCleanup(live.shutdown)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        for name, attr in (("meta.json", "META_FILE"), ("smoke.jsonl", "SMOKE_LOG_FILE"), ("known.json", "KNOWN_IDS_FILE"), ("usage.json", "USAGE_FILE")):
+            p = patch.object(RM, attr, base / name); p.start(); self.addCleanup(p.stop)
+        mk = lambda model, prio, **kw: {"type": "api", "provider": "openai", "base_url": live_url, "model": model, "tier": "free_api",
+                                        "priority": prio, "enabled": True, "context_limit": 1000, "output_limit": 100, **kw}
+        data = {"resources": {"gone": mk("withdrawn:free", 1), "ok": mk("present", 2), "optout": mk("withdrawn:free", 3, health_check_model=False)}}
+        l = patch("app.config.config_loader.load_layered_json_config", return_value=data); l.start(); self.addCleanup(l.stop)
+        cfg = base / "pool.json"; cfg.write_text(json.dumps(data), encoding="utf-8")
+        rm = RM(config_path=str(cfg))
+        rm.probe_all()
+        order = [r["id"] for r in rm.selection_order([ResourceTier.FREE_API]) if r["eligible"]]
+        self.assertEqual(order, ["ok", "optout"])
+        reasons = {r["id"]: r["excluded_because"] for r in rm.selection_order([ResourceTier.FREE_API])}
+        self.assertTrue(reasons["gone"].startswith("model_missing"))

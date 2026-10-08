@@ -63,6 +63,7 @@ class TestResourceManagerFlatFormat(unittest.TestCase):
         rm._quota_pools = {}
         rm._quota_pool_errors = {}
         rm._pool_calls = {}
+        rm._memory_ceiling_gb = None
         rm._config_mtime_ns = None
         rm._runtime_mtime_ns = None
         rm._env_mtime_ns = None
@@ -160,6 +161,7 @@ class TestResourceManagerLegacyFallback(unittest.TestCase):
         rm._quota_pools = {}
         rm._quota_pool_errors = {}
         rm._pool_calls = {}
+        rm._memory_ceiling_gb = None
         rm._config_mtime_ns = None
         rm._runtime_mtime_ns = None
         rm._env_mtime_ns = None
@@ -201,6 +203,7 @@ class TestResourceManagerLegacyFallback(unittest.TestCase):
         rm._quota_pools = {}
         rm._quota_pool_errors = {}
         rm._pool_calls = {}
+        rm._memory_ceiling_gb = None
         rm._sandbox_env = {}
         rm._tier_policy = {}
         rm._log = lambda msg, level="info": None
@@ -247,6 +250,7 @@ class TestAcquireByRequirements(unittest.TestCase):
         rm._quota_pools = {}
         rm._quota_pool_errors = {}
         rm._pool_calls = {}
+        rm._memory_ceiling_gb = None
         rm._config_mtime_ns = None
         rm._runtime_mtime_ns = None
         rm._env_mtime_ns = None

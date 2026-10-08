@@ -1372,7 +1372,9 @@ class AgenticExecutor:
                 if resource is None:
                     msg = (
                         f"Resource requirements not satisfiable for task {task.id}: "
-                        f"{role_resource_requirements}. Runtime must not fallback to tier-only acquire."
+                        f"{role_resource_requirements}. Rejected: "
+                        f"{self._rm.requirements_rejection_summary(role_resource_requirements, _failed_resource_ids)}. "
+                        "Runtime must not fallback to tier-only acquire."
                     )
                     self._log(msg, "error")
                     return TaskResult(success=False, error_message=msg)
