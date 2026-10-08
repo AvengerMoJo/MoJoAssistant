@@ -161,3 +161,60 @@ class TestSchedulerWatchdogRun(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWaitingForHuman(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ledger = RunLedger(Path(tmp.name) / "runs")
+
+    def _waiting(self, tid, hours, parent=None, **kw):
+        t = Task(id=tid, type=TaskType.INTERNAL_ASSIGNMENT, config={"pending_options": ["continue", "cancel"]}, parent_task_id=parent)
+        t.status = TaskStatus.WAITING_FOR_INPUT
+        t.pending_question = "Should I continue?"
+        t.started_at = NOW - timedelta(hours=hours)
+        return t
+
+    def test_reminder_and_escalation_levels_oldest_first(self):
+        tasks = [self._waiting("new", 2), self._waiting("day", 30), self._waiting("old", 15 * 24)]
+        got = watchdogs.waiting_for_human(tasks, self.ledger, NOW)
+        self.assertEqual([(g["task_id"], g["level"]) for g in got], [("old", "escalated"), ("day", "reminder")])
+        self.assertEqual(got[0]["choices"], ["continue", "cancel"])
+
+    def test_ledger_waiting_entry_defines_when_waiting_began(self):
+        t = self._waiting("w", 500)   # started long ago, but only started waiting 3 hours ago
+        self.ledger.append({"task_id": "w", "outcome": "waiting_for_input",
+                            "ended_at": (NOW - timedelta(hours=3)).isoformat(timespec="seconds")})
+        self.assertEqual(watchdogs.waiting_for_human([t], self.ledger, NOW), [])
+
+    def test_sub_task_whose_parent_is_gone_is_orphaned_but_not_cancelled(self):
+        parent_done = Task(id="parent", type=TaskType.INTERNAL_ASSIGNMENT, config={})
+        parent_done.status = TaskStatus.COMPLETED
+        orphan = self._waiting("orphan", 400, parent="parent")
+        live_parent = Task(id="p2", type=TaskType.INTERNAL_ASSIGNMENT, config={})
+        live_parent.status = TaskStatus.RUNNING
+        attached = self._waiting("attached", 400, parent="p2")
+        got = {g["task_id"]: g for g in watchdogs.waiting_for_human([parent_done, orphan, live_parent, attached], self.ledger, NOW)}
+        self.assertTrue(got["orphan"]["orphaned"])
+        self.assertFalse(got["attached"]["orphaned"])
+        self.assertEqual(orphan.status, TaskStatus.WAITING_FOR_INPUT)     # nothing auto-cancelled
+
+    def test_non_waiting_tasks_are_ignored(self):
+        t = self._waiting("x", 500)
+        t.status = TaskStatus.PENDING
+        self.assertEqual(watchdogs.waiting_for_human([t], self.ledger, NOW), [])
+
+
+class TestSchedulerHitlAlert(TestSchedulerWatchdogRun):
+    def test_escalated_waiting_questions_raise_one_error_level_event(self):
+        w = Task(id="w", type=TaskType.INTERNAL_ASSIGNMENT, config={})
+        w.status = TaskStatus.WAITING_FOR_INPUT
+        w.pending_question = "Continue?"
+        w.started_at = datetime.now() - timedelta(days=5)
+        self.s.queue.tasks = {"w": w}
+        self._run()
+        events = [e for e in self.sent if e["event_type"] == "hitl_waiting"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["severity"], "error")
+        self.assertIn("reply_to_task", events[0]["data"]["how_to_reply"])

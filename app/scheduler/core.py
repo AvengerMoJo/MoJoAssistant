@@ -901,6 +901,7 @@ class Scheduler:
     WATCHDOG_DEFAULTS = {
         "enabled": True, "stale_factor": 2.0, "grace_seconds": 3600, "in_progress_days": 7,
         "blocked_days": 14, "dreams_max_age_days": 3.0, "realert_hours": 24,
+        "hitl_remind_hours": 24, "hitl_escalate_hours": 72,
     }
 
     def _watchdog_state_path(self):
@@ -933,6 +934,13 @@ class Scheduler:
                                                         cfg["in_progress_days"], cfg["blocked_days"]))
             if stalled:
                 findings["project_stalled"] = ("project_stalled", {"count": len(stalled), "items": stalled[:25]})
+            waiting = watchdogs.waiting_for_human(list(self.queue.tasks.values()), self._run_ledger, now,
+                                                  cfg["hitl_remind_hours"], cfg["hitl_escalate_hours"])
+            if waiting:
+                findings["hitl_waiting"] = ("hitl_waiting", {"count": len(waiting), "items": waiting[:15],
+                                                              "escalated": sum(1 for w in waiting if w["level"] == "escalated"),
+                                                              "orphaned": sum(1 for w in waiting if w["orphaned"]),
+                                                              "how_to_reply": 'reply_to_task(task_id=..., reply=...) or scheduler(action="remove", task_id=...) for an orphan'})
             dreams = watchdogs.dreams_stale(get_memory_subpath("dreams"), now, cfg["dreams_max_age_days"])
             if dreams:
                 findings["dreams_stale"] = ("dreams_stale", dreams)
@@ -955,8 +963,11 @@ class Scheduler:
                     "watcher_stale": f"Watcher has not succeeded: {data.get('task_id')} ({data.get('hours_since_success')}h since last success)",
                     "project_stalled": f"{data.get('count')} project item(s) have stopped moving",
                     "dreams_stale": f"Memory consolidation output is {data.get('age_days')} days old",
+                    "hitl_waiting": (f"{data.get('count')} question(s) waiting for you "
+                                     f"({data.get('escalated')} over 72h, {data.get('orphaned')} orphaned)"),
                 }[kind]
-                await self._broadcast({"event_type": kind, "severity": "warning", "notify_user": True,
+                severe = kind == "hitl_waiting" and data.get("escalated")
+                await self._broadcast({"event_type": kind, "severity": "error" if severe else "warning", "notify_user": True,
                                        "title": title, "data": data})
                 self._log(f"Watchdog: {title}", "warning")
             path.parent.mkdir(parents=True, exist_ok=True)

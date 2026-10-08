@@ -129,3 +129,46 @@ def dreams_stale(dreams_dir: Path, now: datetime, max_age_days: float = 3.0) -> 
     if age > timedelta(days=max_age_days):
         return {"newest_archive": newest[1], "age_days": round(age.total_seconds() / 86400, 1)}
     return None
+
+
+def waiting_for_human(
+    tasks: Iterable[Any],
+    ledger: RunLedger,
+    now: datetime,
+    remind_hours: float = 24.0,
+    escalate_hours: float = 72.0,
+) -> List[Dict[str, Any]]:
+    """Tasks paused on a human answer, oldest first, with how long they have waited.
+
+    Waiting began at the latest 'waiting_for_input' ledger entry, else the HITL post stamp, else the
+    task's start. A task whose parent is no longer waiting or running is flagged `orphaned`: nobody is
+    left to use the answer, so the useful action is to cancel it. Nothing is cancelled automatically.
+    """
+    by_id = {t.id: t for t in tasks}
+    out = []
+    for t in by_id.values():
+        if getattr(t.status, "value", t.status) != "waiting_for_input":
+            continue
+        entry = next((e for e in ledger.recent(t.id, limit=20) if e.get("outcome") == "waiting_for_input"), None)
+        since = (_parse((entry or {}).get("ended_at"))
+                 or _parse((t.config or {}).get("_hitl_posted_at"))
+                 or _parse(getattr(t, "started_at", None)) or _parse(getattr(t, "created_at", None)))
+        if since is None:
+            continue
+        hours = (now - since).total_seconds() / 3600
+        if hours < remind_hours:
+            continue
+        parent_id = getattr(t, "parent_task_id", None)
+        parent = by_id.get(parent_id) if parent_id else None
+        parent_status = getattr(getattr(parent, "status", None), "value", None)
+        out.append({
+            "task_id": t.id,
+            "hours_waiting": round(hours, 1),
+            "level": "escalated" if hours >= escalate_hours else "reminder",
+            "orphaned": bool(parent_id) and parent_status not in ("running", "waiting_for_input"),
+            "parent_task_id": parent_id,
+            "question": str(t.pending_question or "")[:240],
+            "choices": (t.config or {}).get("pending_options"),
+        })
+    out.sort(key=lambda f: -f["hours_waiting"])
+    return out
