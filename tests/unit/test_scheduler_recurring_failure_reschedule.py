@@ -94,3 +94,45 @@ class TestFailureExitsReschedule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDreamingGetsALongerWallClock(unittest.TestCase):
+    """Dreaming makes several multi-minute LLM calls; the 1800s default cut it off."""
+
+    def _limit_seen(self, ttype):
+        import asyncio as _a
+        seen = {}
+
+        async def spy(task):
+            seen["t"] = _a.get_running_loop()
+            return TaskResult(success=True, metrics={})
+        s = Scheduler.__new__(Scheduler)
+        wire_run_tracking(s)
+        s._log = MagicMock()
+        s.stats = {"tasks_failed": 0, "tasks_succeeded": 0, "tasks_executed": 0, "tasks_completed": 0}
+        s.queue = MagicMock()
+        s.executor = MagicMock()
+        s.executor.execute = spy
+        s._broadcast = MagicMock(side_effect=lambda *a, **k: _a.sleep(0))
+        s.current_task = None
+        s._should_notify_completion = MagicMock(return_value=False)
+        s._schedule_dreaming_for_agentic_task = MagicMock()
+        s._store_agentic_result_to_memory = MagicMock()
+        s._benchmark_store = MagicMock()
+        captured = {}
+        real = _a.wait_for
+
+        async def capture(coro, timeout):
+            captured["timeout"] = timeout
+            return await real(coro, timeout)
+        t = Task(id="x", type=ttype, config={"goal": "g"})
+        t.mark_started()
+        from unittest.mock import patch
+        with patch("app.scheduler.core.asyncio.wait_for", capture):
+            _a.run(s._execute_task(t))
+        return captured["timeout"]
+
+    def test_dreaming_default_is_an_hour_assistant_default_is_half_an_hour(self):
+        from app.scheduler.models import TaskType as TT
+        self.assertEqual(self._limit_seen(TT.DREAMING), 3600)
+        self.assertEqual(self._limit_seen(TT.INTERNAL_ASSIGNMENT), 1800)

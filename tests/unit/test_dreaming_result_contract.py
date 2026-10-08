@@ -183,8 +183,8 @@ class TestConfigurableTimeout(unittest.TestCase):
         self.assertEqual(seen["timeout"], 900)
         self.assertIn("TimeoutError", str(cm.exception))
 
-    def test_default_is_ten_minutes_not_two(self):
-        self.assertEqual(ResourcePoolLLMInterface(MagicMock())._timeout, 600.0)
+    def test_default_is_fifteen_minutes_not_two(self):
+        self.assertEqual(ResourcePoolLLMInterface(MagicMock())._timeout, 900.0)
 
     def test_timeout_errors_are_classified_as_timeouts(self):
         from app.scheduler.run_ledger import classify_error

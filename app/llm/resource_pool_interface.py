@@ -47,7 +47,7 @@ class ResourcePoolLLMInterface:
         resource_manager: "ResourceManager",
         tier_preference: Optional[List] = None,
         max_tokens: int = 16000,
-        timeout_seconds: float = 600.0,
+        timeout_seconds: float = 900.0,
     ) -> None:
         """
         Args:

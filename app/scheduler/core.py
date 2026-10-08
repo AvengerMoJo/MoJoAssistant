@@ -566,7 +566,9 @@ class Scheduler:
             # Execute via executor — enforce wall-clock timeout so a hung LLM
             # call can't leave the task stuck in RUNNING forever.
             # Default cap: 30 minutes for tasks with no max_duration_seconds set.
-            _DEFAULT_TASK_TIMEOUT = 1800
+            # Dreaming makes several long LLM calls (a thinking model needs ~5-10 min per call on a real
+            # chunking prompt), so it gets a longer default than an ordinary assistant task.
+            _DEFAULT_TASK_TIMEOUT = 3600 if task.type == TaskType.DREAMING else 1800
             max_duration = (
                 task.resources.max_duration_seconds
                 if task.resources and task.resources.max_duration_seconds
