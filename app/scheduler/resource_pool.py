@@ -77,6 +77,7 @@ class LLMResource:
     load_mode: str = "cloud"  # resident (kept loaded), on_demand (needs approval), cloud
     approval: str = "none"  # none, hitl (ask the user before loading or paying)
     credential_route: Optional[str] = None  # route id in the credential service, when keys come from there
+    quota_source: Optional[Dict[str, Any]] = None  # read the provider's own quota (percent-metered plans)
     quotas: List["resource_quota.QuotaWindow"] = field(default_factory=list)  # renewing allowance windows; ALL must have room
     config_error: Optional[str] = None  # set (and the resource disabled) when its config could not be applied
     health_check: bool = True  # False: provider has no usable listing endpoint; never probe it
@@ -142,6 +143,8 @@ class ResourceManager:
         self._group_counters: Dict[str, int] = {}
         self._health: Dict[str, "resource_health.ProbeResult"] = {}
         # State the user was last told about, and how many consecutive probes agree on the latest state.
+        # Latest provider-reported quota per resource: {"windows": [...], "fetched_at": ts, "error": str|None}
+        self._provider_quota: Dict[str, Dict[str, Any]] = {}
         self._notified_state: Dict[str, str] = {}
         self._probe_streak: Dict[str, tuple] = {}
         self._sandbox_env: Dict[str, str] = {}
@@ -421,6 +424,7 @@ class ResourceManager:
         config_error: Optional[str] = None
         try:
             quotas = resource_quota.parse_windows(conf.get("quotas"))
+            resource_quota.validate_source(conf.get("quota_source"))
         except (ValueError, TypeError) as e:
             # A quota that cannot be read must not be ignored (the resource
             # could overspend its plan), and must not take the whole pool down:
@@ -446,6 +450,7 @@ class ResourceManager:
             health_path=conf.get("health_path", "/models"),
             enabled=conf.get("enabled", True) and config_error is None,
             quotas=quotas,
+            quota_source=conf.get("quota_source"),
             config_error=config_error,
             api_key=api_key,
             api_key_env=api_key_env,
@@ -621,6 +626,7 @@ class ResourceManager:
             t = self.probe_resource(rid)
             if t:
                 transitions.append(t)
+            self.refresh_provider_quota(rid)
         return transitions
 
     def get_health(self) -> Dict[str, Dict[str, Any]]:
@@ -849,6 +855,7 @@ class ResourceManager:
                 "health": self._health[rid].to_dict() if rid in self._health else None,
                 "quota": [w.to_dict() for w in self.quota_status(rid)],
                 "config_error": resource.config_error,
+                "quota_source_error": (self._provider_quota.get(rid) or {}).get("error"),
                 # Only meaningful for local backends -- API/paid resources
                 # have no VRAM-residency concept, so this is omitted for them
                 # rather than reported as a misleading False.
@@ -1291,11 +1298,49 @@ class ResourceManager:
         """Per-window usage for a resource's renewing quotas (empty when none are configured)."""
         with self._lock:
             resource = self._resources.get(resource_id)
-            if resource is None or not resource.quotas:
+            if resource is None:
                 return []
             usage = self._usage.get(resource_id)
             stamps = list(usage.quota_calls) if usage else []
-        return resource_quota.evaluate(resource.quotas, stamps, time.time())
+            reported = self._provider_quota.get(resource_id)
+            provider_windows = list(reported["windows"]) if reported and reported.get("windows") else []
+        now = time.time()
+        out = resource_quota.evaluate(resource.quotas, stamps, now) if resource.quotas else []
+        for w in provider_windows:
+            if w.resets_at is not None and now >= w.resets_at:
+                # The reported window has ended; its percentage describes a
+                # period that is over. Not exhausted until the next refresh says so.
+                w = resource_quota.WindowStatus(**{**w.to_dict(), "used": 0, "exhausted": False})
+            out.append(w)
+        return out
+
+    def refresh_provider_quota(self, resource_id: str) -> Optional[str]:
+        """Re-read a resource's provider-reported quota. Returns an error string on failure.
+
+        Failure is recorded and surfaced (get_status), and the previous reading is
+        kept -- nothing is invented. Network I/O happens outside the lock.
+        """
+        with self._lock:
+            resource = self._resources.get(resource_id)
+            if resource is None or not resource.enabled or not resource.quota_source:
+                self._provider_quota.pop(resource_id, None)
+                return None
+            conf, api_key = dict(resource.quota_source), resource.api_key or ""
+        try:
+            windows = resource_quota.fetch_provider_quota(conf, api_key)
+            error = None
+        except resource_quota.QuotaSourceError as e:
+            windows, error = None, str(e)
+        with self._lock:
+            prev = self._provider_quota.get(resource_id) or {}
+            self._provider_quota[resource_id] = {
+                "windows": windows if windows is not None else prev.get("windows"),
+                "fetched_at": time.time() if windows is not None else prev.get("fetched_at"),
+                "error": error,
+            }
+        if error:
+            self._log(f"Provider quota for '{resource_id}' unreadable: {error}", "warning")
+        return error
 
     def _legacy_budget_available(self, resource: LLMResource) -> bool:
         budget = resource.budget

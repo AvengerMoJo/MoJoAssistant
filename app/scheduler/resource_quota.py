@@ -145,3 +145,89 @@ def lookback_seconds(windows: Sequence[QuotaWindow]) -> float:
     for w in windows:
         span = max(span, _MONTHLY_LOOKBACK if w.kind == "monthly" else w.seconds)
     return span
+
+
+# ---------------------------------------------------------------------------
+# Provider-reported quota
+#
+# Some plans meter in tokens and show only a percentage in their console, so a
+# call count configured by hand can only approximate them. Where the provider
+# exposes the real figure, read it instead. The source is selected by config
+# (`quota_source.type`); a new type is added only for a genuinely new wire format.
+# ---------------------------------------------------------------------------
+import json as _json
+import urllib.error as _urlerr
+import urllib.request as _urlreq
+
+
+class QuotaSourceError(Exception):
+    """The provider's quota could not be read or understood. Never swallowed:
+    the caller records and surfaces it, and does not guess a value."""
+
+
+def _percent(value: Any, what: str) -> float:
+    try:
+        return float(str(value).strip().rstrip("%"))
+    except (TypeError, ValueError):
+        raise QuotaSourceError(f"{what}: cannot read percentage from {value!r}")
+
+
+def parse_minimax_token_plan(payload: Dict[str, Any], model_name: str, block_at_used_pct: float) -> List[WindowStatus]:
+    """MiniMax GET .../backend/account/token_plan/remains_percent.
+
+    Per model it reports a fixed interval window (the 5-hour block) and a weekly
+    window, each with start/end in epoch milliseconds and used/total percent.
+    Counts come back as -1 (percent-only plans), so percent is what we use.
+    """
+    base = payload.get("base_resp") or {}
+    if base.get("status_code") != 0:
+        raise QuotaSourceError(f"provider error: {base.get('status_code')} {base.get('status_msg')}")
+    entry = next((m for m in payload.get("model_remains", []) if m.get("model_name") == model_name), None)
+    if entry is None:
+        names = [m.get("model_name") for m in payload.get("model_remains", [])]
+        raise QuotaSourceError(f"model_name {model_name!r} not in provider response (has {names})")
+    out = []
+    for label, prefix, start_key, end_key in (
+        ("5h", "current_interval", "start_time", "end_time"),
+        ("weekly", "current_weekly", "weekly_start_time", "weekly_end_time"),
+    ):
+        used = _percent(entry.get(f"{prefix}_used_percent"), f"{label} used_percent")
+        out.append(WindowStatus(
+            name=label, kind="provider_percent", used=int(round(used)),
+            agent_limit=int(round(block_at_used_pct)), max_calls=100,
+            window_start=entry[start_key] / 1000.0, resets_at=entry[end_key] / 1000.0,
+            exhausted=used >= block_at_used_pct,
+        ))
+    return out
+
+
+def _fetch_minimax_token_plan(conf: Dict[str, Any], api_key: str, timeout: float) -> List[WindowStatus]:
+    req = _urlreq.Request(conf["url"], headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"})
+    try:
+        with _urlreq.urlopen(req, timeout=timeout) as resp:
+            payload = _json.loads(resp.read(1_000_000))
+    except _urlerr.HTTPError as e:
+        raise QuotaSourceError(f"HTTP {e.code} from {conf['url']}")
+    except (_urlerr.URLError, OSError, ValueError) as e:
+        raise QuotaSourceError(f"{type(e).__name__}: {e}")
+    return parse_minimax_token_plan(payload, conf["model_name"], float(conf.get("block_at_used_pct", 100)))
+
+
+SOURCES = {"minimax_token_plan": _fetch_minimax_token_plan}
+
+
+def validate_source(conf: Optional[Dict[str, Any]]) -> None:
+    """Raise ValueError for an unusable quota_source config (None is fine)."""
+    if conf is None:
+        return
+    if not isinstance(conf, dict) or conf.get("type") not in SOURCES:
+        raise ValueError(f"quota_source.type must be one of {sorted(SOURCES)}")
+    if not conf.get("url") or not conf.get("model_name"):
+        raise ValueError("quota_source needs 'url' and 'model_name'")
+    pct = conf.get("block_at_used_pct", 100)
+    if not isinstance(pct, (int, float)) or not 0 < pct <= 100:
+        raise ValueError("quota_source.block_at_used_pct must be in (0, 100]")
+
+
+def fetch_provider_quota(conf: Dict[str, Any], api_key: str, timeout: float = 10.0) -> List[WindowStatus]:
+    return SOURCES[conf["type"]](conf, api_key, timeout)
