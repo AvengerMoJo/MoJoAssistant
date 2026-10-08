@@ -10,7 +10,7 @@ import time
 import json
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from pathlib import Path
 
@@ -308,6 +308,10 @@ class Scheduler:
                         self._idle_since = datetime.now()  # reset after each trigger
                 else:
                     self._idle_since = None  # work is running — not idle
+
+                # Deterministic watchdogs (no LLM): every 30 ticks, offset so it doesn't coincide with probes
+                if self.tick_count % 30 == 7:
+                    asyncio.create_task(self._run_watchdogs(), name="watchdogs")
 
                 # Quota harvesting: spend renewing quota that is about to expire unspent
                 if dispatched == 0 and not self._running_tasks:
@@ -893,6 +897,74 @@ class Scheduler:
             })
         except Exception as e:
             self._log(f"Quota harvest check failed: {type(e).__name__}: {e}", "error")
+
+    WATCHDOG_DEFAULTS = {
+        "enabled": True, "stale_factor": 2.0, "grace_seconds": 3600, "in_progress_days": 7,
+        "blocked_days": 14, "dreams_max_age_days": 3.0, "realert_hours": 24,
+    }
+
+    def _watchdog_state_path(self):
+        from pathlib import Path
+        from app.config.paths import get_memory_subpath
+        return Path(get_memory_subpath("state", "watchdog_alerts.json"))
+
+    async def _run_watchdogs(self) -> None:
+        """Deterministic checks that the automation itself is still running (no LLM involved).
+
+        Findings are de-duplicated per key and re-alerted every realert_hours while they persist;
+        a key that stops being a finding is forgotten, so a later relapse alerts again. Delivery goes
+        through the ordinary event path (ntfy / slack / discord), which does not depend on any model.
+        """
+        try:
+            from app.config.config_loader import load_layered_json_config
+            from app.config.paths import get_memory_subpath
+            from app.scheduler import project_tracker, watchdogs
+            cfg = {**self.WATCHDOG_DEFAULTS,
+                   **((load_layered_json_config("config/scheduler_config.json") or {}).get("watchdogs") or {})}
+            if not cfg["enabled"]:
+                return
+            now = datetime.now()
+            findings = {}
+            for f in watchdogs.stale_watchers(list(self.queue.tasks.values()), self._run_ledger, now,
+                                              cfg["stale_factor"], cfg["grace_seconds"]):
+                findings[f"watcher_stale:{f['task_id']}"] = ("watcher_stale", f)
+            stalled = await asyncio.to_thread(
+                lambda: watchdogs.stalled_project_items(project_tracker.list_projects(), now,
+                                                        cfg["in_progress_days"], cfg["blocked_days"]))
+            if stalled:
+                findings["project_stalled"] = ("project_stalled", {"count": len(stalled), "items": stalled[:25]})
+            dreams = watchdogs.dreams_stale(get_memory_subpath("dreams"), now, cfg["dreams_max_age_days"])
+            if dreams:
+                findings["dreams_stale"] = ("dreams_stale", dreams)
+
+            import json as _json
+            path = self._watchdog_state_path()
+            try:
+                seen = _json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                seen = {}
+            realert = timedelta(hours=cfg["realert_hours"])
+            fresh = {}
+            for key, (kind, data) in findings.items():
+                last = seen.get(key)
+                due = last is None or now - datetime.fromisoformat(last) >= realert
+                fresh[key] = now.isoformat() if due else last
+                if not due:
+                    continue
+                title = {
+                    "watcher_stale": f"Watcher has not succeeded: {data.get('task_id')} ({data.get('hours_since_success')}h since last success)",
+                    "project_stalled": f"{data.get('count')} project item(s) have stopped moving",
+                    "dreams_stale": f"Memory consolidation output is {data.get('age_days')} days old",
+                }[kind]
+                await self._broadcast({"event_type": kind, "severity": "warning", "notify_user": True,
+                                       "title": title, "data": data})
+                self._log(f"Watchdog: {title}", "warning")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(_json.dumps(fresh), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as e:
+            self._log(f"Watchdog check failed: {type(e).__name__}: {e}", "error")
 
     async def _probe_resources_and_notify(self) -> None:
         """Probe resource endpoints and tell the user about failures, recoveries and new resources.
