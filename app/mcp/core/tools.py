@@ -5432,8 +5432,9 @@ Agent resumes within seconds.
                     "         api_key='...'|null, description='...')\n\n"
                     "enabled        — REQUIRED. Must be true or the resource is silently excluded.\n"
                     "priority       — REQUIRED for selection order. Lower number = selected first (1 wins over 10).\n"
-                    "                 Check resource_status to see current selection_order and any task_assignment_overrides\n"
-                    "                 that may bypass priority for specific task types.\n"
+                    "                 Check resource_status for the real selection_order (it uses the pool's own ranking:\n"
+                    "                 health, quota, load penalty) and not_selectable (why each other resource is skipped).\n"
+                    "                 llm_config.json task_assignments are NOT read by routing and override nothing.\n"
                     "context_limit  — total context window in tokens (check model card)\n"
                     "output_limit   — max tokens the model can generate per response\n"
                     "input_limit    — max input tokens per request if asymmetric (e.g. free-tier APIs)\n"
@@ -5597,15 +5598,15 @@ Agent resumes within seconds.
                 if info.get("enabled") is None
             ]
 
-            # Show effective selection order (priority ascending = first selected)
-            enabled = sorted(
-                [(rid, info) for rid, info in status.items() if info.get("enabled")],
-                key=lambda x: (x[1].get("priority") or 999),
-            )
+            # Effective selection order: the pool's own ranking and eligibility (health,
+            # quota, load penalty, quota-aware priority), not a raw-priority sort.
+            order_rows = rm.selection_order()
             selection_order = [
-                f"{i+1}. {rid} (priority={info.get('priority','?')}, model={info.get('model','?')}, tier={info.get('tier','?')})"
-                for i, (rid, info) in enumerate(enabled)
+                f"{r['position']}. {r['id']} (rank={r['effective_priority']}, configured_priority={r['configured_priority']}, "
+                f"model={r['model']}, tier={r['tier']}" + (", cold-load penalty" if r["cold_load_penalty"] else "") + ")"
+                for r in order_rows if r["eligible"]
             ]
+            not_selectable = {r["id"]: r["excluded_because"] for r in order_rows if not r["eligible"]}
 
             # Show task_assignment overrides that bypass priority
             overrides = {}
@@ -5629,7 +5630,12 @@ Agent resumes within seconds.
                 "resources": status,
                 "count": len(status),
                 "selection_order": selection_order,
-                "task_assignment_overrides": overrides or None,
+                "not_selectable": not_selectable,
+                "task_assignments_ignored_by_routing": overrides or None,
+                "task_assignments_note": (
+                    "llm_config.json task_assignments are written by the installer but NOT read by any routing code; "
+                    "they do not override priority." if overrides else None
+                ),
                 "warnings": (
                     [f"⚠ enabled=null (silently excluded — set enabled:true to activate): {', '.join(disabled_warnings)}"]
                     if disabled_warnings else []

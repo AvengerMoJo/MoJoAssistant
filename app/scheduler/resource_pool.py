@@ -493,27 +493,10 @@ class ResourceManager:
 
         with self._lock:
             self._maybe_reload_runtime_state()
-            candidates = []
-            for resource in self._resources.values():
-                if not resource.enabled:
-                    continue
-                if exclude_ids and resource.id in exclude_ids:
-                    continue
-                if resource.tier not in tier_preference:
-                    continue
-                if resource.tier == ResourceTier.PAID and resource.id not in self._approved_paid:
-                    continue
-                if resource.context_limit < min_context:
-                    continue
-                if resource.output_limit < min_output:
-                    continue
-                if self._is_rate_limited(resource):
-                    continue
-                if not self._is_budget_available(resource):
-                    continue
-                if self._compute_status(resource) in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED):
-                    continue
-                candidates.append(resource)
+            candidates = [
+                r for r in self._resources.values()
+                if self._exclusion_reason(r, tier_preference, min_context, min_output, exclude_ids) is None
+            ]
 
             if not candidates:
                 return None
@@ -529,12 +512,7 @@ class ResourceManager:
             # something for local backends.
             loaded_ids = self.get_loaded_resource_ids()
 
-            def _effective_priority(r: LLMResource) -> tuple:
-                is_cold_local = r.type == "local" and r.id not in loaded_ids
-                penalty = self.LOAD_PENALTY if is_cold_local else 0
-                return (self._rank_priority(r) + penalty, 1 if is_cold_local else 0)
-
-            candidates.sort(key=_effective_priority)
+            candidates.sort(key=lambda r: self._effective_priority(r, loaded_ids))
 
             # For resources in the same account_group, apply round-robin
             best = candidates[0]
@@ -641,6 +619,84 @@ class ResourceManager:
     def get_health(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             return {rid: h.to_dict() for rid, h in self._health.items()}
+
+    def _exclusion_reason(
+        self,
+        resource: LLMResource,
+        tier_preference: List[ResourceTier],
+        min_context: int = 0,
+        min_output: int = 0,
+        exclude_ids: Optional[set] = None,
+    ) -> Optional[str]:
+        """Why acquire() would skip this resource, or None if it is a candidate.
+
+        The single source of truth for eligibility: acquire(), selection_order()
+        and the 'no resource available' error all use it, so what is displayed
+        cannot drift from what is selected. Caller holds the lock.
+        """
+        if not resource.enabled:
+            return f"disabled ({resource.config_error})" if resource.config_error else "disabled"
+        if exclude_ids and resource.id in exclude_ids:
+            return "excluded for this task (failed earlier in the run)"
+        if resource.tier not in tier_preference:
+            return f"tier {resource.tier.value} not in {[t.value for t in tier_preference]}"
+        if resource.tier == ResourceTier.PAID and resource.id not in self._approved_paid:
+            return "paid tier, not approved"
+        if resource.context_limit < min_context:
+            return f"context {resource.context_limit} < required {min_context}"
+        if resource.output_limit < min_output:
+            return f"output limit {resource.output_limit} < required {min_output}"
+        if self._is_rate_limited(resource):
+            return "rate limited"
+        if not self._is_budget_available(resource):
+            exhausted = [w.name for w in self.quota_status(resource.id) if w.exhausted]
+            return f"quota exhausted ({', '.join(exhausted)})" if exhausted else "budget exhausted"
+        status = self._compute_status(resource)
+        if status in (ResourceStatus.UNREACHABLE, ResourceStatus.AUTH_FAILED):
+            health = self._health.get(resource.id)
+            return f"{status.value}" + (f": {health.detail}" if health else "")
+        return None
+
+    def _effective_priority(self, r: LLMResource, loaded_ids: set) -> tuple:
+        """Selection rank: configured/quota-aware priority, plus LOAD_PENALTY for a
+        local model that is not resident in VRAM (a penalty, not a filter)."""
+        is_cold_local = r.type == "local" and r.id not in loaded_ids
+        penalty = self.LOAD_PENALTY if is_cold_local else 0
+        return (self._rank_priority(r) + penalty, 1 if is_cold_local else 0)
+
+    def selection_order(
+        self,
+        tier_preference: Optional[List[ResourceTier]] = None,
+        min_context: int = 0,
+        min_output: int = 0,
+        exclude_ids: Optional[set] = None,
+    ) -> List[Dict[str, Any]]:
+        """Every resource in the order acquire() would pick them, then the ones it would not, with reasons."""
+        tiers = tier_preference or [ResourceTier.FREE, ResourceTier.FREE_API]
+        loaded_ids = self.get_loaded_resource_ids()
+        with self._lock:
+            rows = []
+            for r in self._resources.values():
+                reason = self._exclusion_reason(r, tiers, min_context, min_output, exclude_ids)
+                key = self._effective_priority(r, loaded_ids)
+                rows.append({
+                    "id": r.id, "tier": r.tier.value, "model": r.model,
+                    "configured_priority": r.priority,
+                    "rank_priority": self._rank_priority(r),
+                    "cold_load_penalty": key[1] == 1,
+                    "effective_priority": key[0],
+                    "eligible": reason is None,
+                    "excluded_because": reason,
+                })
+        rows.sort(key=lambda x: (not x["eligible"], x["effective_priority"], x["id"]))
+        for i, row in enumerate(r for r in rows if r["eligible"]):
+            row["position"] = i + 1
+        return rows
+
+    def rejection_summary(self, tier_preference=None, min_context=0, min_output=0, exclude_ids=None) -> str:
+        """One line per resource explaining why nothing could be acquired."""
+        rows = self.selection_order(tier_preference, min_context, min_output, exclude_ids)
+        return "; ".join(f"{r['id']}: {r['excluded_because']}" for r in rows if not r["eligible"]) or "no resources configured"
 
     @staticmethod
     def _rank_priority(r: LLMResource) -> int:

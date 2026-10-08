@@ -1394,6 +1394,7 @@ class AgenticExecutor:
             if resource is None:
                 msg = (
                     f"No resource available for task {task.id} at iteration {iteration}. "
+                    f"Rejected: {self._rm.rejection_summary(iter_tiers, exclude_ids=_failed_resource_ids)}. "
                     "Runtime must fail explicitly and must not retry fallback paths."
                 )
                 self._log(msg, "error")
