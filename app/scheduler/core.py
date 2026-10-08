@@ -467,6 +467,7 @@ class Scheduler:
                 )
                 task.mark_failed(f"Task timed out after {max_duration}s")
                 self.stats["tasks_failed"] += 1
+                self._reschedule_recurring_after_failure(task, task.last_error)
                 self.queue.update(task)
                 await self._broadcast({
                     "event_type": "task_failed",
@@ -494,6 +495,7 @@ class Scheduler:
             if result.waiting_for_input and is_infra_failure_question(result.waiting_for_input):
                 task.mark_failed(result.waiting_for_input)
                 self.stats["tasks_failed"] += 1
+                self._reschedule_recurring_after_failure(task, task.last_error)
                 self.queue.update(task)
                 await self._broadcast({
                     "event_type": "task_failed",
@@ -641,21 +643,7 @@ class Scheduler:
                             self._schedule_dreaming_for_agentic_task(task)
 
                     # Cron tasks reschedule even after permanent failure
-                    if task.cron_expression:
-                        from app.scheduler.triggers import CronTrigger
-                        trigger = CronTrigger(task.cron_expression)
-                        next_run = trigger.get_next_run_time(after=datetime.now())
-                        # Preserve error info before wiping result
-                        task.last_error = result.error_message
-                        task.last_failed_at = datetime.now()
-                        task.status = TaskStatus.PENDING
-                        task.schedule = next_run
-                        task.retry_count = 0
-                        task.started_at = None
-                        task.completed_at = None
-                        task.result = None
-                        task.pending_question = None  # clear stale HITL state between cron cycles
-                        self._log(f"Task {task.id} failed but rescheduled (cron) for {next_run.isoformat()}")
+                    self._reschedule_recurring_after_failure(task, result.error_message)
 
             # Save updated task
             self.queue.update(task)
@@ -664,6 +652,7 @@ class Scheduler:
             self._log(f"Error executing task {task.id}: {e}", "error")
             task.mark_failed(str(e))
             self.stats["tasks_failed"] += 1
+            self._reschedule_recurring_after_failure(task, task.last_error)
             self.queue.update(task)
             await self._broadcast({
                 "event_type": "task_failed",
@@ -678,6 +667,31 @@ class Scheduler:
 
         finally:
             self.current_task = None
+
+    def _reschedule_recurring_after_failure(self, task: Task, error: Optional[str]) -> bool:
+        """Put a failed recurring task back on its cron schedule.
+
+        Every failure exit must go through this: timeout, infrastructure
+        failure and unexpected exceptions used to mark the task FAILED and
+        return, so a recurring job that hit any of them never ran again
+        (scott_daily_news_0600 sat in FAILED from 2026-09-06 to 2026-10-08).
+        Returns True when the task was rescheduled.
+        """
+        if not task.cron_expression:
+            return False
+        from app.scheduler.triggers import CronTrigger
+        next_run = CronTrigger(task.cron_expression).get_next_run_time(after=datetime.now())
+        task.last_error = error
+        task.last_failed_at = datetime.now()
+        task.status = TaskStatus.PENDING
+        task.schedule = next_run
+        task.retry_count = 0
+        task.started_at = None
+        task.completed_at = None
+        task.result = None
+        task.pending_question = None  # clear stale HITL state between cron cycles
+        self._log(f"Task {task.id} failed but rescheduled (cron) for {next_run.isoformat()}")
+        return True
 
     def _should_notify_completion(self, task: Task) -> bool:
         """

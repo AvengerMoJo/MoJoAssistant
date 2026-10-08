@@ -23,6 +23,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 from app.scheduler.models import Task, TaskResult
+from app.scheduler.log_util import emit
 from app.scheduler.resource_pool import LLMResource, ResourceManager, ResourceTier
 from app.scheduler.session_storage import SessionMessage, SessionStorage, TaskSession
 from app.scheduler.planning_prompt_manager import PlanningPromptManager
@@ -683,8 +684,7 @@ class AgenticExecutor:
         self._containment_engine = ContainmentEngine()
 
     def _log(self, message: str, level: str = "info"):
-        if self._logger:
-            getattr(self._logger, level)(f"[AgenticExecutor] {message}")
+        emit(self._logger, "AgenticExecutor", message, level)
 
     async def _classify_needs_exec(self, goal: str) -> tuple[bool, str]:
         """LLM classifier: does this goal require shell/terminal execution?

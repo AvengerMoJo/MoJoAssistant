@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from app.scheduler.models import Task, TaskResult, TaskType
 from app.config.paths import get_memory_subpath
+from app.scheduler.log_util import emit
 
 
 class TaskHandler(ABC):
@@ -105,8 +106,7 @@ class ExecutorContext:
     # ------------------------------------------------------------------
 
     def log(self, message: str, level: str = "info") -> None:
-        if self.logger:
-            getattr(self.logger, level)(f"[Executor] {message}")
+        emit(self.logger, "Executor", message, level)
 
     # ------------------------------------------------------------------
     # Lazy resource accessors

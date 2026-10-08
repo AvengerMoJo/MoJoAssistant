@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Any
 
 from app.scheduler.models import Task, TaskResult
+from app.scheduler.log_util import emit
 from app.scheduler.resource_pool import ResourceManager
 from app.scheduler.session_storage import SessionMessage, SessionStorage, TaskSession
 
@@ -125,8 +126,7 @@ class CodingAgentExecutor:
         self._quota_fallback_model: dict | None = None  # set per-task in execute(), also defaulted here
 
     def _log(self, msg: str, level: str = "info") -> None:
-        if self._logger:
-            getattr(self._logger, level)(f"[CodingAgentExecutor] {msg}")
+        emit(self._logger, "CodingAgentExecutor", msg, level)
 
     # ------------------------------------------------------------------ #
     #  Entry point                                                         #

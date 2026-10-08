@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 from app.config.paths import get_memory_subpath
+from app.scheduler.log_util import emit
 from app.scheduler.models import DEFAULT_TIER_PREFERENCE
 from app.scheduler.model_registry import get_registry, lookup_model
 from app.scheduler import resource_health
@@ -214,8 +215,7 @@ class ResourceManager:
             self._log(f"Failed to persist usage stats: {e}", "warning")
 
     def _log(self, message: str, level: str = "info"):
-        if self._logger:
-            getattr(self._logger, level)(f"[ResourcePool] {message}")
+        emit(self._logger, "ResourcePool", message, level)
 
     def _load_config(self):
         from app.config.config_loader import load_layered_json_config, MEMORY_CONFIG_DIR
