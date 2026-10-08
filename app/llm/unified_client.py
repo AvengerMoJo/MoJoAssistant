@@ -146,6 +146,7 @@ class UnifiedLLMClient:
         output_limit: int,
         message_format: str,
         tools: Optional[List[Dict]] = None,
+        max_tokens_cap: int = 16000,
     ) -> Dict[str, Any]:
         if message_format == "anthropic":
             system = next((m["content"] for m in messages if m["role"] == "system"), None)
@@ -162,7 +163,10 @@ class UnifiedLLMClient:
                 "model": model,
                 "messages": messages,
                 "temperature": 0.7,
-                "max_tokens": min(4096, output_limit),
+                # Bounded by the resource's own output_limit and a sanity cap. This was a hard-coded
+                # 4096, which left a thinking model no room for an answer after its reasoning
+                # (finish_reason=length, content '' -- 2026-10-09) on every call in the system.
+                "max_tokens": min(max_tokens_cap, output_limit),
             }
             if tools:
                 payload["tools"] = tools
@@ -220,7 +224,8 @@ class UnifiedLLMClient:
         else:
             url = f"{base_url}/chat/completions"
 
-        payload = self._build_payload(messages, model, output_limit, message_format, tools)
+        payload = self._build_payload(messages, model, output_limit, message_format, tools,
+                                       int(resource_config.get("max_tokens_cap", 16000)))
 
         # Read timeout from resource_config; 0 means no timeout (for thinking models)
         config_timeout = resource_config.get("timeout", 300)
@@ -261,7 +266,8 @@ class UnifiedLLMClient:
         model = model_override or resource_config.get("model", "")
         headers = self._build_headers(resource_config)
 
-        payload = self._build_payload(messages, model, output_limit, message_format, tools=tools)
+        payload = self._build_payload(messages, model, output_limit, message_format, tools=tools,
+                                       max_tokens_cap=int(resource_config.get("max_tokens_cap", 16000)))
         payload["stream"] = True
 
         # completions_path overrides the default suffix for providers with a
@@ -362,7 +368,8 @@ class UnifiedLLMClient:
         else:
             url = f"{base_url}/chat/completions"
 
-        payload = self._build_payload(messages, model, output_limit, message_format, tools)
+        payload = self._build_payload(messages, model, output_limit, message_format, tools,
+                                       int(resource_config.get("max_tokens_cap", 16000)))
 
         timeout = resource_config.get("timeout", 300)
         response = req.post(url, headers=headers, json=payload, timeout=timeout)

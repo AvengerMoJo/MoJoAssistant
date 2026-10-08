@@ -46,7 +46,7 @@ class ResourcePoolLLMInterface:
         self,
         resource_manager: "ResourceManager",
         tier_preference: Optional[List] = None,
-        max_tokens: int = 4096,
+        max_tokens: int = 16000,
         timeout_seconds: float = 600.0,
     ) -> None:
         """
@@ -102,11 +102,12 @@ class ResourcePoolLLMInterface:
         if resource is None:
             raise DreamingLLMError("no LLM resource available for dreaming")
 
+        config_max_tokens = min(resource.output_limit or self._max_tokens, self._max_tokens)
         resource_config = {
             "base_url": resource.base_url,
             "model": resource.model,
             "api_key": resource.api_key,
-            "output_limit": min(resource.output_limit or 4096, self._max_tokens),
+            "output_limit": config_max_tokens,
             "message_format": "openai",
             "provider": resource.provider,
             "timeout": self._timeout,
@@ -127,6 +128,15 @@ class ResourcePoolLLMInterface:
         self._rm.record_usage(resource.id, success=True)
         choices = data.get("choices", [])
         content = (choices[0].get("message", {}).get("content", "") or "") if choices else ""
+        finish = choices[0].get("finish_reason") if choices else None
         if not content.strip():
-            raise DreamingLLMError(f"{resource.id} returned an empty completion")
+            usage = data.get("usage") or {}
+            reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+            why = (f"finish_reason={finish}, {usage.get('completion_tokens')} completion tokens "
+                   f"({reasoning} spent on reasoning) against a {config_max_tokens}-token output budget")
+            hint = (" -- a thinking model used its whole output budget on reasoning; raise dreaming.max_output_tokens "
+                    "or use a non-thinking resource") if finish == "length" else ""
+            raise DreamingLLMError(f"{resource.id} returned an empty completion ({why}){hint}")
+        if finish == "length":
+            logger.warning(f"ResourcePoolLLMInterface: {resource.id} hit its output limit; the reply may be truncated")
         return content

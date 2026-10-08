@@ -231,3 +231,42 @@ class TestInputBudget(TestWatermark):
         r = self._build()
         self.assertLessEqual(len(r["conversation_text"]), 24000)
         self.assertGreater(r["metadata"]["message_count"], 10)
+
+
+class TestReasoningModelBudget(unittest.TestCase):
+    """2026-10-09: a thinking model spent all 4096 output tokens on reasoning and returned content ''.
+    The error must say so, and the default budget must leave room for an answer."""
+
+    def _iface(self, **kw):
+        rm = MagicMock()
+        r = MagicMock()
+        r.id, r.base_url, r.model, r.api_key, r.output_limit, r.provider = "ornith", "http://x/v1", "m", "k", 32000, "openai"
+        rm.acquire.return_value = r
+        return ResourcePoolLLMInterface(rm, **kw)
+
+    def test_empty_content_with_length_finish_explains_the_reasoning_budget(self):
+        async def reasoning_only(*a, **k):
+            return {"choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+                    "usage": {"completion_tokens": 4096, "completion_tokens_details": {"reasoning_tokens": 4096}}}
+        with patch("app.llm.unified_client.UnifiedLLMClient.call_async", side_effect=reasoning_only):
+            with self.assertRaises(DreamingLLMError) as cm:
+                self._iface(max_tokens=4096).generate_response("hi")
+        msg = str(cm.exception)
+        self.assertIn("4096 spent on reasoning", msg)
+        self.assertIn("4096-token output budget", msg)
+        self.assertIn("dreaming.max_output_tokens", msg)
+
+    def test_default_output_budget_is_16000_capped_by_the_resource(self):
+        seen = {}
+
+        async def ok(self_, messages, resource_config, model_override=None, tools=None):
+            seen.update(resource_config)
+            return {"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]}
+        with patch("app.llm.unified_client.UnifiedLLMClient.call_async", ok):
+            self._iface().generate_response("hi")
+        self.assertEqual(seen["output_limit"], 16000)
+        small = self._iface()
+        small._rm.acquire.return_value.output_limit = 8192
+        with patch("app.llm.unified_client.UnifiedLLMClient.call_async", ok):
+            small.generate_response("hi")
+        self.assertEqual(seen["output_limit"], 8192)
