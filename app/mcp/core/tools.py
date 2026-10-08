@@ -3282,6 +3282,9 @@ Agent resumes within seconds.
                     "completed_at": task.completed_at.isoformat() if task.completed_at else None,
                     "pending_question": task.pending_question,
                     "success": result.success if result else None,
+                    # When it will run next, and how often -- previously not visible through the API.
+                    "schedule": task.schedule.isoformat() if getattr(task, "schedule", None) else None,
+                    "cron_expression": task.cron_expression,
                 }
 
             tasks_data = [_summarise(t) for t in tasks]
@@ -3375,6 +3378,14 @@ Agent resumes within seconds.
             pq = d.get("pending_question") or cfg.get("pending_question")
             if pq:
                 compact["pending_question"] = pq
+            # Scheduling: when a (recurring) task will run next -- the API could not answer this before.
+            if d.get("schedule"):
+                compact["schedule"] = d["schedule"]
+            if d.get("cron_expression"):
+                compact["cron_expression"] = d["cron_expression"]
+            for field in ("last_failed_at", "last_completed_at"):
+                if d.get(field):
+                    compact[field] = d[field]
             # Include timing only when task is not pending
             if d.get("started_at"):
                 compact["started_at"] = d["started_at"]

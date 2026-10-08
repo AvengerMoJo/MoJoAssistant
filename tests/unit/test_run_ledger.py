@@ -239,3 +239,33 @@ class TestEphemeralTasks(unittest.TestCase):
         s.queue.add.assert_not_called()
         s.memory_service.add_user_message.assert_not_called() if hasattr(s.memory_service, "add_user_message") else None
         self.assertEqual(s.memory_service.method_calls, [])
+
+
+class TestScheduleVisibleThroughTheApi(unittest.TestCase):
+    """scheduler get/list must say when a recurring task runs next (the API could not before)."""
+
+    def _tools(self, task):
+        from app.mcp.core.tools import ToolRegistry
+        t = ToolRegistry.__new__(ToolRegistry)
+        t.scheduler = MagicMock()
+        t.scheduler.get_task.return_value = task
+        t.scheduler.list_tasks.return_value = [task]
+        t._build_task_debug_summary = lambda tid: {}
+        return t
+
+    def _task(self):
+        task = Task(id="job", type=TaskType.INTERNAL_ASSIGNMENT, config={"goal": "g"}, cron_expression="0 4 * * *")
+        task.schedule = datetime(2026, 10, 10, 4, 0)
+        task.last_failed_at = datetime(2026, 10, 9, 4, 0)
+        return task
+
+    def test_get_includes_schedule_cron_and_last_failure(self):
+        got = asyncio.run(self._tools(self._task())._execute_scheduler_get_task({"task_id": "job"}))["task"]
+        self.assertEqual(got["cron_expression"], "0 4 * * *")
+        self.assertTrue(str(got["schedule"]).startswith("2026-10-10T04:00"))
+        self.assertTrue(str(got["last_failed_at"]).startswith("2026-10-09T04:00"))
+
+    def test_list_rows_include_schedule_and_cron(self):
+        row = asyncio.run(self._tools(self._task())._execute_scheduler_list_tasks({}))["tasks"][0]
+        self.assertEqual(row["cron_expression"], "0 4 * * *")
+        self.assertTrue(row["schedule"].startswith("2026-10-10T04:00"))

@@ -21,7 +21,6 @@ Nothing here writes to long-term memory: the tasks are marked ephemeral.
 import argparse
 import json
 import os
-import socket
 import sys
 import time
 import urllib.request
@@ -96,20 +95,26 @@ def main() -> int:
 
     tag = datetime.now().strftime("%H%M%S")
     n_projects = len(list((Path.home() / ".memory" / "projects").glob("*.json")))
-    hostname = socket.gethostname()
+    ref = Path.home() / ".memory" / "projects" / "mcp_buffer_service.json"   # small, inside the file tool's sandbox
+    ref_data = json.loads(ref.read_text())
+    truth = {"status": ref_data["status"], "items": len(ref_data["items"])}
     ids = {
         "tier_path": f"probe_tier_{tag}", "requirements_path": f"probe_req_{tag}",
         "pinned_failure": f"probe_pinned_{tag}", "cron_timeout": f"probe_cron_{tag}",
     }
     try:
         add_task(c, ids["tier_path"], "Use bash_exec to run: ls ~/.memory/projects | wc -l . Then give your final answer stating that number. "
-                 "Done when: the final answer contains the number the command returned. Read-only: change nothing.",
+                 "Done when: the final answer contains the number the command returned. "
+                 "Out of scope: do not write, delete or change anything. Verify by: the final answer states the number.",
                  "carl", ["bash_exec"])
-        add_task(c, ids["requirements_path"], "Use read_file on /etc/hostname and state the host name it contains in your final answer. "
-                 "Done when: the final answer contains the host name. Read-only: change nothing.", "paul", ["read_file"])
-        add_task(c, ids["pinned_failure"], "Use bash_exec to run: echo hi . Read-only: change nothing.", "carl", ["bash_exec"],
+        add_task(c, ids["requirements_path"], f"Use read_file on {ref} and state the project's status field and how many checklist items it has in your final answer. "
+                 "Done when: the final answer states both. Out of scope: do not write or change anything. "
+                 "Verify by: the final answer states the status and the item count.", "paul", ["read_file"])
+        add_task(c, ids["pinned_failure"], "Use bash_exec to run: echo hi . Done when: the command output is reported. Out of scope: change nothing. "
+                 "Verify by: the output says hi.", "carl", ["bash_exec"],
                  pinned_resource="resource_that_does_not_exist")
-        add_task(c, ids["cron_timeout"], "Use bash_exec to run: sleep 50 . Then say done. Read-only: change nothing.", "carl",
+        add_task(c, ids["cron_timeout"], "Use bash_exec to run: sleep 50 . Then say done. Done when: you have said done. Out of scope: change nothing. "
+                 "Verify by: the command finished.", "carl",
                  ["bash_exec"], cron="0 0 1 1 *", max_duration_seconds=15)
     except Exception as e:
         print(f"setup failed: {e}")
@@ -128,17 +133,18 @@ def main() -> int:
         f"outcome={r and r['outcome']} resources={r and r.get('resources')} expected answer to contain {n_projects}")
     r = runs["requirements_path"]
     got = json.dumps(c.call("scheduler", action="get", task_id=ids["requirements_path"]))
-    check("requirements_path", bool(r) and r["outcome"] == "completed" and hostname in got,
-          f"outcome={r and r['outcome']} resources={r and r.get('resources')} expected host name {hostname!r}")
+    check("requirements_path", bool(r) and r["outcome"] == "completed" and truth["status"] in got and str(truth["items"]) in got,
+          f"outcome={r and r['outcome']} resources={r and r.get('resources')} expected status={truth['status']!r} items={truth['items']}")
     r = runs["pinned_failure"]
     check("pinned_failure", bool(r) and r["outcome"] in ("failed", "failed_will_retry") and r.get("error_class") == "pinned_resource_unavailable",
           f"outcome={r and r['outcome']} error_class={r and r.get('error_class')}")
     r = runs["cron_timeout"]
-    task = c.call("scheduler", action="get", task_id=ids["cron_timeout"])
-    blob = json.dumps(task)
-    next_year = str(datetime.now().year + (0 if datetime.now().month == 1 and datetime.now().day == 1 else 1))
-    check("cron_timeout", bool(r) and r["outcome"] == "timed_out" and r["duration_s"] < 60 and next_year in blob and "pending" in blob,
-          f"outcome={r and r['outcome']} duration={r and r['duration_s']}s (limit 15s) rescheduled_to_{next_year}={next_year in blob}")
+    task = c.call("scheduler", action="get", task_id=ids["cron_timeout"]).get("task") or {}
+    next_year = datetime.now().year + 1
+    nxt = str(task.get("schedule") or "")
+    check("cron_timeout", bool(r) and r["outcome"] == "timed_out" and r["duration_s"] < 60
+          and task.get("status") == "pending" and nxt.startswith(str(next_year)),
+          f"outcome={r and r['outcome']} duration={r and r['duration_s']}s (limit 15s) status={task.get('status')} next_run={nxt[:10]!r}")
 
     if not args.keep:
         for tid in ids.values():
