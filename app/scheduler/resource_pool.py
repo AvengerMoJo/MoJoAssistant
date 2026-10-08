@@ -84,6 +84,9 @@ class LLMResource:
     priority_while_quota: Optional[int] = None
     # Opt-in: {"min_headroom_pct": N, "horizon_seconds": S} -- see harvest_candidates().
     harvest: Optional[Dict[str, Any]] = None
+    # Name of a shared quota pool (top-level "quota_pools"): a limit that belongs to the
+    # ACCOUNT, not one model (e.g. 1000 free-model calls/day across all OpenRouter :free models).
+    quota_pool: Optional[str] = None
     quota_source: Optional[Dict[str, Any]] = None  # read the provider's own quota (percent-metered plans)
     quotas: List["resource_quota.QuotaWindow"] = field(default_factory=list)  # renewing allowance windows; ALL must have room
     config_error: Optional[str] = None  # set (and the resource disabled) when its config could not be applied
@@ -155,6 +158,9 @@ class ResourceManager:
         self._group_counters: Dict[str, int] = {}
         self._health: Dict[str, "resource_health.ProbeResult"] = {}
         self._busy_resource_ids: set = set()
+        self._quota_pools: Dict[str, List["resource_quota.QuotaWindow"]] = {}
+        self._quota_pool_errors: Dict[str, str] = {}
+        self._pool_calls: Dict[str, Deque[float]] = {}
         self._lms_ps_cache = None
         self._busy_checked_at: Optional[float] = None
         # State the user was last told about, and how many consecutive probes agree on the latest state.
@@ -203,6 +209,8 @@ class ResourceManager:
         try:
             data = json.loads(self.USAGE_FILE.read_text(encoding="utf-8"))
             for rid, rec in data.items():
+                if rid == "__quota_pools__":
+                    continue
                 self._usage[rid] = UsageRecord(
                     total_calls=rec.get("total_calls", 0),
                     last_call_at=rec.get("last_call_at"),
@@ -217,6 +225,8 @@ class ResourceManager:
                     rate_limited_until=rec.get("rate_limited_until"),
                     quota_calls=deque(rec.get("quota_calls", [])),
                 )
+            for pname, stamps in (data.get("__quota_pools__") or {}).items():
+                self._pool_calls[pname] = deque(stamps)
             self._log(f"Loaded usage stats for {len(data)} resource(s)")
         except Exception as e:
             self._log(f"Failed to load usage stats: {e}", "warning")
@@ -233,6 +243,7 @@ class ResourceManager:
                     "rate_limited_until": usage.rate_limited_until,
                     "quota_calls": list(usage.quota_calls),
                 }
+            data["__quota_pools__"] = {n: list(d) for n, d in self._pool_calls.items()}
             self.USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
             self.USAGE_FILE.write_text(
                 json.dumps(data, indent=2), encoding="utf-8"
@@ -276,6 +287,13 @@ class ResourceManager:
         """Parse flat `resources` dict format (resource_pool.json)."""
         with self._lock:
             self._resources.clear()
+            self._quota_pools, self._quota_pool_errors = {}, {}
+            for pname, praw in (data.get("quota_pools") or {}).items():
+                try:
+                    self._quota_pools[pname] = resource_quota.parse_windows(praw)
+                except (ValueError, TypeError) as e:
+                    self._quota_pool_errors[pname] = f"invalid quota_pools.{pname}: {e}"
+                    self._log(self._quota_pool_errors[pname], "error")
             for rid, rconf in data.get("resources", {}).items():
                 if not isinstance(rconf, dict):
                     continue
@@ -440,6 +458,11 @@ class ResourceManager:
         try:
             quotas = resource_quota.parse_windows(conf.get("quotas"))
             resource_quota.validate_source(conf.get("quota_source"))
+            pool = conf.get("quota_pool")
+            if pool and pool in self._quota_pool_errors:
+                raise ValueError(self._quota_pool_errors[pool])
+            if pool and pool not in self._quota_pools:
+                raise ValueError(f"quota_pool {pool!r} is not defined in quota_pools")
         except (ValueError, TypeError) as e:
             # A quota that cannot be read must not be ignored (the resource
             # could overspend its plan), and must not take the whole pool down:
@@ -466,6 +489,7 @@ class ResourceManager:
             enabled=conf.get("enabled", True) and config_error is None,
             quotas=quotas,
             quota_source=conf.get("quota_source"),
+            quota_pool=conf.get("quota_pool"),
             priority_while_quota=conf.get("priority_while_quota"),
             harvest=conf.get("harvest"),
             config_error=config_error,
@@ -866,6 +890,12 @@ class ResourceManager:
                 usage.consecutive_errors = 0
                 usage.rate_limited_until = None
                 resource = self._resources.get(resource_id)
+                if resource is not None and resource.quota_pool in self._quota_pools:
+                    calls = self._pool_calls.setdefault(resource.quota_pool, deque())
+                    calls.append(now)
+                    horizon = now - resource_quota.lookback_seconds(self._quota_pools[resource.quota_pool])
+                    while calls and calls[0] < horizon:
+                        calls.popleft()
                 if resource is not None and resource.quotas:
                     usage.quota_calls.append(now)
                     horizon = now - resource_quota.lookback_seconds(resource.quotas)
@@ -1425,6 +1455,12 @@ class ResourceManager:
             provider_windows = list(reported["windows"]) if reported and reported.get("windows") else []
         now = time.time()
         out = resource_quota.evaluate(resource.quotas, stamps, now) if resource.quotas else []
+        if resource.quota_pool in self._quota_pools:
+            with self._lock:
+                pool_stamps = list(self._pool_calls.get(resource.quota_pool, ()))
+            for w in resource_quota.evaluate(self._quota_pools[resource.quota_pool], pool_stamps, now):
+                w.name = f"{resource.quota_pool}/{w.name}"
+                out.append(w)
         for w in provider_windows:
             if w.resets_at is not None and now >= w.resets_at:
                 # The reported window has ended; its percentage describes a
