@@ -86,10 +86,14 @@ class SessionStorage:
     def save_session(self, session: TaskSession) -> None:
         """Write full session to disk."""
         path = self._path(session.task_id)
-        path.write_text(
+        # Temp file + atomic rename: a crash mid-write must never leave a truncated session, because
+        # the next run may resume from it (sessions reach several MB and are rewritten per message).
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
             json.dumps(session.to_dict(), indent=2, default=str, ensure_ascii=False),
             encoding="utf-8",
         )
+        tmp.replace(path)
 
     def load_session(self, task_id: str) -> Optional[TaskSession]:
         """Load a session from disk. Returns None if not found."""

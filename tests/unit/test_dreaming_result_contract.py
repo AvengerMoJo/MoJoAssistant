@@ -163,3 +163,29 @@ class TestWatermark(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConfigurableTimeout(unittest.TestCase):
+    def test_configured_timeout_reaches_the_client_and_a_timeout_surfaces_as_an_error(self):
+        rm = MagicMock()
+        r = MagicMock()
+        r.id, r.base_url, r.model, r.api_key, r.output_limit, r.provider = "r1", "http://x/v1", "m", "k", 4096, "openai"
+        rm.acquire.return_value = r
+        iface = ResourcePoolLLMInterface(rm, timeout_seconds=900)
+        seen = {}
+
+        async def capture(self_, messages, resource_config, model_override=None, tools=None):
+            seen.update(resource_config)
+            raise TimeoutError()
+        with patch("app.llm.unified_client.UnifiedLLMClient.call_async", capture):
+            with self.assertRaises(DreamingLLMError) as cm:
+                iface.generate_response("hi")
+        self.assertEqual(seen["timeout"], 900)
+        self.assertIn("TimeoutError", str(cm.exception))
+
+    def test_default_is_ten_minutes_not_two(self):
+        self.assertEqual(ResourcePoolLLMInterface(MagicMock())._timeout, 600.0)
+
+    def test_timeout_errors_are_classified_as_timeouts(self):
+        from app.scheduler.run_ledger import classify_error
+        self.assertEqual(classify_error("LLM call failed after waiting up to 120s: TimeoutError: "), "timeout")

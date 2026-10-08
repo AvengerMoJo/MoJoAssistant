@@ -168,7 +168,9 @@ class ExecutorContext:
             from app.llm.resource_pool_interface import ResourcePoolLLMInterface
             rm = self.get_resource_manager()
             if rm and rm._resources:
-                return ResourcePoolLLMInterface(rm)
+                from app.config.config_loader import load_layered_json_config
+                dreaming_cfg = (load_layered_json_config("config/scheduler_config.json") or {}).get("dreaming") or {}
+                return ResourcePoolLLMInterface(rm, timeout_seconds=float(dreaming_cfg.get("llm_timeout_seconds", 600)))
         except Exception as e:
             self.log(
                 f"ResourcePool LLM unavailable, falling back to llm_config: {e}", "warning"

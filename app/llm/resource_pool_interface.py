@@ -47,6 +47,7 @@ class ResourcePoolLLMInterface:
         resource_manager: "ResourceManager",
         tier_preference: Optional[List] = None,
         max_tokens: int = 4096,
+        timeout_seconds: float = 600.0,
     ) -> None:
         """
         Args:
@@ -57,6 +58,9 @@ class ResourcePoolLLMInterface:
         self._rm = resource_manager
         self._tier_preference = tier_preference  # None = ResourceManager default
         self._max_tokens = max_tokens
+        # Per-call wait. A nightly run sends ~200 messages in one prompt to a local 35B model; the old
+        # fixed 120s cut every call off (2026-10-09: first honest failure of the nightly job).
+        self._timeout = timeout_seconds
 
     def generate_response(self, query: str, context: Optional[str] = None) -> str:
         """
@@ -75,13 +79,13 @@ class ResourcePoolLLMInterface:
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(asyncio.run, self._generate(query))
-                    return future.result(timeout=120)
+                    return future.result(timeout=self._timeout)
             return asyncio.run(self._generate(query))
         except DreamingLLMError:
             raise
         except (TimeoutError, RuntimeError, OSError) as e:
             logger.error(f"ResourcePoolLLMInterface.generate_response failed: {e}")
-            raise DreamingLLMError(f"LLM call failed: {type(e).__name__}: {e}") from e
+            raise DreamingLLMError(f"LLM call failed after waiting up to {self._timeout:g}s: {type(e).__name__}: {e}") from e
 
     async def _generate(self, query: str) -> str:
         from app.llm.unified_client import UnifiedLLMClient
@@ -105,6 +109,7 @@ class ResourcePoolLLMInterface:
             "output_limit": min(resource.output_limit or 4096, self._max_tokens),
             "message_format": "openai",
             "provider": resource.provider,
+            "timeout": self._timeout,
         }
         client = UnifiedLLMClient()
         messages = [{"role": "user", "content": query}]

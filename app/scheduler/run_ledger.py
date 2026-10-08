@@ -28,7 +28,7 @@ OUTCOMES = (
 
 ERROR_CLASSES = (
     ("no_resource", ("no resource available", "requirements not satisfiable")),
-    ("timeout", ("timed out", "exceeded max duration")),
+    ("timeout", ("timed out", "exceeded max duration", "timeouterror", "waiting up to")),
     ("infra_unreachable", ("backend not reachable", "all connection attempts failed", "connecterror", "connection refused")),
     ("iteration_budget", ("iteration budget exhausted",)),
     ("security_gate", ("danger budget",)),
