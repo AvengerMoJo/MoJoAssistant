@@ -222,3 +222,20 @@ class TestSchedulerRunsAction(unittest.TestCase):
             summary = asyncio.run(tools._execute_scheduler_runs({"summary": True, "hours": 24}))
             self.assertEqual(summary["tasks"]["a"]["runs"], 2)
             self.assertIsNotNone(summary["tasks"]["a"]["last_success"])
+
+
+class TestEphemeralTasks(unittest.TestCase):
+    """Probe/test tasks must not be consolidated into long-term memory."""
+
+    def test_ephemeral_skips_dreaming_and_memory_storage(self):
+        s = Scheduler.__new__(Scheduler)
+        s._log = MagicMock()
+        s.queue = MagicMock()
+        s.memory_service = MagicMock()
+        t = Task(id="probe", type=TaskType.INTERNAL_ASSIGNMENT, config={"goal": "g", "ephemeral": True})
+        t.result = TaskResult(success=True, metrics={"final_answer": "x", "session_file": "/tmp/x.json"})
+        s._schedule_dreaming_for_agentic_task(t)
+        s._store_agentic_result_to_memory(t, t.result)
+        s.queue.add.assert_not_called()
+        s.memory_service.add_user_message.assert_not_called() if hasattr(s.memory_service, "add_user_message") else None
+        self.assertEqual(s.memory_service.method_calls, [])

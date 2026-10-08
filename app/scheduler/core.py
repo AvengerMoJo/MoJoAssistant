@@ -1117,7 +1117,11 @@ class Scheduler:
         """
         After a successful agentic task, auto-create a dreaming task
         to consolidate the session into long-term memory.
+
+        config["ephemeral"] opts out (probes and tests must not write into long-term memory).
         """
+        if (task.config or {}).get("ephemeral"):
+            return
         try:
             from app.scheduler.session_storage import SessionStorage
 
@@ -1227,7 +1231,10 @@ class Scheduler:
         """
         After a successful agentic task, write the goal + final answer to memory
         so the user (and future agents) can find it without reading the session file.
+        config["ephemeral"] opts out.
         """
+        if (task.config or {}).get("ephemeral"):
+            return
         try:
             if not self.memory_service:
                 return
