@@ -8,6 +8,8 @@ Uses JSON for simplicity and debuggability.
 
 import json
 import os
+import shutil
+import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -15,6 +17,12 @@ import threading
 
 from app.scheduler.models import Task, TaskStatus, TaskPriority
 from app.config.paths import get_memory_subpath
+from app.scheduler.log_util import emit
+
+
+class QueueLoadError(RuntimeError):
+    """The task queue file is unreadable and no valid backup exists. Starting with an empty
+    queue would silently erase the whole schedule on the next save, so the scheduler refuses."""
 
 
 class TaskQueue:
@@ -27,6 +35,14 @@ class TaskQueue:
     - Automatic persistence
     - Task filtering and search
     """
+
+    # Refresh the known-good backup after a save when it is older than this. A restore loses at most
+    # this much schedule change; the copy is cheap (the file is ~1 MB).
+    BACKUP_MAX_AGE_SECONDS = 300
+
+    @property
+    def backup_path(self) -> Path:
+        return self.storage_path.with_name(self.storage_path.name + ".bak")
 
     def __init__(self, storage_path: str = None):
         """
@@ -46,31 +62,67 @@ class TaskQueue:
 
         # Load existing tasks
         self.tasks: Dict[str, Task] = {}
+        # Raw entries that failed to parse. Kept and re-written unchanged on every save, so one
+        # bad entry (or a newer schema) can never be silently dropped from the file.
+        self._unloadable: Dict[str, Any] = {}
         self._load_from_disk()
 
+    def _read_queue_file(self, path: Path) -> Dict[str, Any]:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get('tasks'), dict):
+            raise ValueError("queue file has no 'tasks' object")
+        return data
+
+    def _recover_from_corruption(self, error: Exception) -> Dict[str, Any]:
+        """The queue file is unreadable. Quarantine it (never overwrite it), then restore the last
+        known-good backup if one parses -- loudly. With no valid backup, refuse to start: an empty
+        queue would be written over the damaged file and erase the schedule."""
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        quarantine = self.storage_path.with_name(f"{self.storage_path.name}.corrupt-{stamp}")
+        os.replace(self.storage_path, quarantine)
+        emit(None, "TaskQueue", f"{self.storage_path.name} is unreadable ({type(error).__name__}: {error}); "
+                                f"quarantined as {quarantine.name}", "error")
+        if self.backup_path.exists():
+            try:
+                data = self._read_queue_file(self.backup_path)
+            except Exception as be:
+                raise QueueLoadError(
+                    f"{self.storage_path} was corrupt (quarantined as {quarantine.name}) and the backup "
+                    f"{self.backup_path.name} is also unreadable: {be}") from error
+            age_min = (time.time() - self.backup_path.stat().st_mtime) / 60
+            shutil.copy2(self.backup_path, self.storage_path)
+            emit(None, "TaskQueue", f"RESTORED the queue from {self.backup_path.name} "
+                                    f"({len(data['tasks'])} tasks, backup is {age_min:.0f} min old); "
+                                    "changes since then are lost", "error")
+            return data
+        raise QueueLoadError(
+            f"{self.storage_path} was corrupt (quarantined as {quarantine.name}) and there is no backup. "
+            "Refusing to start with an empty queue; restore the file by hand.") from error
+
     def _load_from_disk(self):
-        """Load tasks from JSON file"""
+        """Load tasks from JSON file (see _recover_from_corruption for the unreadable-file policy)."""
         if not self.storage_path.exists():
             self.tasks = {}
             return
 
         try:
-            with open(self.storage_path, 'r') as f:
-                data = json.load(f)
-
-            # Convert dict to Task objects
-            self.tasks = {}
-            for task_id, task_data in data.get('tasks', {}).items():
-                try:
-                    self.tasks[task_id] = Task.from_dict(task_data)
-                except Exception as e:
-                    print(f"Warning: Failed to load task {task_id}: {e}")
-
-            print(f"Loaded {len(self.tasks)} tasks from {self.storage_path}")
-
+            data = self._read_queue_file(self.storage_path)
         except Exception as e:
-            print(f"Error loading tasks from {self.storage_path}: {e}")
-            self.tasks = {}
+            data = self._recover_from_corruption(e)
+
+        self.tasks = {}
+        self._unloadable = {}
+        for task_id, task_data in data['tasks'].items():
+            try:
+                self.tasks[task_id] = Task.from_dict(task_data)
+            except Exception as e:
+                self._unloadable[task_id] = task_data
+                emit(None, "TaskQueue", f"task {task_id} could not be loaded ({type(e).__name__}: {e}); "
+                                        "kept unchanged in the file", "error")
+
+        emit(None, "TaskQueue", f"Loaded {len(self.tasks)} tasks from {self.storage_path}"
+                                + (f" ({len(self._unloadable)} unloadable kept as-is)" if self._unloadable else ""))
 
     def _save_to_disk(self):
         """Save tasks to JSON file"""
@@ -78,8 +130,8 @@ class TaskQueue:
             # Convert tasks to dict
             data = {
                 'tasks': {
-                    task_id: task.to_dict()
-                    for task_id, task in self.tasks.items()
+                    **self._unloadable,
+                    **{task_id: task.to_dict() for task_id, task in self.tasks.items()},
                 },
                 'metadata': {
                     'saved_at': datetime.now().isoformat(),
@@ -94,6 +146,12 @@ class TaskQueue:
 
             # Atomic rename
             os.replace(temp_path, self.storage_path)
+
+            # Keep a recent known-good copy: the file just written is complete, so it is a safe
+            # restore point for _recover_from_corruption.
+            if (not self.backup_path.exists()
+                    or time.time() - self.backup_path.stat().st_mtime > self.BACKUP_MAX_AGE_SECONDS):
+                shutil.copy2(self.storage_path, self.backup_path)
 
         except Exception as e:
             import logging, traceback
