@@ -7,6 +7,7 @@ File: app/mcp/opencode/process_manager.py
 """
 
 import os
+import re
 import subprocess
 import time
 import requests
@@ -109,6 +110,35 @@ class ProcessManager:
             return False
         return "opencode" in cmd and cwd == os.path.realpath(str(repo_dir))
 
+    @staticmethod
+    def opencode_cli_major(opencode_bin: str) -> Optional[int]:
+        """Major version of the installed OpenCode CLI (None if it cannot be determined)."""
+        try:
+            out = subprocess.run([opencode_bin, "--version"], capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        m = re.search(r"v?(\d+)\.\d+", (out.stdout or "") + (out.stderr or ""))
+        return int(m.group(1)) if m else None
+
+    @staticmethod
+    def launch_spec(major: int) -> Tuple[str, str]:
+        """(subcommand, default bind address) for an OpenCode CLI generation.
+
+        v1 started the server with `opencode web --hostname H --port P`, protected by
+        OPENCODE_SERVER_PASSWORD. v2 (2.0.x) rejects those flags on `web` ("Unrecognized flag:
+        --hostname"); the server is `opencode serve --hostname H --port P`, and it does NOT enforce the
+        password (unauthenticated requests get 200), so it is bound to loopback unless explicitly
+        overridden with OPENCODE_HOSTNAME.
+        """
+        return ("serve", "127.0.0.1") if major >= 2 else ("web", "0.0.0.0")
+
+    @staticmethod
+    def _log_tail(path: Path, lines: int = 6) -> str:
+        try:
+            return " | ".join(l.strip() for l in Path(path).read_text(errors="replace").splitlines()[-lines:] if l.strip())
+        except OSError:
+            return "(no launcher log)"
+
     def start_opencode(
         self, config: ProjectConfig, repo_dir: Path, reserved_ports: Optional[Set[int]] = None
     ) -> Tuple[int, int, Optional[str]]:
@@ -151,19 +181,24 @@ class ProcessManager:
         log_file = self.logs_dir / f"{config.project_name}-opencode.log"
         pid_file = Path(config.base_dir) / "opencode.pid"
 
+        major = self.opencode_cli_major(config.opencode_bin)
+        if major is None:
+            return 0, port, f"cannot determine the OpenCode CLI version ('{config.opencode_bin} --version' failed)"
+        subcommand, default_host = self.launch_spec(major)
+        hostname = os.getenv("OPENCODE_HOSTNAME") or default_host
+
         # Build command
         # Use pgrep to find actual process PID (not bash wrapper)
         # Set GIT_SSH_COMMAND so OpenCode can use the project's SSH key for git operations
-        # Bind to 0.0.0.0 to allow remote access (protected by password)
         cmd = f"""cd {repo_dir} && \\
 OPENCODE_SERVER_PASSWORD={config.opencode_password} \\
 GIT_SSH_COMMAND='ssh -i {config.ssh_key_path} -o StrictHostKeyChecking=accept-new' \\
-nohup {config.opencode_bin} web \\
-  --hostname 0.0.0.0 \\
+nohup {config.opencode_bin} {subcommand} \\
+  --hostname {hostname} \\
   --port {port} \\
   >> {log_file} 2>&1 & \\
 sleep 1 && \\
-pgrep -f "opencode.*web.*--port {port}" | tail -1 > {pid_file}"""
+pgrep -f "opencode.*{subcommand}.*--port {port}" | tail -1 > {pid_file}"""
 
         try:
             # Execute command
@@ -183,8 +218,11 @@ pgrep -f "opencode.*web.*--port {port}" | tail -1 > {pid_file}"""
             time.sleep(1)  # Give process time to start and write PID
             if pid_file.exists():
                 with open(pid_file, "r") as f:
-                    pid = int(f.read().strip())
-                return pid, port, None
+                    text = f.read().strip()
+                if not text.isdigit():
+                    # pgrep found nothing: the server exited at once. Say why (the launcher log has it).
+                    return 0, port, f"OpenCode exited right after launch; log: {self._log_tail(log_file)}"
+                return int(text), port, None
             else:
                 return 0, port, "PID file not created"
 
