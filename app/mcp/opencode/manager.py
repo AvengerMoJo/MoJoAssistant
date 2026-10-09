@@ -74,6 +74,13 @@ class OpenCodeManager(BaseAgentManager):
             self._log(error_msg, level="error")
             raise RuntimeError(error_msg) from e
 
+    def _backend_type(self, opencode_bin: str) -> str:
+        """Coding-agent backend matching the installed CLI: v2 (`serve`) speaks a different API than v1 (`web`)."""
+        major = self.process_manager.opencode_cli_major(opencode_bin)
+        if major is None:
+            raise RuntimeError(f"cannot determine the OpenCode CLI version ('{opencode_bin} --version' failed)")
+        return "opencode_v2" if major >= 2 else "opencode"
+
     def _log(self, message: str, level: str = "info"):
         """Log message if logger available"""
         if self.logger:
@@ -378,6 +385,7 @@ class OpenCodeManager(BaseAgentManager):
                 project_name=project_name,  # Display name
                 ssh_key_path=ssh_key_path,
                 base_dir=config.base_dir,
+                backend_type=self._backend_type(config.opencode_bin),
             )
 
             # Step 11: Ensure global MCP tool is running
@@ -645,6 +653,7 @@ class OpenCodeManager(BaseAgentManager):
             project_name=project_name,
             ssh_key_path=project.ssh_key_path,
             base_dir=project.base_dir or project.sandbox_dir,
+            backend_type=self._backend_type(config.opencode_bin),
         )
 
         # Increment active_project_count if the project was not running before

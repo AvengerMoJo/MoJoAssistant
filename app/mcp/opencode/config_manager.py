@@ -55,6 +55,7 @@ class ConfigManager:
         description: str = None,
         ssh_key_path: str = None,
         base_dir: str = None,
+        backend_type: str = None,
     ):
         """
         Add OpenCode server to configuration (Phase 1 Refactor)
@@ -68,6 +69,7 @@ class ConfigManager:
             description: Server description (optional)
             ssh_key_path: Path to SSH key (optional)
             base_dir: Base directory where repo is cloned (optional)
+            backend_type: coding-agent backend that speaks this server's API ("opencode" = v1, "opencode_v2")
         """
         from app.mcp.opencode.utils import normalize_git_url, generate_project_name
 
@@ -90,6 +92,8 @@ class ConfigManager:
                     server["ssh_key_path"] = ssh_key_path
                 if base_dir:
                     server["base_dir"] = base_dir
+                if backend_type:
+                    server["backend_type"] = backend_type
                 self._write_config(config)
                 return
 
@@ -111,6 +115,8 @@ class ConfigManager:
             server_entry["ssh_key_path"] = ssh_key_path
         if base_dir:
             server_entry["base_dir"] = base_dir
+        if backend_type:
+            server_entry["backend_type"] = backend_type
 
         config["servers"].append(server_entry)
 
