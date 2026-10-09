@@ -116,6 +116,14 @@ class OpenCodeManager(BaseAgentManager):
             pass
         return "localhost"
 
+    def _reserved_ports(self, git_url: str) -> set:
+        """Ports recorded for OTHER projects: a new allocation must not reuse them."""
+        return {
+            p.opencode.port
+            for url, p in self.state_manager.get_all_projects().items()
+            if url != git_url and p.opencode and p.opencode.port
+        }
+
     async def start_project(
         self, git_url: str, user_ssh_key: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -320,7 +328,7 @@ class OpenCodeManager(BaseAgentManager):
             # Step 8: Start OpenCode server
             self._log(f"Starting OpenCode server for {project_name}")
             opencode_pid, opencode_port, opencode_error = (
-                self.process_manager.start_opencode(config, repo_dir)
+                self.process_manager.start_opencode(config, repo_dir, self._reserved_ports(git_url))
             )
 
             if opencode_error:
@@ -593,9 +601,12 @@ class OpenCodeManager(BaseAgentManager):
 
         # Start OpenCode
         opencode_pid, opencode_port, opencode_error = (
-            self.process_manager.start_opencode(config, repo_dir)
+            self.process_manager.start_opencode(config, repo_dir, self._reserved_ports(normalized_url))
         )
         if opencode_error:
+            # (the registry stays 'inactive' from the temporary mark above, which is accurate; the
+            # state file now says why, instead of a stale 'running')
+            self.state_manager.update_process_status(normalized_url, "opencode", status="failed", error=opencode_error)
             return {"status": "error", "message": opencode_error}
 
         self.state_manager.update_process_status(

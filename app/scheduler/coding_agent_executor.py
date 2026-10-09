@@ -212,6 +212,8 @@ class CodingAgentExecutor:
 
         # Load the coding agent backend (also initialises self._registry)
         backend = self._get_backend(role, config)
+        if backend is None and await self._recover_inactive_server(server_id):
+            backend = self._get_backend(role, config)
         if backend is None:
             reason = self._last_backend_error or "unknown reason"
             hint = (
@@ -982,6 +984,43 @@ class CodingAgentExecutor:
                 last_relevant_is_error = False
 
         return last_relevant_is_error
+
+    def _known_but_inactive(self, server_id: str | None) -> bool:
+        """True if the server config lists this server but it is not active, so the registry
+        holds no backend for it (BackendRegistry.reload skips inactive entries)."""
+        if not server_id:
+            return False
+        try:
+            self._get_registry()  # loads self._servers_config
+        except Exception:
+            return False
+        servers = getattr(getattr(self, "_servers_config", None), "servers", None) or []
+        return any(e.id == server_id and getattr(e, "status", None) != "active" for e in servers)
+
+    async def _recover_inactive_server(self, server_id: str | None) -> bool:
+        """Start a known project whose server is down/inactive, then reload the registry.
+
+        After a reboot every project's OpenCode server is dead and entries are left inactive; the
+        registry then has no backend, so _get_backend() fails and the auto-start path (which needs a
+        backend object to learn its type) never ran. A server that is KNOWN but inactive is exactly
+        what start_project() restarts. Unknown servers are not bootstrapped here: that needs a deploy
+        key decision, so they still fail with the bootstrap hint.
+        """
+        if not self._known_but_inactive(server_id):
+            return False
+        try:
+            from app.mcp.opencode.manager import OpenCodeManager
+            result = await OpenCodeManager().start_project(server_id)
+        except Exception as e:
+            self._log(f"Recovering inactive server {server_id} failed: {e}", "warning")
+            return False
+        status = result.get("status", "")
+        self._log(f"Recovery start of inactive server {server_id}: {status}")
+        if status not in ("success", "already_running", "running"):
+            self._log(f"Recovery did not succeed: {result}", "warning")
+            return False
+        self._registry = None  # re-read the server config so the now-active entry is registered
+        return True
 
     def _get_backend(self, role: dict, config: dict) -> Any | None:
         server_id = config.get("server_id") or role.get("server_id")

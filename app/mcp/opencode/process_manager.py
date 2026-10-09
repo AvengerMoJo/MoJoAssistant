@@ -12,7 +12,7 @@ import time
 import requests
 from pathlib import Path
 from app.config.paths import get_memory_path
-from typing import Tuple, Optional
+from typing import Optional, Set, Tuple
 from app.mcp.opencode.models import ProjectConfig
 
 
@@ -90,8 +90,27 @@ class ProcessManager:
         except Exception as e:
             return False, f"Error killing process on port {port}: {str(e)}"
 
+    @staticmethod
+    def listening_pids(port: int) -> list:
+        """PIDs listening on a TCP port (empty if none or lsof is unavailable)."""
+        try:
+            out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        return [int(x) for x in out.stdout.split() if x.strip().isdigit()]
+
+    @staticmethod
+    def is_this_projects_server(pid: int, repo_dir: Path) -> bool:
+        """True if `pid` is an opencode server whose working directory is this project's repo."""
+        try:
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            cwd = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
+        except OSError:
+            return False
+        return "opencode" in cmd and cwd == os.path.realpath(str(repo_dir))
+
     def start_opencode(
-        self, config: ProjectConfig, repo_dir: Path
+        self, config: ProjectConfig, repo_dir: Path, reserved_ports: Optional[Set[int]] = None
     ) -> Tuple[int, int, Optional[str]]:
         """
         Start OpenCode web server
@@ -103,15 +122,28 @@ class ProcessManager:
         Returns:
             Tuple of (pid, port, error_message)
         """
-        # Use deterministic port based on git_url, or user-specified port
+        # Port: user-specified, else deterministic from git_url but probed forward past ports that
+        # other projects own (reserved_ports) or that anything is listening on.
         if config.opencode_port:
             port = config.opencode_port
         else:
             # Import here to avoid circular dependency
             from app.mcp.opencode.utils import deterministic_port_for_git_url
-            port = deterministic_port_for_git_url(config.git_url, start_port=4100, port_range=100)
+            avoid = set(reserved_ports or ())
+            avoid |= {p for p in range(4100, 4200) if self.listening_pids(p) and not any(
+                self.is_this_projects_server(pid, repo_dir) for pid in self.listening_pids(p))}
+            try:
+                port = deterministic_port_for_git_url(config.git_url, start_port=4100, port_range=100, avoid=avoid)
+            except ValueError as e:
+                return 0, 0, str(e)
 
-        # Kill any process already on this port
+        # A listener on the port is only cleared if it is THIS project's own stale server. This used
+        # to SIGKILL whatever held the port, so two repos that hashed to 4104 killed each other's
+        # servers on every start, and could kill an unrelated service.
+        for pid in self.listening_pids(port):
+            if not self.is_this_projects_server(pid, repo_dir):
+                return 0, port, (f"port {port} is held by pid {pid}, which is not this project's OpenCode "
+                                 "server; refusing to kill it")
         success, error = self.kill_process_on_port(port)
         if not success:
             return 0, port, error

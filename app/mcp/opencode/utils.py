@@ -6,7 +6,7 @@ File: app/mcp/opencode/utils.py
 
 import re
 import hashlib
-from typing import Tuple
+from typing import Optional, Set, Tuple
 
 
 def normalize_git_url(git_url: str) -> str:
@@ -145,7 +145,9 @@ def generate_base_dir(git_url: str, custom_base: str = None) -> str:
     return os.path.join(managed_dir, project_name)
 
 
-def deterministic_port_for_git_url(git_url: str, start_port: int = 4100, port_range: int = 100) -> int:
+def deterministic_port_for_git_url(
+    git_url: str, start_port: int = 4100, port_range: int = 100, avoid: Optional[Set[int]] = None
+) -> int:
     """
     Generate a deterministic port number for a git URL
 
@@ -170,6 +172,14 @@ def deterministic_port_for_git_url(git_url: str, start_port: int = 4100, port_ra
     hash_bytes = hashlib.sha256(normalized.encode()).digest()[:4]
     hash_int = int.from_bytes(hash_bytes, byteorder='big')
 
-    # Map to port range
-    port_offset = hash_int % port_range
-    return start_port + port_offset
+    # Map to port range. The hash only picks where to START: two repos can hash to the same slot
+    # (browser-instrumentation-poc and MoJoAssistant both hash to 4104), and the old code handed
+    # both the same port, after which starting one killed the other's server. Probe forward past
+    # ports in `avoid` (claimed by other projects or currently listening), wrapping inside the range.
+    avoid = avoid or set()
+    first = hash_int % port_range
+    for step in range(port_range):
+        port = start_port + (first + step) % port_range
+        if port not in avoid:
+            return port
+    raise ValueError(f"no free port in {start_port}-{start_port + port_range - 1} for {normalized}")
