@@ -644,8 +644,18 @@ _BUDGET_EXTENSION_MAX_GRANT = 20  # cap per extension to avoid runaway loops
 _SECONDS_PER_EXTENDED_ITERATION = 90.0
 
 
+from app.scheduler.task_local import TaskLocal
+
+
 class AgenticExecutor:
     """Executes agentic tasks via an autonomous LLM think-act loop."""
+
+    # Per-task state on a shared, concurrently used executor: each asyncio task sees only its own value.
+    _role_id = TaskLocal(None)
+    _policy_monitor = TaskLocal(None)
+    _data_boundary = TaskLocal(None)
+    _enabled_tool_names = TaskLocal(None)
+    _tool_calls_made = TaskLocal(0)
 
     def __init__(
         self,
@@ -675,7 +685,6 @@ class AgenticExecutor:
         self._gap_checker = CapabilityGapChecker()
         self._openrouter_model_cache: Dict[str, Dict[str, Any]] = {}
         self._openrouter_model_cache_ttl_seconds = 600
-        self._role_id: Optional[str] = None
 
         # Behavioral security layer (v1.3.0)
         from app.scheduler.security.behavioral_monitor import BehavioralMonitor

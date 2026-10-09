@@ -101,6 +101,9 @@ NEAR_LIMIT_PROMPT = (
 )
 
 
+from app.scheduler.task_local import TaskLocal
+
+
 class CodingAgentExecutor:
     """
     Executes coding agent tasks by driving a local LLM (the role's persona)
@@ -108,6 +111,14 @@ class CodingAgentExecutor:
 
     Permission requests from the coding agent are bridged to the MoJo HITL inbox.
     """
+
+    # Per-task state on a shared, concurrently used executor: each asyncio task sees only its own value.
+    _last_backend_error = TaskLocal(None)
+    _model_override = TaskLocal(None)
+    _quota_fallback_model = TaskLocal(None)
+    _auto_approve_external_directory = TaskLocal(False)
+    _waiting_for_input_question = TaskLocal(None)
+    _pending_permission = TaskLocal(None)
 
     def __init__(
         self,
@@ -121,9 +132,6 @@ class CodingAgentExecutor:
         self._session_storage = SessionStorage()
         self._registry: Any = None  # BackendRegistry — lazy-loaded and cached
         self._servers_config: Any = None  # ServersConfig — cached alongside _registry
-        self._last_backend_error: str | None = None  # set by _get_backend on failure
-        self._model_override: dict | None = None  # set per-task in execute(), also defaulted here
-        self._quota_fallback_model: dict | None = None  # set per-task in execute(), also defaulted here
 
     def _log(self, msg: str, level: str = "info") -> None:
         emit(self._logger, "CodingAgentExecutor", msg, level)
