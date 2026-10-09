@@ -799,9 +799,7 @@ class CodingAgentExecutor:
 
         if backend_type == "opencode":
             try:
-                from app.mcp.opencode.manager import OpenCodeManager
-                manager = OpenCodeManager()
-                result = await manager.start_project(server_id)
+                result = await self._start_project_off_loop(server_id)
                 status = result.get("status", "")
                 self._log(f"Auto-start result for {server_id}: {status}")
                 if status not in ("success", "already_running", "running"):
@@ -985,6 +983,14 @@ class CodingAgentExecutor:
 
         return last_relevant_is_error
 
+    @staticmethod
+    async def _start_project_off_loop(server_id: str) -> dict:
+        """OpenCodeManager.start_project is `async` but waits synchronously (sleeps, blocking HTTP health
+        polls of up to 60s), which froze the scheduler's event loop for 37.6s on a live restart (the
+        loop-lag watchdog named it). Run it on a worker thread with its own loop."""
+        from app.mcp.opencode.manager import OpenCodeManager
+        return await asyncio.to_thread(lambda: asyncio.run(OpenCodeManager().start_project(server_id)))
+
     def _known_but_inactive(self, server_id: str | None) -> bool:
         """True if the server config lists this server but it is not active, so the registry
         holds no backend for it (BackendRegistry.reload skips inactive entries)."""
@@ -1009,8 +1015,7 @@ class CodingAgentExecutor:
         if not self._known_but_inactive(server_id):
             return False
         try:
-            from app.mcp.opencode.manager import OpenCodeManager
-            result = await OpenCodeManager().start_project(server_id)
+            result = await self._start_project_off_loop(server_id)
         except Exception as e:
             self._log(f"Recovering inactive server {server_id} failed: {e}", "warning")
             return False

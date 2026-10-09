@@ -65,3 +65,34 @@ class TestRecovery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStartRunsOffTheLoop(unittest.TestCase):
+    """start_project waits synchronously (live: 37.6s event-loop stall); it must not run on the scheduler loop."""
+
+    def test_a_blocking_start_does_not_stall_the_loop(self):
+        import time as _t
+
+        class SlowManager:
+            async def start_project(self, server_id):
+                _t.sleep(1.0)             # stands in for the sleeps / blocking health polls
+                return {"status": "success"}
+        ex = _executor([(URL, "inactive")])
+
+        async def go():
+            beats = []
+
+            async def heartbeat():
+                while True:
+                    beats.append(_t.monotonic())
+                    await asyncio.sleep(0.05)
+            hb = asyncio.create_task(heartbeat())
+            await asyncio.sleep(0.15)
+            with patch("app.mcp.opencode.manager.OpenCodeManager", SlowManager):
+                ok = await ex._recover_inactive_server(URL)
+            await asyncio.sleep(0.15)
+            hb.cancel()
+            return ok, beats
+        ok, beats = asyncio.run(go())
+        self.assertTrue(ok)
+        self.assertLess(max(b - a for a, b in zip(beats, beats[1:])), 0.5, "event loop was blocked during start_project")
