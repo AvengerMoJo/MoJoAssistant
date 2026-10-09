@@ -96,3 +96,18 @@ class TestStartRunsOffTheLoop(unittest.TestCase):
         ok, beats = asyncio.run(go())
         self.assertTrue(ok)
         self.assertLess(max(b - a for a, b in zip(beats, beats[1:])), 0.5, "event loop was blocked during start_project")
+
+
+class TestAutoStartBackendTypes(unittest.TestCase):
+    def test_opencode_v2_backend_is_auto_started_like_v1(self):
+        # 2026-10-09: backend_type 'opencode_v2' fell through to "Unknown backend_type -- skipping auto-start".
+        for backend_type in ("opencode", "opencode_v2"):
+            ex = _executor([(URL, "active")])
+            backend = MagicMock(backend_type=backend_type)
+            backend.health = AsyncMock(return_value={"status": "ok"})
+            ex._get_backend = lambda role, config, b=backend: b
+            ex._start_project_off_loop = AsyncMock(return_value={"status": "success"})
+            with patch("app.scheduler.coding_agent_executor.asyncio.sleep", new=AsyncMock()):
+                got = asyncio.run(ex._auto_start_backend({}, {}, URL))
+            ex._start_project_off_loop.assert_awaited_once_with(URL)
+            self.assertIs(got, backend)

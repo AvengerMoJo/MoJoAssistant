@@ -780,7 +780,7 @@ class CodingAgentExecutor:
         healthy. Returns a healthy backend or None on failure.
 
         Backend-type routing:
-        - opencode  → OpenCodeManager.start_project (HTTP server must be launched)
+        - opencode / opencode_v2 → OpenCodeManager.start_project (HTTP server must be launched)
         - claude_code → no-op (binary always present; health() validates working_dir)
         - unknown   → log warning, skip
         """
@@ -797,7 +797,7 @@ class CodingAgentExecutor:
             self._log(f"claude_code backend ({server_id}): no auto-start needed")
             return backend
 
-        if backend_type == "opencode":
+        if backend_type in ("opencode", "opencode_v2"):
             try:
                 result = await self._start_project_off_loop(server_id)
                 status = result.get("status", "")
