@@ -1287,6 +1287,7 @@ class AgenticExecutor:
         )
 
         iteration = 0
+        time_budget_hit = False
         _loop_last_sig: Optional[str] = None  # (tool_name, args_hash, result_prefix)
         _loop_consec: int = 0                 # consecutive identical tool call+result count
         while True:
@@ -1316,6 +1317,7 @@ class AgenticExecutor:
                 self._log(
                     f"Task {task.id}: time budget exhausted at iteration {iteration}"
                 )
+                time_budget_hit = True
                 self._session_storage.update_status(
                     task.id,
                     "timed_out",
@@ -1919,6 +1921,14 @@ class AgenticExecutor:
             )
 
         success = final_answer is not None
+        # Say which budget ran out: a time-budget stop after 2 iterations is not "iterations exhausted".
+        if time_budget_hit:
+            budget_msg = (
+                f"Time budget exhausted ({time.time() - start_time:.0f}s of {max_duration:.0f}s) after "
+                f"{len(iteration_log)} iterations (max {max_iterations}) without FINAL_ANSWER."
+            )
+        else:
+            budget_msg = f"Iteration budget exhausted ({len(iteration_log)}/{max_iterations}) without FINAL_ANSWER."
 
         # Post-condition check (v1.4.4): if the task is being marked success
         # but the agent never called any tools AND tools were available, that's
@@ -1979,14 +1989,10 @@ class AgenticExecutor:
                     final_answer=final_answer,
                 )
             else:
-                _actual_iters = len(iteration_log)
                 self._session_storage.update_status(
                     task.id,
                     "failed",
-                    error_message=(
-                        f"Iteration budget exhausted ({_actual_iters}/{max_iterations}) "
-                        "without FINAL_ANSWER."
-                    ),
+                    error_message=budget_msg,
                 )
 
         session_file = str(self._session_storage._path(task.id))
@@ -2007,10 +2013,7 @@ class AgenticExecutor:
         if not success:
             return TaskResult(
                 success=False,
-                error_message=(
-                    f"Iteration budget exhausted ({len(iteration_log)}/{max_iterations}) "
-                    "without FINAL_ANSWER."
-                ),
+                error_message=budget_msg,
                 output_file=session_file,
                 metrics={
                     "iterations": len(iteration_log),
@@ -2059,7 +2062,7 @@ class AgenticExecutor:
                 task_id=task.id,
                 role_id=role_id,
                 goal=goal,
-                error_message=f"Iteration budget exhausted ({len(iteration_log)}/{max_iterations}) without FINAL_ANSWER.",
+                error_message=budget_msg,
                 iteration_log=iteration_log,
                 final_answer=final_answer,
             )
