@@ -146,12 +146,25 @@ class ExecutorContext:
             )
         return self._coding_agent_executor
 
-    def get_dreaming_pipeline(self, quality_level: str = "basic"):
-        if (
-            self._dreaming_pipeline is None
-            or self._cached_quality_level != quality_level
-        ):
-            from app.dreaming.pipeline import DreamingPipeline
+    def get_dreaming_pipeline(self, quality_level: str = "basic", storage_path: Optional[Path] = None):
+        """Dreaming pipeline.
+
+        Without storage_path: the shared global pipeline (archives under ~/.memory/dreams). It is one
+        object used by concurrent tasks, so callers must never reassign its `.storage`.
+        With storage_path (a role's knowledge_units dir): a NEW pipeline bound to that store. Mutating
+        the shared pipeline's storage for a role is what made a global dream write into Scott's
+        knowledge on 2026-10-10.
+        """
+        from app.dreaming.pipeline import DreamingPipeline
+        if storage_path is not None:
+            from app.services.storage_factory import resolve_storage_backend
+            return DreamingPipeline(
+                llm_interface=self._build_dreaming_llm(),
+                quality_level=quality_level,
+                storage=resolve_storage_backend(storage_path=Path(storage_path)),
+                logger=self.logger,
+            )
+        if self._dreaming_pipeline is None or self._cached_quality_level != quality_level:
             self._dreaming_pipeline = DreamingPipeline(
                 llm_interface=self._build_dreaming_llm(),
                 quality_level=quality_level,

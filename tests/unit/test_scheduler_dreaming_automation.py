@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -79,12 +80,14 @@ class TestSchedulerDreamingAutomation(unittest.IsolatedAsyncioTestCase):
             with open(store, "w", encoding="utf-8") as f:
                 json.dump(data, f)
 
-            built = DreamingHandler._build_automatic_dreaming_input(
-                {
-                    "conversation_store_path": str(store),
-                    "lookback_messages": 10,
-                }
-            )
+            # The real watermark (~/.memory/state) would filter these timestamp-less messages out.
+            with patch.object(DreamingHandler, "_read_global_watermark", return_value=None):
+                built = DreamingHandler._build_automatic_dreaming_input(
+                    {
+                        "conversation_store_path": str(store),
+                        "lookback_messages": 10,
+                    }
+                )
 
             self.assertIsNotNone(built)
             self.assertTrue(built["conversation_id"].startswith("auto_dream_"))

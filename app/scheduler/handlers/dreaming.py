@@ -100,13 +100,11 @@ class DreamingHandler(TaskHandler):
             metadata = {**task.config.get("metadata", {}), **auto_metadata}
 
             if mode == "document":
-                from app.services.storage_factory import resolve_storage_backend
                 role_id = task.config.get("role_id", "unknown")
                 storage_path = (
                     Path(get_memory_subpath("roles")) / role_id / "knowledge_units"
                 )
-                pipeline = ctx.get_dreaming_pipeline(quality_level)
-                pipeline.storage = resolve_storage_backend(storage_path=storage_path)
+                pipeline = ctx.get_dreaming_pipeline(quality_level, storage_path=storage_path)
 
                 doc_id = task.config.get("doc_id") or conversation_id
                 results = await _run_pipeline_off_loop(pipeline.process_document(
@@ -136,19 +134,13 @@ class DreamingHandler(TaskHandler):
                         ),
                     )
 
-            pipeline = ctx.get_dreaming_pipeline(quality_level)
             conv_role_id = task.config.get("role_id")
-            if conv_role_id:
-                try:
-                    from app.services.storage_factory import resolve_storage_backend
-                    role_storage_path = (
-                        Path(get_memory_subpath("roles")) / conv_role_id / "knowledge_units"
-                    )
-                    pipeline.storage = resolve_storage_backend(storage_path=role_storage_path)
-                except Exception as _e:
-                    ctx.log(
-                        f"Could not set role-scoped storage for dreaming: {_e}", "warning"
-                    )
+            # A role-scoped dream gets its own pipeline bound to the role's store; a failure to
+            # resolve that store fails the task (never silently dreams into the global store).
+            pipeline = ctx.get_dreaming_pipeline(
+                quality_level,
+                storage_path=(Path(get_memory_subpath("roles")) / conv_role_id / "knowledge_units") if conv_role_id else None,
+            )
 
             results = await _run_pipeline_off_loop(pipeline.process_conversation(
                 conversation_id=conversation_id,
@@ -345,15 +337,8 @@ class DreamingHandler(TaskHandler):
                 continue
 
             roles_processed += 1
-            # Create a fresh pipeline per role to avoid shared storage mutation
-            pipeline = ctx.get_dreaming_pipeline(quality_level)
-            try:
-                from app.services.storage_factory import resolve_storage_backend
-                role_storage_path = role_dir / "knowledge_units"
-                pipeline = ctx.get_dreaming_pipeline(quality_level)
-                pipeline.storage = resolve_storage_backend(storage_path=role_storage_path)
-            except Exception as e:
-                ctx.log(f"Chat bridge: could not set role storage for {role_id}: {e}", "warning")
+            # One pipeline per role, bound to that role's store (the shared pipeline is never mutated).
+            pipeline = ctx.get_dreaming_pipeline(quality_level, storage_path=role_dir / "knowledge_units")
 
             for session_file in new_sessions:
                 try:
