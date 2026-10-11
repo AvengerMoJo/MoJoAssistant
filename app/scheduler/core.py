@@ -568,7 +568,8 @@ class Scheduler:
             # Default cap: 30 minutes for tasks with no max_duration_seconds set.
             # Dreaming makes several long LLM calls (a thinking model needs ~5-10 min per call on a real
             # chunking prompt), so it gets a longer default than an ordinary assistant task.
-            _DEFAULT_TASK_TIMEOUT = 3600 if task.type == TaskType.DREAMING else 1800
+            from app.scheduler.deadline_review import DEFAULT_TASK_TIMEOUT_S
+            _DEFAULT_TASK_TIMEOUT = 3600 if task.type == TaskType.DREAMING else DEFAULT_TASK_TIMEOUT_S
             max_duration = (
                 task.resources.max_duration_seconds
                 if task.resources and task.resources.max_duration_seconds

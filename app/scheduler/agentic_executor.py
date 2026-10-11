@@ -1297,6 +1297,7 @@ class AgenticExecutor:
 
         iteration = 0
         time_budget_hit = False
+        _deadline_extensions = 0
         _loop_last_sig: Optional[str] = None  # (tool_name, args_hash, result_prefix)
         _loop_consec: int = 0                 # consecutive identical tool call+result count
         while True:
@@ -1322,6 +1323,27 @@ class AgenticExecutor:
                 break
             abs_iteration = start_iteration + iteration
             elapsed = time.time() - start_time
+            if elapsed >= max_duration and config.get("deadline_review"):
+                decision = await self._review_deadline(
+                    task, config, goal, iteration_log, elapsed, max_duration,
+                    _deadline_extensions, _last_resource_id,
+                )
+                self._record(
+                    task.id, "system",
+                    f"[deadline review @ {elapsed:.0f}s of {max_duration:.0f}s] "
+                    f"{'EXTEND +%.0fs' % decision.seconds if decision.extend else 'STOP'} "
+                    f"({decision.source}): {decision.reason}",
+                    iteration=abs_iteration,
+                )
+                if decision.extend:
+                    max_duration += decision.seconds
+                    _deadline_extensions += 1
+                    self._log(
+                        f"Task {task.id}: deadline review extended the time budget by "
+                        f"{decision.seconds:.0f}s to {max_duration:.0f}s -- {decision.reason}"
+                    )
+                else:
+                    self._log(f"Task {task.id}: deadline review stopped the task -- {decision.reason}")
             if elapsed >= max_duration:
                 self._log(
                     f"Task {task.id}: time budget exhausted at iteration {iteration}"
@@ -2242,6 +2264,36 @@ class AgenticExecutor:
             messages.append(entry)
 
         return messages, max_iteration
+
+    async def _review_deadline(
+        self, task, config: Dict[str, Any], goal: str, iteration_log: List[Dict[str, Any]],
+        elapsed: float, max_duration: float, extensions_used: int, last_resource_id: Optional[str],
+    ) -> "ReviewDecision":
+        """At the time budget: stop on a hard rule, else ask a model whether the run is still progressing.
+
+        Any failure of the review itself is a STOP with the reason -- never a silent extension.
+        """
+        from app.scheduler import deadline_review as dr
+
+        outer_cap = task.resources.max_duration_seconds if task.resources and task.resources.max_duration_seconds else dr.DEFAULT_TASK_TIMEOUT_S
+        hard_cap, max_ext, ext_s = dr.compute_limits(config, outer_cap)
+        evidence = dr.gather_evidence(iteration_log, elapsed, max_duration, extensions_used)
+        ruled = dr.rule_decision(evidence, hard_cap, max_ext, ext_s)
+        if ruled:
+            return ruled
+        max_grant = min(ext_s, hard_cap - max_duration)
+        resource = self._rm.acquire_by_id(last_resource_id) if last_resource_id else None
+        if resource is None:
+            return dr.ReviewDecision(False, 0, "deadline review had no resource to ask (none used by this task yet)", "rule")
+        try:
+            data = await asyncio.wait_for(
+                self._call_llm(resource, [{"role": "user", "content": dr.build_prompt(goal, evidence, max_grant)}]),
+                timeout=90,
+            )
+            return dr.parse_model_decision(data["choices"][0]["message"].get("content") or "", max_grant)
+        except Exception as e:
+            self._log(f"Task {task.id}: deadline review failed ({type(e).__name__}: {e}) -- stopping", "error")
+            return dr.ReviewDecision(False, 0, f"deadline review failed: {type(e).__name__}: {e}"[:300], "rule")
 
     async def _call_llm(
         self,
