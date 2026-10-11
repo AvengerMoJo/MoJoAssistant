@@ -388,3 +388,85 @@ class TestUnwrap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHostModelAndFailedTurns(unittest.IsolatedAsyncioTestCase):
+    """A host's configured model is sent on every dispatch, and a turn that ends in a provider error
+    raises that error. Found live 2026-10-10: siliconnode1's default model had been retired
+    (HTTP 410 'deprecated') and the failure came back as an empty reply."""
+
+    def test_model_must_be_provider_slash_model(self):
+        with self.assertRaises(ValueError):
+            OpenCodeClient(base_url="http://test", model="big-pickle")
+        c = OpenCodeClient(base_url="http://test", model="opencode/big-pickle")
+        self.assertEqual(c._model, {"providerID": "opencode", "modelID": "big-pickle"})
+
+    async def test_v1_sends_model_in_message_body(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"parts": []})
+
+        client = _client_with_transport("v1", handler)
+        client._model = {"providerID": "opencode", "modelID": "big-pickle"}
+        await client.send_message("s1", "hi")
+        self.assertEqual(seen["body"]["model"], {"providerID": "opencode", "modelID": "big-pickle"})
+
+    async def test_v2_sets_model_once_per_session_before_prompt(self):
+        order = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST":
+                order.append((request.url.path, json.loads(request.content)))
+                return httpx.Response(200, json={"data": {"id": "m", "type": "user", "time": {"created": 100}}})
+            return httpx.Response(200, json={"data": [{"id": "i", "type": "idle", "outcome": "succeeded", "time": {"created": 101}}]})
+
+        client = _client_with_transport("v2", handler)
+        client._model = {"providerID": "opencode", "modelID": "big-pickle"}
+        await client.send_message("s1", "one", poll_interval=0.001)
+        await client.send_message("s1", "two", poll_interval=0.001)
+        paths = [p for p, _ in order]
+        self.assertEqual(paths, ["/api/session/s1/model", "/api/session/s1/prompt", "/api/session/s1/prompt"])
+        self.assertEqual(order[0][1], {"model": {"id": "big-pickle", "providerID": "opencode"}})
+
+    async def test_v2_no_model_configured_does_not_touch_model_endpoint(self):
+        paths = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST":
+                paths.append(request.url.path)
+                return httpx.Response(200, json={"data": {"id": "m", "type": "user", "time": {"created": 100}}})
+            return httpx.Response(200, json={"data": [{"id": "i", "type": "idle", "outcome": "succeeded", "time": {"created": 101}}]})
+
+        client = _client_with_transport("v2", handler)
+        await client.send_message("s1", "one", poll_interval=0.001)
+        self.assertEqual(paths, ["/api/session/s1/prompt"])
+
+    async def test_v2_provider_error_raises_with_the_provider_message(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST":
+                return httpx.Response(200, json={"data": {"id": "m", "type": "user", "time": {"created": 100}}})
+            return httpx.Response(200, json={"data": [
+                {"id": "a", "type": "assistant", "time": {"created": 101}, "content": [], "finish": "error",
+                 "model": {"id": "exo-free"}, "error": {"message": "Model exo-free has been deprecated.", "status": 410}},
+                {"id": "i", "type": "idle", "outcome": "failed", "time": {"created": 102}},
+            ]})
+
+        client = _client_with_transport("v2", handler)
+        with self.assertRaises(RuntimeError) as cm:
+            await client.send_message("s1", "hi", poll_interval=0.001)
+        msg = str(cm.exception)
+        self.assertIn("exo-free", msg)
+        self.assertIn("deprecated", msg)
+        self.assertIn("410", msg)
+
+    async def test_v2_failed_idle_without_reply_raises(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST":
+                return httpx.Response(200, json={"data": {"id": "m", "type": "user", "time": {"created": 100}}})
+            return httpx.Response(200, json={"data": [{"id": "i", "type": "idle", "outcome": "failed", "time": {"created": 102}}]})
+
+        client = _client_with_transport("v2", handler)
+        with self.assertRaises(RuntimeError):
+            await client.send_message("s1", "hi", poll_interval=0.001)

@@ -71,6 +71,7 @@ class OpenCodeClient:
         password: Basic auth password (username is always "opencode"). v1
             servers don't actually check it; v2 servers do -- always send it.
         api_version: "v1" (default, matches the existing fleet) or "v2".
+        model: optional "provider/model" to use instead of the server's default.
     """
 
     def __init__(
@@ -78,6 +79,7 @@ class OpenCodeClient:
         base_url: str,
         password: Optional[str] = None,
         api_version: str = "v1",
+        model: Optional[str] = None,
     ) -> None:
         if api_version not in ("v1", "v2"):
             raise ValueError(f"api_version must be 'v1' or 'v2', got {api_version!r}")
@@ -86,6 +88,17 @@ class OpenCodeClient:
         self._client: Optional[httpx.AsyncClient] = None
         self._v2 = api_version == "v2"
         self._prefix = "/api" if self._v2 else ""
+        # "provider/model" (e.g. "opencode/big-pickle"). When unset the server's own default model is
+        # used -- which is how a host silently kept calling a model its provider had retired.
+        self._model = self._parse_model(model) if model else None
+        self._model_set_sessions: set = set()
+
+    @staticmethod
+    def _parse_model(model: str) -> Dict[str, str]:
+        provider, sep, model_id = model.partition("/")
+        if not sep or not provider or not model_id:
+            raise ValueError(f"model must be 'provider/model', got {model!r}")
+        return {"providerID": provider, "modelID": model_id}
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -178,6 +191,8 @@ class OpenCodeClient:
             return await self._send_message_v2(session_id, content, **kwargs)
         path = "/session/{}/message".format(session_id)
         payload = {"parts": [{"type": "text", "text": content}], **kwargs}
+        if self._model and "model" not in payload:
+            payload["model"] = self._model
         resp = await client.post(path, json=payload, timeout=MESSAGE_TIMEOUT)
         resp.raise_for_status()
         return self._unwrap(resp)
@@ -186,6 +201,14 @@ class OpenCodeClient:
         self, session_id: str, content: str, poll_interval: float = 1.5, **kwargs: Any
     ) -> Dict[str, Any]:
         client = await self._get_client()
+        if self._model and session_id not in self._model_set_sessions:
+            resp = await client.post(
+                f"{self._prefix}/session/{session_id}/model",
+                json={"model": {"id": self._model["modelID"], "providerID": self._model["providerID"]}},
+                timeout=DEFAULT_TIMEOUT,
+            )
+            resp.raise_for_status()
+            self._model_set_sessions.add(session_id)
         path = f"{self._prefix}/session/{session_id}/prompt"
         payload: Dict[str, Any] = {"text": content, **kwargs}
         resp = await client.post(path, json=payload, timeout=DEFAULT_TIMEOUT)
@@ -206,8 +229,28 @@ class OpenCodeClient:
             )
             if went_idle:
                 reply = self._latest_assistant_message(messages, since)
+                self._raise_if_turn_failed(session_id, messages, reply, since)
                 return self._v2_message_to_v1_shape(reply) if reply else {"parts": []}
             await asyncio.sleep(poll_interval)
+
+    @staticmethod
+    def _raise_if_turn_failed(session_id: str, messages: List[Dict[str, Any]],
+                              reply: Optional[Dict[str, Any]], since: Any) -> None:
+        """A turn that ended in a provider error (e.g. 410 'model deprecated') must surface that error,
+        not come back as an empty reply that callers read as 'no answer'."""
+        err = (reply or {}).get("error")
+        if err or (reply or {}).get("finish") == "error":
+            err = err or {}
+            model = ((reply or {}).get("model") or {}).get("id")
+            raise RuntimeError(
+                f"OpenCode v2 session {session_id}: the model call failed"
+                f"{' (' + model + ')' if model else ''}: {err.get('message') or 'unknown error'}"
+                f"{' [HTTP %s]' % err['status'] if err.get('status') else ''}"
+            )
+        failed = [m for m in messages if m.get("type") == "idle" and m.get("outcome") == "failed"
+                  and (m.get("time") or {}).get("created", 0) >= since]
+        if failed and not reply:
+            raise RuntimeError(f"OpenCode v2 session {session_id}: the turn failed with no assistant reply")
 
     @staticmethod
     def _latest_assistant_message(

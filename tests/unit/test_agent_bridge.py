@@ -341,3 +341,10 @@ async def test_agent_fleet_summary_groups_by_region_and_tier(mixed_tools, mixed_
     # sessions in a way that hides worker-gpu's real count -- total should be
     # exactly worker-gpu's 2, not miscounted.
     assert summary[key]["total_sessions"] == 2
+
+def test_registry_passes_the_host_model_to_the_client():
+    from app.mcp.agent_bridge.registry import HostRegistry
+    reg = HostRegistry({"n1": {"base_url": "http://x", "api_version": "v2", "model": "opencode/big-pickle"},
+                        "n2": {"base_url": "http://y"}})
+    assert reg.get_client("n1")._model == {"providerID": "opencode", "modelID": "big-pickle"}
+    assert reg.get_client("n2")._model is None

@@ -40,6 +40,7 @@ class HostRegistry:
                 base_url=host["base_url"],
                 password=host.get("password", ""),
                 api_version=host.get("api_version", "v1"),
+                model=host.get("model"),
             )
         return self._clients[name]
 
