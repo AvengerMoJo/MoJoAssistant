@@ -983,6 +983,14 @@ class ToolRegistry:
                             "type": "integer",
                             "description": "Max think-act iterations (add action, default 10).",
                         },
+                        "deadline_review": {
+                            "type": "boolean",
+                            "description": (
+                                "add action. At the time budget, review the run (evidence + a model judgment) and extend "
+                                "or stop instead of killing at a fixed limit. max_duration_seconds is then the starting "
+                                "budget; extensions are capped (3 x 300s, never past the scheduler's 1800s cap)."
+                            ),
+                        },
                         "max_duration_seconds": {
                             "type": "integer",
                             "description": (
@@ -3096,7 +3104,9 @@ Agent resumes within seconds.
 
             # Extract max_duration_seconds and danger_budget from config if provided
             if isinstance(config, dict):
-                if "max_duration_seconds" in config:
+                # With deadline_review the value is the task's own (inner) budget, which the review may
+                # extend; the scheduler's outer hard cap must stay above it, so it is NOT moved to resources.
+                if "max_duration_seconds" in config and not config.get("deadline_review"):
                     resources_dict.setdefault("max_duration_seconds", config.pop("max_duration_seconds"))
                 if "danger_budget" in config:
                     resources_dict.setdefault("danger_budget", config.pop("danger_budget"))
@@ -7296,6 +7306,8 @@ Agent resumes within seconds.
                 config["available_tools"] = add_args["available_tools"]
             if add_args.get("max_iterations") and "max_iterations" not in config:
                 config["max_iterations"] = add_args["max_iterations"]
+            if add_args.get("deadline_review") is not None and "deadline_review" not in config:
+                config["deadline_review"] = bool(add_args["deadline_review"])
             if add_args.get("pinned_resource") and "pinned_resource" not in config:
                 config["pinned_resource"] = add_args["pinned_resource"]
             # max_duration_seconds was accepted by _execute_scheduler_add_task's
