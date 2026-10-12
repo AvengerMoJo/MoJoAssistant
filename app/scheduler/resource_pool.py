@@ -335,16 +335,20 @@ class ResourceManager:
 
     def _parse_flat_resources(self, data: dict) -> None:
         """Parse flat `resources` dict format (resource_pool.json)."""
+        from app.scheduler.account_expansion import expand_provider_accounts
+        all_resources, all_pools, expansion_errors = expand_provider_accounts(data)
+        for err in expansion_errors:
+            self._log(err, "error")
         with self._lock:
             self._resources.clear()
             self._quota_pools, self._quota_pool_errors = {}, {}
-            for pname, praw in (data.get("quota_pools") or {}).items():
+            for pname, praw in all_pools.items():
                 try:
                     self._quota_pools[pname] = resource_quota.parse_windows(praw)
                 except (ValueError, TypeError) as e:
                     self._quota_pool_errors[pname] = f"invalid quota_pools.{pname}: {e}"
                     self._log(self._quota_pool_errors[pname], "error")
-            for rid, rconf in data.get("resources", {}).items():
+            for rid, rconf in all_resources.items():
                 if not isinstance(rconf, dict):
                     continue
                 rconf = dict(rconf)
@@ -354,6 +358,11 @@ class ResourceManager:
                 )
                 rconf.setdefault("provider", "openai")
                 resource = self._parse_resource(rid, rconf)
+                if rconf.get("account_group") and rconf.get("enabled", True) and not resource.api_key:
+                    # an account whose key is missing must not be routed to: say so, do not guess
+                    resource.enabled = False
+                    resource.config_error = f"no API key found for {resource.api_key_env}"
+                    self._log(f"Resource '{rid}' disabled: {resource.config_error}", "error")
                 self._resources[rid] = resource
                 if rid not in self._usage:
                     self._usage[rid] = UsageRecord()
