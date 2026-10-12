@@ -13,6 +13,8 @@ allowance of free-model calls) is declared once:
     }
 
 Adding an account or a model is config only. Pure function; no I/O.
+Every generated resource also gets health_group "<group>_<account>", so a probe that proves the
+account unusable (see resource_health.probe_completion) gates all of that account's models.
 Generated ids are "<group>_<account>_<model slug>"; all accounts of one model share account_group
 "<group>_<model slug>" so the pool's round-robin spreads calls across accounts.
 """
@@ -61,6 +63,7 @@ def expand_provider_accounts(data: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict
                 conf["key_var"] = acfg.get("key_var") or acfg.get("api_key_env")
                 conf.pop("api_key_env", None)
                 conf["account_group"] = f"{group}_{slug}"
+                conf["health_group"] = f"{group}_{acct}"
                 conf["enabled"] = bool(acfg.get("enabled", True) and m.get("enabled", True))
                 if acct_pool:
                     conf["quota_pool"] = acct_pool

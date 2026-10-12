@@ -92,3 +92,36 @@ def probe_endpoint(
     except (urllib.error.URLError, OSError) as e:
         reason = getattr(e, "reason", e)
         return ProbeResult(UNREACHABLE, f"{type(reason).__name__}: {reason}", now)
+
+
+def probe_completion(base_url: str, api_key: str, model: str, timeout: float = 30.0) -> ProbeResult:
+    """Send a 1-token chat completion and classify the answer. Never raises.
+
+    A key can pass a key-info or model-listing call and still be refused for inference
+    (2026-10-12: OpenRouter management keys answered /key with 200 but every completion
+    with 401 "User not found"). Only a real completion proves the account can be used.
+    Costs one call against the account's quota, so callers rate-limit it.
+    """
+    now = time.time()
+    if not base_url or not model:
+        return ProbeResult(ERROR, "no base_url or model configured", now)
+    url = base_url.rstrip("/") + "/chat/completions"
+    body = json.dumps({"model": model, "messages": [{"role": "user", "content": "ok"}], "max_tokens": 8}).encode()
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=headers, method="POST"), timeout=timeout) as resp:
+            resp.read(1_000_000)
+            return ProbeResult(LIVE, f"completion HTTP {resp.status}", now, int((time.monotonic() - started) * 1000))
+    except urllib.error.HTTPError as e:
+        latency = int((time.monotonic() - started) * 1000)
+        if e.code in (401, 403):
+            return ProbeResult(AUTH_FAILED, f"completion refused: HTTP {e.code}", now, latency)
+        if e.code == 429:
+            return ProbeResult(LIVE, "completion HTTP 429 (reachable, quota-limited)", now, latency)
+        return ProbeResult(ERROR, f"completion HTTP {e.code} from {url}", now, latency)
+    except (urllib.error.URLError, OSError) as e:
+        reason = getattr(e, "reason", e)
+        return ProbeResult(UNREACHABLE, f"{type(reason).__name__}: {reason}", now)

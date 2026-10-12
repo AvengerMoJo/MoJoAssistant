@@ -94,6 +94,12 @@ class LLMResource:
     health_check_model: bool = True  # False: this provider's listing does not use the configured model id
     health_check: bool = True  # False: provider has no usable listing endpoint; never probe it
     health_path: str = "/models"  # endpoint under base_url the liveness probe GETs
+    # "completion": the listing check cannot see a key the provider refuses for inference, so one
+    # resource per health_group (an account) also sends a 1-token completion, at most every
+    # health_probe_interval_s; a refused key gates every resource of the group.
+    health_probe: Optional[str] = None
+    health_group: Optional[str] = None
+    health_probe_interval_s: float = 21600.0
 
 
 @dataclass
@@ -163,6 +169,7 @@ class ResourceManager:
         self._health: Dict[str, "resource_health.ProbeResult"] = {}
         self._busy_resource_ids: set = set()
         self._memory_ceiling_gb: Optional[float] = None
+        self._group_probe: Dict[str, tuple] = {}  # health_group -> (checked_at, ProbeResult)
         self._quota_pools: Dict[str, List["resource_quota.QuotaWindow"]] = {}
         self._quota_pool_errors: Dict[str, str] = {}
         self._pool_calls: Dict[str, Deque[float]] = {}
@@ -546,6 +553,9 @@ class ResourceManager:
             health_check=conf.get("health_check", True),
             health_check_model=conf.get("health_check_model", True),
             health_path=conf.get("health_path", "/models"),
+            health_probe=conf.get("health_probe"),
+            health_group=conf.get("health_group"),
+            health_probe_interval_s=float(conf.get("health_probe_interval_s", 21600.0)),
             enabled=conf.get("enabled", True) and config_error is None,
             quotas=quotas,
             quota_source=conf.get("quota_source"),
@@ -661,6 +671,9 @@ class ResourceManager:
             base_url, api_key, path = resource.base_url, resource.api_key or "", resource.health_path
             expect = resource.model if resource.health_check_model and resource.model else None
         result = resource_health.probe_endpoint(base_url, api_key, path=path, expect_model=expect)
+        account = self._account_probe(resource)
+        if account is not None and account.state in (resource_health.AUTH_FAILED, resource_health.UNREACHABLE):
+            result = account  # the account itself is unusable: gate every model on it
         with self._lock:
             previous = self._health.get(resource_id)
             result.since = previous.since if previous and previous.state == result.state else result.checked_at
@@ -697,6 +710,28 @@ class ResourceManager:
                 "detail": result.detail,
                 "since": result.since,
             }
+
+    def _account_probe(self, resource: "LLMResource") -> Optional["resource_health.ProbeResult"]:
+        """Result of the account-level completion probe for this resource's health_group, or None.
+
+        Only the first enabled resource of the group sends the completion (a probe costs one
+        call of the account's quota); the others reuse its latest result. A fresh result is
+        reused until health_probe_interval_s has passed.
+        """
+        if resource.health_probe != "completion" or not resource.health_group:
+            return None
+        group = resource.health_group
+        with self._lock:
+            lead = next((r for r in self._resources.values() if r.enabled and r.health_group == group), None)
+            cached = self._group_probe.get(group)
+            fresh = cached is not None and time.time() - cached[0] < resource.health_probe_interval_s
+            if fresh or lead is None or lead.id != resource.id:
+                return cached[1] if cached else None
+            base_url, key, model = resource.base_url, resource.api_key or "", resource.model
+        result = resource_health.probe_completion(base_url, key, model)
+        with self._lock:
+            self._group_probe[group] = (time.time(), result)
+        return result
 
     def probe_all(self) -> List[Dict[str, Any]]:
         """Probe every enabled resource; return the state transitions observed."""

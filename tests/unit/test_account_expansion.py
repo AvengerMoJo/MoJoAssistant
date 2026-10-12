@@ -68,3 +68,9 @@ def test_pool_loads_expanded_accounts_and_disables_the_one_without_a_key(tmp_pat
     b = rm._resources["orf_b_nvidia_nemotron_3_5_lightning_free"]
     assert a.enabled and a.quota_pool == "free__a"
     assert not b.enabled and "KEY_B" in b.config_error
+
+
+def test_generated_resources_carry_the_account_health_group():
+    res, _, _ = expand_provider_accounts(_data())
+    assert res["orf_a_nvidia_nemotron_3_5_lightning_free"]["health_group"] == "orf_a"
+    assert res["orf_b_nvidia_nemotron_3_5_lightning_free"]["health_group"] == "orf_b"
