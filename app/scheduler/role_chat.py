@@ -286,11 +286,10 @@ class RoleChatSession:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"RoleChatSession: failed to load {self.session_id}: {e}")
-        session_type = (
-            "owner_one_on_one"
-            if self.mode == InteractionMode.OWNER_ONE_ON_ONE
-            else "chat"
-        )
+        session_type = {
+            InteractionMode.OWNER_ONE_ON_ONE: "owner_one_on_one",
+            InteractionMode.OWNER_HUB: "owner_hub",
+        }.get(self.mode, "chat")
         return {
             "session_id": self.session_id,
             "role_id": self.role_id,

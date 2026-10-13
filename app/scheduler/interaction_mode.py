@@ -11,6 +11,8 @@ Modes
 DASHBOARD_CHAT          Private, read-only debrief (memory + task history only).
 ROLE_CHAT               Same defaults as dashboard_chat unless mode_overlays expands it.
 OWNER_ONE_ON_ONE        Growth check-in between owner and a role — session tagged for bonsai.
+OWNER_HUB               Owner's working channel with the personal assistant (Telegram) — the opposite of
+                        dashboard_chat: exchanges are kept as memory and the owner's decisions are noted.
 SCHEDULER_AGENTIC_TASK  Full execution surface — planning, tools, orchestration.
 DIRECT_MCP_COMMAND      Operator/admin control path via authorized MCP channels.
 
@@ -33,6 +35,7 @@ class InteractionMode(str, Enum):
     DASHBOARD_CHAT = "dashboard_chat"
     ROLE_CHAT = "role_chat"
     OWNER_ONE_ON_ONE = "owner_one_on_one"
+    OWNER_HUB = "owner_hub"
     SCHEDULER_AGENTIC_TASK = "scheduler_agentic_task"
     DIRECT_MCP_COMMAND = "direct_mcp_command"
 
@@ -113,6 +116,31 @@ This is a trusted, private session. Be candid.
 ---
 """
 
+_OWNER_HUB_OVERLAY = """\
+## OWNER HUB — YOUR WORKING CHANNEL WITH THE OWNER
+
+You are talking with your owner on their phone. This is not a private debrief: \
+what is said here becomes memory (the dreaming pipeline processes every exchange), \
+so it is worth being precise.
+
+**Your job in this channel:**
+- Keep replies short and direct; the owner reads them on a phone.
+- When the owner makes a decision or states a preference, restate it in one line \
+  ("Decision: ...") so it is captured clearly with its reason.
+- When the owner's request needs other assistants to do work, say which assistant \
+  and what you would hand them. You cannot start that work from this channel yet, \
+  so never claim it was started.
+- Ask one clear question at a time when something is ambiguous.
+- Never repeat or ask for passwords, API keys or tokens in this channel.
+
+**Available tools:**
+- `memory_search` — search your memory and past conversations
+- `task_search` — search your task history
+- `knowledge_search` — search prior research and task artifacts
+
+---
+"""
+
 _SCHEDULER_AGENTIC_OVERLAY = """\
 ## EXECUTION MODE — SCHEDULER AGENTIC TASK
 
@@ -147,6 +175,12 @@ _MODE_CONTRACTS: dict[InteractionMode, ModeContract] = {
         mode=InteractionMode.OWNER_ONE_ON_ONE,
         allowed_tool_categories=["memory", "knowledge"],
         prompt_overlay=_OWNER_ONE_ON_ONE_OVERLAY,
+        stores_completion_artifact=False,
+    ),
+    InteractionMode.OWNER_HUB: ModeContract(
+        mode=InteractionMode.OWNER_HUB,
+        allowed_tool_categories=["memory", "knowledge"],
+        prompt_overlay=_OWNER_HUB_OVERLAY,
         stores_completion_artifact=False,
     ),
     InteractionMode.SCHEDULER_AGENTIC_TASK: ModeContract(

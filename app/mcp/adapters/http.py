@@ -215,6 +215,18 @@ class HTTPAdapter(ProtocolAdapter):
                 if self.logger:
                     self.logger.warning("[messenger] manager startup failed: %s", exc)
 
+            # Telegram hub: the owner's working channel with their assistants (not a notification sink)
+            try:
+                from app.mcp.adapters.telegram_hub import build_hub
+                from app.scheduler.resource_pool import ResourceManager
+                _hub = build_hub(lambda: ResourceManager(logger=self.logger))
+                if _hub is not None:
+                    await _hub.start()
+                    self._telegram_hub = _hub
+            except Exception as exc:
+                if self.logger:
+                    self.logger.error("[telegram_hub] startup failed: %s", exc, exc_info=True)
+
             # Start Discord community bot if enabled
             if os.getenv("ENABLE_DISCORD_BOT", "false").lower() in ("true", "1", "yes"):
                 token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
