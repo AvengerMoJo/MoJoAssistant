@@ -318,6 +318,8 @@ class RoleChatSession:
     agentic loop so the role can look things up before answering.
     """
 
+    _max_data_scope: Optional[str] = None  # per-instance value comes from the role file (see __init__)
+
     def __init__(
         self,
         role_id: str,
@@ -328,6 +330,8 @@ class RoleChatSession:
     ):
         self.role_id = role_id
         self.mode = mode
+        # Widest place this role's chat data may go (DATA_SCOPES); None = unrestricted. Set in the role file.
+        self._max_data_scope: Optional[str] = (RoleManager().get(role_id) or {}).get("data_scope")
         self._scheduler = scheduler            # needed only by route_to_role
         self._routable_roles = routable_roles  # None = any existing role except this one
         self.session_id = (
@@ -892,9 +896,15 @@ class RoleChatSession:
         import httpx
         from app.llm.unified_client import UnifiedLLMClient
 
-        resource = rm.acquire()
+        scope = self._max_data_scope
+        resource = rm.acquire(max_data_scope=scope)
         if resource is None:
-            raise RuntimeError("no LLM resource available")
+            inside = [r for r in rm.selection_order(max_data_scope=scope) if r["data_scope"] and not (r["excluded_because"] or "").startswith("data scope")]
+            detail = "; ".join(f"{r['id']}: {r['excluded_because']}" for r in inside if not r["eligible"])[:500]
+            raise RuntimeError(
+                "no LLM resource available" + (f" within data scope {scope}" if scope else "")
+                + (f" ({detail})" if detail else "")
+            )
 
         # Resolve dynamic model for local servers (model=None + dynamic_discovery)
         model = resource.model
@@ -1161,7 +1171,7 @@ class RoleChatSession:
                 client = UnifiedLLMClient()
 
                 for _iteration in range(MAX_CHAT_ITERATIONS):
-                    resource = resource_manager.acquire()
+                    resource = resource_manager.acquire(max_data_scope=self._max_data_scope)
                     if resource is None:
                         err = "(No LLM resource available)"
                         yield f'data: {json.dumps({"type": "token", "text": err})}\n\n'
@@ -1272,7 +1282,7 @@ class RoleChatSession:
                 else:
                     # Budget exhausted — force a final text-only call
                     messages.append({"role": "system", "content": _FINAL_TOOL_LOOP_PROMPT})
-                    resource = resource_manager.acquire()
+                    resource = resource_manager.acquire(max_data_scope=self._max_data_scope)
                     if resource:
                         model = resource.model or ""
                         resource_config = {

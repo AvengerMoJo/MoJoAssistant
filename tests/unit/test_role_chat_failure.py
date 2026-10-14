@@ -11,6 +11,9 @@ class NoResource:
     def acquire(self, *a, **k):
         return None
 
+    def selection_order(self, *a, **k):
+        return []
+
     def record_usage(self, *a, **k):
         pass
 

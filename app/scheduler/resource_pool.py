@@ -21,6 +21,47 @@ from app.scheduler.model_registry import get_registry, lookup_model
 from app.scheduler import resource_health, resource_quota
 
 
+# Where a request's data goes. Ordered: a caller that allows a scope allows every scope before it.
+DATA_SCOPES = ("local_host", "own_network", "third_party")
+
+
+def _is_address_of_this_host(ip: str) -> bool:
+    """True when ip is assigned to one of this machine's interfaces (a bind only succeeds for those)."""
+    import socket
+    family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.bind((ip, 0))
+        return True
+    except OSError:
+        return False
+
+
+def derive_data_scope(base_url: str) -> str:
+    """local_host (loopback or an address of this machine), own_network (private address or a bare/.lan/.local host name),
+    otherwise third_party. A tunnel through a public name is third_party: its operator sees the
+    traffic. A resource can override this with an explicit data_scope."""
+    import ipaddress
+    from urllib.parse import urlparse
+    host = (urlparse(base_url or "").hostname or "").lower()
+    if not host:
+        return "third_party"
+    if host == "localhost" or host.endswith(".localhost"):
+        return "local_host"
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or _is_address_of_this_host(host):
+            return "local_host"
+        # 100.64.0.0/10 is the Tailscale/CGNAT range: the owner's own tailnet.
+        in_tailnet = ip.version == 4 and ip in ipaddress.ip_network("100.64.0.0/10")
+        return "own_network" if (ip.is_private or ip.is_link_local or in_tailnet) else "third_party"
+    except ValueError:
+        pass
+    if "." not in host or host.endswith((".local", ".lan", ".internal", ".home.arpa")):
+        return "own_network"
+    return "third_party"
+
+
 class ResourceTier(Enum):
     FREE = "free"
     FREE_API = "free_api"
@@ -100,6 +141,8 @@ class LLMResource:
     health_probe: Optional[str] = None
     health_group: Optional[str] = None
     health_probe_interval_s: float = 21600.0
+    # Where this resource's traffic goes (see DATA_SCOPES); derived from base_url unless configured.
+    data_scope: str = "third_party"
 
 
 @dataclass
@@ -536,6 +579,11 @@ class ResourceManager:
             config_error = f"invalid quotas: {e}"
             self._log(f"Resource '{rid}' disabled: {config_error}", "error")
 
+        data_scope = conf.get("data_scope") or derive_data_scope(conf.get("base_url", ""))
+        if data_scope not in DATA_SCOPES:
+            config_error = f"data_scope {data_scope!r} must be one of {list(DATA_SCOPES)}"
+            self._log(f"Resource '{rid}' disabled: {config_error}", "error")
+
         return LLMResource(
             id=rid,
             type=conf.get("type", "local"),
@@ -554,6 +602,7 @@ class ResourceManager:
             health_check_model=conf.get("health_check_model", True),
             health_path=conf.get("health_path", "/models"),
             health_probe=conf.get("health_probe"),
+            data_scope=data_scope,
             health_group=conf.get("health_group"),
             health_probe_interval_s=float(conf.get("health_probe_interval_s", 21600.0)),
             enabled=conf.get("enabled", True) and config_error is None,
@@ -581,9 +630,13 @@ class ResourceManager:
         min_context: int = 0,
         min_output: int = 0,
         exclude_ids: Optional[set] = None,
+        max_data_scope: Optional[str] = None,
     ) -> Optional[LLMResource]:
         """
         Acquire the best available resource matching constraints.
+
+        max_data_scope: widest place the request's data may go (see DATA_SCOPES). A busy resource
+        inside the scope is only penalised, so the request queues there instead of leaving the scope.
 
         exclude_ids: skip these resource IDs (used to avoid re-selecting a
         resource that just failed within the current task run).
@@ -592,12 +645,15 @@ class ResourceManager:
         """
         if tier_preference is None:
             tier_preference = [ResourceTier.FREE, ResourceTier.FREE_API]
+        if max_data_scope is not None and max_data_scope not in DATA_SCOPES:
+            raise ValueError(f"max_data_scope {max_data_scope!r} must be one of {list(DATA_SCOPES)}")
 
         with self._lock:
             self._maybe_reload_runtime_state()
             candidates = [
                 r for r in self._resources.values()
-                if self._exclusion_reason(r, tier_preference, min_context, min_output, exclude_ids) is None
+                if self._exclusion_reason(r, tier_preference, min_context, min_output, exclude_ids,
+                                          max_data_scope=max_data_scope) is None
             ]
 
             if not candidates:
@@ -757,6 +813,7 @@ class ResourceManager:
         min_output: int = 0,
         exclude_ids: Optional[set] = None,
         required_caps: Optional[set] = None,
+        max_data_scope: Optional[str] = None,
     ) -> Optional[str]:
         """Why acquire() would skip this resource, or None if it is a candidate.
 
@@ -770,6 +827,11 @@ class ResourceManager:
             return "excluded for this task (failed earlier in the run)"
         if resource.tier not in tier_preference:
             return f"tier {resource.tier.value} not in {[t.value for t in tier_preference]}"
+        if max_data_scope is not None and (
+            resource.data_scope not in DATA_SCOPES
+            or DATA_SCOPES.index(resource.data_scope) > DATA_SCOPES.index(max_data_scope)
+        ):
+            return f"data scope {resource.data_scope} is wider than the allowed {max_data_scope}"
         if resource.tier == ResourceTier.PAID and resource.id not in self._approved_paid:
             return "paid tier, not approved"
         if resource.context_limit < min_context:
@@ -830,6 +892,7 @@ class ResourceManager:
         min_context: int = 0,
         min_output: int = 0,
         exclude_ids: Optional[set] = None,
+        max_data_scope: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Every resource in the order acquire() would pick them, then the ones it would not, with reasons."""
         tiers = tier_preference or [ResourceTier.FREE, ResourceTier.FREE_API]
@@ -838,10 +901,11 @@ class ResourceManager:
         with self._lock:
             rows = []
             for r in self._resources.values():
-                reason = self._exclusion_reason(r, tiers, min_context, min_output, exclude_ids)
+                reason = self._exclusion_reason(r, tiers, min_context, min_output, exclude_ids,
+                                                max_data_scope=max_data_scope)
                 key = self._effective_priority(r, loaded_ids, busy_ids)
                 rows.append({
-                    "id": r.id, "tier": r.tier.value, "model": r.model,
+                    "id": r.id, "tier": r.tier.value, "model": r.model, "data_scope": r.data_scope,
                     "configured_priority": r.priority,
                     "rank_priority": self._rank_priority(r),
                     "cold_load_penalty": key[1] == 1,
@@ -855,9 +919,10 @@ class ResourceManager:
             row["position"] = i + 1
         return rows
 
-    def rejection_summary(self, tier_preference=None, min_context=0, min_output=0, exclude_ids=None) -> str:
+    def rejection_summary(self, tier_preference=None, min_context=0, min_output=0, exclude_ids=None,
+                          max_data_scope=None) -> str:
         """One line per resource explaining why nothing could be acquired."""
-        rows = self.selection_order(tier_preference, min_context, min_output, exclude_ids)
+        rows = self.selection_order(tier_preference, min_context, min_output, exclude_ids, max_data_scope)
         return "; ".join(f"{r['id']}: {r['excluded_because']}" for r in rows if not r["eligible"]) or "no resources configured"
 
     @staticmethod
