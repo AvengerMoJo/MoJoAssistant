@@ -46,11 +46,30 @@ _CHAT_TOOL_ACCESS: Dict[str, List[str]] = {
     "knowledge": ["knowledge_search"],
     # Roster and routing. Only modes whose contract allows "orchestration" (the owner hub) expose them;
     # the general dispatch tools stay out of chat.
-    "orchestration": ["list_roles", "route_to_role"],
+    "orchestration": ["list_roles", "route_to_role", "routed_tasks"],
 }
 
 # OpenAI-format tool definitions for each supported chat tool
 _TOOL_DEFS: Dict[str, Dict] = {
+    "routed_tasks": {
+        "type": "function",
+        "function": {
+            "name": "routed_tasks",
+            "description": (
+                "Status and result of the requests you handed to other assistants with route_to_role "
+                "(newest first): assistant, status, and the answer or the question it is waiting on. "
+                "Read-only, and covers only tasks you routed -- nothing else those assistants hold."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "One routed task. Omit to list recent ones."},
+                    "limit": {"type": "integer", "description": "How many to list (default 5)"},
+                },
+                "required": [],
+            },
+        },
+    },
     "route_to_role": {
         "type": "function",
         "function": {
@@ -688,6 +707,37 @@ class RoleChatSession:
 
         return results
 
+    def _routed_tasks(self, args: Dict[str, Any]) -> str:
+        """Status and answer of the tasks this role routed for the owner. Read-only; only those tasks."""
+        tasks_file = Path(get_memory_subpath("scheduler_tasks.json"))
+        if not tasks_file.exists():
+            return json.dumps({"success": False, "error": "no scheduler task file"})
+        try:
+            data = json.loads(tasks_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            return json.dumps({"success": False, "error": f"could not read the task file: {e}"})
+        task_map = data.get("tasks", data) if isinstance(data, dict) else {}
+        mine = [t for t in task_map.values() if isinstance(t, dict)
+                and ((t.get("config") or {}).get("origin") or {}).get("via") == self.role_id]
+        wanted = (args.get("task_id") or "").strip()
+        if wanted:
+            mine = [t for t in mine if t.get("id") == wanted]
+        mine.sort(key=lambda t: t.get("created_at") or "", reverse=True)
+        rows = []
+        for t in mine[: 1 if wanted else min(int(args.get("limit") or 5), 20)]:
+            answer = (((t.get("result") or {}).get("metrics") or {}).get("final_answer") or "").strip()
+            rows.append({
+                "task_id": t.get("id"),
+                "assistant": (t.get("config") or {}).get("role_id"),
+                "status": t.get("status"),
+                "created_at": (t.get("created_at") or "")[:19],
+                "completed_at": (t.get("completed_at") or "")[:19],
+                "waiting_on": t.get("pending_question") if t.get("status") == "waiting_for_input" else None,
+                "error": t.get("last_error") or None,
+                "answer": answer[: 4000 if wanted else 600] or None,
+            })
+        return json.dumps({"success": True, "count": len(rows), "tasks": rows}, ensure_ascii=False)
+
     def _route_to_role(self, args: Dict[str, Any]) -> str:
         """Create a scheduler task for another role from the owner's message. Fails with a reason; no substitute role."""
         from app.scheduler.models import Task, TaskPriority, TaskResources, TaskType
@@ -778,6 +828,8 @@ class RoleChatSession:
 
         if name == "route_to_role":
             return self._route_to_role(args)
+        if name == "routed_tasks":
+            return self._routed_tasks(args)
 
         # refer_to_role — cross-role referral
         if name == "refer_to_role":

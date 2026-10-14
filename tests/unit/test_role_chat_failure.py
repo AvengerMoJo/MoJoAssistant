@@ -88,3 +88,25 @@ def test_route_refuses_unknown_self_and_unlisted_roles(tmp_path, monkeypatch):
 def test_route_reports_a_scheduler_refusal(tmp_path, monkeypatch):
     out = route(tmp_path, monkeypatch, {"role_id": "paul", "message": "something to do"}, FakeScheduler(accept=False))
     assert not out["success"] and "refused" in out["error"]
+
+
+def test_routed_tasks_shows_only_what_this_role_routed(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("MEMORY_PATH", str(tmp_path))
+    (tmp_path / "scheduler_tasks.json").write_text(json.dumps({"tasks": {
+        "a": {"id": "a", "status": "completed", "created_at": "2026-10-14T10:00:00",
+              "config": {"role_id": "paul", "origin": {"channel": "owner_hub", "via": "anna"}},
+              "result": {"metrics": {"final_answer": "the plan"}}},
+        "b": {"id": "b", "status": "waiting_for_input", "created_at": "2026-10-14T11:00:00", "pending_question": "which repo?",
+              "config": {"role_id": "popo", "origin": {"channel": "owner_hub", "via": "anna"}}},
+        "c": {"id": "c", "status": "completed", "created_at": "2026-10-14T12:00:00",
+              "config": {"role_id": "paul", "origin": {"channel": "owner_hub", "via": "someone_else"}},
+              "result": {"metrics": {"final_answer": "not hers"}}},
+        "d": {"id": "d", "status": "completed", "created_at": "2026-10-14T13:00:00", "config": {"role_id": "paul"}},
+    }}))
+    s = RoleChatSession("anna", session_id="t4", mode=InteractionMode.OWNER_HUB)
+    out = json.loads(asyncio.run(s._execute_tool("routed_tasks", {})))
+    assert [t["task_id"] for t in out["tasks"]] == ["b", "a"]
+    assert out["tasks"][0]["waiting_on"] == "which repo?" and out["tasks"][1]["answer"] == "the plan"
+    one = json.loads(asyncio.run(s._execute_tool("routed_tasks", {"task_id": "c"})))
+    assert one["count"] == 0
