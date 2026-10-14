@@ -740,15 +740,16 @@ class RoleChatSession:
         tools: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         """
-        Call the LLM via ResourceManager and return the full response dict.
-        Falls back to FREE_API tier if the primary resource returns an error.
+        Call the LLM via ResourceManager and return the full response dict, with the answering
+        resource under "_resource" / "_model". Raises when no resource is available or the call
+        fails -- no retry on another tier, so the failure is visible and can be fixed.
         """
         import httpx
         from app.llm.unified_client import UnifiedLLMClient
 
         resource = rm.acquire()
         if resource is None:
-            return {"choices": [{"message": {"content": "(No LLM resource available.)"}}]}
+            raise RuntimeError("no LLM resource available")
 
         # Resolve dynamic model for local servers (model=None + dynamic_discovery)
         model = resource.model
@@ -784,36 +785,13 @@ class RoleChatSession:
                 model_override=model,
                 tools=tools or None,
             )
-            rm.record_usage(resource.id, success=True)
-            return data
         except Exception as e:
             rm.record_usage(resource.id, success=False)
-            logger.warning(
-                f"[role_chat] resource '{resource.id}' failed ({type(e).__name__}: {e}); "
-                "trying free_api tier fallback"
-            )
-
-        try:
-            from app.scheduler.resource_pool import ResourceTier
-            fallback = rm.acquire(tier_preference=[ResourceTier.FREE_API])
-        except Exception:
-            fallback = None
-
-        if fallback is None:
-            return {"choices": [{"message": {"content": f"(LLM unavailable: {e})"}}]}
-
-        try:
-            data = await client.call_async(
-                messages=messages,
-                resource_config=_make_config(fallback, fallback.model),
-                model_override=fallback.model,
-                tools=tools or None,
-            )
-            rm.record_usage(fallback.id, success=True)
-            return data
-        except Exception as e2:
-            rm.record_usage(fallback.id, success=False)
-            return {"choices": [{"message": {"content": f"(LLM unavailable: {e2})"}}]}
+            raise RuntimeError(f"resource '{resource.id}' failed: {type(e).__name__}: {e}") from e
+        rm.record_usage(resource.id, success=True)
+        data["_resource"] = resource.id
+        data["_model"] = model
+        return data
 
     async def _call_via_llm_interface(self, messages: List[Dict]) -> str:
         """Fallback when no ResourceManager available — collapses to single prompt."""
@@ -883,6 +861,7 @@ class RoleChatSession:
 
         response = ""
         total_tool_calls = 0
+        answered_by: Dict[str, Any] = {}
 
         try:
             if resource_manager is not None:
@@ -892,6 +871,7 @@ class RoleChatSession:
                         messages, resource_manager,
                         tools=chat_tools if chat_tools else None,
                     )
+                    answered_by = {"resource": data.get("_resource"), "model": data.get("_model")}
                     msg = (data.get("choices") or [{}])[0].get("message") or {}
                     tool_calls = msg.get("tool_calls")
 
@@ -957,8 +937,9 @@ class RoleChatSession:
                 response = await self._call_via_llm_interface(messages)
 
         except Exception as e:
+            # Not saved: an error is not an answer, and saved exchanges become memory via dreaming.
             logger.error(f"RoleChatSession.exchange failed for {self.role_id}: {e}")
-            response = f"(Error generating response: {e})"
+            return {"error": str(e), "role_id": self.role_id, "session_id": self.session_id}
 
         response = _ensure_response_quality(response, role_name=role.get("name", self.role_id))
         self._save_session(session, message, response)
@@ -967,6 +948,7 @@ class RoleChatSession:
             "role_id": self.role_id,
             "session_id": self.session_id,
             "response": response,
+            **answered_by,
             "context_used": {
                 "knowledge_units": ku_count,
                 "history_turns": len(history),

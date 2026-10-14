@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +54,34 @@ def split_message(text: str, limit: int = MAX_MESSAGE_CHARS) -> List[str]:
         text = text[cut:].lstrip()
     parts.append(text)
     return parts
+
+
+def to_plain_text(md: str) -> str:
+    """Markdown -> text that reads cleanly in a Telegram bubble (sent without parse_mode, so nothing renders).
+
+    Headings become a plain line, bold/italic/code markers are dropped, bullets become a dot, tables
+    become one line per row, links keep their URL in brackets, and runs of blank lines collapse."""
+    out, in_code = [], False
+    for line in md.replace("\r\n", "\n").split("\n"):
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            out.append("  " + line)
+            continue
+        if re.fullmatch(r"\s*\|?[\s:\-|]+\|?\s*", line) and "-" in line:
+            continue  # table separator row
+        line = re.sub(r"^\s{0,3}#{1,6}\s+", "", line)
+        line = re.sub(r"^(\s*)[*+-]\s+", lambda m: m.group(1) + "\u2022 ", line)
+        if line.strip().startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            line = " \u2014 ".join(c for c in cells if c)
+        line = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1 (\2)", line)
+        line = re.sub(r"(\*\*|__)(.+?)\1", r"\2", line)
+        line = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"\1", line)
+        line = re.sub(r"`([^`]+)`", r"\1", line)
+        out.append(line.rstrip())
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
 
 
 def load_hub_config(path: Optional[Path] = None) -> Dict[str, Any]:
@@ -139,7 +168,10 @@ class TelegramHub:
         if result.get("error"):
             await send(f"{agent} could not answer: {result['error']}")
             return
-        for part in split_message(result.get("response") or ""):
+        if result.get("model"):
+            self._state["model"] = result["model"]
+            self._save_state()
+        for part in split_message(to_plain_text(result.get("response") or "")):
             await send(part)
 
     async def _command(self, text: str, send: SendFn) -> None:
@@ -148,7 +180,9 @@ class TelegramHub:
         if cmd in ("/start", "/help"):
             await send(HELP_TEXT.format(agent=self.agent))
         elif cmd == "/who":
-            await send(f"You are talking with {self.agent} (session {self._session_for(self.agent)}).")
+            model = self._state.get("model")
+            await send(f"You are talking with {self.agent} (session {self._session_for(self.agent)})."
+                       + (f"\nLast answer came from {model}." if model else ""))
         elif cmd == "/agents":
             await send("Assistants: " + ", ".join(self._agents()))
         elif cmd == "/to":

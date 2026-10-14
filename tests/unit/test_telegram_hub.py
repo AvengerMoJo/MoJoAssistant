@@ -112,3 +112,22 @@ def test_long_reply_is_split_within_the_limit():
     parts = split_message(("word " * 30 + "\n\n") * 60, limit=500)
     assert len(parts) > 1 and all(len(p) <= 500 for p in parts)
     assert split_message("") == ["(empty reply)"]
+
+
+def test_markdown_becomes_plain_text():
+    from app.mcp.adapters.telegram_hub import to_plain_text
+    md = ("## Plan\n\n**Known:**\n* item `one`\n- item *two*\n\n\n\n"
+          "| a | b |\n|---|---|\n| 1 | 2 |\n\nsee [docs](https://x.io/a)\n```\ncode here\n```")
+    out = to_plain_text(md)
+    assert out == ("Plan\n\nKnown:\n\u2022 item one\n\u2022 item two\n\n"
+                   "a \u2014 b\n1 \u2014 2\n\nsee docs (https://x.io/a)\n  code here")
+    for mark in ("**", "##", "```", "|---"):
+        assert mark not in out
+
+
+def test_who_reports_the_model_that_answered(tmp_path):
+    async def ex(agent, sid, text):
+        return {"response": "ok", "model": "ornith-1.5"}
+    hub, _ = make_hub(tmp_path, exchange=ex)
+    run(say(hub, "hi"))
+    assert "ornith-1.5" in run(say(hub, "/who"))[0]
