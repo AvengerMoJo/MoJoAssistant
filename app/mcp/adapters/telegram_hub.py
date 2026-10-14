@@ -259,7 +259,8 @@ class TelegramHub:
             self._task.cancel()
 
 
-def build_hub(resource_manager_factory: Optional[Callable[[], Any]] = None) -> Optional[TelegramHub]:
+def build_hub(resource_manager_factory: Optional[Callable[[], Any]] = None,
+              scheduler: Optional[Any] = None) -> Optional[TelegramHub]:
     """Build the hub from config and environment. None when disabled; raises when enabled but misconfigured."""
     from app.config.paths import get_memory_subpath
     from app.roles.role_manager import RoleManager
@@ -274,7 +275,8 @@ def build_hub(resource_manager_factory: Optional[Callable[[], Any]] = None) -> O
     async def exchange(agent: str, session_id: str, text: str) -> Dict[str, Any]:
         if "rm" not in rm_holder:
             rm_holder["rm"] = resource_manager_factory() if resource_manager_factory else None
-        session = RoleChatSession(role_id=agent, session_id=session_id, mode=InteractionMode.OWNER_HUB)
+        session = RoleChatSession(role_id=agent, session_id=session_id, mode=InteractionMode.OWNER_HUB,
+                                  scheduler=scheduler, routable_roles=config.get("agents"))
         return await session.exchange(message=text, resource_manager=rm_holder["rm"])
 
     roles = RoleManager()

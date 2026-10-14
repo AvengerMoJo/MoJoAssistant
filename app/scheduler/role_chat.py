@@ -44,13 +44,32 @@ STREAM_FALLBACK_KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalives during
 _CHAT_TOOL_ACCESS: Dict[str, List[str]] = {
     "memory": ["memory_search", "task_search"],
     "knowledge": ["knowledge_search"],
-    # Read-only roster. Only modes whose contract allows "orchestration" (the owner hub) expose it;
-    # dispatch and the other orchestration tools stay out of chat.
-    "orchestration": ["list_roles"],
+    # Roster and routing. Only modes whose contract allows "orchestration" (the owner hub) expose them;
+    # the general dispatch tools stay out of chat.
+    "orchestration": ["list_roles", "route_to_role"],
 }
 
 # OpenAI-format tool definitions for each supported chat tool
 _TOOL_DEFS: Dict[str, Dict] = {
+    "route_to_role": {
+        "type": "function",
+        "function": {
+            "name": "route_to_role",
+            "description": (
+                "Hand the owner's request to another assistant as a scheduled task. Use it only when the "
+                "owner asks for it or agrees to it. The assistant works under the normal scheduler gates and "
+                "replies to the owner itself. Returns the task id. Does not return the assistant's result."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string", "description": "Assistant to hand the request to (see list_roles)"},
+                    "message": {"type": "string", "description": "The owner's request, in their own words, with the context the assistant needs"},
+                },
+                "required": ["role_id", "message"],
+            },
+        },
+    },
     "list_roles": {
         "type": "function",
         "function": {
@@ -285,9 +304,13 @@ class RoleChatSession:
         role_id: str,
         session_id: Optional[str] = None,
         mode: InteractionMode = InteractionMode.DASHBOARD_CHAT,
+        scheduler: Optional[Any] = None,
+        routable_roles: Optional[List[str]] = None,
     ):
         self.role_id = role_id
         self.mode = mode
+        self._scheduler = scheduler            # needed only by route_to_role
+        self._routable_roles = routable_roles  # None = any existing role except this one
         self.session_id = (
             session_id
             or f"chat_{role_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -665,6 +688,50 @@ class RoleChatSession:
 
         return results
 
+    def _route_to_role(self, args: Dict[str, Any]) -> str:
+        """Create a scheduler task for another role from the owner's message. Fails with a reason; no substitute role."""
+        from app.scheduler.models import Task, TaskPriority, TaskResources, TaskType
+        from app.scheduler.spec_qualifier import classify_goal
+
+        def fail(msg: str, **extra) -> str:
+            return json.dumps({"success": False, "error": msg, **extra}, ensure_ascii=False)
+
+        target = (args.get("role_id") or "").strip()
+        message = (args.get("message") or "").strip()
+        if not target or not message:
+            return fail("role_id and message are required")
+        if self._scheduler is None:
+            return fail("the scheduler is not available in this channel, so nothing was sent")
+        known = [r["id"] for r in RoleManager().list_roles() if r.get("id")]
+        allowed = [r for r in (self._routable_roles if self._routable_roles is not None else known)
+                   if r != self.role_id]
+        if target not in known or target not in allowed:
+            return fail(f"cannot route to {target!r}", available=[r for r in allowed if r in known])
+        goal = (
+            f"Owner request, sent from the owner's phone through {self.role_id} (their personal assistant):\n"
+            f'"""\n{message}\n"""\n'
+            "Scope: handle this within your own role. If it belongs to another role, say which one instead of doing it.\n"
+            "Done when: you have replied to the owner with a clear answer or plan, or asked the owner one specific question.\n"
+            "Verify by: re-reading the request and checking that every point it raised is addressed in your reply."
+        )
+        spec = classify_goal(goal)
+        if not spec.passed:
+            return fail("spec_quality_gate", missing=spec.missing, feedback=spec.feedback)
+        task_id = f"owner_route_{target}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        task = Task(
+            id=task_id,
+            type=TaskType.INTERNAL_ASSIGNMENT,
+            priority=TaskPriority.MEDIUM,
+            config={"goal": goal, "role_id": target,
+                    "origin": {"channel": "owner_hub", "via": self.role_id, "session_id": self.session_id}},
+            resources=TaskResources(max_iterations=10),
+            created_by="user",  # the owner's own request: completion notifies the owner
+        )
+        if not self._scheduler.add_task(task):
+            return fail(f"scheduler refused task {task_id} (id may already exist)")
+        logger.info("[role_chat] %s routed an owner request to %s as %s", self.role_id, target, task_id)
+        return json.dumps({"success": True, "task_id": task_id, "role_id": target}, ensure_ascii=False)
+
     async def _execute_tool(self, name: str, args: Dict[str, Any]) -> str:
         """Execute a single chat tool and return its result as a JSON string."""
         # knowledge_search and task_search are handled locally
@@ -708,6 +775,9 @@ class RoleChatSession:
                 return json.dumps({"success": True, "count": len(results), "tasks": results}, ensure_ascii=False)
             except Exception as e:
                 return json.dumps({"success": False, "error": str(e)})
+
+        if name == "route_to_role":
+            return self._route_to_role(args)
 
         # refer_to_role — cross-role referral
         if name == "refer_to_role":
