@@ -44,10 +44,33 @@ STREAM_FALLBACK_KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalives during
 _CHAT_TOOL_ACCESS: Dict[str, List[str]] = {
     "memory": ["memory_search", "task_search"],
     "knowledge": ["knowledge_search"],
+    # Read-only roster. Only modes whose contract allows "orchestration" (the owner hub) expose it;
+    # dispatch and the other orchestration tools stay out of chat.
+    "orchestration": ["list_roles"],
 }
 
 # OpenAI-format tool definitions for each supported chat tool
 _TOOL_DEFS: Dict[str, Dict] = {
+    "list_roles": {
+        "type": "function",
+        "function": {
+            "name": "list_roles",
+            "description": (
+                "List the other assistants (roles): id, name, what each is for, and its capabilities. "
+                "Read-only. Use it to answer who can do what, or who to hand a request to."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "capability": {
+                        "type": "string",
+                        "description": "Only roles with this capability (e.g. 'web', 'file'). Omit to list all.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
     "memory_search": {
         "type": "function",
         "function": {

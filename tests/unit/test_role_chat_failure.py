@@ -32,3 +32,14 @@ def test_exchange_returns_error_and_saves_nothing(tmp_path, monkeypatch):
     assert "no LLM resource available" in result["error"]
     assert "response" not in result
     assert not s._session_file.exists()
+
+
+def test_roster_tool_only_in_owner_hub(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMORY_PATH", str(tmp_path))
+    caps = ["memory", "orchestration", "knowledge"]
+    hub = RoleChatSession("anna", session_id="t1", mode=InteractionMode.OWNER_HUB)
+    dash = RoleChatSession("anna", session_id="t2", mode=InteractionMode.DASHBOARD_CHAT)
+    names = lambda s: {t["function"]["name"] for t in s._get_chat_tools(caps)}
+    assert "list_roles" in names(hub)
+    assert "list_roles" not in names(dash)
+    assert not names(hub) & {"dispatch_subtask", "scheduler_add_task"}

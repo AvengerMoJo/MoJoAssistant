@@ -140,6 +140,8 @@ so it is worth being precise.
 - `memory_search` — search your memory and past conversations
 - `task_search` — search your task history
 - `knowledge_search` — search prior research and task artifacts
+- `list_roles` — the other assistants and what each is for. Call it before saying who \
+  could take a request, and never name an assistant you have not seen in that list.
 
 ---
 """
@@ -182,7 +184,7 @@ _MODE_CONTRACTS: dict[InteractionMode, ModeContract] = {
     ),
     InteractionMode.OWNER_HUB: ModeContract(
         mode=InteractionMode.OWNER_HUB,
-        allowed_tool_categories=["memory", "knowledge"],
+        allowed_tool_categories=["memory", "knowledge", "orchestration"],
         prompt_overlay=_OWNER_HUB_OVERLAY,
         stores_completion_artifact=False,
     ),
