@@ -57,8 +57,12 @@ _BLOCKER_SIGNALS: Dict[str, List[str]] = {
     "terminal": [
         "git clone", "git pull", "git push", "make build", "make install",
         "npm install", "npm run", "pip install", "go build", "cargo build",
-        "chmod", "chown", "systemctl", "tmux", "ssh ", "bash script",
+        "chmod", "chown", "systemctl", "bash script",
         "shell script", "run command", "execute command",
+        # "tmux" and "ssh " as bare words are intentionally omitted -- like "bash_exec" and
+        # "playwright" they appear in prose (a list of credentials to document, a tool being
+        # compared) and blocked a design-doc task that never ran a command. A command-shaped
+        # use is caught by _BLOCKER_PATTERNS below.
     ],
     "exec": [
         # "bash_exec" intentionally omitted — it's a tool name that appears in
@@ -77,6 +81,14 @@ _BLOCKER_SIGNALS: Dict[str, List[str]] = {
         # catch goals that need browser automation without naming a framework.
         "open browser", "navigate to", "click on", "fill form",
         "take screenshot",
+    ],
+}
+
+# Command-shaped uses that do need a terminal: `ssh [-opts] user@host`, `tmux <subcommand>`.
+_BLOCKER_PATTERNS: Dict[str, List[re.Pattern[str]]] = {
+    "terminal": [
+        re.compile(r"\bssh\s+(?:-\w+\s+(?:[\w./:-]+\s+)?)*[\w.-]+@[\w.-]+"),
+        re.compile(r"\btmux\s+(?:new|new-session|attach|send-keys|kill-\w+|split-window|capture-pane|list-\w+)\b"),
     ],
 }
 
@@ -188,6 +200,14 @@ class CapabilityGapChecker:
                         f"Goal mentions '{phrase}' but role has no '{cap}' capability"
                     )
                     break  # one blocker per capability is enough
+            else:
+                for pat in _BLOCKER_PATTERNS.get(cap, ()):
+                    m = pat.search(goal_lower)
+                    if m:
+                        result.blockers.append(
+                            f"Goal contains the command '{m.group(0)}' but role has no '{cap}' capability"
+                        )
+                        break
 
         # Structural shell signals (backtick commands, pipelines) are handled by
         # the LLM classifier in AgenticExecutor — not here — to avoid regex false

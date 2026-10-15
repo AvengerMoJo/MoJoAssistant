@@ -104,3 +104,17 @@ def test_behavioral_browser_phrase_without_browser_tool_still_blocks():
         role={"id": "paul"},
     )
     assert result.has_blockers is True
+
+
+def test_bare_ssh_or_tmux_word_in_prose_is_not_a_blocker():
+    """A design task that only NAMES ssh/tmux (credentials to document, a tool to compare) never runs them."""
+    checker = CapabilityGapChecker()
+    goal = "Document the host credentials: LM Studio key, OpenCode password, RDP/SSH logins. Compare with tmux and playwright."
+    assert checker.check(goal, ["file_read"], {"id": "paul"}).has_blockers is False
+
+
+def test_ssh_and_tmux_commands_still_block_without_terminal():
+    checker = CapabilityGapChecker()
+    for goal in ("run ssh -p 22 alex@100.65.157.37 and check memory", "then tmux send-keys -t 0 ls"):
+        assert checker.check(goal, ["file_read"], {"id": "paul"}).has_blockers is True, goal
+    assert checker.check("ssh alex@host uptime", ["bash_exec"], {"id": "ahman"}).has_blockers is False
