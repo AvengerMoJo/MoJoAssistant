@@ -113,3 +113,28 @@ def test_routed_tasks_shows_only_what_this_role_routed(tmp_path, monkeypatch):
     assert out["tasks"][0]["waiting_on"] == "which repo?" and out["tasks"][1]["answer"] == "the plan"
     one = json.loads(asyncio.run(s._execute_tool("routed_tasks", {"task_id": "c"})))
     assert one["count"] == 0
+
+
+def test_forced_final_answer_keeps_system_message_first(tmp_path, monkeypatch):
+    """When the tool budget runs out, the 'answer now' instruction must not be a second system message:
+    Ornith/Qwen chat templates raise 'System message must be at the beginning' and the turn fails."""
+    s = session(tmp_path, monkeypatch)
+    seen = []
+
+    async def fake_call_raw(messages, rm, tools=None):
+        seen.append([m["role"] for m in messages])
+        if tools is None:
+            return {"choices": [{"message": {"content": "final answer"}}], "_resource": "r", "_model": "m"}
+        return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "function": {"name": "list_roles", "arguments": "{}"}}]}}], "_resource": "r", "_model": "m"}
+
+    async def fake_tool(name, args):
+        return "{}"
+
+    monkeypatch.setattr(s, "_call_raw", fake_call_raw)
+    monkeypatch.setattr(s, "_execute_tool", fake_tool)
+    result = asyncio.run(s.exchange("how did it go?", resource_manager=object()))
+    assert result.get("response") == "final answer", result
+    final_roles = seen[-1]
+    assert final_roles[0] == "system" and "system" not in final_roles[1:]
+    assert final_roles[-1] == "user"

@@ -1073,8 +1073,10 @@ class RoleChatSession:
                         total_tool_calls += 1
                 else:
                     # Tool loops consumed the full budget. Force one final text-only answer.
+                    # A user turn, not a system one: chat templates (Ornith/Qwen) reject a system
+                    # message anywhere but first, and the request fails with a 500 from the server.
                     messages.append({
-                        "role": "system",
+                        "role": "user",
                         "content": _FINAL_TOOL_LOOP_PROMPT,
                     })
                     final_data = await self._call_raw(
@@ -1281,7 +1283,7 @@ class RoleChatSession:
                         total_tool_calls += 1
                 else:
                     # Budget exhausted — force a final text-only call
-                    messages.append({"role": "system", "content": _FINAL_TOOL_LOOP_PROMPT})
+                    messages.append({"role": "user", "content": _FINAL_TOOL_LOOP_PROMPT})  # not system: templates allow it only first
                     resource = resource_manager.acquire(max_data_scope=self._max_data_scope)
                     if resource:
                         model = resource.model or ""

@@ -665,7 +665,7 @@ class TestRoleChatSessionAsync(unittest.IsolatedAsyncioTestCase):
 
             # Final synthesis call must be text-only.
             self.assertIsNone(tools)
-            self.assertEqual(messages[-1]["role"], "system")
+            self.assertEqual(messages[-1]["role"], "user")
             self.assertIn("Do not call any more tools", messages[-1]["content"])
             return {"choices": [{"message": {"content": "Final answer after tool loop.", "tool_calls": None}}]}
 
