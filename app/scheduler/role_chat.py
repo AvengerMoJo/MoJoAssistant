@@ -1089,7 +1089,13 @@ class RoleChatSession:
                     if "<think>" in content and "</think>" in content:
                         after = content.split("</think>", 1)[-1].strip()
                         content = after if after else content
-                    response = content or "(No response after tool loop)"
+                    if not content.strip():
+                        # An error, not an answer: a substitute string would be shown as the
+                        # role's reply and saved into its history for dreaming to learn from.
+                        raise RuntimeError(
+                            f"{self.role_id} produced no answer after {MAX_CHAT_ITERATIONS} tool rounds"
+                        )
+                    response = content
             else:
                 response = await self._call_via_llm_interface(messages)
 
@@ -1304,6 +1310,10 @@ class RoleChatSession:
                                     continue
                                 response_text += text
                                 yield f'data: {json.dumps({"type": "token", "text": text})}\n\n'
+                    if not response_text.strip():
+                        raise RuntimeError(
+                            f"{self.role_id} produced no answer after {MAX_CHAT_ITERATIONS} tool rounds"
+                        )
 
         except Exception as exc:
             err_msg = str(exc)

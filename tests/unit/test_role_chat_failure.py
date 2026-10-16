@@ -138,3 +138,24 @@ def test_forced_final_answer_keeps_system_message_first(tmp_path, monkeypatch):
     final_roles = seen[-1]
     assert final_roles[0] == "system" and "system" not in final_roles[1:]
     assert final_roles[-1] == "user"
+
+
+def test_empty_final_answer_after_tool_budget_is_an_error_and_not_saved(tmp_path, monkeypatch):
+    """No text after the tool rounds is an error for the caller, not a substitute reply saved to history."""
+    s = session(tmp_path, monkeypatch)
+
+    async def fake_call_raw(messages, rm, tools=None):
+        if tools is None:
+            return {"choices": [{"message": {"content": ""}}], "_resource": "r", "_model": "m"}
+        return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "function": {"name": "list_roles", "arguments": "{}"}}]}}], "_resource": "r", "_model": "m"}
+
+    async def fake_tool(name, args):
+        return "{}"
+
+    monkeypatch.setattr(s, "_call_raw", fake_call_raw)
+    monkeypatch.setattr(s, "_execute_tool", fake_tool)
+    result = asyncio.run(s.exchange("how did it go?", resource_manager=object()))
+    assert "produced no answer after" in result["error"], result
+    assert "response" not in result
+    assert not s._session_file.exists()
