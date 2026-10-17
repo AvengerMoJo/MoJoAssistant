@@ -122,9 +122,14 @@ class SafetyPolicy:
                 ]
                 abs_path = os.path.abspath(os.path.expanduser(path_arg))
                 if not any(abs_path.startswith(ap) for ap in runtime_allowed):
+                    if path_arg.startswith(("~/memory/", "~/memory")):
+                        hint = " The memory directory is '~/.memory/' (with the dot), not '~/memory/'."
+                    else:
+                        hint = (" Files of a git repo outside ~/.memory/ are read with knowledge_get_file "
+                                "(the repo must be registered with knowledge_add_repo), not read_file.")
                     return {
                         "allowed": False,
-                        "reason": f"Path '{path_arg}' not in sandbox. Allowed: {sandbox['allowed_paths']}",
+                        "reason": f"Path '{path_arg}' not in sandbox. Allowed: {sandbox['allowed_paths']}.{hint}",
                     }
 
         # Check bash tool danger level AND block commands targeting blocked paths
