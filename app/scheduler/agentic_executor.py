@@ -647,6 +647,9 @@ _SECONDS_PER_EXTENDED_ITERATION = 90.0
 from app.scheduler.task_local import TaskLocal
 
 
+QUEUE_WAIT_MAX_SECONDS = 1200  # longest a call may wait for a free request slot on its model
+
+
 class ExecClassifierError(RuntimeError):
     """The exec-need classifier could not give a clear YES/NO."""
 
@@ -1348,7 +1351,8 @@ class AgenticExecutor:
             if iteration > max_iterations:
                 break
             abs_iteration = start_iteration + iteration
-            elapsed = time.time() - start_time
+            # Time spent in line for the model's request slot is not the task's own time.
+            elapsed = time.time() - start_time - self._rm.queue_wait_s(task.id)
             if elapsed >= max_duration and config.get("deadline_review"):
                 decision = await self._review_deadline(
                     task, config, goal, iteration_log, elapsed, max_duration,
@@ -1529,14 +1533,14 @@ class AgenticExecutor:
             _model_override = role_model_preference if resource.type == "local" else None
             effective_model = _model_override or resource.model
             self._log(
-                f"Iteration {iteration}: calling {effective_model} via {resource.id} "
+                f"[{task.id}] Iteration {iteration}: calling {effective_model} via {resource.id} "
                 f"(~{_estimate_tokens(messages)}t input)"
             )
             iter_start = time.time()
             try:
                 response = await self._call_llm(
                     resource, messages, tools=tool_defs or None,
-                    model_override=_model_override,
+                    model_override=_model_override, owner=task.id,
                 )
                 self._rm.record_usage(resource.id, success=True)
                 # Audit trail — log every non-free external boundary crossing
@@ -1981,7 +1985,8 @@ class AgenticExecutor:
         # Say which budget ran out: a time-budget stop after 2 iterations is not "iterations exhausted".
         if time_budget_hit:
             budget_msg = (
-                f"Time budget exhausted ({time.time() - start_time:.0f}s of {max_duration:.0f}s) after "
+                f"Time budget exhausted ({time.time() - start_time - self._rm.queue_wait_s(task.id):.0f}s of "
+                f"{max_duration:.0f}s, not counting {self._rm.queue_wait_s(task.id):.0f}s waiting for the model) after "
                 f"{len(iteration_log)} iterations (max {max_iterations}) without FINAL_ANSWER."
             )
         else:
@@ -2327,8 +2332,12 @@ class AgenticExecutor:
         messages: List[Dict],
         tools: Optional[List[Dict]] = None,
         model_override: Optional[str] = None,
+        owner: Optional[str] = None,
     ) -> Dict:
-        """Make an LLM call via UnifiedLLMClient."""
+        """Make an LLM call via UnifiedLLMClient, holding one request slot of the model while it runs.
+
+        owner (a task id) is credited with the time spent waiting for the slot. The wait is capped at
+        QUEUE_WAIT_MAX_SECONDS; beyond that it is an explicit ResourceBusyError, not an endless wait."""
         from app.llm.unified_client import UnifiedLLMClient
         # Resolve model (keeps OpenRouter cache logic on executor)
         headers_for_probe = {"Content-Type": "application/json"}
@@ -2345,12 +2354,13 @@ class AgenticExecutor:
             "provider": resource.provider,
         }
         client = UnifiedLLMClient()
-        data = await client.call_async(
-            messages=messages,
-            resource_config=resource_config,
-            model_override=selected_model,
-            tools=tools,
-        )
+        async with self._rm.slot(resource.id, owner=owner, max_wait_s=QUEUE_WAIT_MAX_SECONDS):
+            data = await client.call_async(
+                messages=messages,
+                resource_config=resource_config,
+                model_override=selected_model,
+                tools=tools,
+            )
         choices = data.get("choices", [])
         if not choices:
             raise ValueError("LLM returned no choices")

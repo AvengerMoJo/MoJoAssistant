@@ -29,6 +29,7 @@ from app.config.paths import get_memory_subpath
 from app.roles.role_manager import RoleManager
 from app.scheduler.interaction_mode import InteractionMode, get_mode_contract
 from app.scheduler.ninechapter import build_behavioral_overlay
+from app.scheduler.resource_pool import ResourceBusyError
 from app.roles.owner_context import load_owner_profile, build_owner_context_slice
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ MAX_HISTORY_TURNS = 10    # conversation turns carried into context
 MAX_KU_ITEMS = 8          # knowledge units injected as context
 MAX_KU_QUOTE_CHARS = 200  # truncate long KU quotes
 MAX_CHAT_ITERATIONS = 5   # max tool-call iterations per exchange
+CHAT_QUEUE_WAIT_MAX_SECONDS = 180   # longest a chat call waits for the model's free request slot
 ROUTED_TASK_MAX_SECONDS = 900   # wall-clock budget of a task created by route_to_role
 STREAM_FALLBACK_KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalives during blocking fallback
 
@@ -937,15 +939,21 @@ class RoleChatSession:
 
         client = UnifiedLLMClient()
         try:
-            data = await client.call_async(
-                messages=messages,
-                resource_config=_make_config(resource, model),
-                model_override=model,
-                tools=tools or None,
-            )
-        except Exception as e:
-            rm.record_usage(resource.id, success=False)
-            raise RuntimeError(f"resource '{resource.id}' failed: {type(e).__name__}: {e}") from e
+            # One request at a time per local model: wait in line (bounded), then call.
+            async with rm.slot(resource.id, max_wait_s=CHAT_QUEUE_WAIT_MAX_SECONDS):
+                try:
+                    data = await client.call_async(
+                        messages=messages,
+                        resource_config=_make_config(resource, model),
+                        model_override=model,
+                        tools=tools or None,
+                    )
+                except Exception as e:
+                    rm.record_usage(resource.id, success=False)
+                    raise RuntimeError(f"resource '{resource.id}' failed: {type(e).__name__}: {e}") from e
+        except ResourceBusyError as e:
+            # Not a fault of the resource: nothing is recorded against it.
+            raise RuntimeError(f"{e}; the model is busy with other work, try again shortly") from e
         rm.record_usage(resource.id, success=True)
         data["_resource"] = resource.id
         data["_model"] = model

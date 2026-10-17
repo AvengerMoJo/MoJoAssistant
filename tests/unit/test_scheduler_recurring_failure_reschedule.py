@@ -53,6 +53,7 @@ class TestFailureExitsReschedule(unittest.TestCase):
         s.stats = {"tasks_failed": 0, "tasks_completed": 0, "tasks_executed": 0}
         s.queue = MagicMock()
         s.executor = MagicMock()
+        s.executor._agentic_executor = None  # not created yet: no model slots to account for
         s.executor.execute = execute
         s._broadcast = MagicMock(side_effect=lambda *a, **k: asyncio.sleep(0))
         s.current_task = None
@@ -112,6 +113,7 @@ class TestDreamingGetsALongerWallClock(unittest.TestCase):
         s.stats = {"tasks_failed": 0, "tasks_succeeded": 0, "tasks_executed": 0, "tasks_completed": 0}
         s.queue = MagicMock()
         s.executor = MagicMock()
+        s.executor._agentic_executor = None  # not created yet: no model slots to account for
         s.executor.execute = spy
         s._broadcast = MagicMock(side_effect=lambda *a, **k: _a.sleep(0))
         s.current_task = None
@@ -120,15 +122,15 @@ class TestDreamingGetsALongerWallClock(unittest.TestCase):
         s._store_agentic_result_to_memory = MagicMock()
         s._benchmark_store = MagicMock()
         captured = {}
-        real = _a.wait_for
+        real = Scheduler._execute_within
 
-        async def capture(coro, timeout):
-            captured["timeout"] = timeout
-            return await real(coro, timeout)
+        async def capture(self_, task, max_duration):
+            captured["timeout"] = max_duration
+            return await real(self_, task, max_duration)
         t = Task(id="x", type=ttype, config={"goal": "g"})
         t.mark_started()
         from unittest.mock import patch
-        with patch("app.scheduler.core.asyncio.wait_for", capture):
+        with patch.object(Scheduler, "_execute_within", capture):
             _a.run(s._execute_task(t))
         return captured["timeout"]
 

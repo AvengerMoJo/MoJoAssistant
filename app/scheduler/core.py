@@ -6,6 +6,7 @@ Persistent ticker that continuously checks for work and executes tasks.
 # [mojo-integration]
 
 import asyncio
+import contextlib
 import time
 import json
 import signal
@@ -540,6 +541,33 @@ class Scheduler:
         finally:
             self._finish_run(task, started, attempt)
 
+    async def _execute_within(self, task: Task, max_duration: float):
+        """Run the task with a wall-clock limit, like asyncio.wait_for -- except that time the task spent
+        in line for its model's request slot is not counted: a task must not time out because another
+        task was using the model (that wait is capped separately and fails explicitly)."""
+        agentic = getattr(self.executor, "_agentic_executor", None)
+        rm = getattr(agentic, "_rm", None)
+        run = asyncio.ensure_future(self.executor.execute(task))
+        started = time.monotonic()
+        try:
+            while True:
+                waited = rm.queue_wait_s(task.id) if rm is not None else 0.0
+                remaining = max_duration + waited - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                done, _ = await asyncio.wait({run}, timeout=min(remaining, 5.0))
+                if done:
+                    return run.result()
+        except BaseException:
+            if not run.done():
+                run.cancel()
+                with contextlib.suppress(BaseException):
+                    await run
+            raise
+        finally:
+            if rm is not None:
+                rm.clear_queue_wait(task.id)
+
     async def _execute_task_body(self, task: Task):
         """
         Execute a single task
@@ -576,10 +604,7 @@ class Scheduler:
                 else _DEFAULT_TASK_TIMEOUT
             )
             try:
-                result = await asyncio.wait_for(
-                    self.executor.execute(task),
-                    timeout=max_duration,
-                )
+                result = await self._execute_within(task, max_duration)
             except asyncio.TimeoutError:
                 self._log(
                     f"Task {task.id} exceeded max duration ({max_duration}s) — marking failed",

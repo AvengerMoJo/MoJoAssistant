@@ -89,6 +89,7 @@ class TestSchedulerWritesLedger(unittest.TestCase):
         s.queue = MagicMock()
         s.executor = MagicMock()
         s.executor.execute = execute
+        s.executor._agentic_executor = None  # not created yet: no model slots to account for
         s._broadcast = MagicMock(side_effect=lambda *a, **k: asyncio.sleep(0))
         s.current_task = None
         s._should_notify_completion = MagicMock(return_value=False)

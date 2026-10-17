@@ -58,6 +58,7 @@ class TestResourceManagerFlatFormat(unittest.TestCase):
         rm._loaded_models_checked_at = time.time()
         rm._loaded_resource_ids = set()
         rm._busy_resource_ids = set()
+        rm._slot_active, rm._slot_waiters, rm._queue_wait, rm._waiting_since = {}, {}, {}, {}
         rm._busy_checked_at = time.time()
         rm._lms_ps_cache = None
         rm._quota_pools = {}
@@ -156,6 +157,7 @@ class TestResourceManagerLegacyFallback(unittest.TestCase):
         rm._loaded_models_checked_at = time.time()
         rm._loaded_resource_ids = set()
         rm._busy_resource_ids = set()
+        rm._slot_active, rm._slot_waiters, rm._queue_wait, rm._waiting_since = {}, {}, {}, {}
         rm._busy_checked_at = time.time()
         rm._lms_ps_cache = None
         rm._quota_pools = {}
@@ -198,6 +200,7 @@ class TestResourceManagerLegacyFallback(unittest.TestCase):
         rm._loaded_models_checked_at = time.time()
         rm._loaded_resource_ids = set()
         rm._busy_resource_ids = set()
+        rm._slot_active, rm._slot_waiters, rm._queue_wait, rm._waiting_since = {}, {}, {}, {}
         rm._busy_checked_at = time.time()
         rm._lms_ps_cache = None
         rm._quota_pools = {}
@@ -245,6 +248,7 @@ class TestAcquireByRequirements(unittest.TestCase):
         rm._loaded_models_checked_at = time.time()
         rm._loaded_resource_ids = set()
         rm._busy_resource_ids = set()
+        rm._slot_active, rm._slot_waiters, rm._queue_wait, rm._waiting_since = {}, {}, {}, {}
         rm._busy_checked_at = time.time()
         rm._lms_ps_cache = None
         rm._quota_pools = {}

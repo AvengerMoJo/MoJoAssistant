@@ -5,6 +5,8 @@ Manages available LLM endpoints with rate limiting, budget tracking,
 and tier-based selection for agentic tasks.
 """
 
+import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -92,6 +94,10 @@ class Budget:
     reserved_for_user_pct: float = 20.0
 
 
+class ResourceBusyError(RuntimeError):
+    """A model's request slots stayed taken for longer than the caller was willing to wait."""
+
+
 @dataclass
 class LLMResource:
     id: str
@@ -132,6 +138,7 @@ class LLMResource:
     quota_source: Optional[Dict[str, Any]] = None  # read the provider's own quota (percent-metered plans)
     quotas: List["resource_quota.QuotaWindow"] = field(default_factory=list)  # renewing allowance windows; ALL must have room
     config_error: Optional[str] = None  # set (and the resource disabled) when its config could not be applied
+    max_concurrent_requests: Optional[int] = None  # request slots; unset = 1 for a local model, unlimited for an API
     health_check_model: bool = True  # False: this provider's listing does not use the configured model id
     health_check: bool = True  # False: provider has no usable listing endpoint; never probe it
     health_path: str = "/models"  # endpoint under base_url the liveness probe GETs
@@ -218,6 +225,12 @@ class ResourceManager:
         self._pool_calls: Dict[str, Deque[float]] = {}
         self._lms_ps_cache = None
         self._busy_checked_at: Optional[float] = None
+        # Request slots per served model (base_url|model): how many requests are in flight, who waits (FIFO),
+        # and how long each owner (a task id) has spent waiting -- kept out of that task's time budget.
+        self._slot_active: Dict[str, int] = {}
+        self._slot_waiters: Dict[str, Deque[object]] = {}
+        self._queue_wait: Dict[str, float] = {}
+        self._waiting_since: Dict[int, tuple] = {}  # id(ticket) -> (owner, started) while a caller is in line
         # State the user was last told about, and how many consecutive probes agree on the latest state.
         # Latest provider-reported quota per resource: {"windows": [...], "fetched_at": ts, "error": str|None}
         self._provider_quota: Dict[str, Dict[str, Any]] = {}
@@ -598,6 +611,7 @@ class ResourceManager:
             load_mode=conf.get("load_mode", "cloud"),
             approval=conf.get("approval", "none"),
             credential_route=conf.get("credential_route"),
+            max_concurrent_requests=conf.get("max_concurrent_requests"),
             health_check=conf.get("health_check", True),
             health_check_model=conf.get("health_check_model", True),
             health_path=conf.get("health_path", "/models"),
@@ -1423,6 +1437,93 @@ class ResourceManager:
         self._save_meta()
         self._log(f"_refresh_loaded_models: {len(loaded_resource_ids)} local resource(s) currently loaded: {sorted(loaded_resource_ids)}")
 
+    # -- request slots -------------------------------------------------------
+    @staticmethod
+    def _slot_key(r: LLMResource) -> str:
+        return f"{r.base_url}|{r.model}"
+
+    @staticmethod
+    def _slot_capacity(r: Optional[LLMResource]) -> Optional[int]:
+        if r is None:
+            return None
+        if r.max_concurrent_requests:
+            return int(r.max_concurrent_requests)
+        return 1 if r.type == "local" else None
+
+    def _slot_saturated_ids(self) -> set:
+        """Resources whose model has every slot taken or callers in line: busy NOW, from our own count
+        (the cached `lms ps` read can be seconds old, and two tasks start in the same second)."""
+        with self._lock:
+            out = set()
+            for r in self._resources.values():
+                cap = self._slot_capacity(r)
+                key = self._slot_key(r)
+                if cap is not None and (self._slot_active.get(key, 0) >= cap or self._slot_waiters.get(key)):
+                    out.add(r.id)
+            return out
+
+    @contextlib.asynccontextmanager
+    async def slot(self, resource_id: str, owner: Optional[str] = None, max_wait_s: Optional[float] = None):
+        """Hold one request slot of the model behind resource_id while a call is in flight.
+
+        Callers wait in arrival order and the wait is visible: it is logged, and added to
+        queue_wait_s(owner) so the owner's time budget can leave it out. Waiting longer than max_wait_s
+        raises ResourceBusyError. API resources without max_concurrent_requests are not limited."""
+        with self._lock:
+            r = self._resources.get(resource_id)
+        cap = self._slot_capacity(r)
+        if cap is None:
+            yield 0.0
+            return
+        key = self._slot_key(r)
+        ticket, started, took = object(), time.monotonic(), False
+        with self._lock:
+            self._slot_waiters.setdefault(key, deque()).append(ticket)
+            if owner:
+                self._waiting_since[id(ticket)] = (owner, started)
+        try:
+            while not took:
+                with self._lock:
+                    q = self._slot_waiters[key]
+                    if q[0] is ticket and self._slot_active.get(key, 0) < cap:
+                        q.popleft()
+                        self._slot_active[key] = self._slot_active.get(key, 0) + 1
+                        took = True
+                if took:
+                    break
+                if max_wait_s is not None and time.monotonic() - started > max_wait_s:
+                    raise ResourceBusyError(
+                        f"{resource_id}: all {cap} request slot(s) stayed taken for {max_wait_s:.0f}s")
+                await asyncio.sleep(0.2)
+        finally:
+            with self._lock:
+                self._waiting_since.pop(id(ticket), None)
+                if not took:
+                    with contextlib.suppress(ValueError):
+                        self._slot_waiters[key].remove(ticket)
+        waited = time.monotonic() - started
+        if owner:
+            with self._lock:
+                self._queue_wait[owner] = self._queue_wait.get(owner, 0.0) + waited
+        if waited >= 1.0:
+            self._log(f"{owner or 'a caller'} waited {waited:.0f}s for a free slot on {resource_id}", "info")
+        try:
+            yield waited
+        finally:
+            with self._lock:
+                self._slot_active[key] = max(0, self._slot_active.get(key, 0) - 1)
+
+    def queue_wait_s(self, owner: str) -> float:
+        """Seconds this owner has spent in line for a slot, including a wait still going on."""
+        now = time.monotonic()
+        with self._lock:
+            ongoing = sum(now - t0 for o, t0 in self._waiting_since.values() if o == owner)
+            return self._queue_wait.get(owner, 0.0) + ongoing
+
+    def clear_queue_wait(self, owner: str) -> None:
+        with self._lock:
+            self._queue_wait.pop(owner, None)
+
     def get_busy_resource_ids(self) -> set:
         """Local resources whose model is generating or has queued requests right now.
 
@@ -1430,6 +1531,9 @@ class ResourceManager:
         server counts. Cached for BUSY_CACHE_TTL_SECONDS. On a failed query the
         busy set is empty (selection proceeds on priority) and the failure is logged.
         """
+        return self._lms_busy_ids() | self._slot_saturated_ids()
+
+    def _lms_busy_ids(self) -> set:
         now = time.time()
         with self._lock:
             if self._busy_checked_at is not None and now - self._busy_checked_at < self.BUSY_CACHE_TTL_SECONDS:
