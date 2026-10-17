@@ -44,14 +44,14 @@ def run(monkeypatch, reply=None, rm=None, cfg=None, boundary=None, raises=None, 
 
 
 def test_yes_and_no_are_read_from_the_first_word(monkeypatch):
-    assert run(monkeypatch, "YES. It runs a pipeline.")[1][0] is True
-    assert run(monkeypatch, "no - it only describes the command")[1][0] is False
-    assert run(monkeypatch, "<think>hmm</think>\nYES, needs a shell")[1][0] is True
+    assert run(monkeypatch, "NEEDS_SHELL - It runs a pipeline.")[1][0] is True
+    assert run(monkeypatch, "no_shell - it only describes the command")[1][0] is False
+    assert run(monkeypatch, "<think>hmm</think>\nNEEDS_SHELL - needs a shell")[1][0] is True
 
 
 def test_an_unclear_reply_is_an_error_not_no(monkeypatch):
-    with pytest.raises(ExecClassifierError, match="did not answer YES or NO"):
-        run(monkeypatch, "Maybe, it depends.")
+    with pytest.raises(ExecClassifierError, match="did not answer NEEDS_SHELL or NO_SHELL"):
+        run(monkeypatch, "YES, probably.")
 
 
 def test_llm_failure_is_an_error_and_recorded(monkeypatch):
@@ -63,33 +63,33 @@ def test_llm_failure_is_an_error_and_recorded(monkeypatch):
 
 def test_no_resource_is_an_error(monkeypatch):
     with pytest.raises(ExecClassifierError, match="no resource available"):
-        run(monkeypatch, "YES", rm=FakeRM(resource=None))
+        run(monkeypatch, "NEEDS_SHELL", rm=FakeRM(resource=None))
 
 
 def test_configured_resource_that_is_unavailable_does_not_fall_back(monkeypatch):
     rm = FakeRM(by_id=None)
     with pytest.raises(ExecClassifierError, match="'tiny_cls' is unavailable"):
-        run(monkeypatch, "YES", rm=rm, cfg={"exec_classifier": {"resource_id": "tiny_cls"}})
+        run(monkeypatch, "NEEDS_SHELL", rm=rm, cfg={"exec_classifier": {"resource_id": "tiny_cls"}})
     assert rm.acquired_tiers is None  # the task's own tiers were not tried instead
 
 
 def test_configured_resource_is_used_when_available(monkeypatch):
     rm = FakeRM(by_id=SimpleNamespace(id="tiny_cls"))
-    fake, (needs, _) = run(monkeypatch, "NO", rm=rm, cfg={"exec_classifier": {"resource_id": "tiny_cls"}})
+    fake, (needs, _) = run(monkeypatch, "NO_SHELL", rm=rm, cfg={"exec_classifier": {"resource_id": "tiny_cls"}})
     assert needs is False and rm.usage == [("tiny_cls", True)]
 
 
 def test_role_data_boundary_limits_the_tiers_the_goal_may_go_to(monkeypatch):
     rm = FakeRM()
-    run(monkeypatch, "NO", rm=rm, boundary={"allowed_tiers": ["free"]})
+    run(monkeypatch, "NO_SHELL", rm=rm, boundary={"allowed_tiers": ["free"]})
     assert rm.acquired_tiers == [ResourceTier.FREE]
 
 
 def test_a_pinned_task_is_classified_on_its_pinned_resource_and_never_elsewhere(monkeypatch):
     rm = FakeRM(by_id=SimpleNamespace(id="local_pin"))
-    run(monkeypatch, "NO", rm=rm, pinned="local_pin")
+    run(monkeypatch, "NO_SHELL", rm=rm, pinned="local_pin")
     assert rm.usage == [("local_pin", True)] and rm.acquired_tiers is None
     rm2 = FakeRM(by_id=None)
     with pytest.raises(ExecClassifierError, match="pinned resource 'local_pin' is unavailable"):
-        run(monkeypatch, "NO", rm=rm2, pinned="local_pin")
+        run(monkeypatch, "NO_SHELL", rm=rm2, pinned="local_pin")
     assert rm2.acquired_tiers is None  # did not go looking in the task's tiers

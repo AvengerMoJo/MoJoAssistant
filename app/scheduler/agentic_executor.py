@@ -716,7 +716,7 @@ class AgenticExecutor:
         else its tiers), so the goal goes only where the task itself is about to go. A configured resource that is unavailable is an error, not
         a reason to use another one.
 
-        Returns (needs_exec, one_sentence_reason). Raises ExecClassifierError when no clear YES/NO
+        Returns (needs_exec, one_sentence_reason). Raises ExecClassifierError when no clear label
         could be obtained: the caller pauses the task with that reason, it never assumes "no".
         """
         from app.config.config_loader import load_layered_json_config
@@ -742,8 +742,10 @@ class AgenticExecutor:
                 "Determine whether a task goal requires executing shell commands, "
                 "running scripts, or using a terminal to accomplish its objective. "
                 "Describing shell commands in an analysis does NOT count — only flag "
-                "goals that NEED actual execution. "
-                "Reply: YES or NO, then one sentence explaining why.")},
+                "goals that NEED actual execution. A goal that says tools are out of scope, or only asks "
+                "for a written answer, needs no shell. "
+                "Reply with exactly one of the labels NEEDS_SHELL or NO_SHELL, then a dash and one "
+                "sentence explaining why.")},
             {"role": "user", "content": f"Goal: {goal[:800]}"},
         ]
         try:
@@ -755,10 +757,10 @@ class AgenticExecutor:
         reply = ((data["choices"][0].get("message") or {}).get("content") or "").strip()
         if "</think>" in reply:
             reply = reply.split("</think>", 1)[1].strip()
-        verdict = re.match(r"\W*(YES|NO)\b", reply, re.IGNORECASE)
+        verdict = re.match(r"\W*(NEEDS_SHELL|NO_SHELL)\b", reply, re.IGNORECASE)
         if not verdict:
-            raise ExecClassifierError(f"{resource.id} did not answer YES or NO: {reply[:80]!r}")
-        return verdict.group(1).upper() == "YES", reply
+            raise ExecClassifierError(f"{resource.id} did not answer NEEDS_SHELL or NO_SHELL: {reply[:80]!r}")
+        return verdict.group(1).upper() == "NEEDS_SHELL", reply
 
     def _record(self, task_id: str, role: str, content: str, iteration: int, **kwargs: Any) -> None:
         """Append a message to the session log."""
