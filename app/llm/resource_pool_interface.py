@@ -48,6 +48,8 @@ class ResourcePoolLLMInterface:
         tier_preference: Optional[List] = None,
         max_tokens: int = 16000,
         timeout_seconds: float = 900.0,
+        max_data_scope: str = "own_network",
+        queue_wait_seconds: float = 3600.0,
     ) -> None:
         """
         Args:
@@ -61,6 +63,10 @@ class ResourcePoolLLMInterface:
         # Per-call wait. A nightly run sends ~200 messages in one prompt to a local 35B model; the old
         # fixed 120s cut every call off (2026-10-09: first honest failure of the nightly job).
         self._timeout = timeout_seconds
+        # The text sent here is the owner's conversations and task transcripts: it must not leave the
+        # owner's own machines/network unless dreaming.max_data_scope says so.
+        self._max_data_scope = max_data_scope
+        self._queue_wait = queue_wait_seconds
 
     def generate_response(self, query: str, context: Optional[str] = None) -> str:
         """
@@ -89,15 +95,15 @@ class ResourcePoolLLMInterface:
 
     async def _generate(self, query: str) -> str:
         from app.llm.unified_client import UnifiedLLMClient
-        from app.scheduler.resource_pool import ResourceTier
+        from app.scheduler.resource_pool import ResourceBusyError, ResourceTier
 
         # Acquire a suitable resource
         if self._tier_preference:
             from app.scheduler.resource_pool import ResourceTier as RT
             tiers = [RT(t) if isinstance(t, str) else t for t in self._tier_preference]
-            resource = self._rm.acquire(tier_preference=tiers)
+            resource = self._rm.acquire(tier_preference=tiers, max_data_scope=self._max_data_scope)
         else:
-            resource = self._rm.acquire()
+            resource = self._rm.acquire(max_data_scope=self._max_data_scope)
 
         if resource is None:
             raise DreamingLLMError("no LLM resource available for dreaming")
@@ -115,11 +121,15 @@ class ResourcePoolLLMInterface:
         client = UnifiedLLMClient()
         messages = [{"role": "user", "content": query}]
         try:
-            data = await client.call_async(
-                messages=messages,
-                resource_config=resource_config,
-                model_override=resource.model,
-            )
+            # Wait in line behind other callers of the same local model instead of piling onto it.
+            async with self._rm.slot(resource.id, owner="dreaming", max_wait_s=self._queue_wait):
+                data = await client.call_async(
+                    messages=messages,
+                    resource_config=resource_config,
+                    model_override=resource.model,
+                )
+        except ResourceBusyError as e:
+            raise DreamingLLMError(f"{e}; the model stayed busy with other work") from e
         except (TimeoutError, ConnectionError, OSError) as e:
             self._rm.record_usage(resource.id, success=False, error_message=str(e))
             logger.error(f"ResourcePoolLLMInterface._generate failed: {e}")
@@ -137,6 +147,7 @@ class ResourcePoolLLMInterface:
             hint = (" -- a thinking model used its whole output budget on reasoning; raise dreaming.max_output_tokens "
                     "or use a non-thinking resource") if finish == "length" else ""
             raise DreamingLLMError(f"{resource.id} returned an empty completion ({why}){hint}")
+        logger.info(f"ResourcePoolLLMInterface: {resource.id} answered with {len(content)} chars (finish_reason={finish})")
         if finish == "length":
             logger.warning(f"ResourcePoolLLMInterface: {resource.id} hit its output limit; the reply may be truncated")
         return content

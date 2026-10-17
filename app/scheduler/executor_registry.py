@@ -184,7 +184,9 @@ class ExecutorContext:
                 from app.config.config_loader import load_layered_json_config
                 dreaming_cfg = (load_layered_json_config("config/scheduler_config.json") or {}).get("dreaming") or {}
                 return ResourcePoolLLMInterface(rm, max_tokens=int(dreaming_cfg.get("max_output_tokens", 16000)),
-                                                timeout_seconds=float(dreaming_cfg.get("llm_timeout_seconds", 900)))
+                                                timeout_seconds=float(dreaming_cfg.get("llm_timeout_seconds", 900)),
+                                                max_data_scope=dreaming_cfg.get("max_data_scope", "own_network"),
+                                                queue_wait_seconds=float(dreaming_cfg.get("queue_wait_seconds", 3600)))
         except Exception as e:
             self.log(
                 f"ResourcePool LLM unavailable, falling back to llm_config: {e}", "warning"
