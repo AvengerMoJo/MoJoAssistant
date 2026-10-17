@@ -168,6 +168,10 @@ class UsageRecord:
     # Unlike call_timestamps (in-memory, all attempts, resets on restart) this
     # is persisted: a weekly or monthly allowance must survive a restart.
     quota_calls: Deque[float] = field(default_factory=deque)
+    # How many times the breaker reopened this resource and it failed again
+    # without a single success in between. Doubles the wait each time, so a
+    # resource that is simply broken stops being retried every 5 minutes.
+    failed_recoveries: int = 0
 
 
 class ResourceManager:
@@ -327,7 +331,10 @@ class ResourceManager:
                     last_call_at=rec.get("last_call_at"),
                     # Reset on startup — stale errors from a dead process must not
                     # permanently block resources on the next server start.
-                    consecutive_errors=0,
+                    consecutive_errors=4 if rec.get("failed_recoveries", 0) else 0,
+                    # A restart is not evidence the resource got fixed: keep the
+                    # longer wait, and let one trial call decide.
+                    failed_recoveries=rec.get("failed_recoveries", 0),
                     # NOT reset — a provider-stated quota reset time is a real
                     # fact about the provider, not a process-local counter that
                     # a crashed process could have corrupted. Restarting
@@ -351,6 +358,7 @@ class ResourceManager:
                     "total_calls": usage.total_calls,
                     "last_call_at": usage.last_call_at,
                     "consecutive_errors": usage.consecutive_errors,
+                    "failed_recoveries": usage.failed_recoveries,
                     "rate_limited_until": usage.rate_limited_until,
                     "quota_calls": list(usage.quota_calls),
                 }
@@ -1103,6 +1111,7 @@ class ResourceManager:
 
             if success:
                 usage.consecutive_errors = 0
+                usage.failed_recoveries = 0
                 usage.rate_limited_until = None
                 resource = self._resources.get(resource_id)
                 if resource is not None and resource.quota_pool in self._quota_pools:
@@ -1858,6 +1867,11 @@ class ResourceManager:
 
     # Auto-recovery: reset consecutive_errors after this many seconds
     _ERROR_RECOVERY_SECONDS = 300  # 5 minutes
+    _ERROR_RECOVERY_MAX_SECONDS = 6 * 3600
+
+    def _recovery_wait_s(self, usage: "UsageRecord") -> float:
+        return min(self._ERROR_RECOVERY_SECONDS * (2 ** usage.failed_recoveries),
+                   self._ERROR_RECOVERY_MAX_SECONDS)
 
     def _compute_status(self, resource: LLMResource) -> ResourceStatus:
         if not resource.enabled:
@@ -1887,8 +1901,11 @@ class ResourceManager:
 
         if usage and usage.consecutive_errors >= 5:
             # Auto-recovery: if last call was long ago, reset error counter
-            if usage.last_call_at and (time.time() - usage.last_call_at) > self._ERROR_RECOVERY_SECONDS:
-                usage.consecutive_errors = 0
+            if usage.last_call_at and (time.time() - usage.last_call_at) > self._recovery_wait_s(usage):
+                # Half-open: one trial call. A single failure trips the breaker
+                # again, for twice as long; a success clears both counters.
+                usage.failed_recoveries += 1
+                usage.consecutive_errors = 4
                 self._persist_usage()
             else:
                 return ResourceStatus.UNREACHABLE

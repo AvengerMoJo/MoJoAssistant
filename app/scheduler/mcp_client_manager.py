@@ -34,6 +34,8 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -190,8 +192,18 @@ class MCPClientManager:
             if tmux_socket.exists():
                 args += ["--socket", str(tmux_socket)]
 
+        command = server.command
+        if command in ("python", "python3"):
+            # The service's PATH has no bare 'python': use the interpreter MoJo itself runs on.
+            command = sys.executable
+        elif not Path(command).is_absolute() and not shutil.which(command, path=spawn_env.get("PATH")):
+            raise FileNotFoundError(
+                f"command '{command}' for MCP server '{server.id}' is not on the service PATH "
+                f"({spawn_env.get('PATH', '')})"
+            )
+
         params = StdioServerParameters(
-            command=server.command,
+            command=command,
             args=args,
             env=spawn_env,
             cwd=str(_project_root),
