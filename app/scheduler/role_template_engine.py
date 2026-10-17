@@ -71,6 +71,14 @@ class RoleTemplateEngine:
         if not role:
             return ""
 
+        for field_name in ("success_patterns", "escalation_rules"):
+            value = role.get(field_name)
+            if value is not None and not isinstance(value, dict):
+                raise ValueError(
+                    f"role '{role.get('id') or role.get('name')}': '{field_name}' must be an object, "
+                    f"got {type(value).__name__}"
+                )
+
         parts: List[str] = []
 
         # -- Identity / character narrative --
