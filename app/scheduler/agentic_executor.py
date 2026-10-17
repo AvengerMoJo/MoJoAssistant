@@ -702,7 +702,9 @@ class AgenticExecutor:
     def _log(self, message: str, level: str = "info"):
         emit(self._logger, "AgenticExecutor", message, level)
 
-    async def _classify_needs_exec(self, goal: str, tier_preference: List[ResourceTier]) -> tuple[bool, str]:
+    async def _classify_needs_exec(
+        self, goal: str, tier_preference: List[ResourceTier], pinned_resource_id: Optional[str] = None
+    ) -> tuple[bool, str]:
         """LLM classifier: does this goal require shell/terminal execution?
 
         Used by the capability gap check to catch structural signals (backtick
@@ -710,8 +712,8 @@ class AgenticExecutor:
         technical writing (Python signatures, markdown tables).
 
         Model: scheduler_config.json "exec_classifier": {"resource_id": "<pool id>"} pins a small
-        classification model; without it the task's own tiers are used, so the goal goes only where
-        the task itself is about to go. A configured resource that is unavailable is an error, not
+        classification model; without it the task's own resource is used (the one it is pinned to,
+        else its tiers), so the goal goes only where the task itself is about to go. A configured resource that is unavailable is an error, not
         a reason to use another one.
 
         Returns (needs_exec, one_sentence_reason). Raises ExecClassifierError when no clear YES/NO
@@ -724,6 +726,10 @@ class AgenticExecutor:
             resource = self._rm.acquire_by_id(resource_id)
             if resource is None:
                 raise ExecClassifierError(f"the configured classifier resource {resource_id!r} is unavailable")
+        elif pinned_resource_id:
+            resource = self._rm.acquire_by_id(pinned_resource_id)
+            if resource is None:
+                raise ExecClassifierError(f"the task's pinned resource {pinned_resource_id!r} is unavailable")
         else:
             tiers = self._apply_data_boundary_to_tiers(list(tier_preference), self._data_boundary.get("allowed_tiers"))
             resource = self._rm.acquire(tier_preference=tiers)
@@ -1130,7 +1136,8 @@ class AgenticExecutor:
                 _exec_covered = self._gap_checker._infer_categories(enabled_tool_names)
                 if "terminal" not in _exec_covered and "exec" not in _exec_covered:
                     try:
-                        _llm_needs_exec, _llm_reason = await self._classify_needs_exec(goal, tier_preference)
+                        _llm_needs_exec, _llm_reason = await self._classify_needs_exec(
+                            goal, tier_preference, config.get("pinned_resource") or role_preferred_resource_id)
                     except ExecClassifierError as exc:
                         # No guess either way: the owner decides, with the reason in front of them.
                         _llm_needs_exec, _llm_reason = False, ""

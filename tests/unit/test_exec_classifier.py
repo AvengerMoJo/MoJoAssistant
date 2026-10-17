@@ -29,7 +29,7 @@ class FakeRM:
         self.usage.append((rid, k.get("success")))
 
 
-def run(monkeypatch, reply=None, rm=None, cfg=None, boundary=None, raises=None):
+def run(monkeypatch, reply=None, rm=None, cfg=None, boundary=None, raises=None, pinned=None):
     monkeypatch.setattr("app.config.config_loader.load_layered_json_config", lambda *_a, **_k: cfg or {})
 
     async def call_llm(resource, messages, **k):
@@ -39,7 +39,8 @@ def run(monkeypatch, reply=None, rm=None, cfg=None, boundary=None, raises=None):
 
     fake = SimpleNamespace(_rm=rm or FakeRM(), _data_boundary=boundary or {}, _call_llm=call_llm,
                            _apply_data_boundary_to_tiers=AgenticExecutor._apply_data_boundary_to_tiers)
-    return fake, asyncio.run(AgenticExecutor._classify_needs_exec(fake, "run `ls | wc -l`", [ResourceTier.FREE]))
+    return fake, asyncio.run(
+        AgenticExecutor._classify_needs_exec(fake, "run `ls | wc -l`", [ResourceTier.FREE], pinned))
 
 
 def test_yes_and_no_are_read_from_the_first_word(monkeypatch):
@@ -82,3 +83,13 @@ def test_role_data_boundary_limits_the_tiers_the_goal_may_go_to(monkeypatch):
     rm = FakeRM()
     run(monkeypatch, "NO", rm=rm, boundary={"allowed_tiers": ["free"]})
     assert rm.acquired_tiers == [ResourceTier.FREE]
+
+
+def test_a_pinned_task_is_classified_on_its_pinned_resource_and_never_elsewhere(monkeypatch):
+    rm = FakeRM(by_id=SimpleNamespace(id="local_pin"))
+    run(monkeypatch, "NO", rm=rm, pinned="local_pin")
+    assert rm.usage == [("local_pin", True)] and rm.acquired_tiers is None
+    rm2 = FakeRM(by_id=None)
+    with pytest.raises(ExecClassifierError, match="pinned resource 'local_pin' is unavailable"):
+        run(monkeypatch, "NO", rm=rm2, pinned="local_pin")
+    assert rm2.acquired_tiers is None  # did not go looking in the task's tiers
