@@ -647,6 +647,10 @@ _SECONDS_PER_EXTENDED_ITERATION = 90.0
 from app.scheduler.task_local import TaskLocal
 
 
+class ExecClassifierError(RuntimeError):
+    """The exec-need classifier could not give a clear YES/NO."""
+
+
 class AgenticExecutor:
     """Executes agentic tasks via an autonomous LLM think-act loop."""
 
@@ -695,46 +699,57 @@ class AgenticExecutor:
     def _log(self, message: str, level: str = "info"):
         emit(self._logger, "AgenticExecutor", message, level)
 
-    async def _classify_needs_exec(self, goal: str) -> tuple[bool, str]:
+    async def _classify_needs_exec(self, goal: str, tier_preference: List[ResourceTier]) -> tuple[bool, str]:
         """LLM classifier: does this goal require shell/terminal execution?
 
         Used by the capability gap check to catch structural signals (backtick
         commands, pipeline syntax) that regex can't reliably distinguish from
         technical writing (Python signatures, markdown tables).
 
-        Returns (needs_exec, one_sentence_reason).
-        On any error, returns (False, "classifier unavailable") — we never
-        block a task because the classifier failed.
+        Model: scheduler_config.json "exec_classifier": {"resource_id": "<pool id>"} pins a small
+        classification model; without it the task's own tiers are used, so the goal goes only where
+        the task itself is about to go. A configured resource that is unavailable is an error, not
+        a reason to use another one.
+
+        Returns (needs_exec, one_sentence_reason). Raises ExecClassifierError when no clear YES/NO
+        could be obtained: the caller pauses the task with that reason, it never assumes "no".
         """
+        from app.config.config_loader import load_layered_json_config
+        cfg = (load_layered_json_config("config/scheduler_config.json") or {}).get("exec_classifier") or {}
+        resource_id = cfg.get("resource_id")
+        if resource_id:
+            resource = self._rm.acquire_by_id(resource_id)
+            if resource is None:
+                raise ExecClassifierError(f"the configured classifier resource {resource_id!r} is unavailable")
+        else:
+            tiers = self._apply_data_boundary_to_tiers(list(tier_preference), self._data_boundary.get("allowed_tiers"))
+            resource = self._rm.acquire(tier_preference=tiers)
+            if resource is None:
+                raise ExecClassifierError(
+                    f"no resource available for the check ({self._rm.rejection_summary(tiers)})")
+        messages = [
+            {"role": "system", "content": (
+                "You are a task intent classifier. "
+                "Determine whether a task goal requires executing shell commands, "
+                "running scripts, or using a terminal to accomplish its objective. "
+                "Describing shell commands in an analysis does NOT count — only flag "
+                "goals that NEED actual execution. "
+                "Reply: YES or NO, then one sentence explaining why.")},
+            {"role": "user", "content": f"Goal: {goal[:800]}"},
+        ]
         try:
-            result = await self._mcp_client_manager.call_tool(
-                "llm_direct_chat",
-                {
-                    "system_prompt": (
-                        "You are a task intent classifier. "
-                        "Determine whether a task goal requires executing shell commands, "
-                        "running scripts, or using a terminal to accomplish its objective. "
-                        "Describing shell commands in an analysis does NOT count — only flag "
-                        "goals that NEED actual execution. "
-                        "Reply: YES or NO, then one sentence explaining why."
-                    ),
-                    "message": f"Goal: {goal[:800]}",
-                    "max_tokens": 60,
-                },
-            )
-            payload = result.tool_payload() if hasattr(result, "tool_payload") else result
-            if isinstance(payload, dict) and payload.get("status") == "error":
-                return False, "classifier unavailable"
-            reply = (
-                (payload.get("reply") or payload.get("response") or "NO")
-                if isinstance(payload, dict)
-                else str(payload)
-            ).strip()
-            needs = reply.upper().startswith("YES")
-            return needs, reply
+            data = await self._call_llm(resource, messages)
         except Exception as exc:
-            self._log(f"LLM exec classifier error (skipping): {exc}", "warning")
-            return False, "classifier unavailable"
+            self._rm.record_usage(resource.id, success=False, error_message=str(exc))
+            raise ExecClassifierError(f"{resource.id} failed: {exc}") from exc
+        self._rm.record_usage(resource.id, success=True)
+        reply = ((data["choices"][0].get("message") or {}).get("content") or "").strip()
+        if "</think>" in reply:
+            reply = reply.split("</think>", 1)[1].strip()
+        verdict = re.match(r"\W*(YES|NO)\b", reply, re.IGNORECASE)
+        if not verdict:
+            raise ExecClassifierError(f"{resource.id} did not answer YES or NO: {reply[:80]!r}")
+        return verdict.group(1).upper() == "YES", reply
 
     def _record(self, task_id: str, role: str, content: str, iteration: int, **kwargs: Any) -> None:
         """Append a message to the session log."""
@@ -1111,7 +1126,18 @@ class AgenticExecutor:
                 # Phase 2: LLM classifier for structural signals not caught by phrases.
                 _exec_covered = self._gap_checker._infer_categories(enabled_tool_names)
                 if "terminal" not in _exec_covered and "exec" not in _exec_covered:
-                    _llm_needs_exec, _llm_reason = await self._classify_needs_exec(goal)
+                    try:
+                        _llm_needs_exec, _llm_reason = await self._classify_needs_exec(goal, tier_preference)
+                    except ExecClassifierError as exc:
+                        # No guess either way: the owner decides, with the reason in front of them.
+                        _llm_needs_exec, _llm_reason = False, ""
+                        _needs_ask = True
+                        _ask_question = (
+                            f"The check whether this goal needs a shell could not run: {exc}.\n\n"
+                            "The role has no exec/terminal capability. Proceed without that check?"
+                        )
+                        self._log(f"Exec classifier could not run for task {task.id}: {exc} — "
+                                  "surfacing via ask_user", "warning")
                     if _llm_needs_exec:
                         _needs_ask = True
                         _ask_question = (
