@@ -24,13 +24,13 @@
       "command": "python",
       "args": ["-m", "webwright.run.cli", "--mcp"],
       "category": "browser",
-      "enabled": true,
+      "enabled": false,
       "install_hint": "pip install webwright && playwright install chromium",
       "requires": [
         {"binary": "python"},
         {"binary": "playwright"}
       ],
-      "comment": "Default browser backend for agentic tasks. Agent writes Playwright scripts instead of step-by-step commands. More robust for complex workflows. See docs/guides/BROWSER_MCP_SETUP.md."
+      "comment": "DISABLED 2026-10-18: the venv has no webwright.run.cli module (the PyPI package named webwright is a different project) so every start logged a connect failure; re-enable once the real package is installed. Default browser backend for agentic tasks. Agent writes Playwright scripts instead of step-by-step commands. More robust for complex workflows. See docs/guides/BROWSER_MCP_SETUP.md."
     },
     {
       "id": "playwright",
