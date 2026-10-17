@@ -30,3 +30,18 @@ def test_trial_call_after_recovery_trips_on_one_failure_and_waits_longer():
     u.consecutive_errors += 1
     u.last_call_at = time.time() - 301
     assert rm._compute_status(r) == ResourceStatus.UNREACHABLE  # 600 s window now, 301 s is not enough
+
+
+def test_provider_overload_counts_against_every_account_of_that_model():
+    rm = manager()
+    rm._lock = __import__("threading").RLock()
+    rm._persist_usage = lambda: None
+    rm._quota_pools, rm._pool_calls = {}, {}
+    mk = lambda i, m: type("R", (), {"id": i, "model": m, "base_url": "u", "quota_pool": None, "quotas": None})()
+    rm._resources = {"a": mk("a", "nemo"), "b": mk("b", "nemo"), "c": mk("c", "other")}
+    rm._usage = {}
+    rm.record_usage("a", success=False, error_message="Upstream error from Nvidia: Service temporarily overloaded (code 503)")
+    assert rm._usage["a"].consecutive_errors == 1 and rm._usage["b"].consecutive_errors == 1
+    assert "c" not in rm._usage
+    rm.record_usage("a", success=False, error_message="HTTP 401 bad key")
+    assert rm._usage["a"].consecutive_errors == 2 and rm._usage["b"].consecutive_errors == 1

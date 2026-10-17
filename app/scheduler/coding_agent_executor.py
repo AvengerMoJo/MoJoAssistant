@@ -760,7 +760,8 @@ class CodingAgentExecutor:
             tools=tools,
         )
         if not data.get("choices"):
-            raise ValueError("LLM returned no choices")
+            from app.llm.unified_client import no_choices_message
+            raise ValueError(no_choices_message(data))
         return data
 
     # ------------------------------------------------------------------ #

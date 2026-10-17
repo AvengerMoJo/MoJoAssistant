@@ -1083,6 +1083,24 @@ class ResourceManager:
                     self._group_counters[group] = idx + 1
             return best
 
+    _PROVIDER_WIDE_MARKERS = ("temporarily overloaded", "provider_overloaded", "(code 503)", "bad gateway", "(code 502)")
+
+    def _count_provider_wide_failure(self, resource_id: str, error_message: Optional[str]) -> None:
+        """An overloaded/down provider fails every account of the same model alike: count it against all of
+        them, so the breaker trips once instead of once per account (8 free Nemotron entries = 40 wasted calls)."""
+        text = (error_message or "").lower()
+        if not any(m in text for m in self._PROVIDER_WIDE_MARKERS):
+            return
+        origin = self._resources.get(resource_id)
+        if origin is None:
+            return
+        for rid, other in self._resources.items():
+            if rid == resource_id or other.model != origin.model or other.base_url != origin.base_url:
+                continue
+            sibling = self._usage.setdefault(rid, UsageRecord())
+            sibling.consecutive_errors += 1
+            sibling.last_call_at = time.time()
+
     def record_usage(
         self,
         resource_id: str,
@@ -1127,6 +1145,7 @@ class ResourceManager:
                         usage.quota_calls.popleft()
             else:
                 usage.consecutive_errors += 1
+                self._count_provider_wide_failure(resource_id, error_message)
                 if error_message:
                     from app.scheduler.provider_errors import classify_provider_error
                     _category, rate_limited_until = classify_provider_error(error_message)

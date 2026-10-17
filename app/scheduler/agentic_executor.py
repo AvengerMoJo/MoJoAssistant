@@ -2372,7 +2372,8 @@ class AgenticExecutor:
             )
         choices = data.get("choices", [])
         if not choices:
-            raise ValueError("LLM returned no choices")
+            from app.llm.unified_client import no_choices_message
+            raise ValueError(no_choices_message(data))
         return data
 
     async def _resolve_model_for_resource(

@@ -17,6 +17,16 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
 
 
+def no_choices_message(data) -> str:
+    """Why a reply without choices is empty: the provider's own error text and code when it sent one."""
+    err = (data or {}).get("error") if isinstance(data, dict) else None
+    if isinstance(err, dict):
+        detail = f"{err.get('message', '')} (code {err.get('code')})".strip()
+    else:
+        detail = str(err) if err else "no error field in the reply"
+    return f"LLM returned no choices: {detail}"
+
+
 class UnifiedLLMClient:
     """Single class for all LLM HTTP calls in MoJoAssistant."""
 
