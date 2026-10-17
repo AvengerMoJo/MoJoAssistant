@@ -73,6 +73,7 @@ def test_route_creates_a_scheduler_task_from_the_owner_message(tmp_path, monkeyp
     assert task.id == out["task_id"] and task.config["role_id"] == "paul"
     assert "Review the Q4 roadmap risks" in task.config["goal"]
     assert task.created_by == "user" and task.config["origin"]["channel"] == "owner_hub"
+    assert task.resources.max_iterations == 10 and task.resources.max_duration_seconds == 900
 
 
 def test_route_without_scheduler_fails_visibly(tmp_path, monkeypatch):

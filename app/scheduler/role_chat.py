@@ -37,6 +37,7 @@ MAX_HISTORY_TURNS = 10    # conversation turns carried into context
 MAX_KU_ITEMS = 8          # knowledge units injected as context
 MAX_KU_QUOTE_CHARS = 200  # truncate long KU quotes
 MAX_CHAT_ITERATIONS = 5   # max tool-call iterations per exchange
+ROUTED_TASK_MAX_SECONDS = 900   # wall-clock budget of a task created by route_to_role
 STREAM_FALLBACK_KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalives during blocking fallback
 
 # Maps tool catalog categories → concrete tool names available in chat mode.
@@ -778,7 +779,9 @@ class RoleChatSession:
             priority=TaskPriority.MEDIUM,
             config={"goal": goal, "role_id": target,
                     "origin": {"channel": "owner_hub", "via": self.role_id, "session_id": self.session_id}},
-            resources=TaskResources(max_iterations=10),
+            # The 300 s scheduler default is too short for 10 rounds on a local model (~50 s each):
+            # a routed task died at 313 s after 6 rounds with no answer.
+            resources=TaskResources(max_iterations=10, max_duration_seconds=ROUTED_TASK_MAX_SECONDS),
             created_by="user",  # the owner's own request: completion notifies the owner
         )
         if not self._scheduler.add_task(task):
