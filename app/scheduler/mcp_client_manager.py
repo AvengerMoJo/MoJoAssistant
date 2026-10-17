@@ -297,8 +297,9 @@ class MCPClientManager:
 
     # Per-call timeout so a hung external process (e.g. frozen browser) cannot
     # hold a semaphore slot forever. 5 minutes gives SPAs like Portainer enough
-    # time to load without blocking a semaphore slot indefinitely.
-    CALL_TIMEOUT_SECONDS: float = 300.0
+    # time to load without blocking a semaphore slot indefinitely. 15 minutes since
+    # 2026-10-18: a call to a slow agent (agent_reply) legitimately runs past 5.
+    CALL_TIMEOUT_SECONDS: float = 900.0
 
     async def call_tool(self, server_id: str, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Call a tool on a specific external MCP server."""

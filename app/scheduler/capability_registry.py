@@ -555,7 +555,7 @@ class CapabilityRegistry:
                         "description": "Tools the sub-task may use. Defaults to role's capabilities."
                     },
                     "max_iterations":  {"type": "integer", "description": "Max iterations for sub-task (default 10)"},
-                    "timeout_s":       {"type": "integer", "description": "Seconds to wait for result (default 300)"},
+                    "timeout_s":       {"type": "integer", "description": "Seconds to wait for result (default 900)"},
                     "force":           {"type": "boolean", "description": "Bypass spec quality gate. Only use when the calling AI has already validated the spec with the user."},
                     "project_id":      {"type": "string", "description": "A tracked Project id (see project_list) to auto-resolve project_label/git_url from its linked workspace, and roll this sub-task into its checklist."},
                     "project_label":   {
@@ -1288,7 +1288,7 @@ class CapabilityRegistry:
 
     MAX_DISPATCH_DEPTH = 2
     DISPATCH_POLL_INTERVAL_S = 3
-    DISPATCH_DEFAULT_TIMEOUT_S = 300
+    DISPATCH_DEFAULT_TIMEOUT_S = 900
 
     async def _list_roles(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List all valid agent roles available for dispatch."""

@@ -59,7 +59,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-MESSAGE_TIMEOUT = 300.0
+MESSAGE_TIMEOUT = 900.0
 DEFAULT_TIMEOUT = 30.0
 
 

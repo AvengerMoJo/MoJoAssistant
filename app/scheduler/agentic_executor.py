@@ -1038,7 +1038,7 @@ class AgenticExecutor:
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get(
             "max_duration_seconds",
-            task.resources.max_duration_seconds or 300,
+            task.resources.max_duration_seconds or 900,
         )
 
         # Tier preference: task config > role resource_requirements > task resources > default
