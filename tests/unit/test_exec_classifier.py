@@ -93,3 +93,18 @@ def test_a_pinned_task_is_classified_on_its_pinned_resource_and_never_elsewhere(
     with pytest.raises(ExecClassifierError, match="pinned resource 'local_pin' is unavailable"):
         run(monkeypatch, "NO_SHELL", rm=rm2, pinned="local_pin")
     assert rm2.acquired_tiers is None  # did not go looking in the task's tiers
+
+
+def test_prompt_says_file_tools_are_not_shell_use(monkeypatch):
+    """Live 2026-10-19: 'use write_file to write X' was labeled NEEDS_SHELL and the task paused."""
+    seen = {}
+    monkeypatch.setattr("app.config.config_loader.load_layered_json_config", lambda *_a, **_k: {})
+
+    async def call_llm(resource, messages, **k):
+        seen["system"] = messages[0]["content"]
+        return {"choices": [{"message": {"content": "NO_SHELL - file tool"}}]}
+
+    fake = SimpleNamespace(_rm=FakeRM(), _data_boundary={}, _call_llm=call_llm,
+                           _apply_data_boundary_to_tiers=AgenticExecutor._apply_data_boundary_to_tiers)
+    asyncio.run(AgenticExecutor._classify_needs_exec(fake, "use write_file to write hello", [ResourceTier.FREE]))
+    assert "write_file" in seen["system"] and "not shell use" in seen["system"]

@@ -747,7 +747,10 @@ class AgenticExecutor:
                 "running scripts, or using a terminal to accomplish its objective. "
                 "Describing shell commands in an analysis does NOT count — only flag "
                 "goals that NEED actual execution. A goal that says tools are out of scope, or only asks "
-                "for a written answer, needs no shell. "
+                "for a written answer, needs no shell. Reading, writing or listing files with file tools "
+                "(read_file, write_file, list_files), searching memory or knowledge, and fetching web pages "
+                "are not shell use either; a shell is needed only to run a command, program or script, or "
+                "to inspect the machine itself. "
                 "Reply with exactly one of the labels NEEDS_SHELL or NO_SHELL, then a dash and one "
                 "sentence explaining why.")},
             {"role": "user", "content": f"Goal: {goal[:800]}"},
