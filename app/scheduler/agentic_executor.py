@@ -22,6 +22,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+from app.scheduler.action_ledger import REFUSAL_MARKER, ActionLedger, too_often_error
 from app.scheduler.models import Task, TaskResult
 from app.scheduler.log_util import emit
 from app.scheduler.resource_pool import LLMResource, ResourceManager, ResourceTier
@@ -77,6 +78,9 @@ _cv_requires_tool:   ContextVar = ContextVar("exec_requires_tool",   default=Tru
 # rather than "any tool at all".
 _cv_requires_deliverable:      ContextVar = ContextVar("exec_requires_deliverable",      default=())
 _cv_deliverable_tools_called:  ContextVar = ContextVar("exec_deliverable_tools_called",  default=frozenset())
+# State-changing tool calls and their failures, so a final answer cannot claim success over a failed one
+# (see app/scheduler/action_ledger.py). None outside a running task.
+_cv_action_ledger:             ContextVar = ContextVar("exec_action_ledger",             default=None)
 
 # Tools whose output commonly bloats context (bash stdout, file reads).
 # Results longer than this cap are truncated before being added to messages.
@@ -802,6 +806,7 @@ class AgenticExecutor:
         _cv_requires_tool.set(False)
         _cv_requires_deliverable.set(())
         _cv_deliverable_tools_called.set(frozenset())
+        _cv_action_ledger.set(ActionLedger())
         _cv_task_id.set(task.id)
         self._tool_calls_made = 0
         # Propagate task context to registry for sub-agent dispatch linkage + role scoping
@@ -1932,11 +1937,14 @@ class AgenticExecutor:
                     )
                 break
             if final_validation_error:
-                correction_prompt = (
-                    "Your previous <FINAL_ANSWER> was rejected by validation: "
-                    f"{final_validation_error}. "
-                    "Return a corrected <FINAL_ANSWER> only."
-                )
+                if final_validation_error.startswith(REFUSAL_MARKER):
+                    correction_prompt = final_validation_error  # the model may act again, not only re-answer
+                else:
+                    correction_prompt = (
+                        "Your previous <FINAL_ANSWER> was rejected by validation: "
+                        f"{final_validation_error}. "
+                        "Return a corrected <FINAL_ANSWER> only."
+                    )
                 messages.append({"role": "user", "content": correction_prompt})
                 self._record(task.id, "user", correction_prompt, iteration=abs_iteration)
                 continue
@@ -2967,6 +2975,7 @@ class AgenticExecutor:
 
             try:
                 result = await self._execute_single_tool(fn_name, fn_args)
+                self._ledger_record(fn_name, fn_args, result)
                 result_str = json.dumps(result, default=str)
                 # Cap large outputs from file/shell tools to prevent context bloat
                 if fn_name in _TOOL_OUTPUT_LARGE_TOOLS and len(result_str) > _TOOL_OUTPUT_CAP_CHARS:
@@ -2977,8 +2986,16 @@ class AgenticExecutor:
                 results.append(result_str)
             except Exception as e:
                 self._log(f"Tool {fn_name} failed: {e}", "error")
+                self._ledger_record(fn_name, fn_args, {"error": str(e)})
                 results.append(json.dumps({"error": str(e)}))
         return results
+
+    def _ledger_record(self, name: str, args: Dict, result: Any) -> None:
+        ledger = _cv_action_ledger.get()
+        if ledger is None:
+            return
+        tool = self._tool_registry.get_tool(name)
+        ledger.record(name, args, result, getattr(tool, "danger_level", "low"))
 
     async def _execute_single_tool(self, name: str, args: Dict) -> Any:
         """Execute a single tool from dynamic registry or built-in tools."""
@@ -3820,6 +3837,15 @@ class AgenticExecutor:
         )
         if not semantic_ok:
             return False, semantic_error
+
+        # A failed state-changing action that was never fixed must not sit under "Completed:".
+        ledger = _cv_action_ledger.get()
+        if ledger is not None:
+            pending = ledger.unaddressed(answer)
+            if pending:
+                if not ledger.refuse():
+                    raise RuntimeError(too_often_error(pending))
+                return False, ledger.refusal_message(pending)
 
         # Bug found live 2026-08-25 (Rebecca, task rebecca_agent_boundary_
         # research_2608): a role/task can say "write your findings to
