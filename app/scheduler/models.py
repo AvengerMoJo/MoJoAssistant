@@ -68,6 +68,7 @@ class TaskType(Enum):
     INTERNAL_ASSIGNMENT = "internal_assignment"  # Internal role-based LLM think-act loop
     ASSISTANT = "assistant"  # Role-based agentic session (alias for INTERNAL_ASSIGNMENT routing)
     GROWTH = "growth"  # BRIDLE: role growth cycle — one-on-one → drift → snapshot → HITL
+    RESOURCE_MAINTENANCE = "resource_maintenance"  # Pool upkeep jobs (e.g. daily OpenRouter free-model refresh)
     CODING_SESSION = "coding_session"  # Long-running external coding agent session (OpenCode, Goose)
 
 

@@ -88,6 +88,15 @@
         "drift_threshold": 0.15
       },
       "resources": { "requires_gpu": false }
+    },
+    {
+      "id": "openrouter_free_models_daily",
+      "type": "resource_maintenance",
+      "cron": "30 2 * * *",
+      "priority": "low",
+      "enabled": false,
+      "description": "Daily refresh of the OpenRouter free-model lane (adds working new free tool models, disables vanished or failing ones) -- enable in ~/.memory/config/scheduler_config.json",
+      "config": {"job": "openrouter_free_models"}
     }
   ]
 }

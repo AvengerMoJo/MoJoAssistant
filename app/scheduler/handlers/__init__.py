@@ -13,6 +13,7 @@ from app.scheduler.handlers.custom import CustomHandler
 from app.scheduler.handlers.agentic import AgenticHandler
 from app.scheduler.handlers.bonsai import BonsaiGrowthHandler
 from app.scheduler.handlers.coding_session_opencode import OpenCodeSessionHandler
+from app.scheduler.handlers.resource_maintenance import ResourceMaintenanceHandler
 
 
 def build_registry() -> HandlerRegistry:
@@ -25,4 +26,5 @@ def build_registry() -> HandlerRegistry:
     registry.register(TaskType.ASSISTANT, AgenticHandler())
     registry.register(TaskType.GROWTH, BonsaiGrowthHandler())
     registry.register(TaskType.CODING_SESSION, OpenCodeSessionHandler())
+    registry.register(TaskType.RESOURCE_MAINTENANCE, ResourceMaintenanceHandler())
     return registry
