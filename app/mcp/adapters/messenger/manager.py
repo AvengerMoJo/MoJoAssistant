@@ -126,10 +126,21 @@ class MessengerManager:
         """Route a scheduler event to all registered adapters.
 
         Skipped when notify_user=False — silent/internal events never reach users.
+        Skipped when audience=="push_only" — push adapters (ntfy) pick those up
+        from the event log; messenger adapters must not also deliver them.
+
+        Found live 2026-10-19: Quality Monitor escalations need to reach the
+        owner's ntfy but not their Discord (the owner asked for failure
+        notifications on push and questions on Discord only). Scheduler
+        _broadcast hands every event to BOTH the event log and this manager,
+        so without the audience guard a push_only event would still arrive in
+        Discord via DiscordMessengerAdapter.send_notification.
         """
         if not self._adapters:
             return
         if not event.get("notify_user", False):
+            return
+        if event.get("audience") == "push_only":
             return
 
         event_type = event.get("event_type", "")

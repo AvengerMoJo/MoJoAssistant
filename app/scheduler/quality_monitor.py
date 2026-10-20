@@ -18,7 +18,11 @@ as its own scheduled task, so it has no failure mode of its own to watch.
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
+import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -30,6 +34,8 @@ from app.config.paths import get_memory_subpath
 from app.scheduler.models import Task, TaskPriority, TaskStatus, TaskType
 from app.scheduler.queue import TaskQueue
 
+logger = logging.getLogger(f"mojo_assistant.{__name__}")
+
 RESTART_CAP = 2
 STUCK_GRACE_SECONDS = 300  # slack beyond a task's own max_duration_seconds
 WAITING_TOO_LONG_HOURS = 24
@@ -37,6 +43,31 @@ QM_RESTART_COUNT_KEY = "_qm_restart_count"
 QM_ORIGIN_KEY = "_qm_restarted_from"
 QM_ESCALATED_KEY = "_qm_escalated_at"  # stamped per (task, classification)
 ALERT_ID_PREFIX = "quality_monitor_alert_"
+
+# Dual-write shadow flag. While True, an escalation emits the push event AND
+# creates the legacy WAITING_FOR_INPUT alert task, so the owner can compare
+# what ntfy shows against what Discord showed and confirm the ntfy payload is
+# as useful before Discord is turned off. Set QM_SHADOW_DISCORD_LEGACY = False
+# (or QM_SHADOW_DISCORD_LEGACY=false in the environment) for the hard cut.
+#
+# Found live 2026-10-19: two quality_monitor_alert_* tasks reached the owner's
+# Discord within one hour for a smoke-test failure the owner could do nothing
+# about from their phone. Owner: "I saw the fail but I can't tell it to do
+# anything to fix it ... send to ntfy as notification is enough, not discord
+# for response." The failure never needed to be a *question*.
+QM_SHADOW_DISCORD_LEGACY = os.getenv(
+    "QM_SHADOW_DISCORD_LEGACY", "true"
+).strip().lower() not in ("false", "0", "no", "off")
+
+# Severity per classification. waiting_for_input_too_long means the owner was
+# asked something and ignored it, which is more actionable than a task that
+# merely failed -- but both go to push only, never to the Discord HITL queue.
+QM_SEVERITY = {
+    "genuinely_failed": "error",
+    "waiting_for_input_too_long": "warning",
+    "stuck": "warning",
+    "falsely_completed": "warning",
+}
 
 Classification = str  # "stuck" | "waiting_for_input_too_long" | "falsely_completed" | "genuinely_failed" | "healthy"
 
@@ -269,16 +300,95 @@ def _build_continuation_task(original: Task, finding: QualityFinding) -> Task:
     )
 
 
-def _raise_alert(queue: TaskQueue, finding: QualityFinding, now: Optional[datetime] = None) -> bool:
-    """Surface via the EXISTING Discord HITL path -- the Discord adapter
-    already polls queue.list_tasks(status=WAITING_FOR_INPUT) for any task
-    with pending_question set (see app/mcp/adapters/hitl/discord.py) and
-    delivers it. No new notification channel needed.
+def _build_alert_event(finding: QualityFinding, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Build the push event for an escalation.
 
-    Returns True if an alert was actually raised, False if a live alert for
-    the same (task, classification) already exists (dedupe guard)."""
+    audience="push_only" is the routing contract: MessengerManager.dispatch
+    skips messenger adapters (Discord, Telegram) for these, while push
+    adapters (ntfy) still receive them from the event log. Without that
+    marker a notify_user=True event would ALSO land in the owner's Discord
+    via DiscordMessengerAdapter.send_notification -- the exact channel the
+    owner asked to be kept for questions only.
+    """
+    ts = (now or datetime.now())
+    return {
+        "event_type": "task_failed",
+        "task_id": finding.task_id,
+        "classification": finding.classification,
+        "severity": QM_SEVERITY.get(finding.classification, "warning"),
+        "reason": finding.reason,
+        "detail": finding.detail,
+        "title": f"Quality Monitor: {finding.task_id} ({finding.classification})",
+        "audience": "push_only",
+        "notify_user": True,
+        "source": "quality_monitor",
+        "timestamp": ts.isoformat(),
+    }
+
+
+def _deliver(sink: Callable[[Dict[str, Any]], Any], event: Dict[str, Any]) -> None:
+    """Call an event sink that may be sync or async.
+
+    The Scheduler injects self._broadcast, which is `async def`. Calling it
+    from this synchronous module would build a coroutine and never await it --
+    the event would be silently dropped and the owner would never be notified,
+    which is the exact failure mode this whole change exists to fix. When the
+    returned value is awaitable, schedule it on the running loop; when there
+    is no running loop (unit tests calling a plain sync sink) it's already
+    been handled by the sink itself.
+    """
+    result = sink(event)
+    if inspect.isawaitable(result):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop to schedule on -- the caller supplied an async sink
+            # outside an event loop. Run it to completion so the event is
+            # never lost, matching how the rest of the scheduler treats
+            # fire-and-forget notification delivery.
+            asyncio.run(result)
+        else:
+            loop.create_task(result)
+
+
+def _raise_alert(
+    queue: TaskQueue,
+    finding: QualityFinding,
+    now: Optional[datetime] = None,
+    event_sink: Optional[Callable[[Dict[str, Any]], Any]] = None,
+) -> bool:
+    """Escalate a finding to the owner's push channel (ntfy).
+
+    Primary path: emit an event with audience="push_only" so ntfy delivers it
+    and Discord does NOT. event_sink is injected by the caller (the Scheduler
+    passes self._broadcast); when absent -- as in unit tests -- the event is
+    still built and returned so callers can assert on it, it just isn't
+    delivered anywhere.
+
+    Shadow path (QM_SHADOW_DISCORD_LEGACY, default on): ALSO create the
+    legacy WAITING_FOR_INPUT alert task so the owner can compare ntfy against
+    Discord before Discord is switched off. See the constant's comment.
+
+    Returns True if the alert was raised, False if one was already live for
+    the same (task, classification)."""
     if _live_alert_exists(queue, finding.task_id, finding.classification):
         return False
+
+    if event_sink is not None:
+        try:
+            _deliver(event_sink, _build_alert_event(finding, now=now))
+        except Exception as exc:
+            # A failed push must never take down the watchdog's own tick --
+            # the finding is already recorded in the ledger, and the next
+            # pass re-checks _already_escalated on the subject task.
+            logger.warning(
+                "[quality_monitor] alert event delivery failed for %s (%s): %s",
+                finding.task_id, finding.classification, exc, exc_info=True,
+            )
+
+    if not QM_SHADOW_DISCORD_LEGACY:
+        return True
+
     alert_id = f"{ALERT_ID_PREFIX}{finding.task_id}_{int((now or datetime.now()).timestamp())}"
     question = (
         f"Quality Monitor: task {finding.task_id} classified as "
@@ -298,7 +408,13 @@ def _raise_alert(queue: TaskQueue, finding: QualityFinding, now: Optional[dateti
     return True
 
 
-def apply_action(queue: TaskQueue, task: Task, finding: QualityFinding, now: Optional[datetime] = None) -> QualityFinding:
+def apply_action(
+    queue: TaskQueue,
+    task: Task,
+    finding: QualityFinding,
+    now: Optional[datetime] = None,
+    event_sink: Optional[Callable[[Dict[str, Any]], Any]] = None,
+) -> QualityFinding:
     """Decide + perform restart vs escalate, per the confirmed design:
     auto-restart ONLY for falsely_completed/stuck cases where the restart
     cap isn't exhausted; everything else (waiting_for_input_too_long,
@@ -341,12 +457,12 @@ def apply_action(queue: TaskQueue, task: Task, finding: QualityFinding, now: Opt
                 (finding.detail or "")
                 + f"\n-> restart skipped: continuation task {continuation.id} already exists"
             )
-            raised = _raise_alert(queue, finding, now=now)
+            raised = _raise_alert(queue, finding, now=now, event_sink=event_sink)
             finding.action = "escalated"
             if raised:
                 _mark_escalated(queue, task, finding.classification, now=now)
     else:
-        raised = _raise_alert(queue, finding, now=now)
+        raised = _raise_alert(queue, finding, now=now, event_sink=event_sink)
         finding.action = "escalated"
         if raised:
             # One notification per (task, classification). Only stamp when an
@@ -361,6 +477,7 @@ def run_quality_check(
     now: Optional[datetime] = None,
     final_answer_loader: Callable[[str], Optional[str]] = load_final_answer,
     done_when_checker: Callable[[str], Optional[bool]] = check_done_when,
+    event_sink: Optional[Callable[[Dict[str, Any]], Any]] = None,
 ) -> List[QualityFinding]:
     """Top-level entry point, called periodically from Scheduler._ticker_loop.
     Returns every finding (including a healthy pass logged by the caller as
@@ -384,5 +501,5 @@ def run_quality_check(
             continue
         if _already_escalated(task, finding.classification):
             continue  # already notified once for this state; don't repeat
-        findings.append(apply_action(queue, task, finding, now=now))
+        findings.append(apply_action(queue, task, finding, now=now, event_sink=event_sink))
     return findings

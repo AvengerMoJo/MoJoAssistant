@@ -357,7 +357,7 @@ class Scheduler:
                 if self.tick_count % 5 == 0:
                     try:
                         from app.scheduler.quality_monitor import run_quality_check
-                        findings = run_quality_check(self.queue)
+                        findings = run_quality_check(self.queue, event_sink=self._broadcast)
                         if findings:
                             self._log(
                                 f"Quality Monitor: {len(findings)} finding(s) — "

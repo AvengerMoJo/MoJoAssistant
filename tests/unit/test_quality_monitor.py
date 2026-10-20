@@ -448,3 +448,151 @@ class TestRunQualityCheck:
         assert third == []
         alerts = [t for t in queue.list_tasks() if t.id.startswith("quality_monitor_alert_")]
         assert len(alerts) == 1
+
+
+def _failed_task(task_id="sub_paul_x", error="Agent did not produce a final answer"):
+    return Task(
+        id=task_id, type=TaskType.INTERNAL_ASSIGNMENT,
+        status=TaskStatus.FAILED, retry_count=3, max_retries=3,
+        last_error=error,
+    )
+
+
+class TestAlertEventEmission:
+    """Owner directive 2026-10-19: failures belong on ntfy (push), not on
+    Discord (questions only). _raise_alert emits an event carrying
+    audience='push_only'; MessengerManager.dispatch skips messenger adapters
+    for those, so the same event reaches ntfy via the event log but never
+    Discord."""
+
+    def test_escalation_emits_push_only_event(self, queue):
+        task = _failed_task()
+        queue.add(task)
+        events = []
+
+        run_quality_check(queue, event_sink=events.append)
+
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event_type"] == "task_failed"
+        assert ev["audience"] == "push_only"
+        assert ev["notify_user"] is True
+        assert ev["task_id"] == task.id
+        assert ev["classification"] == "genuinely_failed"
+        assert ev["severity"] == "error"
+        assert ev["source"] == "quality_monitor"
+
+    def test_event_carries_reason_for_the_push_body(self, queue):
+        """ntfy has no buttons and a short body -- the reason string is the
+        only thing the owner actually reads, so it must survive into the
+        event rather than being dropped with the legacy task."""
+        task = _failed_task(error="coding agent backend unreachable")
+        queue.add(task)
+        events = []
+
+        run_quality_check(queue, event_sink=events.append)
+
+        assert "coding agent backend unreachable" in events[0]["reason"]
+        assert task.id in events[0]["title"]
+
+    def test_waiting_too_long_is_warning_not_error(self, queue):
+        task = Task(
+            id="stale_q", type=TaskType.INTERNAL_ASSIGNMENT,
+            status=TaskStatus.WAITING_FOR_INPUT,
+            started_at=datetime.now() - timedelta(hours=48),
+        )
+        queue.add(task)
+        events = []
+
+        run_quality_check(queue, event_sink=events.append)
+
+        assert len(events) == 1
+        assert events[0]["classification"] == "waiting_for_input_too_long"
+        assert events[0]["severity"] == "warning"
+
+    def test_only_one_event_across_repeated_passes(self, queue):
+        """The 56-identical-alert storm regression, now at the event layer."""
+        queue.add(_failed_task())
+        first, second, third = [], [], []
+
+        run_quality_check(queue, event_sink=first.append)
+        run_quality_check(queue, event_sink=second.append)
+        run_quality_check(queue, event_sink=third.append)
+
+        assert len(first) == 1
+        assert second == [] and third == []
+
+    def test_no_event_without_a_sink(self, queue):
+        """Unit tests and any caller that omits event_sink must not explode."""
+        queue.add(_failed_task())
+        assert len(run_quality_check(queue)) == 1
+
+    def test_sink_exception_does_not_break_the_scan(self, queue):
+        """A dead notification channel must never take down the watchdog's
+        own tick -- the finding still has to be recorded."""
+        queue.add(_failed_task())
+
+        def exploding_sink(event):
+            raise RuntimeError("ntfy down")
+
+        findings = run_quality_check(queue, event_sink=exploding_sink)
+
+        assert len(findings) == 1
+        assert findings[0].action == "escalated"
+
+    def test_async_sink_is_awaited_not_dropped(self, queue):
+        """Regression guard for the coroutine trap: Scheduler._broadcast is
+        `async def`. Calling it from this synchronous module and ignoring the
+        return value builds a coroutine that never runs -- the owner is never
+        notified and nothing logs an error."""
+        import asyncio
+
+        seen = []
+
+        async def async_sink(event):
+            await asyncio.sleep(0)
+            seen.append(event)
+
+        queue.add(_failed_task())
+        async def drive():
+            run_quality_check(queue, event_sink=async_sink)
+            await asyncio.sleep(0.05)  # let the created_task complete
+
+        asyncio.run(drive())
+
+        assert len(seen) == 1
+        assert seen[0]["audience"] == "push_only"
+
+
+class TestShadowFlag:
+    """QM_SHADOW_DISCORD_LEGACY lets the owner compare ntfy against Discord
+    before Discord is switched off for good."""
+
+    def test_shadow_on_creates_both_event_and_alert_task(self, queue, monkeypatch):
+        import app.scheduler.quality_monitor as qm
+        monkeypatch.setattr(qm, "QM_SHADOW_DISCORD_LEGACY", True)
+        queue.add(_failed_task())
+        events = []
+
+        qm.run_quality_check(queue, event_sink=events.append)
+
+        assert len(events) == 1
+        alerts = [t for t in queue.list_tasks() if t.id.startswith("quality_monitor_alert_")]
+        assert len(alerts) == 1
+        assert alerts[0].status == TaskStatus.WAITING_FOR_INPUT
+
+    def test_shadow_off_creates_event_only(self, queue, monkeypatch):
+        """The hard cut: after the owner confirms ntfy carries enough, no
+        alert task is created, so the Discord HITL adapter has nothing to
+        poll and the failure never touches that channel again."""
+        import app.scheduler.quality_monitor as qm
+        monkeypatch.setattr(qm, "QM_SHADOW_DISCORD_LEGACY", False)
+        queue.add(_failed_task())
+        events = []
+
+        qm.run_quality_check(queue, event_sink=events.append)
+
+        assert len(events) == 1
+        alerts = [t for t in queue.list_tasks() if t.id.startswith("quality_monitor_alert_")]
+        assert alerts == []
+        assert [t for t in queue.list_tasks() if t.status == TaskStatus.WAITING_FOR_INPUT] == []
