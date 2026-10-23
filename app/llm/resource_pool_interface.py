@@ -47,6 +47,7 @@ class ResourcePoolLLMInterface:
         resource_manager: "ResourceManager",
         tier_preference: Optional[List] = None,
         max_tokens: int = 16000,
+        min_output_tokens: int = 0,
         timeout_seconds: float = 900.0,
         max_data_scope: str = "own_network",
         queue_wait_seconds: float = 3600.0,
@@ -60,6 +61,7 @@ class ResourcePoolLLMInterface:
         self._rm = resource_manager
         self._tier_preference = tier_preference  # None = ResourceManager default
         self._max_tokens = max_tokens
+        self._min_output = min_output_tokens  # a resource that cannot emit this many tokens is not offered
         # Per-call wait. A nightly run sends ~200 messages in one prompt to a local 35B model; the old
         # fixed 120s cut every call off (2026-10-09: first honest failure of the nightly job).
         self._timeout = timeout_seconds
@@ -98,15 +100,21 @@ class ResourcePoolLLMInterface:
         from app.scheduler.resource_pool import ResourceBusyError, ResourceTier
 
         # Acquire a suitable resource
+        # Only resources whose context window really holds this prompt plus the reply budget are offered
+        # (~3 chars/token is deliberately pessimistic for mixed text and JSON).
+        fit = {"min_context": len(query) // 3 + self._max_tokens, "min_output": self._min_output,
+               "max_data_scope": self._max_data_scope}
         if self._tier_preference:
             from app.scheduler.resource_pool import ResourceTier as RT
             tiers = [RT(t) if isinstance(t, str) else t for t in self._tier_preference]
-            resource = self._rm.acquire(tier_preference=tiers, max_data_scope=self._max_data_scope)
+            resource = self._rm.acquire(tier_preference=tiers, **fit)
         else:
-            resource = self._rm.acquire(max_data_scope=self._max_data_scope)
+            resource = self._rm.acquire(**fit)
 
         if resource is None:
-            raise DreamingLLMError("no LLM resource available for dreaming")
+            raise DreamingLLMError(
+                f"no LLM resource available for dreaming (needs {fit['min_context']} tokens of context, "
+                f"{fit['min_output']} of output, data scope up to {fit['max_data_scope']})")
 
         config_max_tokens = min(resource.output_limit or self._max_tokens, self._max_tokens)
         resource_config = {

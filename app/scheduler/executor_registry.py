@@ -146,7 +146,8 @@ class ExecutorContext:
             )
         return self._coding_agent_executor
 
-    def get_dreaming_pipeline(self, quality_level: str = "basic", storage_path: Optional[Path] = None):
+    def get_dreaming_pipeline(self, quality_level: str = "basic", storage_path: Optional[Path] = None,
+                              source: str = "conversation", role_id: Optional[str] = None):
         """Dreaming pipeline.
 
         Without storage_path: the shared global pipeline (archives under ~/.memory/dreams). It is one
@@ -156,17 +157,19 @@ class ExecutorContext:
         knowledge on 2026-10-10.
         """
         from app.dreaming.pipeline import DreamingPipeline
-        if storage_path is not None:
+        # The LLM's data scope depends on where the text came from, so only the owner-conversation pipeline
+        # is shared; anything else gets its own pipeline bound to the scope for that source (and role).
+        if storage_path is not None or source != "conversation":
             from app.services.storage_factory import resolve_storage_backend
             return DreamingPipeline(
-                llm_interface=self._build_dreaming_llm(),
+                llm_interface=self._build_dreaming_llm(source, role_id),
                 quality_level=quality_level,
-                storage=resolve_storage_backend(storage_path=Path(storage_path)),
+                storage=resolve_storage_backend(storage_path=Path(storage_path or get_memory_subpath("dreams"))),
                 logger=self.logger,
             )
         if self._dreaming_pipeline is None or self._cached_quality_level != quality_level:
             self._dreaming_pipeline = DreamingPipeline(
-                llm_interface=self._build_dreaming_llm(),
+                llm_interface=self._build_dreaming_llm("conversation"),
                 quality_level=quality_level,
                 logger=self.logger,
                 storage_path=Path(get_memory_subpath("dreams")),
@@ -174,7 +177,7 @@ class ExecutorContext:
             self._cached_quality_level = quality_level
         return self._dreaming_pipeline
 
-    def _build_dreaming_llm(self) -> Any:
+    def _build_dreaming_llm(self, source: str = "conversation", role_id: Optional[str] = None) -> Any:
         from app.llm.llm_interface import LLMInterface
         try:
             from app.scheduler.resource_pool import ResourceManager
@@ -182,11 +185,20 @@ class ExecutorContext:
             rm = self.get_resource_manager()
             if rm and rm._resources:
                 from app.config.config_loader import load_layered_json_config
+                from app.scheduler.dreaming_scope import resolve_scope
                 dreaming_cfg = (load_layered_json_config("config/scheduler_config.json") or {}).get("dreaming") or {}
+                role_scope = None
+                if role_id and source != "conversation":
+                    from app.roles.role_manager import RoleManager
+                    role_scope = (RoleManager().get(role_id) or {}).get("data_scope")
+                scope = resolve_scope(dreaming_cfg, source, role_scope)
                 return ResourcePoolLLMInterface(rm, max_tokens=int(dreaming_cfg.get("max_output_tokens", 16000)),
+                                                min_output_tokens=int(dreaming_cfg.get("min_output_tokens", 0)),
                                                 timeout_seconds=float(dreaming_cfg.get("llm_timeout_seconds", 900)),
-                                                max_data_scope=dreaming_cfg.get("max_data_scope", "own_network"),
+                                                max_data_scope=scope,
                                                 queue_wait_seconds=float(dreaming_cfg.get("queue_wait_seconds", 3600)))
+        except ValueError:
+            raise  # a bad dreaming scope/limit in config must fail the run, not quietly use another LLM path
         except Exception as e:
             self.log(
                 f"ResourcePool LLM unavailable, falling back to llm_config: {e}", "warning"

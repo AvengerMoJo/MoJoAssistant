@@ -12,7 +12,7 @@ def _ctx(tmp_path):
     ctx._dreaming_pipeline = None
     ctx._cached_quality_level = None
     ctx.logger = None
-    ctx._build_dreaming_llm = lambda: object()
+    ctx._build_dreaming_llm = lambda *a, **k: object()
     return ctx
 
 

@@ -43,7 +43,7 @@ def test_call_stays_in_data_scope_and_takes_a_slot(monkeypatch):
     rm = RM()
     out = asyncio.run(ResourcePoolLLMInterface(rm, queue_wait_seconds=77)._generate("q"))
     assert out == "{}"
-    assert rm.acquired == [{"max_data_scope": "own_network"}]
+    assert rm.acquired[0]["max_data_scope"] == "own_network"
     assert rm.slots == [("ornith", "dreaming", 77)]
 
 
@@ -58,3 +58,19 @@ def test_a_model_that_stays_busy_is_an_explicit_error(monkeypatch):
     patch_client(monkeypatch)
     with pytest.raises(DreamingLLMError, match="stayed busy"):
         asyncio.run(ResourcePoolLLMInterface(RM(busy=True), queue_wait_seconds=5)._generate("q"))
+
+
+def test_only_resources_that_fit_the_prompt_and_reply_are_offered(monkeypatch):
+    patch_client(monkeypatch)
+    rm = RM()
+    asyncio.run(ResourcePoolLLMInterface(rm, max_tokens=32000, min_output_tokens=16000)._generate("x" * 30000))
+    assert rm.acquired[0]["min_context"] == 10000 + 32000   # 30000 chars / 3 + the reply budget
+    assert rm.acquired[0]["min_output"] == 16000
+
+
+def test_no_resource_error_names_what_was_needed(monkeypatch):
+    class Empty(RM):
+        def acquire(self, **kw):
+            return None
+    with pytest.raises(DreamingLLMError, match=r"needs 32000 tokens of context.*up to own_network"):
+        asyncio.run(ResourcePoolLLMInterface(Empty(), max_tokens=32000)._generate("q"))

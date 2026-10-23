@@ -98,13 +98,17 @@ class DreamingHandler(TaskHandler):
                 )
 
             metadata = {**task.config.get("metadata", {}), **auto_metadata}
+            # Where the text came from decides how far it may travel (dreaming_scope.py); untagged = the
+            # owner's own conversations, the narrowest scope.
+            dream_source = task.config.get("source", "conversation")
 
             if mode == "document":
                 role_id = task.config.get("role_id", "unknown")
                 storage_path = (
                     Path(get_memory_subpath("roles")) / role_id / "knowledge_units"
                 )
-                pipeline = ctx.get_dreaming_pipeline(quality_level, storage_path=storage_path)
+                pipeline = ctx.get_dreaming_pipeline(
+                    quality_level, storage_path=storage_path, source=dream_source, role_id=role_id)
 
                 doc_id = task.config.get("doc_id") or conversation_id
                 results = await _run_pipeline_off_loop(pipeline.process_document(
@@ -140,6 +144,8 @@ class DreamingHandler(TaskHandler):
             pipeline = ctx.get_dreaming_pipeline(
                 quality_level,
                 storage_path=(Path(get_memory_subpath("roles")) / conv_role_id / "knowledge_units") if conv_role_id else None,
+                source=dream_source,
+                role_id=conv_role_id,
             )
 
             results = await _run_pipeline_off_loop(pipeline.process_conversation(

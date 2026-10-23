@@ -1205,6 +1205,7 @@ class Scheduler:
                     "conversation_id": f"sessions/session_{task.id}",
                     "conversation_text": conversation_text,
                     "quality_level": "basic",
+                    "source": "task_output",  # not the owner's own chat: dreaming.scopes.task_output applies
                     "role_id": role_id,  # role-scope the session memory
                     "metadata": {
                         "source": "session_compaction",
@@ -1238,6 +1239,7 @@ class Scheduler:
                         "doc_id": f"reports/{role_id}/report_{task.id}",
                         "conversation_text": final_answer,
                         "quality_level": "basic",
+                        "source": "task_output",
                         "role_id": role_id,
                         "metadata": {
                             "source": "report_extraction",
