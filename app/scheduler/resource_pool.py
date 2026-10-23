@@ -1936,3 +1936,29 @@ class ResourceManager:
             return ResourceStatus.BUDGET_EXHAUSTED
 
         return ResourceStatus.AVAILABLE
+
+
+# ── One pool per process ─────────────────────────────────────────────────────────────────
+# Request slots, queue waits and the loaded/busy cache live in the ResourceManager object, and the
+# scheduler, the owner chats (Telegram, dashboard, Discord), dreaming and the MCP tools each built their
+# own, so a task and a chat never saw each other's queue and a model one of them found broken stayed
+# "available" to the others until the usage file was re-read. Everything that runs inside the service
+# uses this one. Config changes are picked up by the manager itself (mtime check) or reload_config().
+_shared_rm: Optional["ResourceManager"] = None
+_shared_rm_lock = threading.Lock()
+
+
+def get_shared_resource_manager(logger=None) -> "ResourceManager":
+    """The process-wide ResourceManager, created on first use (the first caller's logger is kept)."""
+    global _shared_rm
+    with _shared_rm_lock:
+        if _shared_rm is None:
+            _shared_rm = ResourceManager(logger=logger)
+        return _shared_rm
+
+
+def reset_shared_resource_manager() -> None:
+    """Forget the shared manager (tests; a restart does this anyway)."""
+    global _shared_rm
+    with _shared_rm_lock:
+        _shared_rm = None

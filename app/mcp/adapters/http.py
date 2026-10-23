@@ -218,8 +218,8 @@ class HTTPAdapter(ProtocolAdapter):
             # Telegram hub: the owner's working channel with their assistants (not a notification sink)
             try:
                 from app.mcp.adapters.telegram_hub import build_hub
-                from app.scheduler.resource_pool import ResourceManager
-                _hub = build_hub(lambda: ResourceManager(logger=self.logger), scheduler=_sched)
+                from app.scheduler.resource_pool import get_shared_resource_manager
+                _hub = build_hub(lambda: get_shared_resource_manager(logger=self.logger), scheduler=_sched)
                 if _hub is not None:
                     await _hub.start()
                     self._telegram_hub = _hub

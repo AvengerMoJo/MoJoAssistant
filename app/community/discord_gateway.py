@@ -127,8 +127,8 @@ class CommunityAssistantService:
     def _get_resource_manager(self):
         if self._resource_manager is None:
             try:
-                from app.scheduler.resource_pool import ResourceManager
-                self._resource_manager = ResourceManager()
+                from app.scheduler.resource_pool import get_shared_resource_manager
+                self._resource_manager = get_shared_resource_manager()
             except Exception as e:
                 logger.warning(f"[discord_gateway] could not load ResourceManager: {e}")
         return self._resource_manager

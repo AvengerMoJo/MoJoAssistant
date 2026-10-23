@@ -114,8 +114,8 @@ class ExecutorContext:
 
     def get_resource_manager(self):
         if self._resource_manager is None:
-            from app.scheduler.resource_pool import ResourceManager
-            self._resource_manager = ResourceManager(logger=self.logger)
+            from app.scheduler.resource_pool import get_shared_resource_manager
+            self._resource_manager = get_shared_resource_manager(logger=self.logger)
         return self._resource_manager
 
     def get_agentic_executor(self):

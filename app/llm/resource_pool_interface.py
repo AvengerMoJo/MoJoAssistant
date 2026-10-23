@@ -37,7 +37,7 @@ class ResourcePoolLLMInterface:
     LLM interface for the dreaming pipeline backed by ResourceManager.
 
     Usage:
-        rm = ResourceManager()
+        rm = get_shared_resource_manager()
         llm = ResourcePoolLLMInterface(rm)
         pipeline = DreamingPipeline(llm_interface=llm, quality_level="basic")
     """

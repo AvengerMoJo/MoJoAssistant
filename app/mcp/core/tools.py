@@ -4901,9 +4901,9 @@ Agent resumes within seconds.
             from app.scheduler.evals.runner import EvalRunner
             from app.scheduler.evals.scenarios import get_scenario
             from app.scheduler.evals.suites import get_suite
-            from app.scheduler.resource_pool import ResourceManager
+            from app.scheduler.resource_pool import get_shared_resource_manager
 
-            rm = ResourceManager()
+            rm = get_shared_resource_manager()
             resource = rm._resources.get(resource_id)
             if resource is None:
                 return {"status": "error", "message": f"Resource '{resource_id}' not found"}
@@ -5122,8 +5122,8 @@ Agent resumes within seconds.
 
         # 1. Config validity
         try:
-            from app.scheduler.resource_pool import ResourceManager
-            rm = ResourceManager()
+            from app.scheduler.resource_pool import get_shared_resource_manager
+            rm = get_shared_resource_manager()
             resources = rm._resources
             enabled = [r for r in resources.values() if r.enabled]
             report["checks"].append({
@@ -5141,8 +5141,8 @@ Agent resumes within seconds.
         # 2. Endpoint reachability (probe local server)
         try:
             import requests
-            from app.scheduler.resource_pool import ResourceManager
-            rm = ResourceManager()
+            from app.scheduler.resource_pool import get_shared_resource_manager
+            rm = get_shared_resource_manager()
             local_resources = [
                 r for r in rm._resources.values()
                 if r.enabled and r.base_url and "localhost" in r.base_url
@@ -5215,8 +5215,8 @@ Agent resumes within seconds.
         # on acquire()'s lazy 24h cache.
         try:
             import json as _json
-            from app.scheduler.resource_pool import ResourceManager
-            rm = ResourceManager()
+            from app.scheduler.resource_pool import get_shared_resource_manager
+            rm = get_shared_resource_manager()
             refreshed = rm.refresh_loaded_models_now()
             loaded_ids = set(refreshed["loaded_resource_ids"])
             local_resources = {r.id: r for r in rm._resources.values() if r.type == "local"}
@@ -5790,8 +5790,8 @@ Agent resumes within seconds.
 
             # Persist agentic_capable flag to ResourceManager
             try:
-                from app.scheduler.resource_pool import ResourceManager
-                rm = ResourceManager()
+                from app.scheduler.resource_pool import get_shared_resource_manager
+                rm = get_shared_resource_manager()
                 rm.set_agentic_capable(resource_id, result.agentic_capable)
             except Exception:
                 pass

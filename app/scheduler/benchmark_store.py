@@ -505,8 +505,8 @@ def _extract_duration(result) -> float:
 def _get_free_resource_ids() -> List[str]:
     """Return resource IDs that are free-tier, enabled, and agentic-capable."""
     try:
-        from app.scheduler.resource_pool import ResourceManager
-        rm = ResourceManager()
+        from app.scheduler.resource_pool import get_shared_resource_manager
+        rm = get_shared_resource_manager()
         ids = []
         for rid, res in rm._resources.items():
             if not getattr(res, "enabled", True):
@@ -528,8 +528,8 @@ def _get_free_resource_ids() -> List[str]:
 
 def _get_current_priorities() -> Dict[str, int]:
     try:
-        from app.scheduler.resource_pool import ResourceManager
-        rm = ResourceManager()
+        from app.scheduler.resource_pool import get_shared_resource_manager
+        rm = get_shared_resource_manager()
         return {
             rid: getattr(res, "priority", 50)
             for rid, res in rm._resources.items()

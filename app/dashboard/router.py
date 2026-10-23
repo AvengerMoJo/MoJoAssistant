@@ -1096,9 +1096,9 @@ async def privacy_report(mojo_dash: Optional[str] = Cookie(default=None)):
     # ── External services (resource pool) ────────────────────────────────
     ext_rows = ""
     try:
-        from app.scheduler.resource_pool import ResourceManager
+        from app.scheduler.resource_pool import get_shared_resource_manager
         import logging
-        rm = ResourceManager(logger=logging.getLogger(__name__))
+        rm = get_shared_resource_manager(logger=logging.getLogger(__name__))
         status = rm.get_status()
         for rid, info in status.get("resources", {}).items():
             rtype = info.get("type", "?")
@@ -1351,9 +1351,9 @@ Continue the interview via MCP to review and adjust each step, then save.</p>
 def _get_resource_manager():
     """Try to create a ResourceManager from config. Returns None on failure."""
     try:
-        from app.scheduler.resource_pool import ResourceManager
+        from app.scheduler.resource_pool import get_shared_resource_manager
         import logging
-        return ResourceManager(logger=logging.getLogger(__name__))
+        return get_shared_resource_manager(logger=logging.getLogger(__name__))
     except Exception:
         return None
 
