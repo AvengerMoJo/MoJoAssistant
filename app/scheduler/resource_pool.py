@@ -108,7 +108,7 @@ class LLMResource:
     tier: ResourceTier
     priority: int = 1
     enabled: bool = True
-    api_key: Optional[str] = None
+    api_key: Optional[str] = field(default=None, repr=False)
     api_key_env: Optional[str] = None
     context_limit: int = 32768
     output_limit: int = 8192
@@ -150,6 +150,17 @@ class LLMResource:
     health_probe_interval_s: float = 21600.0
     # Where this resource's traffic goes (see DATA_SCOPES); derived from base_url unless configured.
     data_scope: str = "third_party"
+    # Key held by the credential engine instead of this machine's config/env. When set, reading `api_key`
+    # asks the engine (lease, audited) and raises CredentialEngineError if it cannot -- no env fallback.
+    credential_engine: bool = False
+    key_source: Optional[Any] = field(default=None, repr=False)
+
+    def __getattribute__(self, name):
+        if name == "api_key":
+            source = object.__getattribute__(self, "key_source")
+            if source is not None:
+                return source()
+        return object.__getattribute__(self, name)
 
 
 @dataclass
@@ -429,7 +440,8 @@ class ResourceManager:
                 )
                 rconf.setdefault("provider", "openai")
                 resource = self._parse_resource(rid, rconf)
-                if rconf.get("account_group") and rconf.get("enabled", True) and not resource.api_key:
+                if (rconf.get("account_group") and rconf.get("enabled", True) and not resource.credential_engine
+                        and not resource.api_key):
                     # an account whose key is missing must not be routed to: say so, do not guess
                     resource.enabled = False
                     resource.config_error = f"no API key found for {resource.api_key_env}"
@@ -562,8 +574,17 @@ class ResourceManager:
         # Resolve API key: inline api_key wins; otherwise resolve from key_var/api_key_env;
         # final fallback: resolve_llm_resource() reads layered llm_config.json directly.
         from app.llm.unified_client import UnifiedLLMClient
-        api_key = UnifiedLLMClient.resolve_key(rid, conf, env_override=self._sandbox_env)
-        api_key_env = conf.get("key_var") or conf.get("api_key_env")
+        credential_engine = bool(conf.get("credential_engine"))
+        key_source = None
+        if credential_engine:
+            # The key comes from the engine, at the moment it is needed. Nothing from env is read, so a
+            # migrated resource cannot quietly keep working off a leftover local key.
+            from app.scheduler.credential_engine_client import get_credential_engine_client
+            key_source = get_credential_engine_client().key_source(rid)
+            api_key, api_key_env = None, None
+        else:
+            api_key = UnifiedLLMClient.resolve_key(rid, conf, env_override=self._sandbox_env)
+            api_key_env = conf.get("key_var") or conf.get("api_key_env")
 
         rate_limit = None
         if "rate_limit" in conf:
@@ -636,6 +657,8 @@ class ResourceManager:
             config_error=config_error,
             api_key=api_key,
             api_key_env=api_key_env,
+            credential_engine=credential_engine,
+            key_source=key_source,
             context_limit=conf.get("context_limit", 32768),
             output_limit=conf.get("output_limit", 8192),
             input_limit=conf.get("input_limit"),
@@ -1153,6 +1176,10 @@ class ResourceManager:
                         usage.rate_limited_until = rate_limited_until
 
             self._persist_usage()
+            engine_managed = resource_id in self._resources and self._resources[resource_id].credential_engine
+        if engine_managed:
+            from app.scheduler.credential_engine_client import get_credential_engine_client
+            get_credential_engine_client().report(resource_id, success, error_message)
 
     def resolve_via_service(self, route_id: str) -> Dict[str, Any]:
         """Resolve a credential through the standalone ai-credential-manager
@@ -1321,8 +1348,10 @@ class ResourceManager:
                     id=rid,
                     provider=template.provider,
                     base_url=template.base_url,
-                    api_key=template.api_key,
+                    api_key=None if template.key_source else template.api_key,
                     api_key_env=template.api_key_env,
+                    credential_engine=template.credential_engine,
+                    key_source=template.key_source,
                     model=model_id,
                     context_limit=ctx_limit,
                     output_limit=out_limit,

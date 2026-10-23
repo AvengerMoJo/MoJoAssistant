@@ -37,7 +37,7 @@ def test_provider_overload_counts_against_every_account_of_that_model():
     rm._lock = __import__("threading").RLock()
     rm._persist_usage = lambda: None
     rm._quota_pools, rm._pool_calls = {}, {}
-    mk = lambda i, m: type("R", (), {"id": i, "model": m, "base_url": "u", "quota_pool": None, "quotas": None})()
+    mk = lambda i, m: type("R", (), {"id": i, "model": m, "base_url": "u", "quota_pool": None, "quotas": None, "credential_engine": False})()
     rm._resources = {"a": mk("a", "nemo"), "b": mk("b", "nemo"), "c": mk("c", "other")}
     rm._usage = {}
     rm.record_usage("a", success=False, error_message="Upstream error from Nvidia: Service temporarily overloaded (code 503)")
