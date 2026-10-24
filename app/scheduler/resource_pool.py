@@ -195,6 +195,8 @@ class ResourceManager:
     # Append-only: each pick where an allowance that would have ranked ahead was used up and something else served.
     # The utilization report reads it -- a cap hit alone does not show refused demand, an overflow does.
     OVERFLOW_LOG_FILE = Path(get_memory_subpath("state", "resource_overflow.jsonl"))
+    SHADOW_LOG_FILE = Path(get_memory_subpath("state", "engine_shadow.jsonl"))
+    _shadow = None  # engine_shadow.ShadowSelector when shadow_engine_selection is on (class default: off)
     META_FILE = Path(get_memory_subpath("resource_pool_meta.json"))
     KNOWN_IDS_FILE = Path(get_memory_subpath("resource_pool_known_ids.json"))
     SMOKE_LOG_FILE = Path(get_memory_subpath("resource_pool_smoke_log.jsonl"))
@@ -239,6 +241,7 @@ class ResourceManager:
         self._health: Dict[str, "resource_health.ProbeResult"] = {}
         self._busy_resource_ids: set = set()
         self._memory_ceiling_gb: Optional[float] = None
+        self._shadow = None  # engine_shadow.ShadowSelector when shadow_engine_selection is on
         self._group_probe: Dict[str, tuple] = {}  # health_group -> (checked_at, ProbeResult)
         self._quota_pools: Dict[str, List["resource_quota.QuotaWindow"]] = {}
         self._quota_pool_errors: Dict[str, str] = {}
@@ -412,6 +415,7 @@ class ResourceManager:
         self._loaded_config = data  # keep reference for model_registry lookups
         ceiling = data.get("memory_ceiling_gb")
         self._memory_ceiling_gb = float(ceiling) if ceiling else None
+        self._configure_shadow(bool(data.get("shadow_engine_selection")))
         if use_flat:
             self._parse_flat_resources(data)
             self._auto_sync_flat_servers(data)
@@ -738,7 +742,32 @@ class ResourceManager:
 
             self._note_overflow(best, lambda r: self._exclusion_reason(
                 r, tier_preference, min_context, min_output, exclude_ids, max_data_scope=max_data_scope))
+            self._shadow_compare("acquire", best, tier_preference, min_context, min_output, exclude_ids, max_data_scope)
             return best
+
+    def _configure_shadow(self, on: bool) -> None:
+        if not on:
+            self._shadow = None
+            return
+        if self._shadow is None:
+            from app.scheduler.credential_engine_client import get_credential_engine_client
+            from app.scheduler.engine_shadow import ShadowSelector
+            self._shadow = ShadowSelector(get_credential_engine_client, self.SHADOW_LOG_FILE)
+
+    def _shadow_compare(self, kind: str, best: LLMResource, tier_preference, min_context, min_output, exclude_ids,
+                        max_data_scope=None, required_caps=None) -> None:
+        """Ask the engine the same question on the side and log whether it agrees (see engine_shadow). Never affects the pick."""
+        if self._shadow is None:
+            return
+        req: Dict[str, Any] = {"tiers": [t.value for t in tier_preference], "min_context": min_context,
+                               "min_output": min_output, "exclude_ids": sorted(exclude_ids or [])}
+        if max_data_scope:
+            req["max_data_scope"] = max_data_scope
+        if required_caps:
+            req["capabilities"] = sorted(required_caps)
+        if best.tier == ResourceTier.PAID:
+            req["paid_approved"] = [best.id]
+        self._shadow.compare(kind, {"id": best.id, "group": best.account_group, "tier": best.tier.value}, req)
 
     def _note_overflow(self, chosen: LLMResource, excluded_reason) -> None:
         """Caller holds the lock. If a resource that would have outranked `chosen` was skipped because its quota
@@ -1164,6 +1193,8 @@ class ResourceManager:
                     self._group_counters[group] = idx + 1
             self._note_overflow(best, lambda r: self._exclusion_reason(
                 r, tier_preference, min_context, min_output, exclude_ids, required_caps))
+            self._shadow_compare("requirements", best, tier_preference, min_context, min_output, exclude_ids,
+                                 required_caps=required_caps)
             return best
 
     _PROVIDER_WIDE_MARKERS = ("temporarily overloaded", "provider_overloaded", "(code 503)", "bad gateway", "(code 502)")

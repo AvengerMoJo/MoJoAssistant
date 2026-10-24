@@ -112,6 +112,11 @@ class CredentialEngineClient:
             self._leases[resource_id] = got["lease_id"]
             return got.get("api_key")
 
+    def select(self, requirements: dict, limit: int = 8) -> dict:
+        """The engine's ranking for a request, best first, with why each other resource cannot serve it. Read-only:
+        needs the tenant's discover scope, hands out no key and records no lease."""
+        return self._post("select", f"tenant:{self._tenant}:discover", {"requirements": requirements, "limit": limit})
+
     def key_source(self, resource_id: str) -> Callable[[], Optional[str]]:
         return lambda: self.api_key(resource_id)
 
