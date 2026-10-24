@@ -137,6 +137,8 @@ class LLMResource:
     quota_pool: Optional[str] = None
     quota_source: Optional[Dict[str, Any]] = None  # read the provider's own quota (percent-metered plans)
     quotas: List["resource_quota.QuotaWindow"] = field(default_factory=list)  # renewing allowance windows; ALL must have room
+    # Opt-in pacing (resource_quota.parse_pace): priority_while_quota applies only while no window is above its pace line.
+    pace: Optional[Dict[str, Any]] = None
     config_error: Optional[str] = None  # set (and the resource disabled) when its config could not be applied
     max_concurrent_requests: Optional[int] = None  # request slots; unset = 1 for a local model, unlimited for an API
     health_check_model: bool = True  # False: this provider's listing does not use the configured model id
@@ -605,10 +607,12 @@ class ResourceManager:
             )
 
         quotas: List[resource_quota.QuotaWindow] = []
+        pace: Optional[Dict[str, Any]] = None
         config_error: Optional[str] = None
         try:
             quotas = resource_quota.parse_windows(conf.get("quotas"))
             resource_quota.validate_source(conf.get("quota_source"))
+            pace = resource_quota.parse_pace(conf.get("pace"))
             pool = conf.get("quota_pool")
             if pool and pool in self._quota_pool_errors:
                 raise ValueError(self._quota_pool_errors[pool])
@@ -650,6 +654,7 @@ class ResourceManager:
             health_probe_interval_s=float(conf.get("health_probe_interval_s", 21600.0)),
             enabled=conf.get("enabled", True) and config_error is None,
             quotas=quotas,
+            pace=pace,
             quota_source=conf.get("quota_source"),
             quota_pool=conf.get("quota_pool"),
             priority_while_quota=conf.get("priority_while_quota"),
@@ -970,14 +975,27 @@ class ResourceManager:
         rows = self.selection_order(tier_preference, min_context, min_output, exclude_ids, max_data_scope)
         return "; ".join(f"{r['id']}: {r['excluded_because']}" for r in rows if not r["eligible"]) or "no resources configured"
 
-    @staticmethod
-    def _rank_priority(r: LLMResource) -> int:
+    def _rank_priority(self, r: LLMResource) -> int:
         """Selection rank (lower wins). Callers only rank resources that already
         passed the availability filters, so a quota-bearing resource that reaches
-        this point has headroom in every window."""
-        if r.priority_while_quota is not None and (r.quotas or r.quota_source):
+        this point has headroom in every window. With `pace` it also has to be at
+        or behind its pace line (resource_quota.on_pace), so a subscription is
+        spent evenly -- and freely once the allowance is about to expire."""
+        if r.priority_while_quota is None or not (r.quotas or r.quota_source):
+            return r.priority
+        if r.pace is None:
+            return r.priority_while_quota
+        if resource_quota.on_pace(self.quota_status(r.id), time.time(), r.pace):
             return r.priority_while_quota
         return r.priority
+
+    def budget_report(self, resource_id: str) -> List[Dict[str, Any]]:
+        """Per quota window: the agent's share, what is spent, what the pace line allows now, what is left per day."""
+        with self._lock:
+            r = self._resources.get(resource_id)
+        if r is None:
+            raise ValueError(f"unknown resource_id: {resource_id}")
+        return resource_quota.budget_report(self.quota_status(resource_id), time.time(), r.pace)
 
     def find_tier_restriction_conflict(self, tiers: List[ResourceTier]) -> Optional[str]:
         """
@@ -1231,6 +1249,9 @@ class ResourceManager:
                 "status": status.value,
                 "health": self._health[rid].to_dict() if rid in self._health else None,
                 "quota": [w.to_dict() for w in self.quota_status(rid)],
+                "rank_priority": self._rank_priority(resource),
+                "budget": resource_quota.budget_report(self.quota_status(rid), time.time(), resource.pace)
+                          if (resource.quotas or resource.quota_source) else [],
                 "config_error": resource.config_error,
                 "quota_source_error": (self._provider_quota.get(rid) or {}).get("error"),
                 # Only meaningful for local backends -- API/paid resources
