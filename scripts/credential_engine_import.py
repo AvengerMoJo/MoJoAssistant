@@ -56,6 +56,18 @@ async def main(apply: bool) -> int:
     client = ServiceClient.from_file(OWNER_CLIENT)
     tenant = json.loads(OWNER_CLIENT.read_text())["tenant_id"]
     scope = f"admin:vault:manage:{tenant}"
+    # An import REPLACES a definition, and which credential a resource uses lives only on the service side.
+    # Carry each existing credential_ref over, or every migrated resource would lose its key on the next import.
+    # `credential_engine` is MoJoAssistant's own opt-in flag; the service does not store it.
+    existing = await client.call("list_resources", scope)
+    rows = existing.get("resources") if isinstance(existing, dict) else existing
+    if not isinstance(rows, list):
+        raise SystemExit(f"cannot read the service's current definitions (unexpected list_resources answer): {type(existing).__name__}")
+    refs = {r.get("id") or r.get("resource_id"): r.get("credential_ref") for r in rows if isinstance(r, dict)}
+    for rid, conf in resources.items():
+        conf.pop("credential_engine", None)
+        if refs.get(rid) and not conf.get("credential_ref"):
+            conf["credential_ref"] = refs[rid]
     result = await client.call("import_resources", scope, resources=resources, quota_pools=pools, dry_run=not apply)
 
     print(f"{'APPLIED' if apply else 'DRY RUN'}: {len(resources)} definitions read from resource_pool.json")
