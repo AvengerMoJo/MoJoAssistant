@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import secrets
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ import httpx
 
 BOOTSTRAP_PATH = Path(os.path.expanduser("~/.memory/config/ai_credential_manager_client.json"))
 REFRESH_MARGIN_S = 60
+# A provider refusing the key we hold: the key may have been rotated or revoked, so stop reusing it.
+_AUTH_REFUSED = re.compile(r"\b(401|403)\b|unauthori[sz]ed|forbidden|invalid[ _-]?api[ _-]?key|incorrect api key|authentication", re.I)
 _log = logging.getLogger("credential_engine")
 
 
@@ -117,6 +120,10 @@ class CredentialEngineClient:
         model call, but a failed report is logged as an error, not dropped."""
         with self._lock:
             lease = self._leases.get(resource_id)
+            if not success and error_message and _AUTH_REFUSED.search(error_message) and resource_id in self._held:
+                # Drop the held key: the next call asks the engine again and gets whatever the vault holds now
+                # (a rotated key), instead of replaying a refused one until the lease runs out.
+                del self._held[resource_id]
         if lease is None:
             return  # no key was ever fetched for this resource in this process, so there is no lease to report on
 

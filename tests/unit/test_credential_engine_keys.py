@@ -156,3 +156,18 @@ def test_call_outcomes_of_an_engine_resource_are_reported(tmp_path, monkeypatch,
             break
         time.sleep(0.02)
     assert any(p == "/api/v1/report" for _, p, _ in engine.requests)
+
+
+def test_a_key_the_provider_refused_is_dropped_so_a_rotated_key_is_picked_up(client, engine):
+    assert client.api_key("r1") == "sk-ENGINE"
+    engine.key = "sk-ROTATED"
+    assert client.api_key("r1") == "sk-ENGINE"                 # still inside its lease: no round trip
+    client.report("r1", False, "Error code: 401 - invalid api key")
+    assert client.api_key("r1") == "sk-ROTATED"                # refused key dropped; the engine is asked again
+
+
+def test_an_ordinary_failure_keeps_the_held_key(client, engine):
+    client.api_key("r1")
+    client.report("r1", False, "Error code: 500 - upstream timeout")
+    client.report("r1", True)
+    assert sum(1 for _, p, _ in engine.requests if p == "/api/v1/acquire") == 1
