@@ -277,8 +277,65 @@ def _fetch_zai_coding_plan(conf: Dict[str, Any], api_key: str, timeout: float) -
     return parse_zai_coding_plan(payload, float(conf.get("block_at_used_pct", 100)))
 
 
-SOURCES = {"minimax_token_plan": _fetch_minimax_token_plan, "zai_coding_plan": _fetch_zai_coding_plan}
-_SOURCE_REQUIRES = {"minimax_token_plan": ("url", "model_name"), "zai_coding_plan": ("url",)}
+# OpenRouter free-model allowance. GET <url> (https://openrouter.ai/api/v1/key, called with the account's own
+# inference key) answers {"data":{..., "free_model_daily_requests":{"used":24,"limit":1000,"remaining":976}}}.
+# The limit is per ACCOUNT (1000 a day once 10+ credits have been bought, 50 below that, so a changed `limit` is
+# reported as the window's capacity rather than assumed). The response carries no reset time, so the daily block
+# comes from config (`window_seconds` + `anchor`, an epoch second of a past reset), never from a guess. The meter
+# lags the call by up to a minute, so a burst can overshoot it: block_at_used_pct is the margin for that.
+_OPENROUTER_CACHE: Dict[Any, Any] = {}
+_OPENROUTER_CACHE_TTL_S = 20.0  # resources that share one account share one reading
+_OPENROUTER_LOCK = __import__("threading").Lock()
+
+
+def parse_openrouter_key(payload: Dict[str, Any], block_at_used_pct: float, window_seconds: int, anchor: float,
+                         now: Optional[float] = None) -> List[WindowStatus]:
+    import time as _time
+    now = _time.time() if now is None else now
+    meter = ((payload.get("data") or {}).get("free_model_daily_requests")) if isinstance(payload, dict) else None
+    if not isinstance(meter, dict):
+        raise QuotaSourceError("no free_model_daily_requests in the provider response")
+    used, limit = meter.get("used"), meter.get("limit")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (used, limit)) or limit <= 0 or used < 0:
+        raise QuotaSourceError(f"unreadable free_model_daily_requests: used={used!r} limit={limit!r}")
+    pct = used / limit * 100
+    start = anchor + ((now - anchor) // window_seconds) * window_seconds
+    remaining = meter.get("remaining")
+    return [WindowStatus(name="daily", kind="provider_percent", used=int(round(pct)), agent_limit=int(round(block_at_used_pct)),
+                         max_calls=100, window_start=start, resets_at=start + window_seconds,
+                         exhausted=pct >= block_at_used_pct or (isinstance(remaining, (int, float)) and remaining <= 0),
+                         capacity=limit, capacity_unit="requests")]
+
+
+def _fetch_openrouter_key(conf: Dict[str, Any], api_key: str, timeout: float) -> List[WindowStatus]:
+    import hashlib as _hashlib
+    import time as _time
+    cache_key = (conf["url"], _hashlib.sha256(api_key.encode()).hexdigest())
+    with _OPENROUTER_LOCK:
+        hit = _OPENROUTER_CACHE.get(cache_key)
+        if hit and _time.time() - hit[0] < _OPENROUTER_CACHE_TTL_S:
+            payload = hit[1]
+        else:
+            payload = None
+    if payload is None:
+        req = _urlreq.Request(conf["url"], headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"})
+        try:
+            with _urlreq.urlopen(req, timeout=timeout) as resp:
+                payload = _json.loads(resp.read(1_000_000))
+        except _urlerr.HTTPError as e:
+            raise QuotaSourceError(f"HTTP {e.code} from {conf['url']}")
+        except (_urlerr.URLError, OSError, ValueError) as e:
+            raise QuotaSourceError(f"{type(e).__name__}: {e}")
+        with _OPENROUTER_LOCK:
+            _OPENROUTER_CACHE[cache_key] = (_time.time(), payload)
+    return parse_openrouter_key(payload, float(conf.get("block_at_used_pct", 100)), int(conf["window_seconds"]),
+                                float(conf["anchor"]))
+
+
+SOURCES = {"minimax_token_plan": _fetch_minimax_token_plan, "zai_coding_plan": _fetch_zai_coding_plan,
+           "openrouter_key": _fetch_openrouter_key}
+_SOURCE_REQUIRES = {"minimax_token_plan": ("url", "model_name"), "zai_coding_plan": ("url",),
+                    "openrouter_key": ("url", "window_seconds", "anchor")}
 
 
 def validate_source(conf: Optional[Dict[str, Any]]) -> None:
