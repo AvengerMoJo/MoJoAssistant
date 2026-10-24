@@ -980,14 +980,19 @@ class ResourceManager:
         passed the availability filters, so a quota-bearing resource that reaches
         this point has headroom in every window. With `pace` it also has to be at
         or behind its pace line (resource_quota.on_pace), so a subscription is
-        spent evenly -- and freely once the allowance is about to expire."""
-        if r.priority_while_quota is None or not (r.quotas or r.quota_source):
-            return r.priority
+        spent evenly -- and freely once the allowance is about to expire. A paced
+        resource with no priority_while_quota ranks priority + pace.ahead_penalty
+        while ahead of its line (a free daily pool, demoted behind the subscriptions)."""
         if r.pace is None:
-            return r.priority_while_quota
-        if resource_quota.on_pace(self.quota_status(r.id), time.time(), r.pace):
-            return r.priority_while_quota
-        return r.priority
+            if r.priority_while_quota is not None and (r.quotas or r.quota_source):
+                return r.priority_while_quota
+            return r.priority
+        if not (r.quotas or r.quota_source or r.quota_pool):
+            return r.priority
+        on = resource_quota.on_pace(self.quota_status(r.id), time.time(), r.pace)
+        if r.priority_while_quota is not None:
+            return r.priority_while_quota if on else r.priority
+        return r.priority if on else r.priority + r.pace["ahead_penalty"]
 
     def budget_report(self, resource_id: str) -> List[Dict[str, Any]]:
         """Per quota window: the agent's share, what is spent, what the pace line allows now, what is left per day."""

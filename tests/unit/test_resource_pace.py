@@ -52,3 +52,32 @@ class TestPacedSubscription(TestPoolUsesProviderQuota):
         self.assertIsNotNone(rq.parse_pace(True))
         with self.assertRaises(ValueError):
             rq.parse_pace({"head_start": 2})
+
+
+class TestPacedDailyPool(TestPoolUsesProviderQuota):
+    """A shared daily pool (OpenRouter free): normal rank while on pace, demoted by ahead_penalty when ahead."""
+
+    def _pool(self, spent):
+        from collections import deque
+        sub = self.rm._resources["sub"]
+        sub.quota_source = None
+        self.rm._provider_quota.pop("sub", None)
+        sub.priority, sub.priority_while_quota, sub.quota_pool = 1, None, "free"
+        sub.pace = rq.parse_pace({"ahead_penalty": 300})
+        self.rm._quota_pools["free"] = rq.parse_windows([{"name": "daily", "kind": "fixed", "seconds": 86400, "anchor": 0,
+                                                          "max_calls": 1000, "reserved_for_user_pct": 10}])
+        now = time.time()
+        self.rm._pool_calls["free"] = deque([now] * spent)
+        return sub
+
+    def test_on_pace_keeps_its_rank(self):
+        sub = self._pool(spent=0)
+        self.assertEqual(self.rm._rank_priority(sub), 1)
+
+    def test_ahead_of_the_line_is_demoted_behind_the_others(self):
+        sub = self._pool(spent=899)                 # nearly the whole share; the line only reaches it at day's end
+        elapsed = (time.time() % 86400) / 86400
+        if 899 <= 900 * min(1, elapsed + 0.1):
+            self.skipTest("the day is almost over: the line has caught up")
+        self.assertEqual(self.rm._rank_priority(sub), 301)
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE_API]).id, "other")

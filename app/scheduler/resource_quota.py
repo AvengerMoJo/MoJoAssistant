@@ -304,9 +304,12 @@ def fetch_provider_quota(conf: Dict[str, Any], api_key: str, timeout: float = 10
 #     allowed_now = agent_limit * min(1, elapsed_fraction + head_start) * cost_scale
 #
 # A resource is "on pace" when no window is above its line. On pace it may rank at priority_while_quota
-# (treated as nearly free); ahead of pace it ranks at its normal priority until time catches up. The line
+# (treated as nearly free); ahead of pace it ranks at its normal priority -- plus pace.ahead_penalty, for
+# allowances with no boosted rank of their own (a free daily pool: demote it behind the subscriptions) --
+# until time catches up. The line
 # reaches the full share at the window's end, so allowance about to expire is always free to use.
-#   - rolling windows (credits come back one by one) have no end to pace towards: a hard cap only.
+#   - only the longest window with an end is paced (that is where spending now costs future allowance); shorter
+#     windows and rolling windows (credits come back one by one) are hard caps only.
 #   - head_start (default 10%) lets a window be used straight away instead of flapping after one call.
 #   - cost_scale shrinks the line while the provider charges more per call (peak hours), so work drifts to
 #     the cheap hours without ever being forbidden.
@@ -343,7 +346,10 @@ def parse_pace(conf: Any) -> Optional[Dict[str, Any]]:
     sched = conf.get("cost_schedule")
     if sched is not None:
         _check_schedule(sched)
-    return {"head_start": float(head), "cost_schedule": sched}
+    penalty = conf.get("ahead_penalty", 0)
+    if not isinstance(penalty, int) or isinstance(penalty, bool) or not 0 <= penalty <= 10000:
+        raise ValueError("pace.ahead_penalty must be an integer in [0, 10000]")
+    return {"head_start": float(head), "cost_schedule": sched, "ahead_penalty": penalty}
 
 
 def _check_schedule(sched: Any) -> None:
@@ -382,15 +388,32 @@ def cost_scale(sched: Optional[Dict[str, Any]], now: float) -> float:
     return cheapest / cost_multiplier(sched, now)
 
 
+def _span(s: WindowStatus, now: float) -> Optional[float]:
+    """Length of a window with an end to pace towards; None for rolling windows (no end, capacity returns call by call)."""
+    if s.kind in _HARD_CAP_ONLY or s.resets_at is None or s.resets_at <= s.window_start:
+        return None
+    return s.resets_at - s.window_start
+
+
 def pace(statuses: Sequence[WindowStatus], now: float, head_start: float = DEFAULT_HEAD_START,
          scale: float = 1.0) -> List[PaceRow]:
+    """Only the LONGEST window with an end is paced. Spending now costs future availability only there; in a
+    shorter window the unspent remainder is lost at its edge anyway, so conserving inside it buys nothing and
+    would strand allowance (MiniMax: a week at 0% used must not be held back by the 5-hour block inside it).
+    Shorter and rolling windows stay hard caps; the long window's line is what stops short blocks draining it."""
+    spans = [_span(s, now) for s in statuses]
+    longest = max([x for x in spans if x is not None], default=None)
     rows = []
-    for s in statuses:
+    for s, span in zip(statuses, spans):
         limit = float(s.agent_limit)
-        if s.kind in _HARD_CAP_ONLY or s.resets_at is None or s.resets_at <= s.window_start:
+        if span is None:
             rows.append(PaceRow(s.name, s.used, limit, limit, s.used > limit, None, "rolling: hard cap only"))
             continue
-        elapsed = min(1.0, max(0.0, (now - s.window_start) / (s.resets_at - s.window_start)))
+        if span < 0.99 * longest:
+            rows.append(PaceRow(s.name, s.used, limit, limit, s.used > limit, None,
+                                "shorter than the longest window: hard cap only (its unspent part is lost at its edge)"))
+            continue
+        elapsed = min(1.0, max(0.0, (now - s.window_start) / span))
         allowed = limit * min(1.0, elapsed + head_start) * min(1.0, scale)
         rows.append(PaceRow(s.name, s.used, limit, allowed, s.used > allowed, elapsed,
                             f"{elapsed:.0%} of the window gone, line at {min(1.0, elapsed + head_start):.0%}"
