@@ -24,6 +24,7 @@ from credential_manager.owner_client import ServiceClient  # noqa: E402
 
 OWNER_CLIENT = Path.home() / ".config" / "ai-credential-manager" / "owner_admin_client.json"
 RESEARCH = Path.home() / ".memory" / "research"
+OVERFLOW_LOG = Path.home() / ".memory" / "state" / "resource_overflow.jsonl"
 
 
 def _fmt(v, suffix="%"):
@@ -53,6 +54,37 @@ def rows_of(report: dict):
                          "verdict": r["verdict"] if lead else "", "why": r["why"] if lead else "",
                          "calls": r["calls"], "failed": r["failed"]})
     return rows
+
+
+def overflow_section(days: float) -> list:
+    """Refused demand: picks where an allowance that would have ranked first was used up and something else served.
+    A cap hit alone only shows the share was spent (rank 0 spends it on purpose); an overflow shows work that wanted it."""
+    import time
+    if not OVERFLOW_LOG.exists():
+        return ["", "### Overflow (demand an exhausted allowance could not serve)", "", "No overflow log yet."]
+    horizon, by = time.time() - days * 86400, {}
+    for line in OVERFLOW_LOG.read_text().splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d["t"] < horizon:
+            continue
+        for rid, why, _rank in d["displaced"]:
+            e = by.setdefault(rid, {"n": 0, "paid": 0, "served": {}})
+            e["n"] += 1
+            e["paid"] += d["chosen_tier"] == "paid"
+            e["served"][d["chosen"]] = e["served"].get(d["chosen"], 0) + 1
+    out = ["", "### Overflow (demand an exhausted allowance could not serve)", ""]
+    if not by:
+        return out + ["None in this period: nothing was refused for lack of allowance."]
+    out += ["| allowance | times skipped (exhausted) | served by a paid resource | mostly served by |", "|---|---|---|---|"]
+    for rid, e in sorted(by.items(), key=lambda kv: -kv[1]["n"]):
+        top = max(e["served"], key=e["served"].get)
+        out.append(f"| {rid} | {e['n']} | {e['paid']} | {top} ({e['served'][top]}) |")
+    out.append("")
+    out.append("Read buy_more together with this: a recurring limit PLUS skips that landed on paid resources is the real case for a bigger plan.")
+    return out
 
 
 def render(report: dict) -> str:
@@ -86,7 +118,7 @@ async def main(days_list) -> int:
              "Evidence for subscription decisions. Allowances only appear once they report to the credential engine; "
              "history begins when snapshot recording began, so early periods are mostly `insufficient_data`.", ""]
     for d in days_list:
-        parts += [render(await client.call("utilization_report", admin, days=d)), ""]
+        parts += [render(await client.call("utilization_report", admin, days=d))] + overflow_section(d) + [""]
     text = "\n".join(parts)
     print(text)
     RESEARCH.mkdir(parents=True, exist_ok=True)

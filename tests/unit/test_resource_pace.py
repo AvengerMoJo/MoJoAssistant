@@ -1,10 +1,11 @@
 """A subscription with `pace` is spent evenly: rank 0 while at/behind its pace line, normal rank when ahead,
 out of rotation at the agent's share. Uses the provider-quota pool fixture."""
 import time
+from pathlib import Path
 
 from app.scheduler import resource_quota as rq
 from app.scheduler.resource_pool import ResourceTier
-from tests.unit.test_resource_quota_provider import TestPoolUsesProviderQuota
+from tests.unit.test_resource_quota_provider import TestPoolUsesProviderQuota, payload
 
 DAY = 86400.0
 
@@ -95,3 +96,40 @@ class TestEqualRankTieBreak(TestPoolUsesProviderQuota):
         self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE_API]).id, "other")   # a quarter of the week left
         order = [x["id"] for x in self.rm.selection_order([ResourceTier.FREE_API]) if x["eligible"]]
         self.assertEqual(order[:2], ["other", "sub"])                                              # display agrees with behaviour
+
+
+class TestOverflowRecord(TestPoolUsesProviderQuota):
+    """When an allowance that would have ranked first is used up and something else serves, that is recorded."""
+
+    def setUp(self):
+        super().setUp()
+        from unittest.mock import patch
+        p = patch.object(type(self.rm), "OVERFLOW_LOG_FILE", Path(self.tmp.name) / "overflow.jsonl")
+        p.start()
+        self.addCleanup(p.stop)
+        self.log = Path(self.tmp.name) / "overflow.jsonl"
+
+    def lines(self):
+        import json
+        return [json.loads(l) for l in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def test_exhausted_allowance_served_by_another_resource_is_recorded(self):
+        self.server.body = payload("97%")
+        self.rm.probe_all()
+        self.rm._resources["sub"].priority = 1
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE_API]).id, "other")
+        [row] = self.lines()
+        self.assertEqual((row["chosen"], row["chosen_tier"], row["displaced"][0][0]), ("other", "free_api", "sub"))
+        self.assertIn("quota exhausted", row["displaced"][0][1])
+
+    def test_nothing_is_recorded_when_nothing_was_displaced(self):
+        self.rm.probe_all()
+        self.rm.acquire(tier_preference=[ResourceTier.FREE_API])
+        self.assertEqual(self.lines(), [])
+
+    def test_requirements_path_records_it_too(self):
+        self.server.body = payload("97%")
+        self.rm.probe_all()
+        self.rm._resources["sub"].priority = 1
+        self.rm.acquire_by_requirements({"tier": ["free_api"]})
+        self.assertEqual(len(self.lines()), 1)

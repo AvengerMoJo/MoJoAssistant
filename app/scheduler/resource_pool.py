@@ -192,6 +192,9 @@ class ResourceManager:
 
     SANDBOX_ENV_FILE = Path(get_memory_subpath("resource_pool.env"))
     USAGE_FILE = Path(get_memory_subpath("resource_pool_usage.json"))
+    # Append-only: each pick where an allowance that would have ranked ahead was used up and something else served.
+    # The utilization report reads it -- a cap hit alone does not show refused demand, an overflow does.
+    OVERFLOW_LOG_FILE = Path(get_memory_subpath("state", "resource_overflow.jsonl"))
     META_FILE = Path(get_memory_subpath("resource_pool_meta.json"))
     KNOWN_IDS_FILE = Path(get_memory_subpath("resource_pool_known_ids.json"))
     SMOKE_LOG_FILE = Path(get_memory_subpath("resource_pool_smoke_log.jsonl"))
@@ -733,7 +736,33 @@ class ResourceManager:
                     best = group_candidates[idx]
                     self._group_counters[group] = idx + 1
 
+            self._note_overflow(best, lambda r: self._exclusion_reason(
+                r, tier_preference, min_context, min_output, exclude_ids, max_data_scope=max_data_scope))
             return best
+
+    def _note_overflow(self, chosen: LLMResource, excluded_reason) -> None:
+        """Caller holds the lock. If a resource that would have outranked `chosen` was skipped because its quota
+        or budget is used up, append who was displaced and who served instead (and at which tier)."""
+        try:
+            chosen_rank = self._rank_priority(chosen)
+            displaced = []
+            for r in self._resources.values():
+                if r.id == chosen.id or not (r.quotas or r.quota_source or r.quota_pool or r.budget):
+                    continue
+                would = r.priority_while_quota if r.priority_while_quota is not None else r.priority
+                if would >= chosen_rank:
+                    continue
+                why = excluded_reason(r)
+                if why and (why.startswith("quota exhausted") or why == "budget exhausted"):
+                    displaced.append([r.id, why, would])
+            if not displaced:
+                return
+            self.OVERFLOW_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with self.OVERFLOW_LOG_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"t": time.time(), "chosen": chosen.id, "chosen_tier": chosen.tier.value,
+                                    "chosen_rank": chosen_rank, "displaced": displaced}) + "\n")
+        except Exception as e:  # recording must never break routing, but a lost record is surfaced, not hidden
+            self._log(f"Could not record overflow for '{chosen.id}': {e}", "error")
 
     def detect_new_resources(self) -> List[str]:
         """Return enabled resource ids not seen before, then remember them.
@@ -1133,6 +1162,8 @@ class ResourceManager:
                     idx = self._group_counters.get(group, 0) % len(group_candidates)
                     best = group_candidates[idx]
                     self._group_counters[group] = idx + 1
+            self._note_overflow(best, lambda r: self._exclusion_reason(
+                r, tier_preference, min_context, min_output, exclude_ids, required_caps))
             return best
 
     _PROVIDER_WIDE_MARKERS = ("temporarily overloaded", "provider_overloaded", "(code 503)", "bad gateway", "(code 502)")
