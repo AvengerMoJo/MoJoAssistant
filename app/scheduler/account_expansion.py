@@ -62,6 +62,8 @@ def expand_provider_accounts(data: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict
                 conf.update(m)
                 conf["key_var"] = acfg.get("key_var") or acfg.get("api_key_env")
                 conf.pop("api_key_env", None)
+                if acfg.get("credential_engine"):  # this account's key comes from the credential engine, not the environment
+                    conf["credential_engine"] = True
                 conf["account_group"] = f"{group}_{slug}"
                 conf["health_group"] = f"{group}_{acct}"
                 conf["enabled"] = bool(acfg.get("enabled", True) and m.get("enabled", True))

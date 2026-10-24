@@ -4,6 +4,9 @@
   venv/bin/python scripts/credential_engine_migrate.py glm_5_2               # plan only, changes nothing
   venv/bin/python scripts/credential_engine_migrate.py glm_5_2 --apply       # vault + catalog + client grant/policy, then verify
   venv/bin/python scripts/credential_engine_migrate.py glm_5_2 --apply --switch   # ... and flip credential_engine on in resource_pool.json
+  venv/bin/python scripts/credential_engine_migrate.py openrouter_free:tinyi       # one ACCOUNT of a provider_accounts group: its key
+                                                                                    # is stored once, every resource generated for it
+                                                                                    # follows (--switch marks the account credential_engine)
 
 --apply is additive: it COPIES the key into the vault. The old environment variable is not touched, so
 nothing MoJoAssistant does today changes. It then proves the engine path: the key MoJo's own client gets
@@ -78,7 +81,80 @@ def current_key(rid: str):
     return r, r.api_key, r.api_key_env
 
 
+async def main_account(spec: str, apply: bool, switch: bool) -> int:
+    """group:account -- one account of provider_accounts.<group>. One key, N generated resources."""
+    group, _, acct = spec.partition(":")
+    load_service_env()
+    resources, pools, _ = build_payload()
+    runtime = json.loads(RUNTIME_POOL.read_text())
+    acfg = (((runtime.get("provider_accounts") or {}).get(group) or {}).get("accounts") or {}).get(acct)
+    if not acfg:
+        raise SystemExit(f"provider_accounts.{group}.accounts.{acct} is not in the runtime resource_pool.json")
+    if acfg.get("credential_engine"):
+        raise SystemExit(f"{group}:{acct} already reads its key from the engine")
+    var = acfg.get("key_var") or acfg.get("api_key_env")
+    ids = sorted(r for r in resources if r.startswith(f"{group}_{acct}_"))
+    if not ids:
+        raise SystemExit(f"no resources are generated for {group}:{acct}")
+    # the key as the pool resolves it today (environment, then ~/.memory/resource_pool.env)
+    from app.scheduler.resource_pool import ResourceManager
+    live = ResourceManager()._resources.get(ids[0])
+    key = (live.api_key if live else None) or ""
+    if not key:
+        raise SystemExit(f"the pool resolves no key for ${var}; nothing to migrate")
+    base_url = resources[ids[0]]["base_url"]
+    owner = ServiceClient.from_file(OWNER_CLIENT)
+    tenant = json.loads(OWNER_CLIENT.read_text())["tenant_id"]
+    admin = f"admin:vault:manage:{tenant}"
+    st = load_state()
+    already_cred = st["credentials"].get(var)
+    print(f"account    {group}:{acct}  ->  {len(ids)} resources ({ids[0]} ...)")
+    print(f"key        from ${var}  (sha256 {sha(key)}…, length {len(key)})")
+    print(f"vault      {'credential ' + already_cred + ' already holds this key' if already_cred else 'a new credential will be stored (encrypted)'}")
+    print(f"engine     all {len(ids)} catalog entries get credential_ref (tier {resources[ids[0]].get('tier')}, covered by MoJo's policy)")
+    print(f"MoJo       {'provider_accounts.' + group + '.accounts.' + acct + '.credential_engine=true will be written' if switch else 'unchanged (no --switch)'}")
+    if not apply:
+        print("\nDRY RUN - nothing changed. Re-run with --apply.")
+        return 0
+    pid = st["providers"].get(base_url)
+    if not pid:
+        pid = (await owner.call("register_provider", admin, display_name=group, base_url=base_url,
+                                auth_style="bearer_header"))["provider_id"]
+        st["providers"][base_url] = pid
+        save_state(st)
+    cid = already_cred
+    if not cid:
+        cid = (await owner.call("register_credential", admin, provider_id=pid, value=key,
+                                description=f"${var} ({group}:{acct}, migrated from MoJoAssistant)"))["credential_id"]
+        st["credentials"][var] = cid
+        save_state(st)
+    out = await owner.call("import_resources", admin, resources={r: dict(resources[r], credential_ref=cid) for r in ids},
+                           quota_pools=pools, dry_run=False)
+    if out["rejected"]:
+        raise SystemExit(f"engine rejected definitions: {out['rejected']}")
+    mojo = json.loads(BOOTSTRAP.read_text())["mojoassistant_client"]["client_id"]
+    need = f"tenant:{tenant}:acquire"
+    if not any(g["resource_scope"] == need and not g["revoked"] for g in await owner.call("list_grants", admin, client_id=mojo)):
+        await owner.call("grant_access", admin, client_id=mojo, resource_scope=need)
+    from app.scheduler.credential_engine_client import CredentialEngineClient
+    probe_id = next(r for r in ids if resources[r].get("enabled", True))
+    got = CredentialEngineClient().api_key(probe_id)
+    if got is None or sha(got) != sha(key):
+        raise SystemExit(f"VERIFY FAILED: the engine handed MoJo a different key for {probe_id} ({sha(got or '')} != {sha(key)})")
+    print(f"\nverified   engine hands MoJo's client the same key for {probe_id} (sha256 {sha(got)}…)")
+    if switch:
+        data = json.loads(RUNTIME_POOL.read_text())
+        shutil.copy2(RUNTIME_POOL, RUNTIME_POOL.with_name(RUNTIME_POOL.name + f".bak_engine_{group}_{acct}"))
+        data["provider_accounts"][group]["accounts"][acct]["credential_engine"] = True
+        RUNTIME_POOL.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        assert json.loads(RUNTIME_POOL.read_text())["provider_accounts"][group]["accounts"][acct]["credential_engine"] is True
+        print(f"switched   {group}:{acct}: credential_engine=true written (backup .bak_engine_{group}_{acct})")
+    return 0
+
+
 async def main(rid: str, apply: bool, switch: bool) -> int:
+    if ":" in rid:
+        return await main_account(rid, apply, switch)
     load_service_env()
     resources, pools, _ = build_payload()
     if rid not in resources:

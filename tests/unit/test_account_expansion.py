@@ -74,3 +74,12 @@ def test_generated_resources_carry_the_account_health_group():
     res, _, _ = expand_provider_accounts(_data())
     assert res["orf_a_nvidia_nemotron_3_5_lightning_free"]["health_group"] == "orf_a"
     assert res["orf_b_nvidia_nemotron_3_5_lightning_free"]["health_group"] == "orf_b"
+
+
+def test_account_flagged_credential_engine_marks_its_generated_resources():
+    data = {"quota_pools": {}, "provider_accounts": {"g": {"template": {"provider": "openrouter"},
+            "models": [{"model": "m/a:free"}],
+            "accounts": {"x": {"key_var": "K_X", "credential_engine": True}, "y": {"key_var": "K_Y"}}}}}
+    res, _, errors = expand_provider_accounts(data)
+    assert errors == [] and res["g_x_m_a_free"]["credential_engine"] is True
+    assert "credential_engine" not in res["g_y_m_a_free"]
