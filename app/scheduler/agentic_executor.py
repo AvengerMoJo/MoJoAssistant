@@ -756,11 +756,14 @@ class AgenticExecutor:
             {"role": "user", "content": f"Goal: {goal[:800]}"},
         ]
         try:
+            _t0 = time.time()
             data = await self._call_llm(resource, messages)
         except Exception as exc:
-            self._rm.record_usage(resource.id, success=False, error_message=str(exc))
+            self._rm.record_usage(resource.id, success=False, error_message=str(exc), task_class="scheduler.classifier")
             raise ExecClassifierError(f"{resource.id} failed: {exc}") from exc
-        self._rm.record_usage(resource.id, success=True)
+        self._rm.record_usage(resource.id, success=True, token_usage=data.get("usage"),
+                              model_served=data.get("_selected_model") or resource.model,
+                              duration_ms=(time.time() - _t0) * 1000, task_class="scheduler.classifier")
         reply = ((data["choices"][0].get("message") or {}).get("content") or "").strip()
         if "</think>" in reply:
             reply = reply.split("</think>", 1)[1].strip()
@@ -1559,7 +1562,9 @@ class AgenticExecutor:
                     resource, messages, tools=tool_defs or None,
                     model_override=_model_override, owner=task.id,
                 )
-                self._rm.record_usage(resource.id, success=True)
+                self._rm.record_usage(resource.id, success=True, token_usage=response.get("usage"),
+                                      model_served=response.get("_selected_model") or effective_model,
+                                      duration_ms=(time.time() - iter_start) * 1000, task_class="scheduler.agentic")
                 # Audit trail — log every non-free external boundary crossing
                 if resource.tier.value != "free":
                     try:
@@ -1576,10 +1581,12 @@ class AgenticExecutor:
                             tokens_out=usage.get("completion_tokens", 0),
                             tokens_total=usage.get("total_tokens", 0),
                         )
-                    except Exception:
-                        pass  # audit logging must never break task execution
+                    except Exception as audit_exc:
+                        # audit logging must never break task execution, but a lost audit row is an error to see
+                        self._log(f"audit log write failed for {resource.id}: {audit_exc}", "error")
             except Exception as e:
-                self._rm.record_usage(resource.id, success=False, error_message=str(e))
+                self._rm.record_usage(resource.id, success=False, error_message=str(e), task_class="scheduler.agentic",
+                                      duration_ms=(time.time() - iter_start) * 1000)
                 _failed_resource_ids.add(resource.id)
                 self._log(f"LLM call failed: {e} — resource '{resource.id}' excluded for this task", "error")
                 iteration_log.append(

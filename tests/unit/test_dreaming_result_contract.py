@@ -39,7 +39,7 @@ class TestLLMInterfaceRaises(unittest.TestCase):
         with patch("app.llm.unified_client.UnifiedLLMClient.call_async", side_effect=ConnectionError("refused")):
             with self.assertRaises(DreamingLLMError):
                 iface.generate_response("hi")
-        rm.record_usage.assert_called_with("r1", success=False, error_message="refused")
+        rm.record_usage.assert_called_with("r1", success=False, error_message="refused", task_class="memory.dreaming")
 
     def test_empty_completion_raises(self):
         iface, _ = self._iface(self._resource())

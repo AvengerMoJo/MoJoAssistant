@@ -1221,8 +1221,17 @@ class ResourceManager:
         tokens_used: int = 0,
         success: bool = True,
         error_message: Optional[str] = None,
+        *,
+        token_usage: Optional[Dict[str, Any]] = None,
+        model_served: Optional[str] = None,
+        duration_ms: Optional[float] = None,
+        task_class: Optional[str] = None,
     ):
         """Record a completed LLM call.
+
+        token_usage / model_served / duration_ms / task_class (optional, keyword-only) describe the call for the
+        credential engine's usage ledger: token_usage is the provider response's own `usage` dict. A figure the
+        provider did not return is stored as unknown, never as zero. Counts and labels only, never content.
 
         error_message (optional): the raw exception/response text on failure.
         When it classifies as quota_exhausted with a parseable reset time
@@ -1269,8 +1278,10 @@ class ResourceManager:
             self._persist_usage()
             engine_managed = resource_id in self._resources and self._resources[resource_id].credential_engine
         if engine_managed:
-            from app.scheduler.credential_engine_client import get_credential_engine_client
-            get_credential_engine_client().report(resource_id, success, error_message)
+            from app.scheduler.credential_engine_client import call_ledger_fields, get_credential_engine_client
+            get_credential_engine_client().report(
+                resource_id, success, error_message,
+                ledger=call_ledger_fields(token_usage, model_served, duration_ms, task_class, resource_id))
 
     def resolve_via_service(self, route_id: str) -> Dict[str, Any]:
         """Resolve a credential through the standalone ai-credential-manager

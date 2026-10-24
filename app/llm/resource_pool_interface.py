@@ -14,6 +14,7 @@ resource_pool.json has been updated.
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 from typing import List, Optional, TYPE_CHECKING
 
@@ -131,6 +132,7 @@ class ResourcePoolLLMInterface:
         try:
             # Wait in line behind other callers of the same local model instead of piling onto it.
             async with self._rm.slot(resource.id, owner="dreaming", max_wait_s=self._queue_wait):
+                _t0 = time.time()
                 data = await client.call_async(
                     messages=messages,
                     resource_config=resource_config,
@@ -139,11 +141,12 @@ class ResourcePoolLLMInterface:
         except ResourceBusyError as e:
             raise DreamingLLMError(f"{e}; the model stayed busy with other work") from e
         except (TimeoutError, ConnectionError, OSError) as e:
-            self._rm.record_usage(resource.id, success=False, error_message=str(e))
+            self._rm.record_usage(resource.id, success=False, error_message=str(e), task_class="memory.dreaming")
             logger.error(f"ResourcePoolLLMInterface._generate failed: {e}")
             raise DreamingLLMError(f"{resource.id}: {type(e).__name__}: {e}") from e
 
-        self._rm.record_usage(resource.id, success=True)
+        self._rm.record_usage(resource.id, success=True, token_usage=data.get("usage"), model_served=resource.model,
+                              duration_ms=(time.time() - _t0) * 1000, task_class="memory.dreaming")
         choices = data.get("choices", [])
         content = (choices[0].get("message", {}).get("content", "") or "") if choices else ""
         finish = choices[0].get("finish_reason") if choices else None

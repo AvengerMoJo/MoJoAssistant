@@ -11,7 +11,7 @@ from app.scheduler.resource_pool import ResourceTier
 
 class FakeRM:
     def __init__(self, resource="default", by_id=None):
-        self.resource = SimpleNamespace(id="r1") if resource == "default" else resource
+        self.resource = SimpleNamespace(id="r1", model="m") if resource == "default" else resource
         self.by_id = by_id
         self.acquired_tiers, self.usage = None, []
 
@@ -74,7 +74,7 @@ def test_configured_resource_that_is_unavailable_does_not_fall_back(monkeypatch)
 
 
 def test_configured_resource_is_used_when_available(monkeypatch):
-    rm = FakeRM(by_id=SimpleNamespace(id="tiny_cls"))
+    rm = FakeRM(by_id=SimpleNamespace(id="tiny_cls", model="m"))
     fake, (needs, _) = run(monkeypatch, "NO_SHELL", rm=rm, cfg={"exec_classifier": {"resource_id": "tiny_cls"}})
     assert needs is False and rm.usage == [("tiny_cls", True)]
 
@@ -86,7 +86,7 @@ def test_role_data_boundary_limits_the_tiers_the_goal_may_go_to(monkeypatch):
 
 
 def test_a_pinned_task_is_classified_on_its_pinned_resource_and_never_elsewhere(monkeypatch):
-    rm = FakeRM(by_id=SimpleNamespace(id="local_pin"))
+    rm = FakeRM(by_id=SimpleNamespace(id="local_pin", model="m"))
     run(monkeypatch, "NO_SHELL", rm=rm, pinned="local_pin")
     assert rm.usage == [("local_pin", True)] and rm.acquired_tiers is None
     rm2 = FakeRM(by_id=None)

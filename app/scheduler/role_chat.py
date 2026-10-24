@@ -19,6 +19,7 @@ Session history persists at ~/.memory/roles/{role_id}/chat_history/{session_id}.
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 import logging
 from datetime import datetime
@@ -941,6 +942,7 @@ class RoleChatSession:
         try:
             # One request at a time per local model: wait in line (bounded), then call.
             async with rm.slot(resource.id, max_wait_s=CHAT_QUEUE_WAIT_MAX_SECONDS):
+                _t0 = time.time()
                 try:
                     data = await client.call_async(
                         messages=messages,
@@ -949,12 +951,14 @@ class RoleChatSession:
                         tools=tools or None,
                     )
                 except Exception as e:
-                    rm.record_usage(resource.id, success=False)
+                    rm.record_usage(resource.id, success=False, task_class="chat.role",
+                                    duration_ms=(time.time() - _t0) * 1000)
                     raise RuntimeError(f"resource '{resource.id}' failed: {type(e).__name__}: {e}") from e
         except ResourceBusyError as e:
             # Not a fault of the resource: nothing is recorded against it.
             raise RuntimeError(f"{e}; the model is busy with other work, try again shortly") from e
-        rm.record_usage(resource.id, success=True)
+        rm.record_usage(resource.id, success=True, token_usage=data.get("usage"), model_served=data.get("_selected_model") or model,
+                        duration_ms=(time.time() - _t0) * 1000, task_class="chat.role")
         data["_resource"] = resource.id
         data["_model"] = model
         return data

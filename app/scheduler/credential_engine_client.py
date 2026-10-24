@@ -21,9 +21,10 @@ import secrets
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import httpx
 
@@ -62,6 +63,7 @@ class CredentialEngineClient:
         self._tokens: Dict[str, tuple] = {}
         self._held: Dict[str, _Held] = {}
         self._leases: Dict[str, str] = {}  # resource id -> latest lease id, for reporting
+        self.unreported_calls = 0  # calls that finished with no lease to report against
 
     # ── auth ───────────────────────────────────────────────────────────────────────────────
     def _token(self, scope: str) -> str:
@@ -120,26 +122,54 @@ class CredentialEngineClient:
     def key_source(self, resource_id: str) -> Callable[[], Optional[str]]:
         return lambda: self.api_key(resource_id)
 
-    def report(self, resource_id: str, success: bool, error_message: Optional[str] = None) -> None:
+    def report(self, resource_id: str, success: bool, error_message: Optional[str] = None,
+               ledger: Optional[Dict[str, Any]] = None) -> None:
         """Tell the engine how a call went. Runs off the calling thread: reporting must not slow or break a
-        model call, but a failed report is logged as an error, not dropped."""
+        model call, but a failed report is logged as an error, not dropped. `ledger` carries the call's
+        details (see call_ledger_fields); only the fields that are known are sent."""
         with self._lock:
             lease = self._leases.get(resource_id)
             if not success and error_message and _AUTH_REFUSED.search(error_message) and resource_id in self._held:
                 # Drop the held key: the next call asks the engine again and gets whatever the vault holds now
                 # (a rotated key), instead of replaying a refused one until the lease runs out.
                 del self._held[resource_id]
+            if lease is None:
+                # No key was fetched for this resource in this process, so there is no lease to report on.
+                # The call happened and the engine will not hear about it: count it and say so.
+                self.unreported_calls += 1
         if lease is None:
-            return  # no key was ever fetched for this resource in this process, so there is no lease to report on
+            _log.warning("call on %s not reported to the credential engine: no lease held in this process "
+                         "(%d unreported so far)", resource_id, self.unreported_calls)
+            return
+
+        payload = {"lease_id": lease, "success": success, "error_message": error_message}
+        payload.update({k: v for k, v in (ledger or {}).items() if v is not None})
 
         def send():
             try:
-                self._post("report", f"tenant:{self._tenant}:acquire",
-                           {"lease_id": lease, "success": success, "error_message": error_message})
+                self._post("report", f"tenant:{self._tenant}:acquire", payload)
             except Exception as e:
                 _log.error("could not report usage of %s to the credential engine: %s", resource_id, e)
 
         threading.Thread(target=send, name="credential-engine-report", daemon=True).start()
+
+
+def _count(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def call_ledger_fields(usage: Optional[Dict[str, Any]], model_served: Optional[str] = None,
+                       duration_ms: Optional[float] = None, task_class: Optional[str] = None,
+                       resource_id: str = "") -> Dict[str, Any]:
+    """The ledger details of one finished call. A figure the provider did not return is None (unknown), never 0,
+    and the missing usage is logged so a provider that never reports tokens is visible."""
+    usage = usage if isinstance(usage, dict) else {}
+    tokens_in, tokens_out = _count(usage.get("prompt_tokens")), _count(usage.get("completion_tokens"))
+    if tokens_in is None or tokens_out is None:
+        _log.info("provider response from %s carried no token counts; the ledger records them as unknown", resource_id)
+    return {"call_id": uuid.uuid4().hex, "model_served": model_served or None, "tokens_in": tokens_in,
+            "tokens_out": tokens_out, "task_class": task_class or None,
+            "duration_ms": round(duration_ms, 1) if isinstance(duration_ms, (int, float)) and duration_ms >= 0 else None}
 
 
 _client: Optional[CredentialEngineClient] = None
