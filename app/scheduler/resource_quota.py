@@ -421,6 +421,25 @@ def pace(statuses: Sequence[WindowStatus], now: float, head_start: float = DEFAU
     return rows
 
 
+def urgency(statuses: Sequence[WindowStatus], now: float) -> float:
+    """How much of the paced window's allowance is at risk of expiring unused: unspent share / time left.
+    Used to break ties between resources of equal rank -- the one whose allowance is closest to being wasted
+    goes first (MiniMax's week at 0% with a quarter left beats GLM's week at 0% with half left). 0 when
+    there is no paced window (rolling-only or no windows): nothing to lose by waiting."""
+    spans = [_span(s, now) for s in statuses]
+    longest = max([x for x in spans if x is not None], default=None)
+    if longest is None:
+        return 0.0
+    best = 0.0
+    for s, span in zip(statuses, spans):
+        if span is None or span < 0.99 * longest or s.agent_limit <= 0:
+            continue
+        left = max(0.0, 1.0 - min(1.0, max(0.0, (now - s.window_start) / span)))
+        remaining = max(0.0, (s.agent_limit - s.used) / s.agent_limit)
+        best = max(best, remaining / max(left, 0.02))
+    return best
+
+
 def on_pace(statuses: Sequence[WindowStatus], now: float, conf: Dict[str, Any]) -> bool:
     """True when the resource has windows and none of them is above its pace line. `conf` is parse_pace()'s result."""
     if not statuses:

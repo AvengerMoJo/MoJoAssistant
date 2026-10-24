@@ -934,7 +934,10 @@ class ResourceManager:
         penalty = self.LOAD_PENALTY if is_cold_local else 0
         if busy_ids and r.id in busy_ids:
             penalty += self.BUSY_PENALTY
-        return (self._rank_priority(r) + penalty, 1 if is_cold_local else 0)
+        # Equal rank: the paced resource whose allowance is closest to expiring unused goes first
+        # (resource_quota.urgency); otherwise config order would decide between two subscriptions.
+        urgent = resource_quota.urgency(self.quota_status(r.id), time.time()) if r.pace is not None else 0.0
+        return (self._rank_priority(r) + penalty, 1 if is_cold_local else 0, -urgent)
 
     def selection_order(
         self,
@@ -961,10 +964,13 @@ class ResourceManager:
                     "cold_load_penalty": key[1] == 1,
                     "busy": r.id in busy_ids,
                     "effective_priority": key[0],
+                    "_tie": key[1:],
                     "eligible": reason is None,
                     "excluded_because": reason,
                 })
-        rows.sort(key=lambda x: (not x["eligible"], x["effective_priority"], x["id"]))
+        rows.sort(key=lambda x: (not x["eligible"], x["effective_priority"], x["_tie"], x["id"]))
+        for x in rows:
+            x.pop("_tie")
         for i, row in enumerate(r for r in rows if r["eligible"]):
             row["position"] = i + 1
         return rows

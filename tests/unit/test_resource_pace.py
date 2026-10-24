@@ -81,3 +81,17 @@ class TestPacedDailyPool(TestPoolUsesProviderQuota):
             self.skipTest("the day is almost over: the line has caught up")
         self.assertEqual(self.rm._rank_priority(sub), 301)
         self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE_API]).id, "other")
+
+
+class TestEqualRankTieBreak(TestPoolUsesProviderQuota):
+    """Two paced subscriptions at the same rank: the one closer to expiring unused goes first, not the one listed first."""
+
+    def test_most_urgent_allowance_wins_the_tie(self):
+        for rid, elapsed in (("sub", 0.5), ("other", 0.75)):
+            r = self.rm._resources[rid]
+            r.tier, r.priority, r.priority_while_quota, r.pace = ResourceTier.FREE_API, 50, 0, rq.parse_pace(True)
+            r.quota_source = r.quota_source or {"type": "minimax_token_plan", "url": "u", "model_name": "general"}
+            self.rm._provider_quota[rid] = windows(used_week=0, elapsed=elapsed)
+        self.assertEqual(self.rm.acquire(tier_preference=[ResourceTier.FREE_API]).id, "other")   # a quarter of the week left
+        order = [x["id"] for x in self.rm.selection_order([ResourceTier.FREE_API]) if x["eligible"]]
+        self.assertEqual(order[:2], ["other", "sub"])                                              # display agrees with behaviour
