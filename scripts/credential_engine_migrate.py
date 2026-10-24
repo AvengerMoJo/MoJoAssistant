@@ -4,6 +4,8 @@
   venv/bin/python scripts/credential_engine_migrate.py glm_5_2               # plan only, changes nothing
   venv/bin/python scripts/credential_engine_migrate.py glm_5_2 --apply       # vault + catalog + client grant/policy, then verify
   venv/bin/python scripts/credential_engine_migrate.py glm_5_2 --apply --switch   # ... and flip credential_engine on in resource_pool.json
+  venv/bin/python scripts/credential_engine_migrate.py var:LMSTUDIO_API_KEY        # every flat resource that uses one key variable
+                                                                                    # (the key is stored once; --switch marks each resource)
   venv/bin/python scripts/credential_engine_migrate.py openrouter_free:tinyi       # one ACCOUNT of a provider_accounts group: its key
                                                                                     # is stored once, every resource generated for it
                                                                                     # follows (--switch marks the account credential_engine)
@@ -81,6 +83,84 @@ def current_key(rid: str):
     return r, r.api_key, r.api_key_env
 
 
+async def main_var(var: str, apply: bool, switch: bool) -> int:
+    """var:NAME -- every flat resource whose key comes from environment variable NAME. One key, N resources."""
+    name = var.split(":", 1)[1]
+    load_service_env()
+    resources, pools, key_vars = build_payload()
+    ids = sorted(key_vars.get(name, []))
+    ids = [r for r in ids if not r.startswith(tuple(f"{g}_" for g in (json.loads(RUNTIME_POOL.read_text()).get("provider_accounts") or {})))]
+    if not ids:
+        raise SystemExit(f"no flat resource uses ${name}")
+    from app.scheduler.resource_pool import ResourceManager
+    rm = ResourceManager()
+    pool = {r: rm._resources[r] for r in ids if r in rm._resources}
+    done = [r for r in ids if pool.get(r) and pool[r].credential_engine]
+    todo = [r for r in ids if r not in done]
+    if not todo:
+        raise SystemExit(f"all {len(ids)} resources using ${name} already read their key from the engine")
+    first = next((pool[r] for r in todo if pool.get(r) and pool[r].api_key), None)
+    if first is None:
+        raise SystemExit(f"the pool resolves no key for ${name}; nothing to migrate")
+    key = first.api_key
+    owner = ServiceClient.from_file(OWNER_CLIENT)
+    tenant = json.loads(OWNER_CLIENT.read_text())["tenant_id"]
+    admin = f"admin:vault:manage:{tenant}"
+    st = load_state()
+    already_cred = st["credentials"].get(name)
+    on = [r for r in todo if pool[r].enabled]
+    print(f"key        ${name}  (sha256 {sha(key)}…, length {len(key)})  shared by {len(ids)} resources, {len(done)} already on the engine")
+    print(f"resources  {len(todo)} to move ({len(on)} enabled): {', '.join(todo[:4])}{' ...' if len(todo) > 4 else ''}")
+    print(f"vault      {'credential ' + already_cred + ' already holds this key' if already_cred else 'a new credential will be stored (encrypted)'}")
+    print(f"MoJo       {'credential_engine=true written for each of the ' + str(len(todo)) if switch else 'unchanged (no --switch)'}")
+    if not apply:
+        print("\nDRY RUN - nothing changed. Re-run with --apply.")
+        return 0
+    base_urls = sorted({resources[r]["base_url"] for r in todo})
+    if len(base_urls) != 1:
+        raise SystemExit(f"resources sharing ${name} point at different endpoints {base_urls}; migrate them separately")
+    pid = st["providers"].get(base_urls[0])
+    if not pid:
+        pid = (await owner.call("register_provider", admin, display_name=name, base_url=base_urls[0],
+                                auth_style="bearer_header"))["provider_id"]
+        st["providers"][base_urls[0]] = pid
+        save_state(st)
+    cid = already_cred
+    if not cid:
+        cid = (await owner.call("register_credential", admin, provider_id=pid, value=key,
+                                description=f"${name} (migrated from MoJoAssistant)"))["credential_id"]
+        st["credentials"][name] = cid
+        save_state(st)
+    out = await owner.call("import_resources", admin, resources={r: dict(resources[r], credential_ref=cid) for r in todo},
+                           quota_pools=pools, dry_run=False)
+    if out["rejected"]:
+        raise SystemExit(f"engine rejected definitions: {out['rejected']}")
+    mojo = json.loads(BOOTSTRAP.read_text())["mojoassistant_client"]["client_id"]
+    need = f"tenant:{tenant}:acquire"
+    if not any(g["resource_scope"] == need and not g["revoked"] for g in await owner.call("list_grants", admin, client_id=mojo)):
+        await owner.call("grant_access", admin, client_id=mojo, resource_scope=need)
+    pol = (await owner.call("get_client_policy", admin, client_id=mojo))["policy"]
+    tiers = sorted(set(pol["allowed_tiers"]) | {pool[r].tier.value for r in todo if r in pool})
+    await owner.call("set_client_policy", admin, client_id=mojo, policy={**pol, "allowed_tiers": tiers})
+    from app.scheduler.credential_engine_client import CredentialEngineClient
+    probe_id = on[0] if on else todo[0]
+    got = CredentialEngineClient().api_key(probe_id)
+    if got is None or sha(got) != sha(key):
+        raise SystemExit(f"VERIFY FAILED: the engine handed MoJo a different key for {probe_id} ({sha(got or '')} != {sha(key)})")
+    print(f"\nverified   engine hands MoJo's client the same key for {probe_id} (sha256 {sha(got)}…)")
+    if switch:
+        data = json.loads(RUNTIME_POOL.read_text())
+        shutil.copy2(RUNTIME_POOL, RUNTIME_POOL.with_name(RUNTIME_POOL.name + f".bak_engine_{name}"))
+        flat = data.setdefault("resources", {})
+        for r in todo:
+            flat.setdefault(r, {})["credential_engine"] = True
+        RUNTIME_POOL.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        back = json.loads(RUNTIME_POOL.read_text())["resources"]
+        assert all(back[r].get("credential_engine") is True for r in todo), "read-back failed"
+        print(f"switched   {len(todo)} resources: credential_engine=true written (backup .bak_engine_{name})")
+    return 0
+
+
 async def main_account(spec: str, apply: bool, switch: bool) -> int:
     """group:account -- one account of provider_accounts.<group>. One key, N generated resources."""
     group, _, acct = spec.partition(":")
@@ -153,6 +233,8 @@ async def main_account(spec: str, apply: bool, switch: bool) -> int:
 
 
 async def main(rid: str, apply: bool, switch: bool) -> int:
+    if rid.startswith("var:"):
+        return await main_var(rid, apply, switch)
     if ":" in rid:
         return await main_account(rid, apply, switch)
     load_service_env()

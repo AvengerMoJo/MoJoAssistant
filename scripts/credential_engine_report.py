@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Weekly and monthly resource-utilization report -- the evidence to read BEFORE ordering more subscription.
+
+  venv/bin/python scripts/credential_engine_report.py            # prints 7-day and 30-day views, saves a markdown copy
+  venv/bin/python scripts/credential_engine_report.py --days 7   # one period
+
+Calls the credential engine's utilization_report (owner scope). Per renewing allowance: the plan's limit, the
+agent's share (after the reserve kept for the owner), mean and peak % of that share used per COMPLETED cycle, %
+left unspent at each reset, and cap hits -- plus a verdict: buy_more only when most of the share was used AND the
+cap was hit (real refused demand); underused when little was used; insufficient_data until a cycle has completed.
+History starts when recording began, so the first weeks say so rather than guess. Shared pools (an OpenRouter
+account's daily 1000) are shown once, not once per model. The markdown copy goes to ~/.memory/research/.
+"""
+import argparse
+import asyncio
+import datetime
+import json
+import sys
+from pathlib import Path
+
+SIB = Path.home() / "Development" / "Personal"
+sys.path[:0] = [str(SIB / "ai-credential-manager"), str(SIB / "ai-resource-manager")]
+from credential_manager.owner_client import ServiceClient  # noqa: E402
+
+OWNER_CLIENT = Path.home() / ".config" / "ai-credential-manager" / "owner_admin_client.json"
+RESEARCH = Path.home() / ".memory" / "research"
+
+
+def _fmt(v, suffix="%"):
+    return "-" if v is None else f"{v}{suffix}"
+
+
+def rows_of(report: dict):
+    """One row per distinct allowance: a resource's own windows, or a shared pool once. The verdict belongs to the
+    resource, so it is printed on its longest window's row only (rolling windows are caps, not the verdict's subject)."""
+    seen, rows = set(), []
+    for rid, r in sorted(report["resources"].items()):
+        spans = [w.get("span_s", 0) for w in r["windows"]]
+        longest = max(spans, default=0)
+        for w in r["windows"]:
+            pooled = "/" in w["window"]
+            ident = w["window"] if pooled else f"{rid}:{w['window']}"
+            if ident in seen:
+                continue
+            seen.add(ident)
+            lead = w.get("span_s", 0) == longest
+            cur = w.get("current") or {}
+            rows.append({"who": w["window"].split("/")[0] if pooled else rid, "window": w["window"].split("/")[-1],
+                         "share": w["agent_share"], "capacity": w.get("capacity"), "unit": w.get("capacity_unit"),
+                         "cycles": w["cycles_complete"], "mean": w["mean_util_pct"], "peak": w["peak_util_pct"],
+                         "unspent": w.get("mean_unspent_pct"), "caps": w["cap_hits"],
+                         "now": cur.get("util_pct"), "elapsed": cur.get("elapsed_pct"), "proj": cur.get("projected_util_pct") if lead else None,
+                         "verdict": r["verdict"] if lead else "", "why": r["why"] if lead else "",
+                         "calls": r["calls"], "failed": r["failed"]})
+    return rows
+
+
+def render(report: dict) -> str:
+    d = report["period_days"]
+    t = report["thresholds"]
+    lines = [f"## Last {d:g} days ({'weekly' if d <= 7 else 'monthly'} view)", "",
+             "| allowance | window | limit | share | cycles done | mean used | peak | unspent | cap hits | now (elapsed) | verdict |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for r in rows_of(report):
+        cap = f"{r['capacity']:,.0f} {r['unit']}" if r["capacity"] else "-"
+        now = f"{r['now']}% ({r['elapsed']}%)" + (f" -> ~{r['proj']}%" if r["proj"] else "") if r["now"] is not None else "-"
+        lines.append(f"| {r['who']} | {r['window']} | {cap} | {r['share']} | {r['cycles']} | {_fmt(r['mean'])} | {_fmt(r['peak'])} "
+                     f"| {_fmt(r['unspent'])} | {r['caps']} | {now} | {('**' + r['verdict'] + '**') if r['verdict'] else ''} |")
+    lines += [""] + [f"- **{r['who']}**: {r['why']}" for r in rows_of(report) if r["why"]] + [""]
+    lines += [
+              f"Verdict rule: buy_more = the longest window averaged >= {t['buy_more_if_mean_util_at_least']}% of the agent's share AND hit its cap, "
+        f"OR any window (e.g. a 5h block) hit its cap in >= 50% of at least 5 active cycles -- a recurring limit even if the week is empty. "
+        f"underused = the longest window averaged < {t['underused_if_mean_util_below']}% and no window hit its cap in 25%+ of its active cycles. "
+        f"A greedy rank-0 policy fills allowances on purpose, so a cap hit shows the share was used, not that work was refused: "
+        f"read buy_more together with whether tasks overflowed to paid resources. "
+        f"Calls over the period (engine usage log): {sum(r['calls'] for r in report['resources'].values())} reported, "
+        f"{sum(r['failed'] for r in report['resources'].values())} failed."]
+    return "\n".join(lines)
+
+
+async def main(days_list) -> int:
+    client = ServiceClient.from_file(OWNER_CLIENT)
+    tenant = json.loads(OWNER_CLIENT.read_text())["tenant_id"]
+    admin = f"admin:vault:manage:{tenant}"
+    parts = [f"# Resource utilization report -- {datetime.date.today()}", "",
+             "Evidence for subscription decisions. Allowances only appear once they report to the credential engine; "
+             "history begins when snapshot recording began, so early periods are mostly `insufficient_data`.", ""]
+    for d in days_list:
+        parts += [render(await client.call("utilization_report", admin, days=d)), ""]
+    text = "\n".join(parts)
+    print(text)
+    RESEARCH.mkdir(parents=True, exist_ok=True)
+    out = RESEARCH / f"resource_utilization_{datetime.date.today()}.md"
+    out.write_text(text)
+    print(f"\nsaved {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--days", type=float, action="append", help="period in days (default: 7 and 30)")
+    a = ap.parse_args()
+    sys.exit(asyncio.run(main(a.days or [7, 30])))

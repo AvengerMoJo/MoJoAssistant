@@ -53,6 +53,10 @@ class WindowStatus:
     window_start: float
     resets_at: Optional[float]
     exhausted: bool
+    # The plan's own size when the provider states it (z.ai: 12000 credits per 5h), for reports; None when
+    # the provider reports percent only.
+    capacity: Optional[float] = None
+    capacity_unit: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -254,7 +258,8 @@ def parse_zai_coding_plan(payload: Dict[str, Any], block_at_used_pct: float, now
         else:  # hours: rolling. resets_at (if given) is when the oldest credits come back, not a block end.
             kind, resets_at, start = "provider_rolling", (reset_ms / 1000.0 if reset_ms else None), now - span
         out.append(WindowStatus(name=name, kind=kind, used=int(round(used)), agent_limit=int(round(block_at_used_pct)),
-                                max_calls=100, window_start=start, resets_at=resets_at, exhausted=used >= block_at_used_pct))
+                                max_calls=100, window_start=start, resets_at=resets_at, exhausted=used >= block_at_used_pct,
+                                capacity=lim.get("usage"), capacity_unit="credits"))
     if not out:
         raise QuotaSourceError("no credit windows in the provider response")
     return out
