@@ -30,7 +30,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SIB = Path.home() / "Development" / "Personal"
-sys.path[:0] = [str(ROOT), str(SIB / "ai-credential-manager"), str(SIB / "ai-resource-manager")]
+sys.path[:0] = [str(ROOT), str(SIB / "ai-credential-manager")]
 
 from app.config.config_loader import load_layered_json_config  # noqa: E402
 from app.config.paths import get_memory_subpath  # noqa: E402

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 SIB = Path.home() / "Development" / "Personal"
-sys.path[:0] = [str(SIB / "ai-credential-manager"), str(SIB / "ai-resource-manager")]
+sys.path[:0] = [str(SIB / "ai-credential-manager")]
 from credential_manager.owner_client import ServiceClient  # noqa: E402
 
 OWNER_CLIENT = Path.home() / ".config" / "ai-credential-manager" / "owner_admin_client.json"

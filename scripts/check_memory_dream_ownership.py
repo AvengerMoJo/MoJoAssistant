@@ -54,6 +54,18 @@ LEGACY_IMPORT_PATTERNS = [
 ALLOWLIST_PATH_PARTS = {
     "docs/",
     "tests/benchmarks/run_locomo.py.bak",
+    # Tests that exercise the compatibility shims themselves must import them
+    # (this file imports app.services.hybrid_memory_service at :69/:113/:147
+    # to verify the shim wires EmbeddingPool correctly).
+    "tests/unit/test_hybrid_memory_pool_integration.py",
+}
+
+# Post-EmbeddingPool work (2026-06, commit 040fe07 "Gap 6"): these modules
+# legitimately live under app/memory/ but are NOT compatibility shims.
+# Importing them from app code / tests is allowed; legacy shim imports still fail.
+ALLOWED_APP_MEMORY_MODULES = {
+    "embedding_pool",
+    "embedding_migration",
 }
 
 
@@ -117,10 +129,18 @@ def check_legacy_imports() -> list[str]:
 
         text = path.read_text(encoding="utf-8")
         for pattern in LEGACY_IMPORT_PATTERNS:
-            if pattern.search(text):
-                rel = path.relative_to(ROOT)
-                errors.append(f"legacy import found in {rel}: {pattern.pattern}")
-                break
+            m = pattern.search(text)
+            if not m:
+                continue
+            # Non-shim app/memory modules added 2026-06 (embedding pool work)
+            # are allowed; keep scanning so an allowed match can't mask a
+            # later pattern's real violation in the same file.
+            mod = re.search(r"app\.memory\.([\w_]+)", m.group(0))
+            if mod and mod.group(1) in ALLOWED_APP_MEMORY_MODULES:
+                continue
+            rel = path.relative_to(ROOT)
+            errors.append(f"legacy import found in {rel}: {pattern.pattern}")
+            break
 
     return errors
 

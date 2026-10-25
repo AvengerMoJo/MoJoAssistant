@@ -22,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SIBLINGS = Path.home() / "Development" / "Personal"
-sys.path[:0] = [str(ROOT), str(SIBLINGS / "ai-credential-manager"), str(SIBLINGS / "ai-resource-manager")]
+sys.path[:0] = [str(ROOT), str(SIBLINGS / "ai-credential-manager")]
 
 from app.config.config_loader import load_layered_json_config  # noqa: E402
 from credential_manager.owner_client import ServiceClient  # noqa: E402
