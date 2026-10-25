@@ -106,6 +106,20 @@ def usage_section(usage: dict) -> list:
     return out
 
 
+def unmet_section(unmet: dict) -> list:
+    """Asks refused because no resource had a fresh, sufficient profile -- the list of what to measure next."""
+    out = ["", "### Unmet demand (asks no profiled resource could serve)", ""]
+    rows = unmet["unmet"]
+    if not rows:
+        return out + ["None in this period."]
+    out += ["| task class | profile | demand | refusals | to measure / shortfall |", "|---|---|---|---|---|"]
+    for g in rows:
+        todo = "; ".join(f"{rid}: {why}" for rid, why in sorted(g["to_measure"].items()))
+        out.append(f"| {g['task_class'] or '-'} | {g['profile'] or '-'} | {g['demand']} | {g['refusals']} | {todo} |")
+    out += ["", "unknown = measure it; expired = measure it again; insufficient = a real shortfall (a stronger resource is needed)."]
+    return out
+
+
 def incident_section(days: float) -> list:
     """Failures inside task runs (a provider refusing a call), including runs that finished anyway after a retry."""
     import time
@@ -159,7 +173,7 @@ async def main(days_list) -> int:
              "Evidence for subscription decisions. Allowances only appear once they report to the credential engine; "
              "history begins when snapshot recording began, so early periods are mostly `insufficient_data`.", ""]
     for d in days_list:
-        parts += [render(await client.call("utilization_report", admin, days=d))] + usage_section(await client.call("usage_summary", admin, days=d)) + overflow_section(d) + incident_section(d) + [""]
+        parts += [render(await client.call("utilization_report", admin, days=d))] + usage_section(await client.call("usage_summary", admin, days=d)) + unmet_section(await client.call("unmet_demand_report", admin, days=d)) + overflow_section(d) + incident_section(d) + [""]
     text = "\n".join(parts)
     print(text)
     RESEARCH.mkdir(parents=True, exist_ok=True)
