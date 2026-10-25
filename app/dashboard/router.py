@@ -284,13 +284,49 @@ async def plugin_panel(panel_id: str, mojo_dash: Optional[str] = Cookie(default=
         return HTMLResponse(f"No dashboard panel '{_h.escape(panel_id)}' is configured.", status_code=404)
     if panel["mode"] == "link":
         return RedirectResponse(panel["url"], status_code=303)
-    url = _h.escape(panel["url"], quote=True)
-    body = (f'<div style="margin-bottom:8px;color:#888">{_h.escape(panel["title"])} \u00b7 its own interface and sign-in \u00b7 '
-            f'<a href="{url}" target="_blank" rel="noopener" style="color:#7ec8e3">open on its own</a></div>'
+    remote = panel["mode"] == "remote"
+    url = _h.escape(f"/dashboard/plugins/{panel_id}/view/" if remote else panel["url"], quote=True)
+    own = "" if remote else (f' \u00b7 <a href="{url}" target="_blank" rel="noopener" style="color:#7ec8e3">open on its own</a>')
+    body = (f'<div style="margin-bottom:8px;color:#888">{_h.escape(panel["title"])} \u00b7 '
+            f'{"served by this dashboard" if remote else "its own interface and sign-in"}{own}</div>'
             f'<iframe src="{url}" title="{_h.escape(panel["title"], quote=True)}" '
             'sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="no-referrer" '
             'style="width:100%;height:calc(100vh - 120px);border:1px solid #333;border-radius:6px;background:#111"></iframe>')
     return _page(panel["title"], body)
+
+
+_REMOTE_MAX_BYTES = 2_000_000
+
+
+@router.get("/plugins/{panel_id}/view/{path:path}")
+async def plugin_remote_view(panel_id: str, path: str, request: Request, mojo_dash: Optional[str] = Cookie(default=None)):
+    """Relay one GET to a 'remote' panel's product, with its bearer token. The browser only ever talks to this
+    dashboard. Anything that is not an exact, quiet success is shown as an error, never papered over."""
+    if redir := _require_auth(mojo_dash):
+        return redir
+    import httpx
+    from app.dashboard.plugins import load_panels
+    from fastapi.responses import Response
+    panel = next((p for p in load_panels() if p["id"] == panel_id and p["mode"] == "remote"), None)
+    if panel is None:
+        return HTMLResponse("No such remote panel.", status_code=404)
+    if ".." in path.split("/") or "\\" in path or "//" in path:
+        return HTMLResponse("Bad path.", status_code=400)
+    token = os.environ.get(panel["key_var"])
+    if not token:
+        return HTMLResponse(f"Panel '{panel_id}' cannot load: environment variable {panel['key_var']} is not set.", status_code=502)
+    target = panel["url"].rstrip("/") + "/" + path
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
+            r = await c.get(target, params=dict(request.query_params), headers={"Authorization": f"Bearer {token}"})
+    except httpx.HTTPError as e:
+        return HTMLResponse(f"Panel '{panel_id}' is unreachable: {type(e).__name__}", status_code=502)
+    if len(r.content) > _REMOTE_MAX_BYTES:
+        return HTMLResponse("Panel answer too large.", status_code=502)
+    ctype = r.headers.get("content-type", "application/octet-stream")
+    return Response(r.content, status_code=r.status_code, media_type=ctype.split(";")[0],
+                    headers={"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN", "X-Content-Type-Options": "nosniff",
+                             "Content-Security-Policy": "frame-ancestors 'self'"})
 
 
 # ---------------------------------------------------------------------------
