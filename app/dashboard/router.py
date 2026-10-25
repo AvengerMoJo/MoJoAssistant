@@ -105,10 +105,22 @@ _NAV = """
   <a href="/dashboard/projects">Projects</a>
   <a href="/dashboard/library">Library</a>
   <a href="/dashboard/chat">Chat</a>
-  <a href="/dashboard/privacy">Privacy</a>
+  <a href="/dashboard/privacy">Privacy</a>{plugin_links}
   <a href="/dashboard/logout" style="float:right;color:#888">logout</a>
 </nav>
 """
+
+
+def _nav() -> str:
+    """The nav bar plus one entry per configured third-party panel (see app/dashboard/plugins.py)."""
+    import html as _h
+    from app.dashboard.plugins import load_panels
+    links = ""
+    for p in load_panels():
+        href = p["url"] if p["mode"] == "link" else f"/dashboard/plugins/{p['id']}"
+        target = ' target="_blank" rel="noopener"' if p["mode"] == "link" else ""
+        links += f'\n  <a href="{_h.escape(href, quote=True)}"{target}>{_h.escape(p["title"])}</a>'
+    return _NAV.replace("{plugin_links}", links)
 
 _CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -228,7 +240,7 @@ details .pre { margin-top: 8px; }
 """
 
 def _page(title: str, body: str, nav: bool = True) -> HTMLResponse:
-    nav_html = _NAV if nav else ""
+    nav_html = _nav() if nav else ""
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -255,6 +267,30 @@ def _require_auth(session: str | None):
     if not verify_token(session):
         return RedirectResponse("/dashboard/login", status_code=303)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Third-party panels (config-driven; see app/dashboard/plugins.py)
+# ---------------------------------------------------------------------------
+
+@router.get("/plugins/{panel_id}", response_class=HTMLResponse)
+async def plugin_panel(panel_id: str, mojo_dash: Optional[str] = Cookie(default=None)):
+    if redir := _require_auth(mojo_dash):
+        return redir
+    import html as _h
+    from app.dashboard.plugins import load_panels
+    panel = next((p for p in load_panels() if p["id"] == panel_id), None)
+    if panel is None:
+        return HTMLResponse(f"No dashboard panel '{_h.escape(panel_id)}' is configured.", status_code=404)
+    if panel["mode"] == "link":
+        return RedirectResponse(panel["url"], status_code=303)
+    url = _h.escape(panel["url"], quote=True)
+    body = (f'<div style="margin-bottom:8px;color:#888">{_h.escape(panel["title"])} \u00b7 its own interface and sign-in \u00b7 '
+            f'<a href="{url}" target="_blank" rel="noopener" style="color:#7ec8e3">open on its own</a></div>'
+            f'<iframe src="{url}" title="{_h.escape(panel["title"], quote=True)}" '
+            'sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="no-referrer" '
+            'style="width:100%;height:calc(100vh - 120px);border:1px solid #333;border-radius:6px;background:#111"></iframe>')
+    return _page(panel["title"], body)
 
 
 # ---------------------------------------------------------------------------
