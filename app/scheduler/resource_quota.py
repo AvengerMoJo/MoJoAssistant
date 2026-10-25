@@ -57,6 +57,9 @@ class WindowStatus:
     # the provider reports percent only.
     capacity: Optional[float] = None
     capacity_unit: Optional[str] = None
+    # `used` rounded to a whole percent loses up to half a point; this keeps the provider's own figure so
+    # reports can show a decimal. A good-enough estimate for budgeting, not an invoice.
+    used_exact: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -200,7 +203,7 @@ def parse_minimax_token_plan(payload: Dict[str, Any], model_name: str, block_at_
             name=label, kind="provider_percent", used=int(round(used)),
             agent_limit=int(round(block_at_used_pct)), max_calls=100,
             window_start=entry[start_key] / 1000.0, resets_at=entry[end_key] / 1000.0,
-            exhausted=used >= block_at_used_pct,
+            exhausted=used >= block_at_used_pct, used_exact=round(used, 2),
         ))
     return out
 
@@ -259,7 +262,7 @@ def parse_zai_coding_plan(payload: Dict[str, Any], block_at_used_pct: float, now
             kind, resets_at, start = "provider_rolling", (reset_ms / 1000.0 if reset_ms else None), now - span
         out.append(WindowStatus(name=name, kind=kind, used=int(round(used)), agent_limit=int(round(block_at_used_pct)),
                                 max_calls=100, window_start=start, resets_at=resets_at, exhausted=used >= block_at_used_pct,
-                                capacity=lim.get("usage"), capacity_unit="credits"))
+                                capacity=lim.get("usage"), capacity_unit="credits", used_exact=round(used, 2)))
     if not out:
         raise QuotaSourceError("no credit windows in the provider response")
     return out
@@ -304,7 +307,7 @@ def parse_openrouter_key(payload: Dict[str, Any], block_at_used_pct: float, wind
     return [WindowStatus(name="daily", kind="provider_percent", used=int(round(pct)), agent_limit=int(round(block_at_used_pct)),
                          max_calls=100, window_start=start, resets_at=start + window_seconds,
                          exhausted=pct >= block_at_used_pct or (isinstance(remaining, (int, float)) and remaining <= 0),
-                         capacity=limit, capacity_unit="requests")]
+                         capacity=limit, capacity_unit="requests", used_exact=round(pct, 2))]
 
 
 def _fetch_openrouter_key(conf: Dict[str, Any], api_key: str, timeout: float) -> List[WindowStatus]:

@@ -87,6 +87,24 @@ def overflow_section(days: float) -> list:
     return out
 
 
+def usage_section(usage: dict) -> list:
+    """What was actually called, from the engine's call ledger. Token totals cover only the calls that reported
+    counts; the last column says how many did not, so a total is never read as complete when it is not."""
+    rows = usage["usage"]
+    out = ["", "### Usage (call ledger)", ""]
+    if not rows:
+        return out + ["No calls in the ledger for this period."]
+    out += ["| client | task class | resource | calls | failed | tokens in | tokens out | calls w/o token counts | avg ms |",
+            "|---|---|---|---|---|---|---|---|---|"]
+    for r in sorted(rows, key=lambda r: -r["calls"]):
+        out.append(f"| {r['client']} | {r['task_class']} | {r['resource']} | {r['calls']} | {r['failed']} | {r['tokens_in']:,} "
+                   f"| {r['tokens_out']:,} | {r['calls_without_token_counts']} | {_fmt(r['avg_duration_ms'], '')} |")
+    tin, tout = sum(r["tokens_in"] for r in rows), sum(r["tokens_out"] for r in rows)
+    out += ["", f"Total: {sum(r['calls'] for r in rows)} calls, {tin:,} tokens in, {tout:,} tokens out "
+                "(estimates for budgeting: providers count tokens their own way, and some calls report none)."]
+    return out
+
+
 def render(report: dict) -> str:
     d = report["period_days"]
     t = report["thresholds"]
@@ -118,7 +136,7 @@ async def main(days_list) -> int:
              "Evidence for subscription decisions. Allowances only appear once they report to the credential engine; "
              "history begins when snapshot recording began, so early periods are mostly `insufficient_data`.", ""]
     for d in days_list:
-        parts += [render(await client.call("utilization_report", admin, days=d))] + overflow_section(d) + [""]
+        parts += [render(await client.call("utilization_report", admin, days=d))] + usage_section(await client.call("usage_summary", admin, days=d)) + overflow_section(d) + [""]
     text = "\n".join(parts)
     print(text)
     RESEARCH.mkdir(parents=True, exist_ok=True)

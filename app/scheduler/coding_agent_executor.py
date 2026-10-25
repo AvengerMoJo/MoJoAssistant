@@ -418,13 +418,16 @@ class CodingAgentExecutor:
                     self._log("Still no resource, aborting")
                     break
 
+            call_start = time.time()
             try:
                 response_data = await self._call_llm(
                     resource, messages, tools=_CODING_AGENT_TOOLS, model_override=role_model_preference
                 )
-                self._rm.record_usage(resource.id, success=True)
+                self._rm.record_usage(resource.id, success=True, token_usage=response_data.get("usage"),
+                                      model_served=response_data.get("_selected_model") or role_model_preference or resource.model,
+                                      duration_ms=(time.time() - call_start) * 1000, task_class="scheduler.coding_agent")
             except Exception as e:
-                self._rm.record_usage(resource.id, success=False)
+                self._rm.record_usage(resource.id, success=False, error_message=str(e), task_class="scheduler.coding_agent")
                 self._log(f"LLM call failed at iteration {iteration}: {e}", "error")
                 continue
 
