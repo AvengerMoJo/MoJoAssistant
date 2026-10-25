@@ -767,7 +767,9 @@ class ResourceManager:
             req["capabilities"] = sorted(required_caps)
         if best.tier == ResourceTier.PAID:
             req["paid_approved"] = [best.id]
-        self._shadow.compare(kind, {"id": best.id, "group": best.account_group, "tier": best.tier.value}, req)
+        from app.scheduler import profile_demand
+        self._shadow.compare(kind, {"id": best.id, "group": best.account_group, "tier": best.tier.value}, req,
+                             profile_demand=profile_demand.current())
 
     def _note_overflow(self, chosen: LLMResource, excluded_reason) -> None:
         """Caller holds the lock. If a resource that would have outranked `chosen` was skipped because its quota

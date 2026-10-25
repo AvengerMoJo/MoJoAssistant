@@ -1130,6 +1130,10 @@ class AgenticExecutor:
         if config.get("_tool_schema_mode") == "lean":
             tool_defs = _to_lean_openai_tools(tool_defs)
 
+        # Shadow mode asks the engine whether the picked resource's MEASURED profile could serve this task.
+        from app.scheduler import profile_demand as _profile_demand
+        _profile_demand.set_demand({"needs_tools": True} if tool_defs else None)
+
         # --- Capability gap check (fresh starts only) ---
         # Phase 1: fast phrase-based check (no LLM, free).
         # Phase 2: LLM classifier for structural ambiguity (backtick commands,
