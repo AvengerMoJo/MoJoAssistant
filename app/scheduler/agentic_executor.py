@@ -85,6 +85,9 @@ _cv_action_ledger:             ContextVar = ContextVar("exec_action_ledger",    
 # Tools whose output commonly bloats context (bash stdout, file reads).
 # Results longer than this cap are truncated before being added to messages.
 _TOOL_OUTPUT_CAP_CHARS = 4000
+# Every other tool (e.g. playwright__browser_evaluate dumping a whole page, 2026-10-25: one result pushed the
+# context to ~450k tokens and both MiniMax and GLM refused the call) gets a much larger cap, still explicit.
+_TOOL_OUTPUT_CAP_ANY_CHARS = 100_000
 _TOOL_OUTPUT_LARGE_TOOLS = {"bash_exec", "read_file", "file_read", "list_files", "search_in_files"}
 
 # Smoke-only tool definitions. These are intentionally kept out of the normal
@@ -304,6 +307,14 @@ def _extract_xml_tool_calls(text: str) -> List[Dict]:
                     })
 
     return results
+
+
+def _cap_tool_output(fn_name: str, result_str: str) -> str:
+    """Cut an oversized tool result, saying so in the text: shell/file tools at 4k chars, every other tool at 100k."""
+    cap = _TOOL_OUTPUT_CAP_CHARS if fn_name in _TOOL_OUTPUT_LARGE_TOOLS else _TOOL_OUTPUT_CAP_ANY_CHARS
+    if len(result_str) <= cap:
+        return result_str
+    return result_str[:cap] + f'... [truncated {len(result_str) - cap} chars by context guard]'
 
 
 def _trim_to_context_budget(
@@ -2988,11 +2999,7 @@ class AgenticExecutor:
                 self._ledger_record(fn_name, fn_args, result)
                 result_str = json.dumps(result, default=str)
                 # Cap large outputs from file/shell tools to prevent context bloat
-                if fn_name in _TOOL_OUTPUT_LARGE_TOOLS and len(result_str) > _TOOL_OUTPUT_CAP_CHARS:
-                    result_str = (
-                        result_str[:_TOOL_OUTPUT_CAP_CHARS]
-                        + f'... [truncated {len(result_str) - _TOOL_OUTPUT_CAP_CHARS} chars by context guard]'
-                    )
+                result_str = _cap_tool_output(fn_name, result_str)
                 results.append(result_str)
             except Exception as e:
                 self._log(f"Tool {fn_name} failed: {e}", "error")
