@@ -25,6 +25,7 @@ from credential_manager.owner_client import ServiceClient  # noqa: E402
 OWNER_CLIENT = Path.home() / ".config" / "ai-credential-manager" / "owner_admin_client.json"
 RESEARCH = Path.home() / ".memory" / "research"
 OVERFLOW_LOG = Path.home() / ".memory" / "state" / "resource_overflow.jsonl"
+INCIDENT_LOG = Path.home() / ".memory" / "state" / "task_incidents.jsonl"
 
 
 def _fmt(v, suffix="%"):
@@ -105,6 +106,28 @@ def usage_section(usage: dict) -> list:
     return out
 
 
+def incident_section(days: float) -> list:
+    """Failures inside task runs (a provider refusing a call), including runs that finished anyway after a retry."""
+    import time
+    out = ["", "### Task incidents (failures inside runs, even ones that finished)", ""]
+    if not INCIDENT_LOG.exists():
+        return out + ["No incident log yet."]
+    horizon, by = time.time() - days * 86400, {}
+    for line in INCIDENT_LOG.read_text().splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d["t"] >= horizon:
+            by.setdefault((d["kind"], d["resource"], d.get("last_tool") or "-"), []).append(d["task_id"])
+    if not by:
+        return out + ["None in this period."]
+    out += ["| kind | resource | last tool before it | times | example task |", "|---|---|---|---|---|"]
+    for (kind, rid, tool), tasks in sorted(by.items(), key=lambda kv: -len(kv[1])):
+        out.append(f"| {kind} | {rid} | {tool} | {len(tasks)} | {tasks[-1]} |")
+    return out
+
+
 def render(report: dict) -> str:
     d = report["period_days"]
     t = report["thresholds"]
@@ -136,7 +159,7 @@ async def main(days_list) -> int:
              "Evidence for subscription decisions. Allowances only appear once they report to the credential engine; "
              "history begins when snapshot recording began, so early periods are mostly `insufficient_data`.", ""]
     for d in days_list:
-        parts += [render(await client.call("utilization_report", admin, days=d))] + usage_section(await client.call("usage_summary", admin, days=d)) + overflow_section(d) + [""]
+        parts += [render(await client.call("utilization_report", admin, days=d))] + usage_section(await client.call("usage_summary", admin, days=d)) + overflow_section(d) + incident_section(d) + [""]
     text = "\n".join(parts)
     print(text)
     RESEARCH.mkdir(parents=True, exist_ok=True)

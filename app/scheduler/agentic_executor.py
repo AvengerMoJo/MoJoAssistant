@@ -1600,6 +1600,15 @@ class AgenticExecutor:
                                       duration_ms=(time.time() - iter_start) * 1000)
                 _failed_resource_ids.add(resource.id)
                 self._log(f"LLM call failed: {e} — resource '{resource.id}' excluded for this task", "error")
+                try:
+                    from app.scheduler.task_incidents import record_incident
+                    _inc = record_incident(
+                        task.id, role_id, resource.id, str(e) or type(e).__name__, iteration,
+                        _estimate_tokens(messages), getattr(resource, "context_limit", None),
+                        max((len(str(m.get("content") or "")) for m in messages), default=0), iteration_log)
+                    self._log(f"incident recorded: {_inc['kind']} on {resource.id} (last tool {_inc['last_tool']})", "warning")
+                except Exception as inc_exc:  # a lost incident row is an error to see, never a reason to stop the task
+                    self._log(f"task incident write failed: {inc_exc}", "error")
                 iteration_log.append(
                     {
                         "iteration": iteration,
