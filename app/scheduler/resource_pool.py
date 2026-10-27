@@ -141,6 +141,7 @@ class LLMResource:
     pace: Optional[Dict[str, Any]] = None
     config_error: Optional[str] = None  # set (and the resource disabled) when its config could not be applied
     max_concurrent_requests: Optional[int] = None  # request slots; unset = 1 for a local model, unlimited for an API
+    timeout_seconds: Optional[float] = None  # how long one call may wait for the reply; unset = the client default (300 s)
     health_check_model: bool = True  # False: this provider's listing does not use the configured model id
     health_check: bool = True  # False: provider has no usable listing endpoint; never probe it
     health_path: str = "/models"  # endpoint under base_url the liveness probe GETs
@@ -637,6 +638,12 @@ class ResourceManager:
             config_error = f"data_scope {data_scope!r} must be one of {list(DATA_SCOPES)}"
             self._log(f"Resource '{rid}' disabled: {config_error}", "error")
 
+        timeout_seconds = conf.get("timeout_seconds")
+        if timeout_seconds is not None and (isinstance(timeout_seconds, bool)
+                                            or not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0):
+            config_error = f"timeout_seconds {timeout_seconds!r} must be a positive number"
+            self._log(f"Resource '{rid}' disabled: {config_error}", "error")
+
         return LLMResource(
             id=rid,
             type=conf.get("type", "local"),
@@ -652,6 +659,7 @@ class ResourceManager:
             approval=conf.get("approval", "none"),
             credential_route=conf.get("credential_route"),
             max_concurrent_requests=conf.get("max_concurrent_requests"),
+            timeout_seconds=float(timeout_seconds) if timeout_seconds is not None and not config_error else None,
             health_check=conf.get("health_check", True),
             health_check_model=conf.get("health_check_model", True),
             health_path=conf.get("health_path", "/models"),

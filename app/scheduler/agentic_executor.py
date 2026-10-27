@@ -1045,17 +1045,8 @@ class AgenticExecutor:
                     workflow_template_block = self._build_workflow_template_prompt(template)
                     self._log(f"Loaded workflow template for agent_type={agent_type}")
 
-        if character_block:
-            system_prompt = (
-                mode_overlay
-                + runtime_context
-                + character_block
-                + workflow_template_block
-                + "\n\n---\n\n"
-                + workflow_prompt
-            )
-        else:
-            system_prompt = mode_overlay + runtime_context + workflow_template_block + workflow_prompt
+        system_prompt = self._compose_system_prompt(
+            mode_overlay, character_block, workflow_template_block, workflow_prompt, runtime_context)
 
         max_iterations = config.get("max_iterations", task.resources.max_iterations)
         max_duration = config.get(
@@ -2377,6 +2368,17 @@ class AgenticExecutor:
             self._log(f"Task {task.id}: deadline review failed ({type(e).__name__}: {e}) -- stopping", "error")
             return dr.ReviewDecision(False, 0, f"deadline review failed: {type(e).__name__}: {e}"[:300], "rule")
 
+    @staticmethod
+    def _compose_system_prompt(mode_overlay: str, character_block: str, workflow_template_block: str,
+                               workflow_prompt: str, runtime_context: str) -> str:
+        """The clock goes LAST. The model server reuses its saved read of a prompt only up to the first
+        difference, so a minute-resolution time near the start made every task re-read the whole role and
+        workflow text. Everything before it is now the same between tasks of one role."""
+        if character_block:
+            return (mode_overlay + character_block + workflow_template_block
+                    + "\n\n---\n\n" + workflow_prompt + "\n\n" + runtime_context)
+        return mode_overlay + workflow_template_block + workflow_prompt + "\n\n" + runtime_context
+
     async def _call_llm(
         self,
         resource: LLMResource,
@@ -2404,6 +2406,9 @@ class AgenticExecutor:
             "message_format": "openai",
             "provider": resource.provider,
         }
+        if resource.timeout_seconds:
+            # a local model reading a big prompt sends nothing until it has read all of it
+            resource_config["timeout"] = resource.timeout_seconds
         client = UnifiedLLMClient()
         async with self._rm.slot(resource.id, owner=owner, max_wait_s=QUEUE_WAIT_MAX_SECONDS):
             data = await client.call_async(
