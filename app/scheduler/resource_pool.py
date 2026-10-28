@@ -246,6 +246,7 @@ class ResourceManager:
         self._group_probe: Dict[str, tuple] = {}  # health_group -> (checked_at, ProbeResult)
         self._quota_pools: Dict[str, List["resource_quota.QuotaWindow"]] = {}
         self._quota_pool_errors: Dict[str, str] = {}
+        self._network_preference: tuple = self.NETWORK_SCOPES
         self._pool_calls: Dict[str, Deque[float]] = {}
         self._lms_ps_cache = None
         self._busy_checked_at: Optional[float] = None
@@ -425,6 +426,20 @@ class ResourceManager:
             self._parse_legacy_resources(data)
             self._auto_sync_local_servers(data)
 
+    NETWORK_SCOPES = ("local", "lan", "tailnet", "public")
+
+    def _parse_network_preference(self, raw) -> tuple:
+        """Top-level "network_preference": which route to use first for a resource that lists several
+        "endpoints". An unreadable value is logged and the default order is used for the pool."""
+        if raw is None:
+            return self.NETWORK_SCOPES
+        if (isinstance(raw, list) and raw and all(isinstance(x, str) for x in raw)
+                and set(raw) <= set(self.NETWORK_SCOPES)):
+            return tuple(raw)
+        self._log(f"network_preference {raw!r} must be a non-empty list drawn from {list(self.NETWORK_SCOPES)}; "
+                  "using the default order", "error")
+        return self.NETWORK_SCOPES
+
     def _parse_flat_resources(self, data: dict) -> None:
         """Parse flat `resources` dict format (resource_pool.json)."""
         from app.scheduler.account_expansion import expand_provider_accounts
@@ -434,6 +449,7 @@ class ResourceManager:
         with self._lock:
             self._resources.clear()
             self._quota_pools, self._quota_pool_errors = {}, {}
+            self._network_preference = self._parse_network_preference(data.get("network_preference"))
             for pname, praw in all_pools.items():
                 try:
                     self._quota_pools[pname] = resource_quota.parse_windows(praw)
@@ -633,7 +649,26 @@ class ResourceManager:
             config_error = f"invalid quotas: {e}"
             self._log(f"Resource '{rid}' disabled: {config_error}", "error")
 
-        data_scope = conf.get("data_scope") or derive_data_scope(conf.get("base_url", ""))
+        # One resource, several routes: "endpoints" maps a network scope to a base_url; the pool's
+        # network_preference picks the first scope the resource has. No match disables the resource
+        # (no silent use of a route the owner did not list).
+        base_url = conf.get("base_url", "")
+        endpoints = conf.get("endpoints")
+        if endpoints is not None:
+            if (not isinstance(endpoints, dict) or not endpoints
+                    or any(k not in self.NETWORK_SCOPES or not str(v).startswith(("http://", "https://"))
+                           for k, v in endpoints.items())):
+                config_error = f"endpoints {endpoints!r} must map {list(self.NETWORK_SCOPES)} scopes to http(s) urls"
+                self._log(f"Resource '{rid}' disabled: {config_error}", "error")
+            else:
+                chosen = next((s for s in self._network_preference if s in endpoints), None)
+                if chosen is None:
+                    config_error = (f"no endpoint on {list(self._network_preference)} (has {sorted(endpoints)})")
+                    self._log(f"Resource '{rid}' disabled: {config_error}", "error")
+                else:
+                    base_url = endpoints[chosen]
+
+        data_scope = conf.get("data_scope") or derive_data_scope(base_url)
         if data_scope not in DATA_SCOPES:
             config_error = f"data_scope {data_scope!r} must be one of {list(DATA_SCOPES)}"
             self._log(f"Resource '{rid}' disabled: {config_error}", "error")
@@ -648,7 +683,7 @@ class ResourceManager:
             id=rid,
             type=conf.get("type", "local"),
             provider=conf.get("provider", "openai"),
-            base_url=conf.get("base_url", ""),
+            base_url=base_url,
             model=conf.get("model", ""),
             tier=self._parse_tier(conf.get("tier", "free")),
             priority=conf.get("priority", 1),
