@@ -861,6 +861,9 @@ class ResourceManager:
     # single provider 500 (seen 2026-10-08, Google /models) is not an outage.
     FAILURE_CONFIRM_PROBES = 2
 
+    # How soon an account whose last completion probe was not LIVE is probed again (costs one call of its quota).
+    ACCOUNT_PROBE_RETRY_S = 900.0
+
     def probe_resource(self, resource_id: str) -> Optional[Dict[str, Any]]:
         """Probe one resource's endpoint; return a transition when the user should hear of one.
 
@@ -933,7 +936,11 @@ class ResourceManager:
         with self._lock:
             lead = next((r for r in self._resources.values() if r.enabled and r.health_group == group), None)
             cached = self._group_probe.get(group)
-            fresh = cached is not None and time.time() - cached[0] < resource.health_probe_interval_s
+            # A good answer is trusted for the whole interval; anything else is asked again soon, so one bad
+            # probe cannot keep an account out of the pool for hours.
+            ttl = resource.health_probe_interval_s if cached and cached[1].state == resource_health.LIVE \
+                else min(resource.health_probe_interval_s, self.ACCOUNT_PROBE_RETRY_S)
+            fresh = cached is not None and time.time() - cached[0] < ttl
             if fresh or lead is None or lead.id != resource.id:
                 return cached[1] if cached else None
             base_url, key, model = resource.base_url, resource.api_key or "", resource.model

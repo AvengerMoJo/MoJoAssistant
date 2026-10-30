@@ -1,5 +1,7 @@
 import json
 import threading
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
@@ -91,3 +93,29 @@ def test_a_listing_failure_still_works_without_an_account_probe(tmp_path, monkey
             patch.object(rh, "probe_completion", lambda *a, **k: rh.ProbeResult(rh.LIVE, "ok", 0)):
         rm.probe_all()
     assert not [r for r in rm.selection_order() if r["eligible"]]
+
+
+def test_a_slow_completion_does_not_judge_the_account(monkeypatch):
+    def slow(*a, **k):
+        raise urllib.error.URLError(TimeoutError("The read operation timed out"))
+    monkeypatch.setattr(urllib.request, "urlopen", slow)
+    r = rh.probe_completion("http://x/v1", "k", "m", timeout=5)
+    assert r.state == rh.ERROR and "slow model" in r.detail
+
+
+def test_a_failed_account_probe_is_retried_soon_but_a_live_one_is_trusted(tmp_path, monkeypatch):
+    rm = _pool(tmp_path, monkeypatch)
+    calls = []
+    answers = iter([rh.AUTH_FAILED, rh.LIVE, rh.LIVE, rh.LIVE])  # account a: refused, then fine; account b: fine
+
+    def completion(base_url, key, model, timeout=30.0):
+        calls.append(key)
+        return rh.ProbeResult(next(answers) if key == "ka" else rh.LIVE, "x", 0)
+
+    live_listing = lambda *a, **k: rh.ProbeResult(rh.LIVE, "HTTP 200", 0)
+    with patch.object(rh, "probe_endpoint", live_listing), patch.object(rh, "probe_completion", completion):
+        rm.probe_all()                                   # a refused, b live
+        for k, (t, res) in list(rm._group_probe.items()):
+            rm._group_probe[k] = (t - 1000, res)         # 1000 s later: past the retry time, inside the 3600 s interval
+        rm.probe_all()
+    assert calls.count("ka") == 2 and calls.count("kb") == 1

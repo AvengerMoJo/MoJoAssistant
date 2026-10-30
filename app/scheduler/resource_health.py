@@ -124,4 +124,9 @@ def probe_completion(base_url: str, api_key: str, model: str, timeout: float = 3
         return ProbeResult(ERROR, f"completion HTTP {e.code} from {url}", now, latency)
     except (urllib.error.URLError, OSError) as e:
         reason = getattr(e, "reason", e)
+        if isinstance(reason, TimeoutError):
+            # The server took the connection and never finished the answer: a slow model, not a dead account.
+            # UNREACHABLE would gate every model on the account (2026-10-30: one slow 550B free model took
+            # all four OpenRouter accounts out of the pool for six hours).
+            return ProbeResult(ERROR, f"no completion within {timeout:g}s ({type(reason).__name__}); slow model, account not judged", now)
         return ProbeResult(UNREACHABLE, f"{type(reason).__name__}: {reason}", now)
