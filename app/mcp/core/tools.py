@@ -729,6 +729,7 @@ class ToolRegistry:
                     "action='resource_approve',   resource_id            → approve a resource for use\n"
                     "action='resource_revoke',    resource_id            → revoke a resource\n"
                     "action='resource_smoke_test',resource_id            → test connectivity\n"
+                    "action='resource_chat',      message, provider?, models?, resource_ids?, max_data_scope? → ask pool model(s) one question, keys never leave MoJo\n"
                     "action='llm_models',         resource_id            → list live models from server\n"
                     "action='registry_refresh'                           → refresh public model registry (LiteLLM + OpenRouter)\n\n"
                     "# Custom assistant capabilities (user-defined tools; NOT LLM resources)\n"
@@ -5894,6 +5895,105 @@ Agent resumes within seconds.
         except Exception as e:
             return {"status": "error", "message": f"llm_direct_chat failed: {e}"}
 
+    async def _execute_resource_chat(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Let a standalone agent use pool models without holding a key.
+
+        One question goes to N distinct models picked by the pool's own ranking (health, quota, rate limits),
+        or to the exact resource_ids given. Each call is recorded in the pool's usage ledger. A resource that
+        fails is reported as failed in its own row -- nothing is retried on another model, so the caller sees
+        exactly which model answered. max_data_scope defaults to own_network: a third-party model (OpenRouter,
+        Gemini, ...) only receives the question when the caller says max_data_scope=third_party.
+        """
+        import asyncio
+        import time as _time
+        from app.llm.unified_client import UnifiedLLMClient
+        from app.scheduler.resource_pool import DATA_SCOPES, ResourceBusyError, ResourceTier
+
+        message = (args.get("message") or "").strip()
+        system_prompt = (args.get("system_prompt") or "").strip()
+        if not message:
+            return {"status": "error", "message": "message is required"}
+        scope = args.get("max_data_scope") or "own_network"
+        if scope not in DATA_SCOPES:
+            return {"status": "error", "message": f"max_data_scope must be one of {list(DATA_SCOPES)}"}
+        tier_name = args.get("tier") or "free_api"
+        if tier_name not in ("free", "free_api"):
+            return {"status": "error", "message": "tier must be 'free' or 'free_api' (paid resources are not reachable here)"}
+        try:
+            n_models = int(args.get("models") or 1)
+            max_tokens = int(args.get("max_tokens") or 1024)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "models and max_tokens must be integers"}
+        if not 1 <= n_models <= 8:
+            return {"status": "error", "message": "models must be between 1 and 8"}
+        max_tokens = max(16, min(max_tokens, 8192))
+        provider = (args.get("provider") or "").strip().lower() or None
+        pinned = args.get("resource_ids") or []
+        if pinned and (not isinstance(pinned, list) or not all(isinstance(x, str) for x in pinned)):
+            return {"status": "error", "message": "resource_ids must be a list of resource id strings"}
+
+        rm = self._get_resource_manager()
+        fit = {"min_context": len(message + system_prompt) // 3 + max_tokens, "max_data_scope": scope}
+        picked = []
+        if pinned:
+            for rid in pinned:
+                with rm._lock:
+                    res = rm._resources.get(rid)
+                if res is None:
+                    return {"status": "error", "message": f"Resource not found: {rid}"}
+                reason = rm._exclusion_reason(res, [ResourceTier.FREE, ResourceTier.FREE_API], fit["min_context"], 0, None,
+                                              max_data_scope=scope)
+                if reason is not None:
+                    return {"status": "error", "message": f"{rid} cannot serve this request: {reason}"}
+                picked.append(res)
+        else:
+            skip, seen_models = set(), set()
+            tiers = [ResourceTier(tier_name)]
+            for _ in range(500):
+                res = rm.acquire(tier_preference=tiers, exclude_ids=skip, **fit)
+                if res is None:
+                    break
+                skip.add(res.id)
+                if (provider and (res.provider or "").lower() != provider) or res.model in seen_models:
+                    continue
+                seen_models.add(res.model)
+                picked.append(res)
+                if len(picked) == n_models:
+                    break
+        if not picked:
+            return {"status": "error", "message": (
+                f"no pool resource qualifies (tier={tier_name}, provider={provider or 'any'}, max_data_scope={scope}, "
+                f"needs ~{fit['min_context']} tokens of context). A third-party provider needs max_data_scope=third_party.")}
+
+        messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + [{"role": "user", "content": message}]
+
+        async def ask(res):
+            cfg = {"base_url": res.base_url, "model": res.model, "api_key": res.api_key, "provider": res.provider,
+                   "output_limit": min(max_tokens, res.output_limit or max_tokens), "message_format": "openai"}
+            row = {"resource_id": res.id, "model": res.model, "provider": res.provider}
+            t0 = _time.time()
+            try:
+                async with rm.slot(res.id, owner="resource_chat", max_wait_s=30):
+                    data = await UnifiedLLMClient().call_async(messages=messages, resource_config=cfg, model_override=res.model)
+            except ResourceBusyError as e:
+                row.update(status="error", error=f"busy: {e}")
+                return row
+            except Exception as e:
+                rm.record_usage(res.id, success=False, error_message=str(e), task_class="mcp.resource_chat")
+                row.update(status="error", error=f"{type(e).__name__}: {e}")
+                return row
+            rm.record_usage(res.id, success=True, token_usage=data.get("usage"), model_served=res.model,
+                            duration_ms=(_time.time() - t0) * 1000, task_class="mcp.resource_chat")
+            choice = (data.get("choices") or [{}])[0]
+            row.update(status="success", reply=(choice.get("message") or {}).get("content") or "",
+                       finish_reason=choice.get("finish_reason"), usage=data.get("usage"),
+                       duration_s=round(_time.time() - t0, 1))
+            return row
+
+        rows = await asyncio.gather(*(ask(r) for r in picked))
+        ok = sum(1 for r in rows if r["status"] == "success")
+        return {"status": "success" if ok else "error", "answered": ok, "asked": len(rows), "results": rows}
+
     # ── Role Hub ─────────────────────────────────────────────────────
 
     async def _execute_role_hub(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -6608,6 +6708,8 @@ Agent resumes within seconds.
             if not resource_id:
                 return {"status": "error", "message": "Parameter 'resource_id' is required."}
             return await self._execute_resource_pool_smoke_test(args)
+        if action == "resource_chat":
+            return await self._execute_resource_chat(args)
         if action == "llm_models":
             resource_id = args.get("resource_id")
             if not resource_id:
@@ -6691,6 +6793,7 @@ Agent resumes within seconds.
                         "resource_approve":      "Approve a resource — params: resource_id",
                         "resource_revoke":       "Revoke a resource — params: resource_id",
                         "resource_smoke_test":   "Run agentic smoke checks — required: resource_id; optional: role_id, dynamic_goal, dynamic_available_tools, dynamic_expected_tool, dynamic_planning_prompt, dynamic_system_prompt, debug_artifact, issue_note",
+                        "resource_chat":         "Ask one or several pool models the same question and get each answer back (keys stay in MoJo; quota and rate limits are enforced) — params: message, system_prompt?, provider? (e.g. openrouter), models? (how many distinct models, default 1), resource_ids? (pin exact resources), tier? (free|free_api, default free_api), max_data_scope? (local_host|own_network|third_party, default own_network), max_tokens?",
                         "llm_models":            "List live models from server — params: resource_id",
                         "registry_refresh":      "Refresh public model registry cache (LiteLLM + OpenRouter) — auto-populates context/token limits for known models",
                         "capability_list":       "List tool capabilities (system built-ins + user custom) — NOT the LLM resource pool",
