@@ -53,7 +53,7 @@ class ResourceMaintenanceHandler(TaskHandler):
                 return resp.json()
 
         async def verify(model: str) -> bool:
-            cfg = {"base_url": probe.base_url, "model": model, "api_key": probe.api_key, "output_limit": 100,
+            cfg = {"base_url": probe.base_url, "model": model, "api_key": probe.api_key, "output_limit": 1500,  # thinking models spend most of a small budget on reasoning before the tool call
                    "message_format": "openai", "provider": probe.provider, "timeout": 90}
             data = await UnifiedLLMClient().call_async(
                 messages=[{"role": "user", "content": "Call the echo tool with the text 'ok'."}],
