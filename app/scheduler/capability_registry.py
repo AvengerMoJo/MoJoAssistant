@@ -1955,6 +1955,7 @@ class CapabilityRegistry:
 
     async def _bash_exec(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute shell command(s) with safety limits."""
+        from app.scheduler import bash_command as _bash
         raw_commands = args.get("commands", args.get("command"))
         if raw_commands is None:
             return {"success": False, "error": "Missing 'commands' parameter"}
@@ -2040,16 +2041,21 @@ class CapabilityRegistry:
 
         results = []
         for command in commands:
-            cmd_parts = command.split()
-            if not cmd_parts:
-                continue
-            base_cmd = cmd_parts[0]
-
-            if base_cmd in BLOCKED_COMMANDS:
+            # Every simple command is checked, not only the first word:
+            # `ls && rm x` and `cat f; rm x` run under shell=True.
+            simple = _bash.split_commands(command)
+            if simple is None:
+                return {
+                    "success": False,
+                    "error": f"Cannot parse command (unbalanced quote or backtick): {command}",
+                    "results": results,
+                }
+            blocked = next((b for b in (_bash.base_name(t) for t in simple) if b in BLOCKED_COMMANDS), None)
+            if blocked:
                 return {
                     "success": False,
                     "error": (
-                        f"Command '{base_cmd}' is blocked — destructive or privileged "
+                        f"Command '{blocked}' is blocked — destructive or privileged "
                         "commands are not permitted."
                     ),
                     "results": results,
@@ -2087,7 +2093,7 @@ class CapabilityRegistry:
             }
             results.append(command_result)
 
-            if result.returncode != 0:
+            if result.returncode != 0 and not _bash.is_no_match(command, result.returncode):
                 return {
                     "success": False,
                     "results": results,

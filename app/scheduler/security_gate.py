@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 
+from app.scheduler.bash_command import all_read_only
 from app.scheduler.safety_policy import SafetyPolicy
 
 logger = logging.getLogger(__name__)
@@ -253,6 +254,8 @@ class SecurityGate:
 
         # --- Rule source 2: Danger budget ---
         danger_str = (tool_def or {}).get("danger_level", "low")
+        if tool_name == "bash_exec" and all_read_only(args.get("commands", args.get("command"))):
+            danger_str = "low"  # observing costs like read_file, not like a write
         danger_score = _DANGER_SCORE.get(danger_str, 1)
         remaining = state.budget - state.consumed
 
