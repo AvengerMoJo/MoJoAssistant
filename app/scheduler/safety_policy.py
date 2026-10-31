@@ -1,12 +1,27 @@
 """Safety Policy Enforcement for Agentic Tasks."""
 # [hitl-orchestrator: generic]
 
+import fnmatch
 import json
 import os
+import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from app.config.paths import get_memory_path
+
+
+# Commands whose non-option arguments are paths they write or remove.
+_WRITERS = {"rm", "rmdir", "mv", "cp", "tee", "touch", "mkdir", "ln", "install",
+            "truncate", "dd", "shred", "unlink", "chmod", "chown", "chgrp"}
+_SECRET_DIRS = {".ssh", ".gnupg", ".aws", "ai-credential-manager", ".mcp_service"}
+_SECRET_FILES = ("id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*", "*.pem", "*.p12", "*.pfx",
+                 "*.key", "*.kdbx", "auth.json", "clients.json", "ai_credential_manager_client.json",
+                 "shadow", "sudoers")
+_ENV_TEMPLATE = (".example", ".sample", ".template")
+# Harmless system files an agent may read.
+_SAFE_READS = ["/etc/os-release", "/etc/resolv.conf", "/etc/hostname", "/proc/self",
+               "/proc/cpuinfo", "/proc/meminfo"]
 
 
 class SafetyPolicy:
@@ -143,62 +158,104 @@ class SafetyPolicy:
                     "reason": f"Bash tool must be '{min_danger}' danger or higher",
                 }
 
-            command = args.get("command", "")
-            blocked = self._first_blocked_path(command, immutable.get("blocked_paths", []), sandbox)
-            if blocked is not None:
-                return {
-                    "allowed": False,
-                    "reason": f"Command targets blocked path '{blocked}'",
-                }
+            violation = self._bash_violation(args.get("commands", args.get("command")), sandbox, immutable)
+            if violation:
+                return {"allowed": False, "reason": violation}
 
         return {"allowed": True}
 
-    def _first_blocked_path(
-        self, command: str, blocked_paths: List[str], sandbox: Dict[str, Any]
-    ) -> Optional[str]:
-        """Return the first blocked path a command genuinely targets, or None.
+    def _bash_violation(self, raw, sandbox: Dict[str, Any], immutable: Dict[str, Any]) -> Optional[str]:
+        """Reason a bash_exec command (string or list) is refused, or None.
 
-        Found live 2026-09-23: the previous check was `if blocked in command`
-        with blocked_paths[0] == "/" -- a bare substring test against the
-        single-character root path, which is a substring of virtually every
-        real shell command (any path at all contains "/"). This blocked
-        `ls ~/.memory/projects/*.json` -- a routine, fully in-sandbox read --
-        with "Command targets blocked path '/'", and would have blocked
-        nearly every bash_exec call referencing any path, not just this one.
+        Three rules, checked per simple command (`a && b`, pipes, `$(..)`):
+          1. secrets  -- ssh/gpg/aws dirs, .env, private keys, the credential
+                         vault, auth/client files: no read, no write.
+          2. writes   -- a redirect or a writing command (rm, cp, touch, sed -i,
+                         ...) aimed outside the memory dir and /tmp.
+          3. system   -- reads of /etc, /var, /root, /boot, /sys, /proc (except
+                         a few harmless files) and a bare `/` (whole-disk scan).
+        Reading repos under /home is allowed; `commands` is the tool's real
+        parameter (the old check only read `command`, so it never fired)."""
+        from app.scheduler import bash_command as _bash
 
-        Fix: only flag a path argument that actually resolves under a
-        blocked root, and only after confirming it does NOT also resolve
-        under an allowed root (allowed_paths carves out the memory
-        directory from broader blocks like "/home" the same way
-        read_file/write_file already do above)."""
-        try:
-            import shlex
-            tokens = shlex.split(command)
-        except ValueError:
-            tokens = command.split()
-
+        commands = [raw] if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
         allowed_roots = [os.path.abspath(get_memory_path())] + [
             os.path.abspath(os.path.expanduser(p)) for p in sandbox.get("allowed_paths", [])
         ]
-        blocked_roots = [
-            os.path.abspath(os.path.expanduser(p)) if p != "/" else "/"
-            for p in blocked_paths
-        ]
+        try:
+            from app.scheduler.sandbox.context import _cv_sandbox_handle
+            in_sandbox = _cv_sandbox_handle.get() is not None
+        except Exception:
+            in_sandbox = False  # no sandbox module: the strict host rules apply
+        write_roots = allowed_roots + ["/tmp"]
+        read_blocked = [p for p in immutable.get("blocked_paths", []) if p not in ("/", "/home", "/usr")]
 
-        for token in tokens:
-            if not (token.startswith("/") or token.startswith("~")):
+        def under(path: str, roots) -> bool:
+            return any(path == r or path.startswith(r.rstrip("/") + "/") for r in roots)
+
+        for command in commands:
+            if not isinstance(command, str):
                 continue
-            token_abs = os.path.abspath(os.path.expanduser(token))
-            if any(token_abs == ar or token_abs.startswith(ar.rstrip("/") + "/") for ar in allowed_roots):
-                continue  # explicitly allowed — carve-out wins
-            for i, br in enumerate(blocked_roots):
-                is_match = (
-                    token_abs == br
-                    if br == "/"
-                    else token_abs == br or token_abs.startswith(br.rstrip("/") + "/")
-                )
-                if is_match:
-                    return blocked_paths[i]
+            try:
+                lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+                lexer.whitespace_split = True
+                tokens = list(lexer)
+            except ValueError:
+                tokens = command.split()  # scanning only: stricter, never executed
+            for tok in tokens:
+                hit = self._secret_hit(tok)
+                if hit:
+                    return f"Command touches a secret ({hit}); secrets are not readable or writable by agents"
+            if in_sandbox:
+                continue  # the container is the boundary for writes and system reads
+            for simple in _bash.split_commands(command) or []:
+                name = _bash.base_name(simple)
+                targets = []
+                for i, tok in enumerate(simple):
+                    if tok.lstrip("0123456789").startswith(">") and i + 1 < len(simple):
+                        targets.append(simple[i + 1])  # redirect target
+                if name in _WRITERS or (name == "sed" and any(a.startswith("-i") or a == "--in-place" for a in simple[1:])):
+                    paths = [t[3:] if t.startswith("of=") else t for t in simple[1:] if not t.startswith("-")]
+                    # cp/mv/ln/install read their sources and write only the last argument.
+                    targets += paths[-1:] if name in ("cp", "mv", "ln", "install") else paths
+                for t in targets:
+                    if t.startswith("&") or t in ("/dev/null", "/dev/stderr", "/dev/stdout"):
+                        continue
+                    if not t.startswith(("/", "~")):
+                        if ".." in t.split("/"):
+                            return f"Command writes through '..' ({t}); use a path inside the memory dir"
+                        continue  # relative: resolved inside the agent workdir
+                    ap = os.path.abspath(os.path.expanduser(t))
+                    if not under(ap, write_roots):
+                        return f"Command writes to '{t}', outside the memory dir and /tmp"
+                for tok in simple[1:]:
+                    if not tok.startswith(("/", "~")):
+                        continue
+                    ap = os.path.abspath(os.path.expanduser(tok))
+                    if ap == "/":
+                        return "Command scans the whole filesystem ('/'); name the directory"
+                    if under(ap, read_blocked) and not under(ap, allowed_roots) and not under(ap, _SAFE_READS):
+                        return f"Command reads system path '{tok}'"
+        return None
+
+    @staticmethod
+    def _secret_hit(token: str) -> Optional[str]:
+        """Name of the secret rule a path-like token matches, or None."""
+        t = token.strip("\"'").lower()
+        if not t or t.startswith("-") and "/" not in t:
+            return None
+        parts = [p for p in t.replace("~", "/~").split("/") if p]
+        for part in parts:
+            if part in _SECRET_DIRS:
+                return part
+        base = parts[-1] if parts else t
+        if base.startswith(".env") and not base.endswith(_ENV_TEMPLATE):
+            return base
+        for pat in _SECRET_FILES:
+            if fnmatch.fnmatch(base, pat):
+                return base
+        if fnmatch.fnmatch(t, "*/opencode/service.json"):
+            return "opencode/service.json"
         return None
 
     def check_tool_addition(self, tool_definition: Dict) -> Dict[str, Any]:
