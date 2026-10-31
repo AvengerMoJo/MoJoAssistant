@@ -7,7 +7,8 @@ resource_pool.json -> provider_accounts.openrouter_free.models is therefore kept
   1. fetch the public catalog (no key needed); a failed fetch is an error and changes nothing
   2. candidates = free (price 0) models that support tool calls, have enough context, are not expired
   3. every configured model and up to MAX_NEW_PER_RUN new candidates get one real round trip
-  4. a new candidate that answers is added at a low priority (promotion is the owner's call)
+  4. a new candidate that answers is added at a low priority (promotion is the owner's call); one that does not
+     is set aside for REJECT_DAYS so the next candidates get their turn
   5. a configured model that left the catalog is disabled at once; one that failed FAIL_LIMIT daily checks in a
      row is disabled; a disabled one that is in the catalog and answers again is enabled
   6. the config is written with a backup, read back and re-expanded; if that fails the backup is restored
@@ -32,6 +33,7 @@ MIN_CONTEXT = 32000
 MAX_NEW_PER_RUN = 3
 FAIL_LIMIT = 3
 NEW_MODEL_PRIORITY = 30
+REJECT_DAYS = 7  # a new candidate that failed its round trip is not tried again for this long
 
 
 class RefreshError(RuntimeError):
@@ -165,7 +167,10 @@ async def run_refresh(
     history = state.get("models", {})
 
     known = {m["model"] for m in configured}
-    fresh = [mid for mid in candidates if mid not in known]
+    rejected = {mid: d for mid, d in (state.get("rejected_new") or {}).items()
+                if (now.date() - datetime.fromisoformat(d).date()).days < REJECT_DAYS}
+    # Without this the same few biggest-context candidates fail every day and the rest are never tried.
+    fresh = [mid for mid in candidates if mid not in known and mid not in rejected]
     # biggest context first, then name: the same catalog gives the same order every day
     new_ids = sorted(fresh, key=lambda mid: (-int(candidates[mid].get("context_length") or 0), mid))[:MAX_NEW_PER_RUN]
     to_check = [m["model"] for m in configured if not m["model"].startswith("openrouter/")] + new_ids
@@ -176,6 +181,9 @@ async def run_refresh(
         except Exception:
             verified[mid] = False
 
+    for mid in new_ids:
+        if not verified.get(mid):
+            rejected[mid] = today
     plan = plan_changes(configured, candidates, verified, history, today)
     result = apply_to_config(config_path, plan, expand)
 
@@ -189,7 +197,7 @@ async def run_refresh(
         "config_written": result["written"],
     }
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps({"models": plan["history"], "last_run": summary}, indent=2), encoding="utf-8")
+    state_path.write_text(json.dumps({"models": plan["history"], "rejected_new": rejected, "last_run": summary}, indent=2), encoding="utf-8")
     return summary
 
 

@@ -109,3 +109,26 @@ def test_full_run_adds_at_most_three_new_models_and_records_state(tmp_path):
     assert len(summary["added"]) == fmr.MAX_NEW_PER_RUN and summary["config_written"]
     saved = json.loads(state.read_text())
     assert saved["last_run"]["added"] == summary["added"] and saved["models"]["old:free"]["last_ok"] == "2026-10-18"
+
+
+def test_failed_new_candidates_are_set_aside_so_the_next_ones_get_their_turn(tmp_path):
+    path = make_config(tmp_path, [{"model": "old:free", "priority": 10}])
+    ids = [f"n{i}:free" for i in range(6)]
+    cat = {"data": [entry("old:free")] + [entry(i) for i in ids]}
+    state = tmp_path / "s.json"
+    asked = []
+
+    def verify(m):
+        asked.append(m)
+        return m == "old:free" or m in ("n3:free", "n4:free", "n5:free")   # n0..n2 never answer
+
+    asyncio.run(fmr.run_refresh(path, state, lambda: cat, verify, expand_provider_accounts, now=NOW))
+    assert {"n0:free", "n1:free", "n2:free"} <= set(asked)
+    asked.clear()
+    day2 = datetime(2026, 10, 19, 2, 0, tzinfo=timezone.utc)
+    asyncio.run(fmr.run_refresh(path, state, lambda: cat, verify, expand_provider_accounts, now=day2))
+    assert not {"n0:free", "n1:free", "n2:free"} & set(asked)         # not retried the next day
+    asked.clear()
+    day9 = datetime(2026, 10, 27, 2, 0, tzinfo=timezone.utc)
+    asyncio.run(fmr.run_refresh(path, state, lambda: cat, verify, expand_provider_accounts, now=day9))
+    assert {"n0:free", "n1:free", "n2:free"} <= set(asked)            # tried again after REJECT_DAYS

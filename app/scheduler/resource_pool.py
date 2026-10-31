@@ -673,6 +673,14 @@ class ResourceManager:
             config_error = f"data_scope {data_scope!r} must be one of {list(DATA_SCOPES)}"
             self._log(f"Resource '{rid}' disabled: {config_error}", "error")
 
+        # OpenRouter is free-only here: a paid model on a free_api resource would spend real credit. The refresh job
+        # only ever adds ':free' models; this stops a hand edit or a resource_add from adding any other.
+        if "openrouter.ai" in (base_url or "").lower():
+            model_id = conf.get("model", "")
+            if not (model_id.endswith(":free") or model_id == "openrouter/free"):
+                config_error = f"OpenRouter model {model_id!r} is not a free model (':free' or 'openrouter/free' only)"
+                self._log(f"Resource '{rid}' disabled: {config_error}", "error")
+
         timeout_seconds = conf.get("timeout_seconds")
         if timeout_seconds is not None and (isinstance(timeout_seconds, bool)
                                             or not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0):

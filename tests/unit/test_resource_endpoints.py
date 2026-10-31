@@ -65,3 +65,18 @@ class TestEndpoints(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOpenRouterFreeOnly(TestEndpoints):
+    def _or(self, model):
+        return self._manager({"resources": {"r": _res(type="api", provider="openrouter", base_url="https://openrouter.ai/api/v1",
+                                                    model=model, tier="free_api")}})._resources["r"]
+
+    def test_free_models_are_accepted(self):
+        for m in ("nvidia/nemotron-3.5-lightning:free", "openrouter/free"):
+            self.assertIsNone(self._or(m).config_error, m)
+
+    def test_a_paid_openrouter_model_is_disabled(self):
+        r = self._or("anthropic/claude-sonnet-4.5")
+        self.assertIn("not a free model", r.config_error)
+        self.assertFalse(r.enabled)
