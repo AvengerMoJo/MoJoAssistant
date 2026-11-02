@@ -22,7 +22,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
-from app.config.paths import get_memory_path
+from app.config.config_loader import load_layered_json_config
+from app.config.paths import get_memory_path, get_memory_subpath
+from app.scheduler import bonsai_calibration as calib
 
 POPO_KEY = "~/.ssh/popo_ai_github"
 PORT_RANGE = (4700, 4799)
@@ -40,6 +42,18 @@ SAFE_COMMANDS = ("git ", "pytest", "python", "venv/bin/python", "ls", "cat ", "g
 
 class JobError(Exception):
     pass
+
+
+def job_config() -> Dict[str, Any]:
+    """config/coding_jobs.json (template) overridden by ~/.memory/config/coding_jobs.json."""
+    return load_layered_json_config("config/coding_jobs.json") or {}
+
+
+def reviewer_resources() -> List[str]:
+    ids = job_config().get("reviewer_resources") or []
+    if not ids:
+        raise JobError("config coding_jobs.reviewer_resources is empty: name the pool resources allowed to act as Paul's reviewer")
+    return ids
 
 
 def jobs_dir() -> Path:
@@ -185,7 +199,8 @@ def launch(spec: Dict[str, Any], *, sleep: Callable[[float], None] = time.sleep)
         "repo": spec["repo"], "base_branch": spec.get("base_branch", "main"), "branch": branch,
         "sandbox_path": sandbox, "unit": unit, "port": port, "password": password,
         "session_id": None, "model": spec.get("model") or DEFAULT_MODEL,
-        "budget": {**DEFAULT_BUDGET, **(spec.get("budget") or {})},
+        "role_id": spec.get("role_id", "popo"), "category": spec.get("category", "general"),
+        **_budget(spec),
         "started_at": now_iso(), "state": "running", "last_check_at": None,
         "continues": 0, "checks": [],
     }
@@ -214,6 +229,17 @@ def launch(spec: Dict[str, Any], *, sleep: Callable[[float], None] = time.sleep)
     finally:
         oc.close()
     return job
+
+
+def _budget(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Owner's budget wins; else Bonsai's calibration for this kind of job; else the defaults."""
+    if spec.get("budget"):
+        return {"budget": {**DEFAULT_BUDGET, **spec["budget"]}, "budget_source": "spec"}
+    sug = calib.suggest(spec.get("role_id", "popo"), "coding_job", spec.get("category", "general"))
+    if sug:
+        return {"budget": {"max_hours": sug["max_hours"], "max_steps": sug["max_steps"]},
+                "budget_source": f"bonsai calibration, {sug['samples']} finished runs, p75 x1.2"}
+    return {"budget": dict(DEFAULT_BUDGET), "budget_source": "default (too few finished runs to calibrate)"}
 
 
 def _free_port() -> int:
@@ -362,8 +388,8 @@ DECISIONS = ("CONTINUE", "STATUS_UP", "DONE", "REPLAN", "ASK_OWNER")
 
 
 def review_prompt(job: Dict[str, Any], facts: Dict[str, Any], state: str, unanswered: list) -> str:
-    lessons = lessons_text()
-    lessons = f"Calibration notes from the owner and the weekly review (follow them):\n{lessons}\n\n" if lessons else ""
+    rules = escalation_rules_text()
+    lessons = f"Your own rules for when to involve the owner in a job (they come from your role and are tuned weekly):\n{rules}\n\n" if rules else ""
     return f"""You are Paul, the product manager, reviewing a coding job that works alone. You judge at the level of the plan, not the code.
 A rule check found the job in state: {state}.
 
@@ -382,7 +408,7 @@ STATUS.md (the agent's own report):
 {facts['status_md']}
 
 {lessons}Decide whether the assistant is stuck or stopped for a wrong reason. Answer with ONE JSON object and nothing else:
-{{"decision": "CONTINUE|STATUS_UP|DONE|REPLAN|ASK_OWNER", "reason": "one or two sentences", "message": "for CONTINUE: the exact instruction to send the agent; for STATUS_UP/ASK_OWNER/REPLAN: what the owner needs to read; else empty"}}
+{{"decision": "CONTINUE|STATUS_UP|DONE|REPLAN|ASK_OWNER", "reason": "one or two sentences", "message": "for CONTINUE: the exact instruction to send the agent; for STATUS_UP/ASK_OWNER/REPLAN: what the owner needs to read; else empty", "recommendation": "for ASK_OWNER only: the answer you would pick yourself", "options": ["for ASK_OWNER only: 2-3 short answers the owner can choose from"]}}
 CONTINUE = the stop was wrong, tell it what to do next. STATUS_UP = real but slow progress, tell the owner briefly. DONE = the goal is met and a PR exists.
 REPLAN = this approach is failing, give a revised plan in message. ASK_OWNER = only if a decision truly needs the owner and you cannot make it from the facts; say what you would choose."""
 
@@ -394,7 +420,11 @@ def parse_decision(text: str) -> Dict[str, str]:
     d = json.loads(m.group(0))
     if d.get("decision") not in DECISIONS:
         raise JobError(f"reviewer decision not one of {DECISIONS}: {d.get('decision')!r}")
-    return {"decision": d["decision"], "reason": str(d.get("reason", "")), "message": str(d.get("message", ""))}
+    out = {"decision": d["decision"], "reason": str(d.get("reason", "")), "message": str(d.get("message", ""))}
+    if d["decision"] == "ASK_OWNER":
+        out["recommendation"] = str(d.get("recommendation", "")).strip()
+        out["options"] = [str(o) for o in (d.get("options") or [])][:3]
+    return out
 
 
 def log_decision(job: Dict[str, Any], state: str, decision: Dict[str, str]) -> None:
@@ -405,6 +435,21 @@ def log_decision(job: Dict[str, Any], state: str, decision: Dict[str, str]) -> N
            "continues_before": job["continues"], "owner_feedback": None}
     with p.open("a") as f:
         f.write(json.dumps(row) + "\n")
+
+
+def log_feedback(job_id: str, decided_at: str, rating: str) -> None:
+    """The owner's answer to an ASK_OWNER question, rated by what it showed: the owner only confirming Paul's
+    own recommendation means the question was unnecessary; choosing differently means it was needed."""
+    p = Path(get_memory_path()) / "state" / "job_decisions.jsonl"
+    with p.open("a") as f:
+        f.write(json.dumps({"type": "feedback", "at": now_iso(), "job_id": job_id, "decided_at": decided_at, "rating": rating}) + "\n")
+
+
+def rate_owner_reply(reply: str, recommendation: str) -> str:
+    norm = lambda t: re.sub(r"[^a-z0-9 ]", "", t.lower()).strip()
+    r, rec = norm(reply), norm(recommendation)
+    agrees = r in ("approve", "yes", "ok", "okay", "agree", "go ahead", "as recommended") or (rec and (r == rec or r.startswith(rec) or rec.startswith(r)))
+    return "unnecessary" if agrees else "needed"
 
 
 def apply_decision(job: Dict[str, Any], decision: Dict[str, str], oc: OcClient) -> str:
@@ -439,41 +484,119 @@ def apply_decision(job: Dict[str, Any], decision: Dict[str, str], oc: OcClient) 
 
 # ---------------------------------------------------------------- weekly calibration (BRIDLE / Bonsai)
 
-LESSONS_FILE = "job_review_lessons.md"
+def escalation_rules_text(role_id: str = "paul") -> str:
+    """The role's own calibration of when to ask the owner (escalation_rules), as the role sees it."""
+    p = Path(get_memory_subpath("roles", f"{role_id}.json"))
+    rules = (json.loads(p.read_text()).get("escalation_rules") or {}) if p.exists() else {}
+    out = []
+    for k in ("escalate_when", "do_not_escalate_when"):
+        items = [str(x) for x in rules.get(k, []) if str(x).lower().startswith("coding job")]
+        if items:
+            out.append(f"{k.replace('_', ' ')}:\n" + "\n".join(f"- {i[:400]}" for i in items))
+    return "\n".join(out)
 
 
-def lessons_text() -> str:
-    """Owner/Bonsai-approved calibration notes; added to every Paul review prompt."""
-    p = Path(get_memory_path()) / "state" / LESSONS_FILE
-    return p.read_text()[-2000:].strip() if p.exists() else ""
-
-
-def weekly_report(days: int = 7, now: Optional[datetime] = None) -> Dict[str, Any]:
-    """What Paul decided this week and what became of those jobs: the data for the weekly Bonsai step."""
-    now = now or datetime.now(timezone.utc)
+def _rows(days: int, now: datetime):
     p = Path(get_memory_path()) / "state" / "job_decisions.jsonl"
-    rows = []
+    decisions, feedback = [], []
     if p.exists():
         for line in p.read_text().splitlines():
             row = json.loads(line)
-            if (now - datetime.fromisoformat(row["at"])).days < days:
-                rows.append(row)
-    by_decision: Dict[str, int] = {}
-    for r in rows:
-        by_decision[r["decision"]] = by_decision.get(r["decision"], 0) + 1
+            if (now - datetime.fromisoformat(row["at"])).days >= days:
+                continue
+            (feedback if row.get("type") == "feedback" else decisions).append(row)
+    return decisions, feedback
+
+
+def weekly_report(days: int = 7, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """The weekly BRIDLE/Bonsai input for Paul: decisions, how his asks were rated by the owner's answers,
+    how his nudges ended, and what the calibration store holds.  A rules proposal is made only on evidence."""
+    now = now or datetime.now(timezone.utc)
+    decisions, feedback = _rows(days, now)
+    by: Dict[str, int] = {}
+    for r in decisions:
+        by[r["decision"]] = by.get(r["decision"], 0) + 1
     jobs = {j["job_id"]: j for j in list_jobs()}
-    per_job: Dict[str, Dict[str, Any]] = {}
-    for r in rows:
-        j = per_job.setdefault(r["job_id"], {"decisions": [], "final_state": jobs.get(r["job_id"], {}).get("state")})
-        j["decisions"].append(r["decision"])
-    nudged = [v for v in per_job.values() if "CONTINUE" in v["decisions"]]
-    unrated = sum(1 for r in rows if r.get("owner_feedback") is None)
-    lines = [f"Paul's job decisions, last {days} days: {len(rows)} ({', '.join(f'{k} {v}' for k, v in sorted(by_decision.items())) or 'none'})."]
+    nudged = {r["job_id"] for r in decisions if r["decision"] == "CONTINUE"}
+    ok = sum(1 for j in nudged if jobs.get(j, {}).get("state") in ("done", "running"))
+    rated = {f["decided_at"]: f["rating"] for f in feedback}
+    asks = [r for r in decisions if r["decision"] == "ASK_OWNER"]
+    unnecessary = [r for r in asks if rated.get(r["at"]) == "unnecessary"]
+    lines = [f"Paul's job decisions, last {days} days: {len(decisions)} ({', '.join(f'{k} {v}' for k, v in sorted(by.items())) or 'none'})."]
     if nudged:
-        ok = sum(1 for v in nudged if v["final_state"] in ("done", "running"))
-        lines.append(f"Jobs he nudged with CONTINUE: {len(nudged)}; {ok} finished or still moving, {len(nudged) - ok} ended blocked, dead or over budget.")
-    asked = by_decision.get("ASK_OWNER", 0)
-    if asked:
-        lines.append(f"He asked you {asked} time(s). Each should have been a decision only you could make; tell me which were not.")
-    lines.append(f"{unrated} decision(s) have no owner rating yet (file ~/.memory/state/job_decisions.jsonl, field owner_feedback: good|bad).")
-    return {"rows": len(rows), "by_decision": by_decision, "unrated": unrated, "text": "\n".join(lines)}
+        lines.append(f"Jobs he nudged with CONTINUE: {len(nudged)}; {ok} finished or still moving, {len(nudged) - ok} did not.")
+    if asks:
+        lines.append(f"He asked you {len(asks)} time(s); you answered {len(rated.keys() & {a['at'] for a in asks})}; "
+                     f"{len(unnecessary)} of those only confirmed what he recommended (unnecessary).")
+    cal = calib.summary("popo", "coding_job", "general")
+    if cal["runs"]:
+        lines.append(f"Popo's coding jobs on record: {cal['runs']} ({cal['by_reason']}); suggested budget: {cal['suggestion'] or 'not enough finished runs yet'}.")
+    cfg = job_config().get("weekly_rules_proposal", {})
+    proposal = None
+    if len(asks) >= cfg.get("min_asks", 3) and len(unnecessary) / len(asks) >= cfg.get("unnecessary_share", 0.6):
+        examples = "; ".join(r["reason"][:80] for r in unnecessary[:3])
+        proposal = ("Coding job: do not ask the owner when your own recommendation is already the safe, reversible choice. "
+                    f"Last week {len(unnecessary)} of {len(asks)} asks only confirmed it (e.g. {examples}). Decide it yourself and tell the owner afterwards.")
+        lines.append("Proposed change to Paul's escalation rules (do_not_escalate_when):\n" + proposal)
+    return {"rows": len(decisions), "by_decision": by, "asks": len(asks), "unnecessary": len(unnecessary),
+            "proposal": proposal, "text": "\n".join(lines)}
+
+
+def add_escalation_rule(role_id: str, key_name: str, rule: str) -> None:
+    """Config write, BRIDLE pattern: backup, write, read back and re-parse."""
+    if key_name not in ("escalate_when", "do_not_escalate_when"):
+        raise JobError(f"unknown escalation key {key_name!r}")
+    p = Path(get_memory_subpath("roles", f"{role_id}.json"))
+    data = json.loads(p.read_text())
+    rules = data.setdefault("escalation_rules", {})
+    if rule in rules.get(key_name, []):
+        return
+    p.with_suffix(".json.bak-jobrules").write_text(p.read_text())
+    rules.setdefault(key_name, []).append(rule)
+    p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    if rule not in json.loads(p.read_text())["escalation_rules"][key_name]:
+        raise JobError(f"escalation rule did not persist in {p}")
+
+
+# ---------------------------------------------------------------- end of a job (Log -> Dream -> Learn)
+
+
+def end_reason(job: Dict[str, Any], state: str, facts: Dict[str, Any]) -> str:
+    if state == "done":
+        return "goal_achieved"
+    if state == "over_budget":
+        return "budget"
+    if (facts.get("job_result") or "").startswith("JOB_RESULT: DONE") and not facts.get("pr_url"):
+        return "detection_bug"
+    if job.get("continues", 0) >= MAX_CONTINUES:
+        return "model_confusion"
+    return "tool_error"
+
+
+def finish(job: Dict[str, Any], state: str, facts: Dict[str, Any], memory_service: Any) -> Dict[str, Any]:
+    """Write what the job taught to Bonsai's calibration store and to the roles' memory,
+    so dreaming can ingest it.  Returns {'reason', 'errors'}; a failed write is reported, never swallowed."""
+    reason = end_reason(job, state, facts)
+    errors = []
+    try:
+        calib.record(job.get("role_id", "popo"), "coding_job", job.get("category", "general"),
+                     steps=facts.get("steps") or 0, hours=facts.get("hours_running") or 0, reason=reason, run_id=job["job_id"])
+    except Exception as e:
+        errors.append(f"calibration: {e}")
+    doc = (f"[CODING JOB ENDED - {now_iso()[:10]}]\nJob {job['job_id']} ({job.get('category', 'general')}) ended {state}, reason {reason}.\n"
+           f"Goal: {job['goal'][:200]}\nSteps {facts.get('steps')}, hours {facts.get('hours_running')}, commits {facts.get('commits')}, PR {facts.get('pr_url')}.\n"
+           f"Agent's own report:\n{(facts.get('status_md') or '')[-600:]}")
+    for role in {job.get("role_id", "popo"), "paul"}:
+        try:
+            if memory_service is None:
+                raise JobError("no memory service")
+            memory_service.add_to_knowledge_base(doc, {"type": "coding_job_outcome", "role": role, "job_id": job["job_id"],
+                                                       "state": state, "end_reason": reason}, role_id=role)
+        except Exception as e:
+            errors.append(f"memory[{role}]: {e}")
+    return {"reason": reason, "errors": errors}
+
+
+def decision_document(job: Dict[str, Any], state: str, decision: Dict[str, str]) -> str:
+    return (f"[PM JOB DECISION - {now_iso()[:10]}]\nJob {job['job_id']} was {state}; Paul decided {decision['decision']}: {decision['reason']}\n"
+            f"{('Message: ' + decision['message']) if decision.get('message') else ''}")

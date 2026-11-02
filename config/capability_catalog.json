@@ -394,6 +394,16 @@
       "danger_level": "medium",
       "mcp_external": true,
       "description": "Create a new event on Google Calendar. Ops calendar only unless user explicitly requests primary. Provided by the Google Workspace MCP server (gws CLI)."
+    },
+    "coding_job_launch": {
+      "category": "orchestration",
+      "danger_level": "medium",
+      "description": "Start a supervised long-running coding job: a coding agent works alone in its own sandbox clone on branch wip_<job_id>, a checker and the PM watch it, it ends at an open pull request. The goal needs done_when, out_of_scope and verify_by."
+    },
+    "coding_job_status": {
+      "category": "orchestration",
+      "danger_level": "low",
+      "description": "Status of supervised coding jobs (state, branch, budget and its source, last PM decision). Give job_id for one, omit to list all."
     }
   }
 }

@@ -1,0 +1,14 @@
+{
+  "_comment": "Supervised coding jobs. reviewer_resources: pool resources allowed to act as Paul's reviewer (the pool picks among them by its own priority). Chosen 2026-11-02 by testing three realistic cases; override in ~/.memory/config/coding_jobs.json.",
+  "reviewer_resources": [
+    "glm_5_2",
+    "openrouter_free_avengermojo_nvidia_nemotron_3_5_super_vl_free",
+    "openrouter_free_elmntri_nvidia_nemotron_3_5_super_vl_free",
+    "openrouter_free_tinyi_nvidia_nemotron_3_5_super_vl_free",
+    "openrouter_free_bedrock_nvidia_nemotron_3_5_super_vl_free"
+  ],
+  "weekly_rules_proposal": {
+    "min_asks": 3,
+    "unnecessary_share": 0.6
+  }
+}

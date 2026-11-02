@@ -154,21 +154,96 @@ def test_launch_records_job_and_sends_contract(memdir, monkeypatch):
     assert cj.load_job("pilot_one")["session_id"] == "ses_1"
 
 
-def test_weekly_report_counts_decisions_and_outcomes(memdir):
+def test_weekly_report_rates_asks_by_the_owners_answers(memdir):
     cj.save_job(job(job_id="a", state="done"))
     cj.save_job(job(job_id="b", state="dead"))
-    for jid, dec in (("a", "CONTINUE"), ("a", "DONE"), ("b", "CONTINUE"), ("b", "ASK_OWNER")):
+    for jid, dec in (("a", "CONTINUE"), ("a", "DONE"), ("b", "CONTINUE")):
         cj.log_decision(job(job_id=jid), "stalled", {"decision": dec, "reason": "r", "message": ""})
+    for i in range(3):
+        cj.log_decision(job(job_id="b"), "blocked", {"decision": "ASK_OWNER", "reason": f"which branch {i}", "message": "m", "recommendation": "use main"})
+    ask_times = [json.loads(l)["at"] for l in (memdir / "state" / "job_decisions.jsonl").read_text().splitlines() if "ASK_OWNER" in l]
+    for t in ask_times:
+        cj.log_feedback("b", t, "unnecessary")
     rep = cj.weekly_report()
-    assert rep["rows"] == 4 and rep["by_decision"]["CONTINUE"] == 2 and rep["unrated"] == 4
-    assert "nudged with CONTINUE: 2; 1 finished" in rep["text"] and "asked you 1" in rep["text"]
+    assert rep["rows"] == 6 and rep["asks"] == 3 and rep["unnecessary"] == 3
+    assert "nudged with CONTINUE: 2; 1 finished" in rep["text"] and "only confirmed" in rep["text"]
+    assert rep["proposal"].startswith("Coding job: do not ask the owner")
 
 
-def test_lessons_reach_the_review_prompt(memdir):
-    (memdir / "state").mkdir()
-    (memdir / "state" / cj.LESSONS_FILE).write_text("Never ask the owner about naming.")
-    f = facts(commits=0, diff_stat="", status_md="s")
-    assert "Never ask the owner about naming." in cj.review_prompt(job(goal="g", done_when="d", out_of_scope="o", verify_by="v"), f, "stalled", [])
+def test_no_proposal_without_evidence(memdir):
+    cj.log_decision(job(), "blocked", {"decision": "ASK_OWNER", "reason": "r", "message": "m", "recommendation": "x"})
+    assert cj.weekly_report()["proposal"] is None
+
+
+@pytest.mark.parametrize("reply,rec,rating", [
+    ("use main", "Use main", "unnecessary"), ("approve", "use main", "unnecessary"), ("yes", "", "unnecessary"),
+    ("use develop instead", "use main", "needed"), ("no, rebase first", "use main", "needed"),
+])
+def test_owner_reply_rating(reply, rec, rating):
+    assert cj.rate_owner_reply(reply, rec) == rating
+
+
+def test_escalation_rule_write_backs_up_and_reads_back(memdir, monkeypatch):
+    monkeypatch.setattr(cj, "get_memory_subpath", lambda *p: str(memdir.joinpath(*p)))
+    (memdir / "roles").mkdir()
+    (memdir / "roles" / "paul.json").write_text(json.dumps({"id": "paul", "escalation_rules": {"escalate_when": ["x"]}}))
+    cj.add_escalation_rule("paul", "do_not_escalate_when", "Coding job: y")
+    cj.add_escalation_rule("paul", "do_not_escalate_when", "Coding job: y")  # idempotent
+    data = json.loads((memdir / "roles" / "paul.json").read_text())
+    assert data["escalation_rules"]["do_not_escalate_when"] == ["Coding job: y"] and data["escalation_rules"]["escalate_when"] == ["x"]
+    assert (memdir / "roles" / "paul.json.bak-jobrules").exists()
+    with pytest.raises(cj.JobError):
+        cj.add_escalation_rule("paul", "bogus", "z")
+    assert "Coding job: y" in cj.escalation_rules_text()
+
+
+def test_rules_reach_the_review_prompt(memdir, monkeypatch):
+    monkeypatch.setattr(cj, "get_memory_subpath", lambda *p: str(memdir.joinpath(*p)))
+    (memdir / "roles").mkdir()
+    (memdir / "roles" / "paul.json").write_text(json.dumps({"escalation_rules": {"escalate_when": ["Coding job: ask only about credentials", "unrelated rule"]}}))
+    text = cj.review_prompt(job(goal="g", done_when="d", out_of_scope="o", verify_by="v"), facts(diff_stat=""), "stalled", [])
+    assert "ask only about credentials" in text and "unrelated rule" not in text
+
+
+def test_calibration_suggests_only_from_enough_finished_runs(memdir):
+    from app.scheduler import bonsai_calibration as bc
+    for i, steps in enumerate((40, 60, 80)):
+        bc.record("popo", "coding_job", "docs", steps=steps, hours=1.0 + i, reason="goal_achieved", run_id=f"r{i}")
+    bc.record("popo", "coding_job", "docs", steps=300, hours=6, reason="budget", run_id="r9")  # not a finished run
+    bc.record("popo", "coding_job", "docs", steps=300, hours=6, reason="budget", run_id="r9")  # same run twice
+    sug = bc.suggest("popo", "coding_job", "docs")
+    assert sug == {"max_steps": 96, "max_hours": 3.6, "samples": 3}
+    assert bc.suggest("popo", "coding_job", "other") is None
+    assert bc.summary("popo", "coding_job", "docs")["by_reason"] == {"goal_achieved": 3, "budget": 1}
+    with pytest.raises(ValueError):
+        bc.record("popo", "coding_job", "docs", steps=1, hours=1, reason="bored", run_id="x")
+
+
+def test_budget_source_is_owner_then_calibration_then_default(memdir):
+    from app.scheduler import bonsai_calibration as bc
+    assert cj._budget({"budget": {"max_hours": 2}})["budget_source"] == "spec"
+    assert "too few" in cj._budget({"category": "docs"})["budget_source"]
+    for i in range(3):
+        bc.record("popo", "coding_job", "docs", steps=50, hours=1, reason="goal_achieved", run_id=f"r{i}")
+    out = cj._budget({"category": "docs"})
+    assert out["budget"] == {"max_hours": 1.2, "max_steps": 60} and "calibration" in out["budget_source"]
+
+
+def test_finish_records_calibration_and_memory_and_reports_failures(memdir):
+    class Mem:
+        def __init__(self): self.docs = []
+        def add_to_knowledge_base(self, doc, meta, role_id=None): self.docs.append((role_id, meta["end_reason"]))
+    m = Mem()
+    out = cj.finish(job(job_id="f1", goal="g", role_id="popo", category="docs"), "done", facts(job_result="JOB_RESULT: DONE", pr_url="u"), m)
+    assert out == {"reason": "goal_achieved", "errors": []} and sorted(m.docs) == [("paul", "goal_achieved"), ("popo", "goal_achieved")]
+    out = cj.finish(job(job_id="f2", goal="g", role_id="popo", category="docs"), "blocked", facts(job_result="JOB_RESULT: DONE", pr_url=None), None)
+    assert out["reason"] == "detection_bug" and any("memory" in e for e in out["errors"])
+
+
+def test_end_reasons():
+    assert cj.end_reason(job(), "over_budget", facts()) == "budget"
+    assert cj.end_reason(job(continues=3), "blocked", facts()) == "model_confusion"
+    assert cj.end_reason(job(), "dead", facts()) == "tool_error"
 
 
 def test_review_asks_the_pool_with_tier_enums(monkeypatch):
@@ -183,8 +258,10 @@ def test_review_asks_the_pool_with_tier_enums(monkeypatch):
         id, model, provider, base_url, api_key = "r1", "m1", "p", "http://x", "k"
 
     class Rm:
+        _resources = {"r1": 1, "other": 2, "glm": 3}
         def acquire(self, tier_preference, **kw):
             seen["tiers"] = tier_preference
+            seen["exclude"] = kw["exclude_ids"]
             return Res()
         @asynccontextmanager
         async def slot(self, *a, **k): yield
@@ -198,6 +275,8 @@ def test_review_asks_the_pool_with_tier_enums(monkeypatch):
             return {"choices": [{"message": {"content": '{"decision": "CONTINUE", "reason": "r", "message": "go"}'}}], "usage": {}}
 
     monkeypatch.setattr("app.llm.unified_client.UnifiedLLMClient", Llm)
+    monkeypatch.setattr(cj, "reviewer_resources", lambda: ["r1", "glm"])
     j = job(goal="g", done_when="d", out_of_scope="o", verify_by="v")
     out = asyncio.run(CodingJobHandler()._review(j, facts(diff_stat=""), "stalled", [], Ctx()))
     assert all(isinstance(t, ResourceTier) for t in seen["tiers"]) and out["decision"] == "CONTINUE" and seen["usage"]
+    assert seen["exclude"] == ["other"]  # only the configured reviewer resources can be picked

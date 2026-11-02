@@ -381,6 +381,41 @@ class CapabilityRegistry:
                 }, "required": ["task_id", "role_id", "goal"]},
             ),
             CapabilityDefinition(
+                name="coding_job_launch",
+                description=(
+                    "Start a supervised long-running coding job and return at once. A third-party coding agent "
+                    "(OpenCode) works alone in its own sandbox clone of the repo on branch wip_<job_id>, a checker "
+                    "watches it every 5 minutes and the PM (Paul) steps in when it stalls. The job ends at an open "
+                    "pull request, never a merge. The goal MUST carry done_when, out_of_scope and verify_by. "
+                    "Use this instead of driving the coding agent turn by turn when the work will take more than "
+                    "one task's worth of steps."
+                ),
+                danger_level="medium",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "job_id": {"type": "string", "description": "3-40 chars, a-z 0-9 _"},
+                    "repo": {"type": "string", "description": "git URL to clone, e.g. git@github.com:AvengerMoJo/MoJoAssistant.git"},
+                    "goal": {"type": "string"},
+                    "done_when": {"type": "string", "description": "Observable completion condition"},
+                    "out_of_scope": {"type": "string"},
+                    "verify_by": {"type": "string", "description": "How the result is checked"},
+                    "category": {"type": "string", "description": "Kind of work (docs, tests, feature, bugfix...); Bonsai calibrates the budget per category"},
+                    "budget": {"type": "object", "description": "Optional {max_hours, max_steps}; omit to use Bonsai's calibrated budget"},
+                }, "required": ["job_id", "repo", "goal", "done_when", "out_of_scope", "verify_by"]},
+            ),
+            CapabilityDefinition(
+                name="coding_job_status",
+                description=(
+                    "Status of supervised coding jobs: state, branch, steps, last check, PM decisions, budget and "
+                    "where the budget came from. Give job_id for one job; omit it to list all jobs."
+                ),
+                danger_level="low",
+                category="orchestration",
+                parameters={"type": "object", "properties": {
+                    "job_id": {"type": "string"},
+                }, "required": []},
+            ),
+            CapabilityDefinition(
                 name="list_roles",
                 description=(
                     "List all available agent roles that can be used with dispatch_subtask or "
@@ -927,6 +962,10 @@ class CapabilityRegistry:
                     return await self._task_report_read(args)
                 elif name == "scheduler_add_task":
                     return await self._scheduler_add_task(args)
+                elif name == "coding_job_launch":
+                    return await self._coding_job_launch(args)
+                elif name == "coding_job_status":
+                    return await self._coding_job_status(args)
                 elif name == "list_roles":
                     return await self._list_roles(args)
                 elif name == "project_list":
@@ -1952,6 +1991,35 @@ class CapabilityRegistry:
 
         else:
             return {"success": False, "error": f"Unknown kind '{kind}' — must be 'named_sandbox', 'coding_agent_server', or 'project'"}
+
+    async def _coding_job_launch(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Start a supervised coding job (app/scheduler/coding_jobs.py); returns once the agent has its contract."""
+        from app.scheduler import coding_jobs as cj
+        spec = {k: v for k, v in args.items() if v not in (None, "")}
+        spec.setdefault("role_id", getattr(self, "_role_id", None) or "popo")
+        try:
+            job = await asyncio.to_thread(cj.launch, spec)
+        except cj.JobError as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True, "job_id": job["job_id"], "branch": job["branch"], "sandbox": job["sandbox_path"],
+                "budget": job["budget"], "budget_source": job["budget_source"],
+                "note": "The agent works alone; the checker reviews it every 5 minutes and the owner is told only when needed."}
+
+    async def _coding_job_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from app.scheduler import coding_jobs as cj
+
+        def brief(j):
+            last = (j.get("checks") or [{}])[-1]
+            return {"job_id": j["job_id"], "state": j["state"], "branch": j["branch"], "budget": j["budget"],
+                    "budget_source": j.get("budget_source"), "started_at": j["started_at"], "last_check_at": j.get("last_check_at"),
+                    "continues": j.get("continues", 0), "last_check": {k: last.get(k) for k in ("state", "end_reason")},
+                    "last_decision": (last.get("review") or {}).get("decision")}
+        try:
+            if args.get("job_id"):
+                return {"success": True, "job": brief(cj.load_job(args["job_id"]))}
+            return {"success": True, "jobs": [brief(j) for j in cj.list_jobs()]}
+        except cj.JobError as e:
+            return {"success": False, "error": str(e)}
 
     async def _bash_exec(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute shell command(s) with safety limits."""
