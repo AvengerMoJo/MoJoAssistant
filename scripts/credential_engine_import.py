@@ -32,6 +32,26 @@ OWNER_CLIENT = Path.home() / ".config" / "ai-credential-manager" / "owner_admin_
 SECRET_FIELDS = ("api_key", "key", "secret", "token", "password")
 
 
+def inherit_refs(resources: dict, refs: dict) -> None:
+    """Give a resource the service does not know yet (not one it knows without a key: that was left that way) the credential its siblings already use.
+
+    Every resource whose key comes from the same variable shares one credential.  A new model added to an
+    account therefore needs no separate key step: it inherits the account's existing credential_ref.  If the
+    siblings disagree (two different refs for one variable) nothing is guessed and the resource stays keyless."""
+    by_var = defaultdict(set)
+    for rid, conf in resources.items():
+        var = conf.get("key_var") or conf.get("api_key_env")
+        if var and refs.get(rid):
+            by_var[var].add(refs[rid])
+    for rid, conf in resources.items():
+        conf.pop("credential_engine", None)
+        var = conf.get("key_var") or conf.get("api_key_env")
+        if refs.get(rid) and not conf.get("credential_ref"):
+            conf["credential_ref"] = refs[rid]
+        elif rid not in refs and not conf.get("credential_ref") and var and len(by_var.get(var, ())) == 1:
+            conf["credential_ref"] = next(iter(by_var[var]))
+
+
 def build_payload():
     data = load_layered_json_config("config/resource_pool.json")
     resources, pools, errors = expand_provider_accounts(data)
@@ -64,10 +84,7 @@ async def main(apply: bool) -> int:
     if not isinstance(rows, list):
         raise SystemExit(f"cannot read the service's current definitions (unexpected list_resources answer): {type(existing).__name__}")
     refs = {r.get("id") or r.get("resource_id"): r.get("credential_ref") for r in rows if isinstance(r, dict)}
-    for rid, conf in resources.items():
-        conf.pop("credential_engine", None)
-        if refs.get(rid) and not conf.get("credential_ref"):
-            conf["credential_ref"] = refs[rid]
+    inherit_refs(resources, refs)
     result = await client.call("import_resources", scope, resources=resources, quota_pools=pools, dry_run=not apply)
 
     print(f"{'APPLIED' if apply else 'DRY RUN'}: {len(resources)} definitions read from resource_pool.json")
