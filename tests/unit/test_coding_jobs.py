@@ -46,7 +46,8 @@ def test_bad_job_id():
     (facts(steps=301), "over_budget"),
     (facts(job_result="JOB_RESULT: DONE", pr_url="http://pr"), "done"),
     (facts(job_result="JOB_RESULT: DONE"), "blocked"),
-    (facts(job_result="JOB_RESULT: BLOCKED needs token"), "blocked"),
+    (facts(job_result="JOB_RESULT: BLOCKED needs token", session_active=False, minutes_idle=30), "blocked"),
+    (facts(job_result="JOB_RESULT: BLOCKED tests still running", session_active=True, minutes_idle=1), "running"),
     (facts(pending_forms=1), "blocked"),
     (facts(server_up=False), "dead"),
     (facts(minutes_idle=90, minutes_since_commit=120, session_active=True), "stalled"),
@@ -168,3 +169,35 @@ def test_lessons_reach_the_review_prompt(memdir):
     (memdir / "state" / cj.LESSONS_FILE).write_text("Never ask the owner about naming.")
     f = facts(commits=0, diff_stat="", status_md="s")
     assert "Never ask the owner about naming." in cj.review_prompt(job(goal="g", done_when="d", out_of_scope="o", verify_by="v"), f, "stalled", [])
+
+
+def test_review_asks_the_pool_with_tier_enums(monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from app.scheduler.handlers.coding_job import CodingJobHandler
+    from app.scheduler.resource_pool import ResourceTier
+
+    seen = {}
+
+    class Res:
+        id, model, provider, base_url, api_key = "r1", "m1", "p", "http://x", "k"
+
+    class Rm:
+        def acquire(self, tier_preference, **kw):
+            seen["tiers"] = tier_preference
+            return Res()
+        @asynccontextmanager
+        async def slot(self, *a, **k): yield
+        def record_usage(self, *a, **k): seen["usage"] = True
+
+    class Ctx:
+        def get_resource_manager(self): return Rm()
+
+    class Llm:
+        async def call_async(self, **kw):
+            return {"choices": [{"message": {"content": '{"decision": "CONTINUE", "reason": "r", "message": "go"}'}}], "usage": {}}
+
+    monkeypatch.setattr("app.llm.unified_client.UnifiedLLMClient", Llm)
+    j = job(goal="g", done_when="d", out_of_scope="o", verify_by="v")
+    out = asyncio.run(CodingJobHandler()._review(j, facts(diff_stat=""), "stalled", [], Ctx()))
+    assert all(isinstance(t, ResourceTier) for t in seen["tiers"]) and out["decision"] == "CONTINUE" and seen["usage"]

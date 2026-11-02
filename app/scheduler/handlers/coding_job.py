@@ -114,8 +114,9 @@ class CodingJobHandler(TaskHandler):
 
     async def _review(self, job, facts, state, unanswered, ctx) -> dict:
         from app.llm.unified_client import UnifiedLLMClient
+        from app.scheduler.resource_pool import ResourceTier
         rm = ctx.get_resource_manager()
-        res = rm.acquire(tier_preference=["free_api", "free"], min_context=16000, max_data_scope="third_party")
+        res = rm.acquire(tier_preference=[ResourceTier.FREE_API, ResourceTier.FREE], min_context=16000, max_data_scope="third_party")
         if res is None:
             raise cj.JobError("no pool resource can serve the reviewer")
         cfg = {"base_url": res.base_url, "model": res.model, "api_key": res.api_key, "provider": res.provider,

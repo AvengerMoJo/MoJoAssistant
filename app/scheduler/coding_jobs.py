@@ -308,8 +308,9 @@ def classify(job: Dict[str, Any], facts: Dict[str, Any]) -> str:
     result = facts["job_result"] or ""
     if result.startswith("JOB_RESULT: DONE") and facts["pr_url"]:
         return "done"
-    if result.startswith("JOB_RESULT: BLOCKED") or facts["pending_forms"]:
-        return "blocked"
+    working = facts["session_active"] and facts["minutes_idle"] is not None and facts["minutes_idle"] < 10
+    if facts["pending_forms"] or (result.startswith("JOB_RESULT: BLOCKED") and not working):
+        return "blocked"  # a BLOCKED line written while the agent is still working is an interim note
     if not facts["server_up"] or (job.get("session_id") is None):
         return "dead"
     if result.startswith("JOB_RESULT: DONE") and not facts["pr_url"]:
