@@ -151,3 +151,20 @@ def test_launch_records_job_and_sends_contract(memdir, monkeypatch):
     assert "Done" not in Oc.sent[0][1] and "DONE WHEN: d" in Oc.sent[0][1] and "wip_pilot_one" in Oc.sent[0][1]
     assert any(c[0] == "systemd-run" for c in calls) and any(c[:2] == ["git", "clone"] for c in calls)
     assert cj.load_job("pilot_one")["session_id"] == "ses_1"
+
+
+def test_weekly_report_counts_decisions_and_outcomes(memdir):
+    cj.save_job(job(job_id="a", state="done"))
+    cj.save_job(job(job_id="b", state="dead"))
+    for jid, dec in (("a", "CONTINUE"), ("a", "DONE"), ("b", "CONTINUE"), ("b", "ASK_OWNER")):
+        cj.log_decision(job(job_id=jid), "stalled", {"decision": dec, "reason": "r", "message": ""})
+    rep = cj.weekly_report()
+    assert rep["rows"] == 4 and rep["by_decision"]["CONTINUE"] == 2 and rep["unrated"] == 4
+    assert "nudged with CONTINUE: 2; 1 finished" in rep["text"] and "asked you 1" in rep["text"]
+
+
+def test_lessons_reach_the_review_prompt(memdir):
+    (memdir / "state").mkdir()
+    (memdir / "state" / cj.LESSONS_FILE).write_text("Never ask the owner about naming.")
+    f = facts(commits=0, diff_stat="", status_md="s")
+    assert "Never ask the owner about naming." in cj.review_prompt(job(goal="g", done_when="d", out_of_scope="o", verify_by="v"), f, "stalled", [])

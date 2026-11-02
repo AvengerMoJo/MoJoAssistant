@@ -361,6 +361,8 @@ DECISIONS = ("CONTINUE", "STATUS_UP", "DONE", "REPLAN", "ASK_OWNER")
 
 
 def review_prompt(job: Dict[str, Any], facts: Dict[str, Any], state: str, unanswered: list) -> str:
+    lessons = lessons_text()
+    lessons = f"Calibration notes from the owner and the weekly review (follow them):\n{lessons}\n\n" if lessons else ""
     return f"""You are Paul, the product manager, reviewing a coding job that works alone. You judge at the level of the plan, not the code.
 A rule check found the job in state: {state}.
 
@@ -378,7 +380,7 @@ DIFF STAT:
 STATUS.md (the agent's own report):
 {facts['status_md']}
 
-Decide whether the assistant is stuck or stopped for a wrong reason. Answer with ONE JSON object and nothing else:
+{lessons}Decide whether the assistant is stuck or stopped for a wrong reason. Answer with ONE JSON object and nothing else:
 {{"decision": "CONTINUE|STATUS_UP|DONE|REPLAN|ASK_OWNER", "reason": "one or two sentences", "message": "for CONTINUE: the exact instruction to send the agent; for STATUS_UP/ASK_OWNER/REPLAN: what the owner needs to read; else empty"}}
 CONTINUE = the stop was wrong, tell it what to do next. STATUS_UP = real but slow progress, tell the owner briefly. DONE = the goal is met and a PR exists.
 REPLAN = this approach is failing, give a revised plan in message. ASK_OWNER = only if a decision truly needs the owner and you cannot make it from the facts; say what you would choose."""
@@ -432,3 +434,45 @@ def apply_decision(job: Dict[str, Any], decision: Dict[str, str], oc: OcClient) 
         return f"Job {job['job_id']} was re-planned by Paul (replan {job['replans']}): {decision['reason']}"
     job["state"] = "blocked"
     return f"Job {job['job_id']} needs you: {decision['message'] or decision['reason']}"
+
+
+# ---------------------------------------------------------------- weekly calibration (BRIDLE / Bonsai)
+
+LESSONS_FILE = "job_review_lessons.md"
+
+
+def lessons_text() -> str:
+    """Owner/Bonsai-approved calibration notes; added to every Paul review prompt."""
+    p = Path(get_memory_path()) / "state" / LESSONS_FILE
+    return p.read_text()[-2000:].strip() if p.exists() else ""
+
+
+def weekly_report(days: int = 7, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """What Paul decided this week and what became of those jobs: the data for the weekly Bonsai step."""
+    now = now or datetime.now(timezone.utc)
+    p = Path(get_memory_path()) / "state" / "job_decisions.jsonl"
+    rows = []
+    if p.exists():
+        for line in p.read_text().splitlines():
+            row = json.loads(line)
+            if (now - datetime.fromisoformat(row["at"])).days < days:
+                rows.append(row)
+    by_decision: Dict[str, int] = {}
+    for r in rows:
+        by_decision[r["decision"]] = by_decision.get(r["decision"], 0) + 1
+    jobs = {j["job_id"]: j for j in list_jobs()}
+    per_job: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        j = per_job.setdefault(r["job_id"], {"decisions": [], "final_state": jobs.get(r["job_id"], {}).get("state")})
+        j["decisions"].append(r["decision"])
+    nudged = [v for v in per_job.values() if "CONTINUE" in v["decisions"]]
+    unrated = sum(1 for r in rows if r.get("owner_feedback") is None)
+    lines = [f"Paul's job decisions, last {days} days: {len(rows)} ({', '.join(f'{k} {v}' for k, v in sorted(by_decision.items())) or 'none'})."]
+    if nudged:
+        ok = sum(1 for v in nudged if v["final_state"] in ("done", "running"))
+        lines.append(f"Jobs he nudged with CONTINUE: {len(nudged)}; {ok} finished or still moving, {len(nudged) - ok} ended blocked, dead or over budget.")
+    asked = by_decision.get("ASK_OWNER", 0)
+    if asked:
+        lines.append(f"He asked you {asked} time(s). Each should have been a decision only you could make; tell me which were not.")
+    lines.append(f"{unrated} decision(s) have no owner rating yet (file ~/.memory/state/job_decisions.jsonl, field owner_feedback: good|bad).")
+    return {"rows": len(rows), "by_decision": by_decision, "unrated": unrated, "text": "\n".join(lines)}

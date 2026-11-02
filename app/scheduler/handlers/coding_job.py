@@ -1,4 +1,4 @@
-"""Supervised coding jobs.  config.action: launch | check | resume | cancel.
+"""Supervised coding jobs.  config.action: launch | check | resume | cancel | decision_report.
 Library and rules: app/scheduler/coding_jobs.py; spec: ~/.memory/research/specs/popo_long_running_job_spec.md"""
 # [mojo-integration]
 from __future__ import annotations
@@ -25,6 +25,10 @@ class CodingJobHandler(TaskHandler):
                 return TaskResult(success=True, metrics={"job_id": job["job_id"], "branch": job["branch"], "port": job["port"]})
             if action == "check":
                 return TaskResult(success=True, metrics=await self._check_all(ctx))
+            if action == "decision_report":
+                rep = cj.weekly_report(int(cfg.get("days", 7)))
+                await self._notify("Weekly review of Paul's job decisions", rep["text"])
+                return TaskResult(success=True, metrics={"rows": rep["rows"], "unrated": rep["unrated"]})
             if action == "resume":
                 return await asyncio.to_thread(self._resume, cfg["job_id"], cfg.get("message", ""))
             if action == "cancel":
