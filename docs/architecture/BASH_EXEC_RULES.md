@@ -25,8 +25,10 @@ whether the command only observes; when it does, the danger is downgraded to `lo
 and the git subcommands in `READ_ONLY_GIT`, and rejects redirects, `$(...)` substitution,
 `find` write actions, `sort -o`, and a `VAR=value` prefix in front of the command.
 
-- Allowed (read-only, charged 1 point): `grep -rn x .` — `ls && pwd`
-- Blocked (not read-only, charged the full 8 points): `rm x` — `cat f > g`
+- Allowed (read-only, charged 1 point): `grep -rn x .`
+- Allowed (read-only, charged 1 point): `ls && pwd`
+- Blocked (not read-only, charged the full 8 points): `rm x`
+- Blocked (not read-only, charged the full 8 points): `cat f > g`
 
 ## Rule 2 — Blocklist over every command in a pipeline
 
@@ -38,8 +40,12 @@ split with `bash_command.split_commands()` and **every** simple command is check
 only the first word, because the command runs under `shell=True` — otherwise `ls && rm x`
 would execute `rm x`.
 
-- Allowed: `grep -c zzz {tmp_path}/f` — `cat {tmp_path}/f` (`tmp_path` is pytest's fixture directory)
-- Blocked: `ls && rm nothing` — `echo hi | xargs true; kill 1`
+- Allowed: `grep -c zzz {tmp_path}/f`
+- Allowed: `cat {tmp_path}/f`
+- Blocked: `ls && rm nothing`
+- Blocked: `echo hi | xargs true; kill 1`
+
+(`{tmp_path}` is pytest's fixture directory.)
 
 ## Rule 3 — Secret path rule
 
@@ -50,8 +56,10 @@ every command with `_secret_hit()` and refuses on `_SECRET_DIRS` (`.ssh`, `.gnup
 not a template (`_ENV_TEMPLATE`: `.example`, `.sample`, `.template`). The scan runs before
 the sandbox carve-out, so it applies inside a sandbox container as well.
 
-- Allowed: `cat /home/alex/Development/Personal/MoJoAssistant/config/notifications_config.json` — `cat /home/alex/Development/x/.env.example`
-- Blocked: `cat ~/.ssh/id_rsa` — `cat ~/.config/opencode/service.json`
+- Allowed: `cat /home/alex/Development/Personal/MoJoAssistant/config/notifications_config.json`
+- Allowed: `cat /home/alex/Development/x/.env.example`
+- Blocked: `cat ~/.ssh/id_rsa`
+- Blocked: `cat ~/.config/opencode/service.json`
 
 ## Rule 4 — Write path rule
 
@@ -63,8 +71,10 @@ last argument. A target outside the memory dir and `/tmp` is refused, and so is 
 that escapes the workdir with `..`. A relative target stays inside the agent workdir and is
 allowed.
 
-- Allowed: `echo hi > ~/.memory/research/x.md` — `mkdir -p ~/.memory/tools && cp /home/alex/cella/cella ~/.memory/tools/cella`
-- Blocked: `echo x > ~/.bashrc` — `sed -i s/a/b/ /home/alex/Development/p/f`
+- Allowed: `echo hi > ~/.memory/research/x.md`
+- Allowed: `mkdir -p ~/.memory/tools && cp /home/alex/cella/cella ~/.memory/tools/cella`
+- Blocked: `echo x > ~/.bashrc`
+- Blocked: `sed -i s/a/b/ /home/alex/Development/p/f`
 
 ## Rule 5 — System-read path rule
 
@@ -74,8 +84,10 @@ that list), except for the harmless files in `_SAFE_READS` (`/etc/os-release`,
 `/etc/resolv.conf`, `/etc/hostname`, `/proc/self`, `/proc/cpuinfo`, `/proc/meminfo`). A bare
 `/` is refused as a whole-filesystem scan. Repos under `/home` are readable.
 
-- Allowed: `cat /etc/os-release` — `ls /usr/bin | grep chrome`
-- Blocked: `cat /etc/passwd` — `find / -name foo`
+- Allowed: `cat /etc/os-release`
+- Allowed: `ls /usr/bin | grep chrome`
+- Blocked: `cat /etc/passwd`
+- Blocked: `find / -name foo`
 
 ## Neighbouring gates (not one of the five rules)
 
