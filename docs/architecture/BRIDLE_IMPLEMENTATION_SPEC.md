@@ -439,6 +439,11 @@ It runs once a day by default; to turn it off, copy the whole entry into
 `~/.memory/config/scheduler_config.json` with `"enabled": false` (the personal layer replaces the
 entry with the same id — the whole entry, not just the one field).
 
+Known limitation: the HITL notification manager logs per-adapter failures and returns no
+delivery status, so the step cannot yet tell whether the message reached a channel. If no
+channel is configured, the pattern is still marked as reported and is not sent again until it
+grows into the next threshold band. The report on disk is the source of truth either way.
+
 ### 11.4 What Phase 1 deliberately does not do
 
 Phase 1 **observes**. It does not disable a resource, does not exclude one, does not change the
