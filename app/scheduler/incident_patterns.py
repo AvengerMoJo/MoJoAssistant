@@ -24,7 +24,10 @@ about a fresh failure pattern once, not only once it has grown.
 The state file carries what has already been reported (`notified`), so the daily step can tell
 "a pattern I have never told the owner about" from "the same pattern, one more time".
 `notified_count` is the count the owner was last told about (the number the next threshold
-comparison uses); `last_count` is the latest observation.
+comparison uses); `last_count` is the latest observation. Only patterns that were actually
+reported get an entry -- a pattern that was seen but could not be reported yet has none, so it
+stays reportable and is reported the next day. `observed` holds what the log says right now,
+reported or not.
 
 At most one notification leaves per day. A pattern that crossed while the day's notification was
 already used stays pending -- it is reported the next day. A notification is delayed, never
@@ -153,11 +156,21 @@ async def scan_patterns(
 
     state_path = state_path or patterns_state_path()
     previous = load_state(state_path)
-    # Only patterns that were actually reported live in `notified`. A pattern that was seen but
-    # never reported (the daily cap was used) stays "new" and is reported the next day.
+    # Only patterns that were actually REPORTED live in `notified`. A pattern that was seen but
+    # not reported (no notifier, or the day's notification was already used) has no entry here,
+    # so it stays "new" and is reported the next day -- a notification is delayed, never dropped.
     notified: Dict[str, Any] = {k: dict(v) for k, v in (previous.get("notified") or {}).items()}
 
     reportable = [p for p in patterns if is_reportable(p, notified, notify_threshold)]
+    # What the log currently says, reported or not.
+    observed: Dict[str, Any] = {
+        pattern_key(p): {
+            "count": int(p.get("count") or 0),
+            "task_count": p.get("task_count"),
+            "last_seen": p.get("last_seen"),
+        }
+        for p in patterns
+    }
 
     state: Dict[str, Any] = {
         "generated_at": now.isoformat(),
@@ -166,6 +179,7 @@ async def scan_patterns(
         "notify_threshold": notify_threshold,
         "pattern_count": len(patterns),
         "patterns": patterns,
+        "observed": observed,
         "notified": notified,
         "last_notification_date": previous.get("last_notification_date"),
         "last_notification_at": previous.get("last_notification_at"),
@@ -192,16 +206,6 @@ async def scan_patterns(
         state["notified"] = notified
         state["last_notification_date"] = today
         state["last_notification_at"] = now.isoformat()
-        write_state(state, state_path)
-    elif reportable:
-        # Keep the latest observation of a pattern that was not reported (yet) -- the state file
-        # shows what the log says even when the owner has not been told about it.
-        for pattern in reportable:
-            entry = notified.setdefault(pattern_key(pattern), {"notified_count": 0})
-            entry["last_count"] = int(pattern.get("count") or 0)
-            entry["task_count"] = pattern.get("task_count")
-            entry["last_seen"] = pattern.get("last_seen")
-        state["notified"] = notified
         write_state(state, state_path)
 
     pending = [] if sent else [pattern_key(p) for p in reportable]

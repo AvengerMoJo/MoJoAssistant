@@ -171,6 +171,27 @@ async def test_a_pending_crossing_is_reported_the_next_day(tmp_path):
     assert len(recorder.calls) == 2
 
 
+async def test_a_new_pattern_suppressed_by_the_daily_cap_is_still_reported_the_next_day(tmp_path):
+    """The day's notification was already used when the pattern first appeared. The pattern was
+    never reported, so it must not be treated as reported -- it waits for the next day."""
+    _two_tasks(tmp_path)
+    (tmp_path / "incident_patterns.json").write_text(json.dumps({
+        "generated_at": DAY1.isoformat(), "pattern_count": 0, "patterns": [], "notified": {},
+        "last_notification_date": DAY1.date().isoformat(),
+    }))
+    recorder = _Recorder()
+    summary = await _scan(tmp_path, recorder)
+    assert summary["notified"] is False
+    assert summary["daily_cap_reached"] is True
+    assert summary["pending"], "the new pattern must wait for tomorrow"
+    assert len(recorder.calls) == 0
+
+    summary = await _scan(tmp_path, recorder, now=DAY2)
+    assert summary["notified"] is True
+    assert len(recorder.calls) == 1
+    assert "glm_5_2" in recorder.calls[0][1]
+
+
 async def test_the_report_is_written_before_the_notification_is_sent(tmp_path):
     _two_tasks(tmp_path)
 
