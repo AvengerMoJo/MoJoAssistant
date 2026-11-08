@@ -363,5 +363,111 @@ This is what closes the loop. The wire enables communication. Bonsai teaches the
 
 ---
 
-*Document version 2 — 2026-06-01*
+## 11. Phase 1 — The Incident Learning Loop (2026-11-08)
+
+The first closed loop in BRIDLE: **Act → Validate → Log → Learn**, applied to provider incidents.
+A provider that refuses a call mid-task used to leave one log line and an iteration-log entry
+that the next retry overwrites — a task that went on to complete left no trace, so nothing could
+learn from it. Phase 1 makes the trace durable, makes it readable, and tells the owner once.
+
+### 11.1 What was recorded before, and what is recorded now
+
+| Field | Before | Now |
+|---|---|---|
+| `kind` | classified failure (context_overflow, rate_limit, auth, …) | unchanged |
+| `error` | the status line only (`400 Bad Request`) | unchanged |
+| `response_body` | — | the provider's own error payload, first 500 chars, secrets scrubbed |
+
+`response_body` is the part that makes a pattern recognisable: four `400 Bad Request` lines are
+indistinguishable, four `prompt is too long: 195000 tokens > 163840 maximum` lines are one
+problem. The body is scrubbed (Authorization headers, `api_key`-style fields, Bearer tokens and
+`key=` query values are redacted) and then cut to 500 characters, so a credential that starts near
+the cut is removed rather than half-copied. Rows written before the field existed have no
+`response_body` key at all and still load.
+
+The body reaches the log from the failure itself: `httpx` keeps the failed response on the
+`HTTPStatusError` it raises, so `UnifiedLLMClient.call_async()` → `resp.raise_for_status()` leaves
+the provider's payload attached to the exception. `extract_response_body(exc)` reads it from
+there; when the failure had no HTTP response behind it (a timeout, a connection error) there is
+no body and none is guessed.
+
+### 11.2 From incidents to patterns
+
+`repeated_patterns(min_tasks=2, window_days=14)` groups rows by
+
+```
+(resource_id, kind, signature)
+signature = HTTP status + first 80 chars of the provider message
+            with digits and identifiers blanked out
+```
+
+so two failures that differ only in a token count (`195000` vs `201111`) or a request id land in
+the same group. A group is a pattern when it was seen in at least `min_tasks` **distinct tasks**
+inside `window_days` — the same task failing twice is one task, not a pattern. Each pattern
+reports its incident count, task count, first/last sighting, a few example task ids and the range
+of `largest_message_chars` (a pattern that only fails on very large messages is a different
+problem from one that fails on small ones).
+
+### 11.3 The daily step
+
+`app/scheduler/incident_patterns.py` reads the log, groups the rows, writes
+`~/.memory/state/incident_patterns.json` and notifies the owner **once**:
+
+- a pattern is reported when it is **new** (never reported before) or when its incident count
+  **crossed a threshold** (it entered a new band `count // notify_threshold`, default 3);
+- at most **one** notification leaves per day — a pattern that crossed while the day's
+  notification was already used stays *pending* and is reported the next day. A notification is
+  delayed, never dropped;
+- the report is written **before** the notification is sent, so a failed notification still leaves
+  the patterns on disk.
+
+The step is config-driven (`config/scheduler_config.json`, merged by task id with the personal
+layer `~/.memory/config/scheduler_config.json`):
+
+```json
+{
+  "id": "incident_patterns_daily",
+  "type": "incident_patterns",
+  "cron": "0 8 * * *",
+  "priority": "low",
+  "enabled": true,
+  "config": {"min_tasks": 2, "window_days": 14, "notify_threshold": 3}
+}
+```
+
+It runs once a day by default; to turn it off, copy the whole entry into
+`~/.memory/config/scheduler_config.json` with `"enabled": false` (the personal layer replaces the
+entry with the same id — the whole entry, not just the one field).
+
+Known limitation: the HITL notification manager logs per-adapter failures and returns no
+delivery status, so the step cannot yet tell whether the message reached a channel. If no
+channel is configured, the pattern is still marked as reported and is not sent again until it
+grows into the next threshold band. The report on disk is the source of truth either way.
+
+### 11.4 What Phase 1 deliberately does not do
+
+Phase 1 **observes**. It does not disable a resource, does not exclude one, does not change the
+ranking, does not touch the danger budget, Bonsai's calibration, the nudge gap, the roles or the
+prompts. What to do with a repeated pattern is a decision for the owner — the loop only makes the
+signal visible and delivers it once a day. Acting on the signal is a later phase, and it has to
+earn its way there.
+
+### 11.5 Reading the routing without changing it
+
+`scripts/routing_pick_check.py` answers "which resource would be picked for this task shape?"
+without touching anything: it calls the same `ResourceManager.selection_order()` the scheduler's
+`acquire()` ranks candidates with, so the printed order cannot drift from the real one.
+
+```bash
+python scripts/routing_pick_check.py --tiers free,free_api --min-context 128000
+```
+
+It prints the pool's selection order (eligible first, then the ones that were passed over and
+why) and the first resource that would be picked. It acquires nothing, disables nothing and
+writes no config.
+
+---
+
+*Document version 3 — 2026-11-08*
+*Version 3 adds §11: Phase 1 of the BRIDLE learning loop for provider incidents.*
 *Replaces version 1 (plugin-oriented spec, 2026-05-31)*
