@@ -1596,11 +1596,19 @@ class AgenticExecutor:
                 _failed_resource_ids.add(resource.id)
                 self._log(f"LLM call failed: {e} — resource '{resource.id}' excluded for this task", "error")
                 try:
-                    from app.scheduler.task_incidents import record_incident
+                    from app.scheduler.task_incidents import record_incident, extract_response_body
+                    # The provider's own words, not just the status line: httpx keeps the failed
+                    # response on the exception it raises, so the body is read from there.
+                    _body = None
+                    try:
+                        _body = extract_response_body(e)
+                    except Exception as body_exc:
+                        self._log(f"provider response body unavailable: {body_exc}", "warning")
                     _inc = record_incident(
                         task.id, role_id, resource.id, str(e) or type(e).__name__, iteration,
                         _estimate_tokens(messages), getattr(resource, "context_limit", None),
-                        max((len(str(m.get("content") or "")) for m in messages), default=0), iteration_log)
+                        max((len(str(m.get("content") or "")) for m in messages), default=0), iteration_log,
+                        response_body=_body)
                     self._log(f"incident recorded: {_inc['kind']} on {resource.id} (last tool {_inc['last_tool']})", "warning")
                 except Exception as inc_exc:  # a lost incident row is an error to see, never a reason to stop the task
                     self._log(f"task incident write failed: {inc_exc}", "error")
