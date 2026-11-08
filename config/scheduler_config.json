@@ -97,6 +97,20 @@
       "enabled": false,
       "description": "Daily refresh of the OpenRouter free-model lane (adds working new free tool models, disables vanished or failing ones) -- enable in ~/.memory/config/scheduler_config.json",
       "config": {"job": "openrouter_free_models"}
+    },
+    {
+      "id": "incident_patterns_daily",
+      "type": "incident_patterns",
+      "cron": "0 8 * * *",
+      "priority": "low",
+      "enabled": true,
+      "description": "Daily BRIDLE read of the task-incident log: groups repeated provider failures, writes ~/.memory/state/incident_patterns.json and notifies the owner once when a pattern is new or crossed a threshold -- turn it off with \"enabled\": false in ~/.memory/config/scheduler_config.json",
+      "config": {
+        "min_tasks": 2,
+        "window_days": 14,
+        "notify_threshold": 3
+      },
+      "resources": { "requires_gpu": false }
     }
   ]
 }

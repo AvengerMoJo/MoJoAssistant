@@ -71,6 +71,7 @@ class TaskType(Enum):
     RESOURCE_MAINTENANCE = "resource_maintenance"  # Pool upkeep jobs (e.g. daily OpenRouter free-model refresh)
     CODING_JOB = "coding_job"  # Supervised long-running coding job: launch / check / resume / cancel
     CODING_SESSION = "coding_session"  # Long-running external coding agent session (OpenCode, Goose)
+    INCIDENT_PATTERNS = "incident_patterns"  # BRIDLE: daily read of the incident log for repeated provider failures
 
 
 @dataclass
